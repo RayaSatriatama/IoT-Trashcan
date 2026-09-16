@@ -89,7 +89,7 @@ func (s *Service) Ingest(ctx context.Context, bearerToken string, req Request, r
 	recordedText := recordedAt.UTC().Format(time.RFC3339Nano)
 	for _, input := range req.Slots {
 		_, err = tx.ExecContext(ctx, `
-			INSERT INTO readings (slot_id, recorded_at, raw_payload, fill_pct, weight_kg, ogi, accumulated_mass, temperature_c, sensor_health)
+			INSERT INTO readings (slot_id, recorded_at, raw_payload, fill, weight, ogi, accumulation, temperature, sensor_health)
 			VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?)`,
 			slotIDs[input.Stream], recordedText, string(rawPayload), input.Fill, input.Weight, input.Temperature, string(health))
 		if err != nil {

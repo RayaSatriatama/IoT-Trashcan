@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -69,6 +70,64 @@ func TestIngestRejectsMalformedSlotsBeforeWrites(t *testing.T) {
 	}
 }
 
+func TestIngestRejectsValidTokenForAnotherClaimedDeviceWithoutWrites(t *testing.T) {
+	db, service := testService(t)
+	defer db.Close()
+
+	req := validRequest()
+	req.DeviceID = "SIGAP-02"
+	_, err := service.Ingest(context.Background(), "fixture-token", req, []byte(`{}`))
+	if !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("Ingest() error = %v, want unauthorized", err)
+	}
+	assertReadingsForDevice(t, db, "device-2", 0)
+}
+
+func TestIngestRejectsMissingStreamWithoutWrites(t *testing.T) {
+	db, service := testService(t)
+	defer db.Close()
+
+	req := validRequest()
+	req.Slots = []Slot{req.Slots[0], req.Slots[2]}
+	_, err := service.Ingest(context.Background(), "fixture-token", req, []byte(`{}`))
+	if !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("Ingest() error = %v, want invalid request", err)
+	}
+	assertReadingsForDevice(t, db, "device-1", 0)
+}
+
+func TestIngestRollsBackReadingsAndHeartbeatWhenReadingInsertFails(t *testing.T) {
+	db, service := testService(t)
+	defer db.Close()
+
+	if _, err := db.Exec(`
+		CREATE TRIGGER fail_b3_insert
+		BEFORE INSERT ON readings
+		WHEN NEW.slot_id = 'slot-b3'
+		BEGIN
+			SELECT RAISE(ABORT, 'forced test failure');
+		END`); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := service.Ingest(context.Background(), "fixture-token", validRequest(), []byte(`{}`))
+	if !errors.Is(err, ErrPersistence) {
+		t.Fatalf("Ingest() error = %v, want persistence error", err)
+	}
+	if !strings.Contains(err.Error(), "forced test failure") {
+		t.Fatalf("Ingest() error = %v, want trigger failure", err)
+	}
+	assertReadingsForDevice(t, db, "device-1", 0)
+
+	var lastSeen sql.NullString
+	if err := db.QueryRow(`SELECT last_seen FROM devices WHERE id = 'device-1'`).Scan(&lastSeen); err != nil {
+		t.Fatal(err)
+	}
+	if !lastSeen.Valid || lastSeen.String != "before-ingest" {
+		t.Fatalf("last_seen = %#v, want before-ingest", lastSeen)
+	}
+}
+
 func validRequest() Request {
 	fill, zero := 72.0, 0.0
 	return Request{
@@ -91,22 +150,50 @@ func testService(t *testing.T) (*sql.DB, *Service) {
 	schema := `
 		CREATE TABLE devices (id TEXT PRIMARY KEY, device_code TEXT NOT NULL UNIQUE, credential_digest TEXT NOT NULL, last_seen TEXT);
 		CREATE TABLE slots (id TEXT PRIMARY KEY, device_id TEXT NOT NULL, waste_stream TEXT NOT NULL, UNIQUE(device_id, waste_stream));
-		CREATE TABLE readings (id INTEGER PRIMARY KEY, slot_id TEXT NOT NULL, recorded_at TEXT NOT NULL, raw_payload TEXT NOT NULL, fill_pct REAL, weight_kg REAL, ogi REAL, accumulated_mass REAL, temperature_c REAL, sensor_health TEXT);
+		CREATE TABLE readings (id INTEGER PRIMARY KEY, slot_id TEXT NOT NULL, recorded_at TEXT NOT NULL, raw_payload TEXT NOT NULL, fill REAL, weight REAL, ogi REAL, accumulation REAL, temperature REAL, sensor_health TEXT);
 	`
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		t.Fatal(err)
 	}
-	digest := sha256.Sum256([]byte("fixture-token"))
-	if _, err := db.Exec(`INSERT INTO devices (id, device_code, credential_digest) VALUES ('device-1', 'SIGAP-01', ?)`, hex.EncodeToString(digest[:])); err != nil {
-		db.Close()
-		t.Fatal(err)
-	}
-	for id, stream := range []string{"organic", "inorganic", "b3"} {
-		if _, err := db.Exec(`INSERT INTO slots (id, device_id, waste_stream) VALUES (?, 'device-1', ?)`, "slot-"+string(rune('1'+id)), stream); err != nil {
+	for _, device := range []struct {
+		id, code, token, lastSeen string
+	}{
+		{"device-1", "SIGAP-01", "fixture-token", "before-ingest"},
+		{"device-2", "SIGAP-02", "fixture-token-b", "before-ingest"},
+	} {
+		digest := sha256.Sum256([]byte(device.token))
+		if _, err := db.Exec(`INSERT INTO devices (id, device_code, credential_digest, last_seen) VALUES (?, ?, ?, ?)`, device.id, device.code, hex.EncodeToString(digest[:]), device.lastSeen); err != nil {
 			db.Close()
 			t.Fatal(err)
 		}
 	}
+	for _, deviceID := range []string{"device-1", "device-2"} {
+		for _, stream := range []string{"organic", "inorganic", "b3"} {
+			if _, err := db.Exec(`INSERT INTO slots (id, device_id, waste_stream) VALUES (?, ?, ?)`, "slot-"+deviceID+"-"+stream, deviceID, stream); err != nil {
+				db.Close()
+				t.Fatal(err)
+			}
+		}
+	}
+	if _, err := db.Exec(`UPDATE slots SET id = 'slot-b3' WHERE id = 'slot-device-1-b3'`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
 	return db, NewService(db)
+}
+
+func assertReadingsForDevice(t *testing.T, db *sql.DB, deviceID string, want int) {
+	t.Helper()
+	var count int
+	if err := db.QueryRow(`
+		SELECT COUNT(*)
+		FROM readings
+		JOIN slots ON slots.id = readings.slot_id
+		WHERE slots.device_id = ?`, deviceID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != want {
+		t.Fatalf("readings for %s = %d, want %d", deviceID, count, want)
+	}
 }

@@ -20,7 +20,7 @@ CREATE TABLE slots (
     id TEXT PRIMARY KEY,
     device_id TEXT NOT NULL REFERENCES devices(id),
     waste_stream TEXT NOT NULL CHECK (waste_stream IN ('organic', 'inorganic', 'b3')),
-    capacity REAL,
+    operational_capacity REAL,
     UNIQUE (device_id, waste_stream)
 );
 
@@ -29,37 +29,37 @@ CREATE TABLE readings (
     slot_id TEXT NOT NULL REFERENCES slots(id),
     recorded_at TEXT NOT NULL,
     raw_payload TEXT NOT NULL,
-    fill_pct REAL,
-    weight_kg REAL,
+    fill REAL,
+    weight REAL,
     ogi REAL,
-    accumulated_mass REAL,
-    temperature_c REAL,
+    accumulation REAL,
+    temperature REAL,
     sensor_health TEXT
 );
 
 CREATE TABLE decisions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    device_id TEXT NOT NULL REFERENCES devices(id),
-    created_at TEXT NOT NULL,
-    status TEXT NOT NULL,
+    reading_id INTEGER PRIMARY KEY REFERENCES readings(id),
+    fis_score REAL,
+    fis_status TEXT,
     fis_version TEXT,
-    detail TEXT
+    dominant_reason TEXT,
+    safety_state TEXT
 );
 
 CREATE TABLE events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     device_id TEXT NOT NULL REFERENCES devices(id),
-    decision_id INTEGER REFERENCES decisions(id),
+    slot_id TEXT REFERENCES slots(id),
     event_type TEXT NOT NULL,
-    severity TEXT,
+    severity TEXT NOT NULL,
     started_at TEXT NOT NULL,
     ended_at TEXT,
-    detail TEXT
+    metadata TEXT
 );
 
 CREATE INDEX idx_devices_location ON devices(location_id);
 CREATE INDEX idx_devices_last_seen ON devices(last_seen);
-CREATE INDEX idx_readings_slot_recorded ON readings(slot_id, recorded_at);
-CREATE INDEX idx_events_started ON events(started_at);
-CREATE INDEX idx_events_device_started ON events(device_id, started_at);
-CREATE INDEX idx_events_severity_started ON events(severity, started_at);
+CREATE INDEX idx_readings_slot_recorded ON readings(slot_id, recorded_at DESC);
+CREATE INDEX idx_events_started ON events(started_at DESC);
+CREATE INDEX idx_events_device_started ON events(device_id, started_at DESC);
+CREATE INDEX idx_events_severity_started ON events(severity, started_at DESC);

@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net/url"
 	"strings"
 
 	_ "modernc.org/sqlite"
@@ -17,15 +18,15 @@ func Open(path string) (*sql.DB, error) {
 		return nil, fmt.Errorf("database path is required")
 	}
 
-	db, err := sql.Open("sqlite", path)
+	dsn, err := sqliteDSN(path)
+	if err != nil {
+		return nil, err
+	}
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite database: %w", err)
 	}
 
-	if _, err := db.ExecContext(context.Background(), "PRAGMA foreign_keys = ON"); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("enable foreign keys: %w", err)
-	}
 	if err := db.PingContext(context.Background()); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("ping sqlite database: %w", err)
@@ -36,4 +37,23 @@ func Open(path string) (*sql.DB, error) {
 	}
 
 	return db, nil
+}
+
+func sqliteDSN(path string) (string, error) {
+	if strings.HasPrefix(path, "file:") {
+		uri, err := url.Parse(path)
+		if err != nil {
+			return "", fmt.Errorf("parse sqlite URI: %w", err)
+		}
+		query := uri.Query()
+		query.Set("_pragma", "foreign_keys(1)")
+		uri.RawQuery = query.Encode()
+		return uri.String(), nil
+	}
+
+	uri := &url.URL{Scheme: "file", Path: path}
+	query := uri.Query()
+	query.Set("_pragma", "foreign_keys(1)")
+	uri.RawQuery = query.Encode()
+	return uri.String(), nil
 }
