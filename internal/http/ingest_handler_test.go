@@ -64,6 +64,44 @@ func TestIngestHandlerRejectsMissingBearerBeforeService(t *testing.T) {
 	}
 }
 
+func TestIngestHandlerRejectsUnsupportedContentType(t *testing.T) {
+	service := &fakeIngestService{}
+	request := httptest.NewRequest(http.MethodPost, "/api/ingest", strings.NewReader(validPayload))
+	request.Header.Set("Content-Type", "text/plain")
+	request.Header.Set("Authorization", "Bearer fixture-token")
+	recorder := httptest.NewRecorder()
+
+	NewRouter(service).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("status=%d, want %d", recorder.Code, http.StatusUnsupportedMediaType)
+	}
+	if service.called {
+		t.Fatal("service was called for unsupported content type")
+	}
+}
+
+func TestIngestHandlerRejectsOversizedBody(t *testing.T) {
+	service := &fakeIngestService{}
+	payload := `{"padding":"` + strings.Repeat("x", maxIngestBodyBytes) + `"}`
+	if len(payload) <= maxIngestBodyBytes {
+		t.Fatal("test payload does not exceed body limit")
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/ingest", strings.NewReader(payload))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer fixture-token")
+	recorder := httptest.NewRecorder()
+
+	NewRouter(service).ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d, want %d", recorder.Code, http.StatusBadRequest)
+	}
+	if service.called {
+		t.Fatal("service was called for oversized body")
+	}
+}
+
 func TestIngestHandlerRejectsMalformedOrTrailingJSON(t *testing.T) {
 	for _, payload := range []string{`{"device_id":`, validPayload + ` {}`} {
 		t.Run(payload[:1], func(t *testing.T) {
