@@ -77,11 +77,28 @@ func TestOpenMigrationIsIdempotent(t *testing.T) {
 	defer second.Close()
 
 	var count int
-	if err := second.QueryRow("SELECT COUNT(*) FROM schema_migrations WHERE name IN ('001_initial.sql', '002_normalized_reading.sql')").Scan(&count); err != nil {
+	if err := second.QueryRow("SELECT COUNT(*) FROM schema_migrations WHERE name IN ('001_initial.sql', '002_normalized_reading.sql', '003_history_reading_time_index.sql')").Scan(&count); err != nil {
 		t.Fatalf("read migration metadata: %v", err)
 	}
-	if count != 2 {
-		t.Fatalf("migration count = %d, want 2", count)
+	if count != 3 {
+		t.Fatalf("migration count = %d, want 3", count)
+	}
+}
+
+func TestHistoryReadingTimeIndexSupportsNewestFirstOrdering(t *testing.T) {
+	db, err := database.Open(filepath.Join(t.TempDir(), "sigap.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	var found int
+	err = db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_readings_recorded_id'`).Scan(&found)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found != 1 {
+		t.Fatalf("history ordering index count = %d, want 1", found)
 	}
 }
 

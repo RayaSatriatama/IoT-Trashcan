@@ -29,6 +29,9 @@ node_modules/
 .turbo/
 .vite/
 web-build/
+/internal/webapp/dist/*
+!/internal/webapp/dist/
+!/internal/webapp/dist/placeholder.txt
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*

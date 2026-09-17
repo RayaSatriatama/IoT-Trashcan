@@ -10,6 +10,7 @@ import (
 	"github.com/RayaSatriatama/IoT-Trashcan/internal/database"
 	httpapi "github.com/RayaSatriatama/IoT-Trashcan/internal/http"
 	"github.com/RayaSatriatama/IoT-Trashcan/internal/ingest"
+	"github.com/RayaSatriatama/IoT-Trashcan/internal/webapp"
 )
 
 func main() {
@@ -25,7 +26,8 @@ func main() {
 	readOptions := readAPIOptions()
 	service := ingest.NewService(db)
 	log.Print("production FIS and safety configuration is unset; valid ingests persist raw readings without fabricated decisions")
-	handler := httpapi.NewRouter(service, httpapi.WithReadDatabase(db, readOptions...))
+	apiHandler := httpapi.NewRouter(service, httpapi.WithReadDatabase(db, readOptions...))
+	handler := webapp.Handler(apiHandler)
 	server := &http.Server{Addr: addr, Handler: handler}
 	log.Printf("SIGAP listening on %s", addr)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {

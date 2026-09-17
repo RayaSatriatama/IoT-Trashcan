@@ -250,7 +250,7 @@ func rawGas(payload, stream string) *float64 {
 
 func isPublicStatus(value string) bool {
 	switch device.Status(value) {
-	case device.StatusNormal, device.StatusWaspada, device.StatusAngkat, device.StatusSafetyAlert, device.StatusOffline, device.StatusDataInvalid:
+	case device.StatusNormal, device.StatusWaspada, device.StatusAngkat, device.StatusSafetyAlert, device.StatusDataInvalid:
 		return true
 	default:
 		return false

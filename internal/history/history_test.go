@@ -30,6 +30,7 @@ func TestParseFiltersValidatesRFC3339RangeAndStatus(t *testing.T) {
 		{"to": []string{"not-a-date"}},
 		{"from": []string{"2026-09-02T00:00:00Z"}, "to": []string{"2026-09-01T00:00:00Z"}},
 		{"status": []string{"Not A Status"}},
+		{"status": []string{"Offline"}},
 	}
 	for _, values := range cases {
 		if _, err := ParseFilters(values); err == nil {
@@ -69,6 +70,27 @@ func TestQueryHistoryNewestFirstAndCombinedFilters(t *testing.T) {
 	}
 	if all[1].OGI != nil || all[1].AccumulationHours != nil {
 		t.Fatalf("missing normalized values must remain nil: %+v", all[1])
+	}
+}
+
+func TestQueryHistoryStatusUsesSafetyOverride(t *testing.T) {
+	db := historyFixture(t)
+	defer db.Close()
+
+	normal, err := Query(context.Background(), db, Filters{Status: "Normal"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(normal) != 1 || normal[0].ReadingID != 1 {
+		t.Fatalf("Normal filter included overridden rows: %+v", normal)
+	}
+
+	alerts, err := Query(context.Background(), db, Filters{Status: "Safety Alert"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(alerts) != 1 || alerts[0].ReadingID != 3 {
+		t.Fatalf("Safety Alert filter = %+v", alerts)
 	}
 }
 
