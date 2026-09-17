@@ -65,14 +65,17 @@ func TestInvalidSimulationPhasePersistsDataInvalidWithoutFIS(t *testing.T) {
 		}
 		clock = clock.Add(time.Second)
 	}
-	var invalid, scored int
+	var invalid, invalidScored, scored int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM decisions WHERE fis_status = 'Data Invalid'`).Scan(&invalid); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM decisions WHERE fis_status = 'Data Invalid' AND fis_score IS NOT NULL`).Scan(&invalidScored); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.QueryRow(`SELECT COUNT(*) FROM decisions WHERE fis_score IS NOT NULL`).Scan(&scored); err != nil {
 		t.Fatal(err)
 	}
-	if invalid == 0 || scored == 0 {
-		t.Fatalf("invalid=%d scored=%d", invalid, scored)
+	if invalid == 0 || invalidScored != 0 || scored == 0 {
+		t.Fatalf("invalid=%d invalidScored=%d scored=%d", invalid, invalidScored, scored)
 	}
 }
