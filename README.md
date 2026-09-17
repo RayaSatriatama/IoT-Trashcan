@@ -46,6 +46,25 @@ Runtime production menggunakan `SIGAP_DB_PATH`, `SIGAP_HTTP_ADDR`, dan optional 
 
 Production FIS dan safety numeric configuration tetap research-blocked. Release runtime tidak menggunakan test fixture thresholds dan tidak memalsukan keputusan valid ketika engine production belum dikonfigurasi.
 
+## Simulation mode
+
+Simulation mode bersifat opt-in untuk demo tanpa hardware. Buat environment lokal lalu jalankan runtime Go yang sama dengan pipeline production:
+
+```bash
+cp .env.simulation.example .env.simulation
+./scripts/run-simulation.sh
+```
+
+Buka `http://localhost:8080`. Simulator membuat 3 lokasi, 4 device, dan 12 slot dengan prefix `SIM-`, lalu mengirim telemetry melalui authenticated ingest. Siklus demo mencakup Normal, Waspada, Angkat, Safety Alert, Data Invalid, Offline, dan Recovery. Data sintetis, FIS, dan safety threshold pada mode ini hanya fixture demo, bukan kalibrasi production atau research.
+
+`SIGAP_SIMULATION_INTERVAL_SECONDS` harus bilangan bulat positif. `SIGAP_SIMULATION_SEED` membuat variasi kecil dapat direproduksi. Untuk memulai ulang data demo, hapus database secara manual:
+
+```bash
+rm sigap-simulation.db
+```
+
+Saat aktif, UI menampilkan banner `MODE SIMULASI`. Saat `SIGAP_SIMULATION_ENABLED` tidak ada atau `false`, seeding, simulator, dan demo decision configuration tidak dijalankan.
+
 ## Kontribusi
 
 Workflow GitHub project tersedia di [skill project](.agents/skills/github-project-practices/SKILL.md). Ringkasannya:

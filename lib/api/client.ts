@@ -7,6 +7,7 @@ import type {
   LocationListResponse,
   OverviewResponse,
   ResearchResponse,
+  RuntimeResponse,
 } from './types';
 
 export type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -59,6 +60,7 @@ export function createApiClient(fetcher: Fetcher = fetch): {
   fetchLocation(id: string, signal?: AbortSignal): Promise<LocationDetail>;
   fetchDevice(id: string, signal?: AbortSignal): Promise<DeviceDetail>;
   fetchResearch(id: string, signal?: AbortSignal): Promise<ResearchResponse>;
+  fetchRuntime(signal?: AbortSignal): Promise<RuntimeResponse>;
   fetchHistory(filters?: HistoryFilters, signal?: AbortSignal): Promise<HistoryResponse>;
   buildExportURL(filters?: HistoryFilters): string;
 } {
@@ -83,6 +85,7 @@ export function createApiClient(fetcher: Fetcher = fetch): {
     fetchLocation: (id, signal) => get<LocationDetail>(`/api/locations/${encodeId(id)}`, signal),
     fetchDevice: (id, signal) => get<DeviceDetail>(`/api/devices/${encodeId(id)}`, signal),
     fetchResearch: (id, signal) => get<ResearchResponse>(`/api/devices/${encodeId(id)}/research`, signal),
+    fetchRuntime: (signal) => get<RuntimeResponse>('/api/runtime', signal),
     fetchHistory: (filters = {}, signal) => {
       const query = serializeHistoryFilters(filters);
       return get<HistoryResponse>(`/api/history${query ? `?${query}` : ''}`, signal);

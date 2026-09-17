@@ -140,8 +140,19 @@ func Query(ctx context.Context, db *sql.DB, filters Filters) ([]Record, error) {
 		args = append(args, filters.DeviceID)
 	}
 	if filters.Status != "" {
-		where = append(where, "CASE WHEN dec.safety_state = 'Safety Alert' THEN 'Safety Alert' ELSE dec.fis_status END = ?")
-		args = append(args, filters.Status)
+		switch filters.Status {
+		case "Safety Alert":
+			where = append(where, "(dec.fis_status = ? OR dec.safety_state = 'Safety Alert')")
+			args = append(args, filters.Status)
+		case "Normal":
+			where = append(where, "dec.fis_status = ? AND COALESCE(dec.safety_state, '') <> 'Safety Alert'")
+			args = append(args, filters.Status)
+		default:
+			// Preserve the underlying actionable FIS state for pickup and warning
+			// audit filters while Safety Alert has its own explicit filter.
+			where = append(where, "dec.fis_status = ?")
+			args = append(args, filters.Status)
+		}
 	}
 	query := `
 		SELECT r.id, r.recorded_at,
