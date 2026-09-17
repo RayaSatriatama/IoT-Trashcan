@@ -60,11 +60,7 @@ func NewRouter(service IngestService, options ...RouterOption) http.Handler {
 		mux.Handle("GET /api/history", http.HandlerFunc(config.readAPI.History))
 		mux.Handle("GET /api/export.csv", http.HandlerFunc(config.readAPI.ExportCSV))
 	}
-	mux.Handle("GET /api/runtime", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-			return
-		}
+	mux.Handle("GET /api/runtime", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]bool{"simulation": config.simulation})
 	}))
 	return mux
