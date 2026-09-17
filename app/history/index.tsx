@@ -12,9 +12,15 @@ import { LoadingState } from '../../components/LoadingState';
 import { StatusBadge } from '../../components/StatusBadge';
 import { apiClient } from '../../lib/api/client';
 import { usePollingResource } from '../../lib/api/hooks';
-import { Activity, Box, ShieldAlert, Truck } from '../../lib/ui/icons';
-import type { CanonicalStatus, HistoryItem, HistoryResponse, LocationListResponse } from '../../lib/api/types';
+import type {
+  CanonicalStatus,
+  HistoryCursor,
+  HistoryItem,
+  HistoryResponse,
+  LocationListResponse,
+} from '../../lib/api/types';
 import { formatNullableMetric, formatTimestamp } from '../../lib/format';
+import { Activity, Box, ShieldAlert, Truck } from '../../lib/ui/icons';
 
 export interface HistoryFilterValues {
   from?: string;
@@ -23,6 +29,9 @@ export interface HistoryFilterValues {
   device_id?: string;
   status?: CanonicalStatus;
 }
+
+export const HISTORY_PAGE_SIZE = 30;
+const HISTORY_POLL_INTERVAL_MS = 60_000;
 
 export const HISTORY_STATUS_FILTERS: ReadonlyArray<{ label: string; value: CanonicalStatus | '' }> = [
   { label: 'Semua status', value: '' },
@@ -177,14 +186,40 @@ function HistoryDetails({ item, compact }: { item: HistoryItem; compact: boolean
 
 function HistoryRow({ item, compact }: { item: HistoryItem; compact: boolean }) {
   if (!compact) {
-    return <XStack alignItems="center" gap="$4" paddingHorizontal="$4" paddingVertical="$3" borderBottomWidth={1} borderBottomColor="$borderColor" role="group" aria-label={`Riwayat ${item.device_code} ${item.stream}`}>
-      <YStack width={178} gap="$1"><Text color="$color" fontSize="$2" fontWeight="700">{item.device_code}</Text><Text color="$colorMuted" fontSize="$1">{item.placement_label || HISTORY_MISSING_VALUE}</Text></YStack>
-      <YStack flex={1} minWidth={150} gap="$1"><Text color="$color" fontSize="$2" fontWeight="600">{item.location_name || HISTORY_MISSING_VALUE}</Text><Text color="$colorMuted" fontSize="$1">{item.stream}</Text></YStack>
-      <YStack width={142} gap="$1"><StatusBadge status={effectiveHistoryStatus(item)} compact /><Text color="$colorMuted" fontSize="$1">{item.safety_state || HISTORY_MISSING_VALUE}</Text></YStack>
-      <YStack width={156} gap="$1"><Text color="$color" fontSize="$2">{formatTimestamp(item.recorded_at)}</Text><Text color="$colorMuted" fontSize="$1">FIS {formatNullableMetric(item.fis_score)}</Text></YStack>
-      <Text color="$colorMuted" fontSize="$1" width={190} numberOfLines={2}>{item.dominant_reason || HISTORY_MISSING_VALUE}</Text>
-    </XStack>;
+    return (
+      <XStack
+        alignItems="center"
+        gap="$4"
+        paddingHorizontal="$4"
+        paddingVertical="$3"
+        borderBottomWidth={1}
+        borderBottomColor="$borderColor"
+        role="group"
+        aria-label={`Riwayat ${item.device_code} ${item.stream}`}
+      >
+        <YStack width={178} gap="$1">
+          <Text color="$color" fontSize="$2" fontWeight="700">{item.device_code}</Text>
+          <Text color="$colorMuted" fontSize="$1">{item.placement_label || HISTORY_MISSING_VALUE}</Text>
+        </YStack>
+        <YStack flex={1} minWidth={150} gap="$1">
+          <Text color="$color" fontSize="$2" fontWeight="600">{item.location_name || HISTORY_MISSING_VALUE}</Text>
+          <Text color="$colorMuted" fontSize="$1">{item.stream}</Text>
+        </YStack>
+        <YStack width={142} gap="$1">
+          <StatusBadge status={effectiveHistoryStatus(item)} compact />
+          <Text color="$colorMuted" fontSize="$1">{item.safety_state || HISTORY_MISSING_VALUE}</Text>
+        </YStack>
+        <YStack width={156} gap="$1">
+          <Text color="$color" fontSize="$2">{formatTimestamp(item.recorded_at)}</Text>
+          <Text color="$colorMuted" fontSize="$1">FIS {formatNullableMetric(item.fis_score)}</Text>
+        </YStack>
+        <Text color="$colorMuted" fontSize="$1" width={190} numberOfLines={2}>
+          {item.dominant_reason || HISTORY_MISSING_VALUE}
+        </Text>
+      </XStack>
+    );
   }
+
   return (
     <Card
       borderWidth={1}
@@ -197,13 +232,13 @@ function HistoryRow({ item, compact }: { item: HistoryItem; compact: boolean }) 
       aria-label={`Riwayat ${item.device_code} ${item.stream}`}
     >
       <XStack gap="$4" alignItems="flex-start" flexWrap="wrap">
-        <HistorySummary item={item} compact={compact} />
-        <YStack minWidth={130} alignItems={compact ? 'flex-start' : 'flex-end'} gap="$1">
+        <HistorySummary item={item} compact />
+        <YStack minWidth={130} alignItems="flex-start" gap="$1">
           <Text color="$colorMuted" fontSize="$1">Status</Text>
           <StatusBadge status={effectiveHistoryStatus(item)} compact />
         </YStack>
       </XStack>
-      <HistoryDetails item={item} compact={compact} />
+      <HistoryDetails item={item} compact />
       <XStack gap="$4" flexWrap="wrap" borderTopWidth={1} borderTopColor="$borderColor" paddingTop="$3">
         <Text color="$colorMuted" fontSize="$2">Fill: {formatNullableMetric(item.fill, '%')}</Text>
         <Text color="$colorMuted" fontSize="$2">Berat: {formatNullableMetric(item.weight, ' kg')}</Text>
@@ -217,17 +252,56 @@ function HistoryRow({ item, compact }: { item: HistoryItem; compact: boolean }) 
 function HistoryTrend({ items }: { items: HistoryItem[] }) {
   const days = groupHistoryByDay(items).slice(-7);
   const maximum = Math.max(...days.map((day) => day.normal + day.pickup + day.safety), 1);
-  return <Card borderWidth={1} borderColor="$borderColor" backgroundColor="$surface" borderRadius="$4" padding="$4" gap="$4"><XStack alignItems="flex-end" justifyContent="space-between" gap="$3"><YStack gap="$1"><Text color="$color" fontSize="$5" fontWeight="800">Trend status</Text><Text color="$colorMuted" fontSize="$2">Distribusi pembacaan tujuh hari terakhir.</Text></YStack><XStack gap="$3" flexWrap="wrap"><XStack alignItems="center" gap="$1"><YStack width={8} height={8} borderRadius="$6" backgroundColor="$statusNormal" /><Text color="$colorMuted" fontSize="$1">Normal</Text></XStack><XStack alignItems="center" gap="$1"><YStack width={8} height={8} borderRadius="$6" backgroundColor="$statusAngkat" /><Text color="$colorMuted" fontSize="$1">Diangkat</Text></XStack><XStack alignItems="center" gap="$1"><YStack width={8} height={8} borderRadius="$6" backgroundColor="$statusSafetyAlert" /><Text color="$colorMuted" fontSize="$1">Safety</Text></XStack></XStack></XStack><XStack alignItems="flex-end" justifyContent="space-between" gap="$3" height={142}>{days.map((day) => { const total = day.normal + day.pickup + day.safety; return <YStack key={day.day} flex={1} alignItems="center" justifyContent="flex-end" gap="$2"><YStack width="70%" maxWidth={36} height={Math.max(10, (total / maximum) * 104)} borderRadius="$3" overflow="hidden" backgroundColor="$surfaceMuted"><YStack flex={day.safety} backgroundColor="$statusSafetyAlert" /><YStack flex={day.pickup} backgroundColor="$statusAngkat" /><YStack flex={day.normal} backgroundColor="$statusNormal" /></YStack><Text color="$colorMuted" fontSize="$1">{day.day.slice(5)}</Text></YStack>; })}</XStack></Card>;
+
+  return (
+    <Card borderWidth={1} borderColor="$borderColor" backgroundColor="$surface" borderRadius="$4" padding="$4" gap="$4">
+      <XStack alignItems="flex-end" justifyContent="space-between" gap="$3" flexWrap="wrap">
+        <YStack gap="$1">
+          <Text color="$color" fontSize="$5" fontWeight="800">Trend status</Text>
+          <Text color="$colorMuted" fontSize="$2">Distribusi status pada halaman yang sedang ditampilkan.</Text>
+        </YStack>
+        <XStack gap="$3" flexWrap="wrap">
+          <XStack alignItems="center" gap="$1"><YStack width={8} height={8} borderRadius="$6" backgroundColor="$statusNormal" /><Text color="$colorMuted" fontSize="$1">Normal</Text></XStack>
+          <XStack alignItems="center" gap="$1"><YStack width={8} height={8} borderRadius="$6" backgroundColor="$statusAngkat" /><Text color="$colorMuted" fontSize="$1">Diangkat</Text></XStack>
+          <XStack alignItems="center" gap="$1"><YStack width={8} height={8} borderRadius="$6" backgroundColor="$statusSafetyAlert" /><Text color="$colorMuted" fontSize="$1">Safety</Text></XStack>
+        </XStack>
+      </XStack>
+      <XStack alignItems="flex-end" justifyContent="space-between" gap="$3" height={142}>
+        {days.map((day) => {
+          const total = day.normal + day.pickup + day.safety;
+          return (
+            <YStack key={day.day} flex={1} alignItems="center" justifyContent="flex-end" gap="$2">
+              <YStack width="70%" maxWidth={36} height={Math.max(10, (total / maximum) * 104)} borderRadius="$3" overflow="hidden" backgroundColor="$surfaceMuted">
+                <YStack flex={day.safety} backgroundColor="$statusSafetyAlert" />
+                <YStack flex={day.pickup} backgroundColor="$statusAngkat" />
+                <YStack flex={day.normal} backgroundColor="$statusNormal" />
+              </YStack>
+              <Text color="$colorMuted" fontSize="$1">{day.day.slice(5)}</Text>
+            </YStack>
+          );
+        })}
+      </XStack>
+    </Card>
+  );
 }
 
 function HistoryTableHeader() {
-  return <XStack alignItems="center" gap="$4" paddingHorizontal="$4" paddingVertical="$2" backgroundColor="$surfaceMuted"><Text color="$colorMuted" fontSize="$1" fontWeight="800" width={178}>DEVICE</Text><Text color="$colorMuted" fontSize="$1" fontWeight="800" flex={1} minWidth={150}>LOKASI / STREAM</Text><Text color="$colorMuted" fontSize="$1" fontWeight="800" width={142}>STATUS</Text><Text color="$colorMuted" fontSize="$1" fontWeight="800" width={156}>WAKTU</Text><Text color="$colorMuted" fontSize="$1" fontWeight="800" width={190}>DETAIL</Text></XStack>;
+  return (
+    <XStack alignItems="center" gap="$4" paddingHorizontal="$4" paddingVertical="$2" backgroundColor="$surfaceMuted">
+      <Text color="$colorMuted" fontSize="$1" fontWeight="800" width={178}>DEVICE</Text>
+      <Text color="$colorMuted" fontSize="$1" fontWeight="800" flex={1} minWidth={150}>LOKASI / STREAM</Text>
+      <Text color="$colorMuted" fontSize="$1" fontWeight="800" width={142}>STATUS</Text>
+      <Text color="$colorMuted" fontSize="$1" fontWeight="800" width={156}>WAKTU</Text>
+      <Text color="$colorMuted" fontSize="$1" fontWeight="800" width={190}>DETAIL</Text>
+    </XStack>
+  );
 }
 
 function LocationFilter({ value, onChange }: { value: string; onChange: (value: string) => void }) {
   const loader = useCallback((signal: AbortSignal) => apiClient.fetchLocations({}, signal), []);
   const { data } = usePollingResource<LocationListResponse>(loader, 60_000);
   const locations = data?.locations ?? [];
+
   return (
     <YStack flex={1} minWidth={220} gap="$2">
       <Text color="$color" fontSize="$2" fontWeight="700">Lokasi</Text>
@@ -300,6 +374,52 @@ function Filters({ filters, onChange, onReset, onExport }: {
   );
 }
 
+function PaginationControls({
+  pageNumber,
+  canGoNewer,
+  canGoOlder,
+  onNewer,
+  onOlder,
+}: {
+  pageNumber: number;
+  canGoNewer: boolean;
+  canGoOlder: boolean;
+  onNewer: () => void;
+  onOlder: () => void;
+}) {
+  return (
+    <XStack alignItems="center" justifyContent="space-between" gap="$3" flexWrap="wrap">
+      <Text color="$colorMuted" fontSize="$2">Halaman {pageNumber} · maksimum {HISTORY_PAGE_SIZE} pembacaan</Text>
+      <XStack gap="$2">
+        <Button
+          minHeight={44}
+          borderWidth={1}
+          borderColor="$borderColor"
+          backgroundColor="$surface"
+          color="$color"
+          disabled={!canGoNewer}
+          opacity={canGoNewer ? 1 : 0.45}
+          onPress={onNewer}
+          aria-label="Tampilkan riwayat yang lebih baru"
+        >
+          Lebih baru
+        </Button>
+        <Button
+          minHeight={44}
+          backgroundColor="$primary"
+          color="$white"
+          disabled={!canGoOlder}
+          opacity={canGoOlder ? 1 : 0.45}
+          onPress={onOlder}
+          aria-label="Tampilkan riwayat yang lebih lama"
+        >
+          Lebih lama
+        </Button>
+      </XStack>
+    </XStack>
+  );
+}
+
 export default function HistoryRoute() {
   const router = useRouter();
   const media = useMedia();
@@ -308,6 +428,8 @@ export default function HistoryRoute() {
   const [locationId, setLocationId] = useState('');
   const [deviceId, setDeviceId] = useState('');
   const [status, setStatus] = useState<CanonicalStatus | undefined>();
+  const [cursorStack, setCursorStack] = useState<HistoryCursor[]>([]);
+
   const dateRange = dateInputToUtcRange(fromDate, toDate);
   const filters = useMemo<HistoryFilterValues>(() => ({
     from: dateRange.from,
@@ -316,9 +438,15 @@ export default function HistoryRoute() {
     device_id: deviceId.trim() || undefined,
     status,
   }), [dateRange.from, dateRange.to, locationId, deviceId, status]);
-  const loader = useCallback((signal: AbortSignal) => apiClient.fetchHistory(filters, signal), [filters]);
-  const { data, loading, error, stale, retry } = usePollingResource<HistoryResponse>(loader);
+  const activeCursor = cursorStack.length ? cursorStack[cursorStack.length - 1] : undefined;
+  const loader = useCallback(
+    (signal: AbortSignal) => apiClient.fetchHistory(filters, { limit: HISTORY_PAGE_SIZE, before: activeCursor }, signal),
+    [activeCursor, filters],
+  );
+  const { data, loading, error, stale, retry } = usePollingResource<HistoryResponse>(loader, HISTORY_POLL_INTERVAL_MS);
   const displayFilters = useMemo(() => ({ ...filters, fromDate, toDate }), [filters, fromDate, toDate]);
+  const pageNumber = cursorStack.length + 1;
+
   const summary = useMemo(() => {
     if (!data) return null;
     const items = data.items;
@@ -331,17 +459,34 @@ export default function HistoryRoute() {
   }, [data]);
 
   const handleNavigate = useCallback((path: string) => router.push(path as never), [router]);
+  const resetPage = useCallback(() => setCursorStack([]), []);
+  const handleFilterChange = useCallback((patch: Partial<HistoryFilterValues & { fromDate: string; toDate: string }>) => {
+    resetPage();
+    if (patch.fromDate !== undefined) setFromDate(patch.fromDate);
+    if (patch.toDate !== undefined) setToDate(patch.toDate);
+    if (patch.location_id !== undefined) setLocationId(patch.location_id ?? '');
+    if (patch.device_id !== undefined) setDeviceId(patch.device_id ?? '');
+    if (patch.status !== undefined || 'status' in patch) setStatus(patch.status);
+  }, [resetPage]);
   const handleReset = useCallback(() => {
     setFromDate('');
     setToDate('');
     setLocationId('');
     setDeviceId('');
     setStatus(undefined);
-  }, []);
+    resetPage();
+  }, [resetPage]);
   const handleExport = useCallback(() => {
     const url = apiClient.buildExportURL(filters);
     if (typeof window !== 'undefined') window.open(url, '_blank', 'noopener,noreferrer');
   }, [filters]);
+  const handleOlder = useCallback(() => {
+    if (!data?.page.has_more || !data.page.next) return;
+    setCursorStack((current) => [...current, data.page.next as HistoryCursor]);
+  }, [data]);
+  const handleNewer = useCallback(() => {
+    setCursorStack((current) => current.slice(0, -1));
+  }, []);
 
   return (
     <AppShell
@@ -351,16 +496,26 @@ export default function HistoryRoute() {
       onNavigate={handleNavigate}
     >
       <YStack gap="$6" paddingBottom="$6">
-        <Card borderWidth={1} borderColor="$primarySoft" backgroundColor="$surface" borderRadius="$5" padding="$5" overflow="hidden"><XStack alignItems="center" gap="$5" flexWrap="wrap"><YStack flex={1} minWidth={250} gap="$2"><Text color="$primary" fontSize="$2" fontWeight="800">AUDIT DAN LAPORAN</Text><Text color="$color" fontSize="$7" lineHeight="$7" fontWeight="800" letterSpacing={-0.8}>Riwayat pembacaan yang mudah ditindaklanjuti.</Text><Text color="$colorMuted" fontSize="$3">Gunakan filter untuk menelusuri data sensor dan keputusan operasional dari semua lokasi.</Text></YStack><RNImage source={historyArtwork} accessibilityLabel="Ilustrasi analisis riwayat" resizeMode="contain" style={{ width: 210, height: 112, maxWidth: '100%' }} /></XStack></Card>
-        <XStack gap="$3" flexWrap="wrap"><YStack width="calc(50% - 6px)" $wide={{ width: 'calc(25% - 9px)' }}><KpiCard label="Total pembacaan" value={summary ? summary.total : '—'} icon={Activity} tone="blue" /></YStack><YStack width="calc(50% - 6px)" $wide={{ width: 'calc(25% - 9px)' }}><KpiCard label="Normal" value={summary ? summary.normal : '—'} icon={Box} tone="green" /></YStack><YStack width="calc(50% - 6px)" $wide={{ width: 'calc(25% - 9px)' }}><KpiCard label="Perlu diangkat" value={summary ? summary.pickup : '—'} icon={Truck} tone="orange" /></YStack><YStack width="calc(50% - 6px)" $wide={{ width: 'calc(25% - 9px)' }}><KpiCard label="Safety Alert" value={summary ? summary.safety : '—'} icon={ShieldAlert} tone="red" /></YStack></XStack>
+        <Card borderWidth={1} borderColor="$primarySoft" backgroundColor="$surface" borderRadius="$5" padding="$5" overflow="hidden">
+          <XStack alignItems="center" gap="$5" flexWrap="wrap">
+            <YStack flex={1} minWidth={250} gap="$2">
+              <Text color="$primary" fontSize="$2" fontWeight="800">AUDIT DAN LAPORAN</Text>
+              <Text color="$color" fontSize="$7" lineHeight="$7" fontWeight="800" letterSpacing={-0.8}>Riwayat pembacaan yang mudah ditindaklanjuti.</Text>
+              <Text color="$colorMuted" fontSize="$3">Gunakan filter untuk menelusuri data sensor dan keputusan operasional dari semua lokasi.</Text>
+            </YStack>
+            <RNImage source={historyArtwork} accessibilityLabel="Ilustrasi analisis riwayat" resizeMode="contain" style={{ width: 210, height: 112, maxWidth: '100%' }} />
+          </XStack>
+        </Card>
+
+        <XStack gap="$3" flexWrap="wrap">
+          <YStack width="calc(50% - 6px)" $wide={{ width: 'calc(25% - 9px)' }}><KpiCard label="Ditampilkan" value={summary ? summary.total : '—'} icon={Activity} tone="blue" /></YStack>
+          <YStack width="calc(50% - 6px)" $wide={{ width: 'calc(25% - 9px)' }}><KpiCard label="Normal" value={summary ? summary.normal : '—'} icon={Box} tone="green" /></YStack>
+          <YStack width="calc(50% - 6px)" $wide={{ width: 'calc(25% - 9px)' }}><KpiCard label="Perlu diangkat" value={summary ? summary.pickup : '—'} icon={Truck} tone="orange" /></YStack>
+          <YStack width="calc(50% - 6px)" $wide={{ width: 'calc(25% - 9px)' }}><KpiCard label="Safety Alert" value={summary ? summary.safety : '—'} icon={ShieldAlert} tone="red" /></YStack>
+        </XStack>
+
         {data && data.items.length ? <HistoryTrend items={data.items} /> : null}
-        <Filters filters={displayFilters} onChange={(patch) => {
-          if (patch.fromDate !== undefined) setFromDate(patch.fromDate);
-          if (patch.toDate !== undefined) setToDate(patch.toDate);
-          if (patch.location_id !== undefined) setLocationId(patch.location_id ?? '');
-          if (patch.device_id !== undefined) setDeviceId(patch.device_id ?? '');
-          if (patch.status !== undefined || 'status' in patch) setStatus(patch.status);
-        }} onReset={handleReset} onExport={handleExport} />
+        <Filters filters={displayFilters} onChange={handleFilterChange} onReset={handleReset} onExport={handleExport} />
 
         {stale && data ? <StaleNotice onRetry={retry} /> : null}
         {loading && !data ? <LoadingState label="Memuat riwayat" rows={4} /> : null}
@@ -371,11 +526,27 @@ export default function HistoryRoute() {
             <YStack gap="$3">
               <XStack alignItems="center" justifyContent="space-between" gap="$3" flexWrap="wrap">
                 <YStack gap="$1">
-                  <Text color="$color" fontSize="$5" fontWeight="700">{data.items.length} pembacaan</Text>
-                  <Text color="$colorMuted" fontSize="$2">Urut terbaru berdasarkan waktu perekaman.</Text>
+                  <Text color="$color" fontSize="$5" fontWeight="700">{data.items.length} pembacaan · halaman {pageNumber}</Text>
+                  <Text color="$colorMuted" fontSize="$2">Riwayat interaktif dibatasi per halaman agar tetap responsif. CSV tetap mengekspor seluruh hasil filter.</Text>
                 </YStack>
               </XStack>
-              {media.wide ? <Card borderWidth={1} borderColor="$borderColor" backgroundColor="$surface" borderRadius="$4" overflow="hidden"><HistoryTableHeader />{data.items.map((item) => <HistoryRow key={`${item.reading_id}-${item.slot_id}`} item={item} compact={false} />)}</Card> : data.items.map((item) => <HistoryRow key={`${item.reading_id}-${item.slot_id}`} item={item} compact />)}
+
+              {media.wide ? (
+                <Card borderWidth={1} borderColor="$borderColor" backgroundColor="$surface" borderRadius="$4" overflow="hidden">
+                  <HistoryTableHeader />
+                  {data.items.map((item) => <HistoryRow key={`${item.reading_id}-${item.slot_id}`} item={item} compact={false} />)}
+                </Card>
+              ) : (
+                data.items.map((item) => <HistoryRow key={`${item.reading_id}-${item.slot_id}`} item={item} compact />)
+              )}
+
+              <PaginationControls
+                pageNumber={pageNumber}
+                canGoNewer={cursorStack.length > 0}
+                canGoOlder={data.page.has_more && data.page.next !== null}
+                onNewer={handleNewer}
+                onOlder={handleOlder}
+              />
             </YStack>
           ) : (
             <EmptyState title={HISTORY_EMPTY_COPY.title} description={HISTORY_EMPTY_COPY.description} />
