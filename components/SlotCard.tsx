@@ -7,7 +7,7 @@ import { Image as RNImage } from 'react-native';
 import { Card, Text, XStack, YStack } from 'tamagui';
 
 import { getStreamLabel } from './DeviceCard';
-import { MetricBar } from './MetricBar';
+import { MetricBar, type MetricBarTone } from './MetricBar';
 import { StatusBadge } from './StatusBadge';
 
 const streamArtwork: Record<string, number> = {
@@ -16,11 +16,18 @@ const streamArtwork: Record<string, number> = {
   b3: b3Artwork,
 };
 
+const streamTone: Record<string, MetricBarTone> = {
+  organic: 'green',
+  inorganic: 'blue',
+  b3: 'red',
+};
+
 export interface SlotCardProps {
   slot: SlotDTO;
 }
 
 export function SlotCard({ slot }: SlotCardProps) {
+  const tone = streamTone[slot.stream] ?? 'neutral';
   return (
     <Card
       borderWidth={1}
@@ -50,8 +57,8 @@ export function SlotCard({ slot }: SlotCardProps) {
         <StatusBadge status={slot.status} compact />
       </XStack>
       <YStack gap="$3">
-        <MetricBar label="Keterisian" value={slot.fill} />
-        <MetricBar label="Utilisasi berat" value={slot.weight_utilization} />
+        <MetricBar label="Keterisian" value={slot.fill} tone={tone} />
+        <MetricBar label="Utilisasi berat" value={slot.weight_utilization} tone={tone} />
       </YStack>
       <YStack gap="$2" borderTopWidth={1} borderTopColor="$borderColor" paddingTop="$3">
         <MetricLine label="Berat" value={formatNullableMetric(slot.weight, ' kg')} />

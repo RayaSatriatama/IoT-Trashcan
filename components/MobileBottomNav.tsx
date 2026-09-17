@@ -39,10 +39,11 @@ export function MobileBottomNav({
       role="navigation"
       aria-label="Navigasi utama"
     >
-        {items.map((item) => {
-          const active = activePath === item.path;
-          const Icon = navigationIcons[item.path] ?? House;
-          return (
+      {items.map((item) => {
+        const active = activePath === item.path;
+        const Icon = navigationIcons[item.path] ?? House;
+        const displayLabel = item.label === 'Ringkasan' ? 'Beranda' : item.label;
+        return (
           <Button
             key={item.path}
             flex={1}
@@ -53,12 +54,12 @@ export function MobileBottomNav({
             color={active ? '$primary' : '$colorMuted'}
             fontWeight={active ? '700' : '500'}
             onPress={() => onNavigate?.(item.path)}
-            aria-label={`Buka ${item.label}`}
+            aria-label={`Buka ${displayLabel}`}
             type="button"
           >
             <XStack alignItems="center" justifyContent="center" gap="$2">
               <Icon size={17} color={active ? '#0A9B62' : '#5D7397'} strokeWidth={active ? 2.4 : 2} aria-hidden={true} />
-              {item.label === 'Ringkasan' ? 'Beranda' : item.label}
+              {displayLabel}
             </XStack>
           </Button>
         );

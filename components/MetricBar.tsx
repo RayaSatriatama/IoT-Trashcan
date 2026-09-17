@@ -1,13 +1,23 @@
 import { formatNullableMetric } from '../lib/format';
 import { Text, XStack, YStack } from 'tamagui';
 
+export type MetricBarTone = 'green' | 'blue' | 'red' | 'neutral';
+
 export interface MetricBarProps {
   label: string;
   value: number | null | undefined;
   max?: number;
   unit?: string;
   unavailableLabel?: string;
+  tone?: MetricBarTone;
 }
+
+const toneColor: Record<MetricBarTone, string> = {
+  green: '$primary',
+  blue: '$blue',
+  red: '$statusSafetyAlert',
+  neutral: '$colorMuted',
+};
 
 export function formatMetricValue(value: number | null | undefined, unit = ''): string {
   return formatNullableMetric(value, unit);
@@ -19,6 +29,7 @@ export function MetricBar({
   max = 100,
   unit = '%',
   unavailableLabel,
+  tone = 'neutral',
 }: MetricBarProps) {
   const validValue = typeof value === 'number' && Number.isFinite(value);
   const percentage = validValue && max > 0 ? Math.min(100, Math.max(0, (value / max) * 100)) : 0;
@@ -50,7 +61,7 @@ export function MetricBar({
             height="100%"
             width={`${percentage}%`}
             minWidth={percentage > 0 ? 2 : 0}
-            backgroundColor={validValue && value >= 80 ? '$statusAngkat' : validValue && value >= 50 ? '$statusWaspada' : '$primary'}
+            backgroundColor={toneColor[tone]}
             borderRadius="$6"
           />
         ) : null}

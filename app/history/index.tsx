@@ -320,7 +320,8 @@ export default function HistoryRoute() {
   const { data, loading, error, stale, retry } = usePollingResource<HistoryResponse>(loader);
   const displayFilters = useMemo(() => ({ ...filters, fromDate, toDate }), [filters, fromDate, toDate]);
   const summary = useMemo(() => {
-    const items = data?.items ?? [];
+    if (!data) return null;
+    const items = data.items;
     return {
       total: items.length,
       normal: items.filter((item) => effectiveHistoryStatus(item) === 'Normal').length,
@@ -351,8 +352,8 @@ export default function HistoryRoute() {
     >
       <YStack gap="$6" paddingBottom="$6">
         <Card borderWidth={1} borderColor="$primarySoft" backgroundColor="$surface" borderRadius="$5" padding="$5" overflow="hidden"><XStack alignItems="center" gap="$5" flexWrap="wrap"><YStack flex={1} minWidth={250} gap="$2"><Text color="$primary" fontSize="$2" fontWeight="800">AUDIT DAN LAPORAN</Text><Text color="$color" fontSize="$7" lineHeight="$7" fontWeight="800" letterSpacing={-0.8}>Riwayat pembacaan yang mudah ditindaklanjuti.</Text><Text color="$colorMuted" fontSize="$3">Gunakan filter untuk menelusuri data sensor dan keputusan operasional dari semua lokasi.</Text></YStack><RNImage source={historyArtwork} accessibilityLabel="Ilustrasi analisis riwayat" resizeMode="contain" style={{ width: 210, height: 112, maxWidth: '100%' }} /></XStack></Card>
-        <XStack gap="$3" flexWrap="wrap"><YStack width="calc(50% - 6px)" $wide={{ width: 'calc(25% - 9px)' }}><KpiCard label="Total pembacaan" value={summary.total} icon={Activity} tone="blue" /></YStack><YStack width="calc(50% - 6px)" $wide={{ width: 'calc(25% - 9px)' }}><KpiCard label="Normal" value={summary.normal} icon={Box} tone="green" /></YStack><YStack width="calc(50% - 6px)" $wide={{ width: 'calc(25% - 9px)' }}><KpiCard label="Perlu diangkat" value={summary.pickup} icon={Truck} tone="orange" /></YStack><YStack width="calc(50% - 6px)" $wide={{ width: 'calc(25% - 9px)' }}><KpiCard label="Safety Alert" value={summary.safety} icon={ShieldAlert} tone="red" /></YStack></XStack>
-        <HistoryTrend items={data?.items ?? []} />
+        <XStack gap="$3" flexWrap="wrap"><YStack width="calc(50% - 6px)" $wide={{ width: 'calc(25% - 9px)' }}><KpiCard label="Total pembacaan" value={summary ? summary.total : '—'} icon={Activity} tone="blue" /></YStack><YStack width="calc(50% - 6px)" $wide={{ width: 'calc(25% - 9px)' }}><KpiCard label="Normal" value={summary ? summary.normal : '—'} icon={Box} tone="green" /></YStack><YStack width="calc(50% - 6px)" $wide={{ width: 'calc(25% - 9px)' }}><KpiCard label="Perlu diangkat" value={summary ? summary.pickup : '—'} icon={Truck} tone="orange" /></YStack><YStack width="calc(50% - 6px)" $wide={{ width: 'calc(25% - 9px)' }}><KpiCard label="Safety Alert" value={summary ? summary.safety : '—'} icon={ShieldAlert} tone="red" /></YStack></XStack>
+        {data && data.items.length ? <HistoryTrend items={data.items} /> : null}
         <Filters filters={displayFilters} onChange={(patch) => {
           if (patch.fromDate !== undefined) setFromDate(patch.fromDate);
           if (patch.toDate !== undefined) setToDate(patch.toDate);
