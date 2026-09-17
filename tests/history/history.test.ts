@@ -11,6 +11,7 @@ vi.mock('react-native', () => ({
 import {
   buildHistoryExportHref,
   dateInputToUtcRange,
+  effectiveHistoryStatus,
   serializeHistoryFilters,
 } from '../../app/history';
 
@@ -41,5 +42,11 @@ describe('history filter contracts', () => {
   it('does not create a range when no date is selected', () => {
     expect(dateInputToUtcRange('', '')).toEqual({ from: undefined, to: undefined });
     expect(dateInputToUtcRange('2026-09-10', '')).toEqual({ from: '2026-09-10T00:00:00.000Z', to: undefined });
+  });
+
+  it('shows Safety Alert as the effective status when safety overrides FIS', () => {
+    expect(effectiveHistoryStatus({ fis_status: 'Angkat', safety_state: 'Safety Alert' })).toBe('Safety Alert');
+    expect(effectiveHistoryStatus({ fis_status: 'Waspada', safety_state: 'Clear' })).toBe('Waspada');
+    expect(effectiveHistoryStatus({ fis_status: null, safety_state: null })).toBeNull();
   });
 });
