@@ -92,7 +92,7 @@ Cover successful typed JSON, non-2xx JSON error text, canonical status labels, a
 
 - [ ] **Step 2: Run the focused tests red**
 
-Run `npm test -- --runInBand lib/api/client.test.ts lib/status.test.ts`. Expected result: failure because client, status, and formatting modules do not yet exist.
+Run `npm test -- lib/api/client.test.ts lib/status.test.ts`. Expected result: failure because client, status, and formatting modules do not yet exist.
 
 - [ ] **Step 3: Implement DTO types and fetch functions**
 
@@ -104,7 +104,7 @@ Use a single in-flight request ref, abort the prior request before retry, clear 
 
 - [ ] **Step 5: Run focused tests green**
 
-Run `npm test -- --runInBand lib/api/client.test.ts lib/status.test.ts`. Expected result: all focused tests pass.
+Run `npm test -- lib/api/client.test.ts lib/status.test.ts`. Expected result: all focused tests pass.
 
 - [ ] **Step 6: Commit**
 
@@ -141,7 +141,7 @@ Cover the status mapping and null metric output through the existing lightweight
 
 - [ ] **Step 2: Run focused tests red**
 
-Run `npm test -- --runInBand components`. Expected result: failure until shared components exist.
+Run `npm test -- components`. Expected result: failure until shared components exist.
 
 - [ ] **Step 3: Implement tokens-based shared components**
 
@@ -149,7 +149,7 @@ Build cards, badges, progress bars, skeletons, empty/error states, and shell nav
 
 - [ ] **Step 4: Run tests green and typecheck**
 
-Run `npm test -- --runInBand components` and `npm run typecheck`.
+Run `npm test -- components` and `npm run typecheck`.
 
 - [ ] **Step 5: Commit**
 
@@ -174,7 +174,7 @@ Assert four KPI labels maximum, priority empty copy, recent activity maximum thr
 
 - [ ] **Step 2: Run the route checks red**
 
-Run `npm test -- --runInBand app` and confirm missing route behavior fails for the expected reason.
+Run `npm test -- app` and confirm missing route behavior fails for the expected reason.
 
 - [ ] **Step 3: Implement Home**
 
