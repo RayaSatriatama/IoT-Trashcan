@@ -54,7 +54,7 @@ func (api *ReadAPI) ExportCSV(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
-	w.Header().Set("Content-Disposition", `attachment; filename="sigap-export.csv"`)
+	w.Header().Set("Content-Disposition", "attachment; filename=\"sigap-export.csv\"")
 	if err := history.WriteCSV(w, items); err != nil {
 		return
 	}
