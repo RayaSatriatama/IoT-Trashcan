@@ -26,7 +26,6 @@ export const HISTORY_STATUS_FILTERS: ReadonlyArray<{ label: string; value: Canon
   { label: 'Waspada', value: 'Waspada' },
   { label: 'Perlu diangkat', value: 'Angkat' },
   { label: 'Peringatan keselamatan', value: 'Safety Alert' },
-  { label: 'Offline', value: 'Offline' },
   { label: 'Data tidak valid', value: 'Data Invalid' },
 ];
 
@@ -118,6 +117,7 @@ function HistorySummary({ item, compact }: { item: HistoryItem; compact: boolean
       <YStack minWidth={160} flex={1} gap="$1">
         <Text color="$colorMuted" fontSize="$1">Device</Text>
         <Text color="$color" fontSize="$2" fontWeight="600">{item.device_code || HISTORY_MISSING_VALUE}</Text>
+        <Text color="$colorMuted" fontSize="$1">ID: {item.device_id}</Text>
       </YStack>
       <YStack minWidth={100} gap="$1">
         <Text color="$colorMuted" fontSize="$1">Stream</Text>
@@ -226,8 +226,8 @@ function Filters({ filters, onChange, onReset, onExport }: {
         </YStack>
         <LocationFilter value={filters.location_id ?? ''} onChange={(location_id) => onChange({ location_id })} />
         <YStack flex={1} minWidth={220} gap="$2">
-          <Label htmlFor="history-device" color="$color" fontSize="$2" fontWeight="700">Device ID</Label>
-          <Input id="history-device" value={filters.device_id ?? ''} onChangeText={(value) => onChange({ device_id: value })} placeholder="Contoh: SIGAP-01" minHeight={48} borderColor="$borderColor" backgroundColor="$background" />
+          <Label htmlFor="history-device" color="$color" fontSize="$2" fontWeight="700">Device ID (internal)</Label>
+          <Input id="history-device" value={filters.device_id ?? ''} onChangeText={(value) => onChange({ device_id: value })} placeholder="Contoh: dev-a" minHeight={48} borderColor="$borderColor" backgroundColor="$background" />
         </YStack>
         <YStack flex={1} minWidth={220} gap="$2">
           <Text color="$color" fontSize="$2" fontWeight="700">Status</Text>
