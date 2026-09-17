@@ -9,7 +9,7 @@
     "userInterfaceStyle": "light",
     "web": {
       "bundler": "metro",
-      "output": "static",
+      "output": "single",
       "favicon": "./assets/logo_mark_ui_generated.png"
     },
     "plugins": ["expo-router"],
