@@ -68,15 +68,24 @@ func (api *ReadAPI) Overview(w http.ResponseWriter, r *http.Request) {
 	for _, location := range locations {
 		response.TotalLocations++
 		response.TotalDevices += len(location.Devices)
+		for _, item := range location.Devices {
+			if item.Status == nil {
+				continue
+			}
+			switch device.Status(*item.Status) {
+			case device.StatusSafetyAlert:
+				response.SafetyAlerts++
+			case device.StatusAngkat:
+				response.PickupRequired++
+			}
+		}
 		if location.Status == nil {
 			continue
 		}
 		switch *location.Status {
 		case string(device.StatusSafetyAlert):
-			response.SafetyAlerts += countDevicesWithStatus(location.Devices, device.StatusSafetyAlert)
 			response.PriorityLocations = append(response.PriorityLocations, location.listItem())
 		case string(device.StatusAngkat):
-			response.PickupRequired += countDevicesWithStatus(location.Devices, device.StatusAngkat)
 			response.PriorityLocations = append(response.PriorityLocations, location.listItem())
 		case string(device.StatusWaspada):
 			response.PriorityLocations = append(response.PriorityLocations, location.listItem())
@@ -457,7 +466,7 @@ func (api *ReadAPI) slots(ctx context.Context, deviceID string) ([]slotDTO, erro
 func (api *ReadAPI) recentEvents(ctx context.Context) ([]eventDTO, error) {
 	rows, err := api.db.QueryContext(ctx, `
 		SELECT id, device_id, slot_id, event_type, severity, started_at, ended_at
-		FROM events ORDER BY started_at DESC, id DESC LIMIT 20`)
+		FROM events ORDER BY started_at DESC, id DESC LIMIT 3`)
 	if err != nil {
 		return nil, err
 	}
@@ -573,16 +582,6 @@ func aggregateStatus(statuses []device.Status) *string {
 		return nil
 	}
 	return stringPointer(string(device.Aggregate(statuses...)))
-}
-
-func countDevicesWithStatus(devices []deviceDTO, target device.Status) int {
-	count := 0
-	for _, item := range devices {
-		if item.Status != nil && *item.Status == string(target) {
-			count++
-		}
-	}
-	return count
 }
 
 func isPublicStatus(value string) bool {

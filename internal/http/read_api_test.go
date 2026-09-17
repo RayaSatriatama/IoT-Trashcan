@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -42,6 +43,66 @@ func TestReadAPIOverviewPrioritizesActionableLocations(t *testing.T) {
 	}
 	if len(body.PriorityLocations) != 1 || body.PriorityLocations[0].ID != "location-a" {
 		t.Fatalf("priority locations=%+v", body.PriorityLocations)
+	}
+}
+
+func TestReadAPIOverviewCountsDeviceKPIsIndependentlyOfLocationAggregate(t *testing.T) {
+	api, db := mixedOverviewFixture(t)
+	defer db.Close()
+	request := httptest.NewRequest(http.MethodGet, "/api/overview", nil)
+	response := httptest.NewRecorder()
+
+	api.Overview(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var body struct {
+		TotalLocations int `json:"total_locations"`
+		TotalDevices   int `json:"total_devices"`
+		PickupRequired int `json:"pickup_required"`
+		SafetyAlerts   int `json:"safety_alerts"`
+		Priority       []struct {
+			ID     string  `json:"id"`
+			Status *string `json:"status"`
+		} `json:"priority_locations"`
+	}
+	decodeBody(t, response, &body)
+	if body.TotalLocations != 1 || body.TotalDevices != 2 || body.SafetyAlerts != 1 || body.PickupRequired != 1 {
+		t.Fatalf("mixed KPI locations=%d devices=%d safety=%d pickup=%d", body.TotalLocations, body.TotalDevices, body.SafetyAlerts, body.PickupRequired)
+	}
+	if len(body.Priority) != 1 || body.Priority[0].ID != "location-mixed" || body.Priority[0].Status == nil || *body.Priority[0].Status != "Safety Alert" {
+		t.Fatalf("mixed priority locations=%+v", body.Priority)
+	}
+}
+
+func TestReadAPIOverviewLimitsRecentActivityToNewestThree(t *testing.T) {
+	api, db := readAPIFixture(t)
+	for index := 0; index < 5; index++ {
+		startedAt := time.Date(2026, 9, 17, 9, 0, index, 0, time.UTC).Format(time.RFC3339)
+		execFixture(t, db, `INSERT INTO events (device_id, event_type, severity, started_at) VALUES ('device-a', ?, 'info', ?)`, fmt.Sprintf("event-%d", index+1), startedAt)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/overview", nil)
+	response := httptest.NewRecorder()
+
+	api.Overview(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var body struct {
+		RecentActivity []struct {
+			EventType string `json:"event_type"`
+		} `json:"recent_activity"`
+	}
+	decodeBody(t, response, &body)
+	if len(body.RecentActivity) != 3 {
+		t.Fatalf("recent activity count=%d, want 3", len(body.RecentActivity))
+	}
+	for index, want := range []string{"event-5", "event-4", "event-3"} {
+		if body.RecentActivity[index].EventType != want {
+			t.Fatalf("recent activity[%d]=%q, want %q", index, body.RecentActivity[index].EventType, want)
+		}
 	}
 }
 
@@ -243,6 +304,32 @@ func readAPIFixture(t *testing.T) (*ReadAPI, *sql.DB) {
 	insertReading(t, db, "device-b-organic", "2026-09-17T09:57:00Z", raw, 0, nil, nil, "Normal", "Clear")
 
 	return NewReadAPI(db, WithReadClock(func() time.Time { return time.Date(2026, 9, 17, 10, 0, 0, 0, time.UTC) }), WithOfflineAfter(30*time.Second)), db
+}
+
+func mixedOverviewFixture(t *testing.T) (*ReadAPI, *sql.DB) {
+	t.Helper()
+	db, err := database.Open(filepath.Join(t.TempDir(), "sigap.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	execFixture(t, db, `INSERT INTO locations (id, name) VALUES ('location-mixed', 'Mixed')`)
+	execFixture(t, db, `INSERT INTO devices (id, location_id, device_code, credential_digest) VALUES
+		('device-safety', 'location-mixed', 'SIGAP-SAFETY', 'digest'),
+		('device-pickup', 'location-mixed', 'SIGAP-PICKUP', 'digest')`)
+	for _, deviceID := range []string{"device-safety", "device-pickup"} {
+		for _, stream := range []string{"organic", "inorganic", "b3"} {
+			execFixture(t, db, `INSERT INTO slots (id, device_id, waste_stream, operational_capacity) VALUES (?, ?, ?, 10)`, deviceID+"-"+stream, deviceID, stream)
+		}
+	}
+	for _, stream := range []string{"organic", "inorganic"} {
+		insertReading(t, db, "device-safety-"+stream, "2026-09-17T10:00:00Z", `{}`, 10, nil, nil, "Normal", "Clear")
+	}
+	insertReading(t, db, "device-safety-b3", "2026-09-17T10:00:00Z", `{}`, 10, nil, nil, "Normal", "Safety Alert")
+	insertReading(t, db, "device-pickup-organic", "2026-09-17T10:00:00Z", `{}`, 10, nil, nil, "Angkat", "Clear")
+	for _, stream := range []string{"inorganic", "b3"} {
+		insertReading(t, db, "device-pickup-"+stream, "2026-09-17T10:00:00Z", `{}`, 10, nil, nil, "Normal", "Clear")
+	}
+	return NewReadAPI(db), db
 }
 
 func insertReading(t *testing.T, db *sql.DB, slotID, recordedAt, raw string, fill any, weight any, utilization any, fisStatus, safetyState string) {
