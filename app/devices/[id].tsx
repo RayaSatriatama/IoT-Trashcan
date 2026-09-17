@@ -1,16 +1,17 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useCallback } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button, Card, Text, XStack, YStack } from 'tamagui';
 
 import { AppShell } from '../../components/AppShell';
 import { EmptyState } from '../../components/EmptyState';
 import { ErrorState } from '../../components/ErrorState';
 import { LoadingState } from '../../components/LoadingState';
+import { ResearchPanel } from '../../components/ResearchPanel';
 import { SlotCard } from '../../components/SlotCard';
 import { StatusBadge } from '../../components/StatusBadge';
 import { apiClient } from '../../lib/api/client';
 import { usePollingResource } from '../../lib/api/hooks';
-import type { CanonicalStatus, DeviceDetail } from '../../lib/api/types';
+import type { CanonicalStatus, DeviceDetail, ResearchResponse } from '../../lib/api/types';
 import { formatTimestamp } from '../../lib/format';
 import { getStatusBadgePresentation } from '../../components/StatusBadge';
 
@@ -88,6 +89,42 @@ export default function DeviceDetailRoute() {
     [id],
   );
   const { data, loading, error, stale, retry } = usePollingResource<DeviceDetail>(loader);
+  const [researchData, setResearchData] = useState<ResearchResponse | null>(null);
+  const [researchLoading, setResearchLoading] = useState(false);
+  const [researchError, setResearchError] = useState<Error | null>(null);
+  const [researchStarted, setResearchStarted] = useState(false);
+  const researchAbort = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    researchAbort.current?.abort();
+    researchAbort.current = null;
+    setResearchData(null);
+    setResearchLoading(false);
+    setResearchError(null);
+    setResearchStarted(false);
+
+    return () => researchAbort.current?.abort();
+  }, [id]);
+
+  const loadResearch = useCallback(() => {
+    if (!id || researchLoading) return;
+    researchAbort.current?.abort();
+    const controller = new AbortController();
+    researchAbort.current = controller;
+    setResearchStarted(true);
+    setResearchLoading(true);
+    setResearchError(null);
+    apiClient.fetchResearch(id, controller.signal)
+      .then((result) => setResearchData(result))
+      .catch((cause: unknown) => {
+        if (!controller.signal.aborted) {
+          setResearchError(cause instanceof Error ? cause : new Error('Gagal memuat data riset'));
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setResearchLoading(false);
+      });
+  }, [id, researchLoading]);
 
   const handleBack = useCallback(() => router.back(), [router]);
   const handleNavigate = useCallback((path: string) => {
@@ -165,6 +202,15 @@ export default function DeviceDetailRoute() {
                 />
               )}
             </YStack>
+
+            <ResearchPanel
+              key={id ?? 'research'}
+              data={researchData}
+              loading={researchLoading}
+              error={researchError}
+              onRetry={loadResearch}
+              onOpen={researchStarted ? undefined : loadResearch}
+            />
           </>
         ) : null}
       </YStack>

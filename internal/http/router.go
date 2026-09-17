@@ -50,6 +50,8 @@ func NewRouter(service IngestService, options ...RouterOption) http.Handler {
 		mux.Handle("GET /api/locations/{id}", http.HandlerFunc(config.readAPI.Location))
 		mux.Handle("GET /api/devices/{id}", http.HandlerFunc(config.readAPI.Device))
 		mux.Handle("GET /api/devices/{id}/research", http.HandlerFunc(config.readAPI.Research))
+		mux.Handle("GET /api/history", http.HandlerFunc(config.readAPI.History))
+		mux.Handle("GET /api/export.csv", http.HandlerFunc(config.readAPI.ExportCSV))
 	}
 	return mux
 }
