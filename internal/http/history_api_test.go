@@ -62,6 +62,7 @@ func TestReadAPIHistoryRejectsInvalidFilters(t *testing.T) {
 		"/api/history?from=not-a-date",
 		"/api/history?from=2026-09-18T00:00:00Z&to=2026-09-17T00:00:00Z",
 		"/api/history?status=unknown",
+		"/api/history?status=Offline",
 	} {
 		request := httptest.NewRequest(http.MethodGet, path, nil)
 		response := httptest.NewRecorder()
@@ -107,10 +108,15 @@ func TestReadAPIExportCSVUsesHistoryProjectionAndFilters(t *testing.T) {
 func TestReadAPIExportCSVRejectsInvalidFilter(t *testing.T) {
 	api, db := readAPIFixture(t)
 	defer db.Close()
-	request := httptest.NewRequest(http.MethodGet, "/api/export.csv?status=unknown", nil)
-	response := httptest.NewRecorder()
-	api.ExportCSV(response, request)
-	if response.Code != http.StatusBadRequest {
-		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	for _, path := range []string{
+		"/api/export.csv?status=unknown",
+		"/api/export.csv?status=Offline",
+	} {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		response := httptest.NewRecorder()
+		api.ExportCSV(response, request)
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("%s status=%d body=%s", path, response.Code, response.Body.String())
+		}
 	}
 }
