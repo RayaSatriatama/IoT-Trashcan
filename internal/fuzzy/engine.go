@@ -83,10 +83,19 @@ func (e *mamdaniEngine) ruleStrength(rule Rule, input Input) (float64, error) {
 
 func centroid(set Membership, output Range) (float64, error) {
 	var numerator, denominator float64
-	for x := output.Min; x <= output.Max+output.Step/2; x += output.Step {
+	for x := output.Min; ; {
 		degree := boundedDegree(set.Degree(x))
 		numerator += x * degree
 		denominator += degree
+
+		if x >= output.Max {
+			break
+		}
+		next := x + output.Step
+		if next <= x || next > output.Max {
+			break
+		}
+		x = next
 	}
 	if denominator == 0 {
 		return 0, ErrNoRuleFired
@@ -108,7 +117,7 @@ func validateConfig(config Config) error {
 	if config.Version == "" || len(config.Inputs) == 0 || len(config.Outputs) == 0 || len(config.Rules) == 0 {
 		return ErrInvalidConfig
 	}
-	if config.OutputRange.Step <= 0 || config.OutputRange.Max <= config.OutputRange.Min {
+	if !finite(config.OutputRange.Min) || !finite(config.OutputRange.Max) || !finite(config.OutputRange.Step) || config.OutputRange.Step <= 0 || config.OutputRange.Max <= config.OutputRange.Min {
 		return fmt.Errorf("%w: output range", ErrInvalidConfig)
 	}
 	for name, variable := range config.Inputs {
@@ -141,4 +150,8 @@ func validateConfig(config Config) error {
 		}
 	}
 	return nil
+}
+
+func finite(value float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0)
 }
