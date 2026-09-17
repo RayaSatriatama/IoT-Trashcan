@@ -42,17 +42,19 @@ function StaleNotice({ onRetry }: { onRetry: () => void }) {
         <Text color="$color" fontSize="$2" flex={1}>
           Data terbaru belum tersedia. Menampilkan detail device terakhir yang berhasil dimuat.
         </Text>
-        <Text
+        <Button
           color="$primary"
           fontSize="$2"
           fontWeight="700"
-          cursor="pointer"
+          minHeight={44}
+          paddingHorizontal="$2"
+          backgroundColor="transparent"
+          borderWidth={0}
           onPress={onRetry}
-          role="button"
           aria-label="Coba perbarui data"
         >
           Coba perbarui
-        </Text>
+        </Button>
       </XStack>
     </Card>
   );

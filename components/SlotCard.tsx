@@ -1,10 +1,20 @@
+import b3Artwork from '../assets/bin_b3_single_faithful.png';
+import inorganicArtwork from '../assets/bin_inorganic_single_faithful.png';
+import organicArtwork from '../assets/bin_organic_single_faithful.png';
 import type { SlotDTO } from '../lib/api/types';
 import { formatNullableMetric, formatTimestamp } from '../lib/format';
+import { Image as RNImage } from 'react-native';
 import { Card, Text, XStack, YStack } from 'tamagui';
 
 import { getStreamLabel } from './DeviceCard';
 import { MetricBar } from './MetricBar';
 import { StatusBadge } from './StatusBadge';
+
+const streamArtwork: Record<string, number> = {
+  organic: organicArtwork,
+  inorganic: inorganicArtwork,
+  b3: b3Artwork,
+};
 
 export interface SlotCardProps {
   slot: SlotDTO;
@@ -23,9 +33,19 @@ export function SlotCard({ slot }: SlotCardProps) {
       aria-label={`Slot ${getStreamLabel(slot.stream)}`}
     >
       <XStack justifyContent="space-between" alignItems="center" gap="$3">
-        <Text fontSize="$4" color="$color" fontWeight="700">
-          {getStreamLabel(slot.stream)}
-        </Text>
+        <XStack alignItems="center" gap="$3" flex={1}>
+          {streamArtwork[slot.stream] ? (
+            <RNImage
+              source={streamArtwork[slot.stream]}
+              accessibilityLabel={`Ilustrasi slot ${getStreamLabel(slot.stream)}`}
+              resizeMode="contain"
+              style={{ width: 56, height: 56 }}
+            />
+          ) : null}
+          <Text fontSize="$4" color="$color" fontWeight="700">
+            {getStreamLabel(slot.stream)}
+          </Text>
+        </XStack>
         <StatusBadge status={slot.status} compact />
       </XStack>
       <YStack gap="$3">

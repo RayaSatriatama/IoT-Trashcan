@@ -6,6 +6,10 @@ vi.mock('expo-router', () => ({
   useRouter: () => ({ back: vi.fn() }),
 }));
 
+vi.mock('react-native', () => ({
+  Image: () => null,
+}));
+
 import {
   LOCATION_EMPTY_DEVICES_COPY,
   deviceDetailHref,

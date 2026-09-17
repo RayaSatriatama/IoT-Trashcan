@@ -1,3 +1,5 @@
+import logoArtwork from '../assets/logo_mark_ui_generated.png';
+import { Image as RNImage } from 'react-native';
 import { Button, Separator, Text, XStack, YStack } from 'tamagui';
 
 export interface NavigationItem {
@@ -32,7 +34,12 @@ export function DesktopSidebar({
       backgroundColor="$surface"
     >
       <XStack alignItems="center" gap="$3">
-        <YStack width={36} height={36} borderRadius="$2" backgroundColor="$primary" />
+        <RNImage
+          source={logoArtwork}
+          accessibilityLabel="Logo SIGAP"
+          resizeMode="contain"
+          style={{ width: 36, height: 36 }}
+        />
         <YStack gap="$1">
           <Text fontSize="$4" color="$color" fontWeight="700">
             SIGAP

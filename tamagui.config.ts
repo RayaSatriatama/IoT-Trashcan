@@ -3,6 +3,7 @@ import { createFont, createTamagui, createTokens } from 'tamagui';
 const bodyFont = createFont({
   family: 'System',
   size: {
+    true: 16,
     1: 12,
     2: 14,
     3: 16,
@@ -13,6 +14,7 @@ const bodyFont = createFont({
     8: 36,
   },
   lineHeight: {
+    true: 24,
     1: 16,
     2: 20,
     3: 24,
@@ -23,12 +25,14 @@ const bodyFont = createFont({
     8: 44,
   },
   weight: {
+    true: '400',
     1: '400',
     2: '500',
     3: '600',
     4: '700',
   },
   letterSpacing: {
+    true: 0,
     1: 0,
     2: -0.2,
     3: -0.4,
@@ -41,6 +45,8 @@ export const tokens = createTokens({
     ink: '#17212B',
     inkMuted: '#5E6A75',
     background: '#F6F8FB',
+    backgroundHover: '#EEF3F5',
+    backgroundPress: '#E3F2EE',
     surface: '#FFFFFF',
     surfaceMuted: '#EEF3F5',
     border: '#D7E0E5',
@@ -54,6 +60,7 @@ export const tokens = createTokens({
     statusDataInvalid: '#7A4EA3',
   },
   space: {
+    true: 16,
     0: 0,
     1: 4,
     2: 8,
@@ -67,6 +74,7 @@ export const tokens = createTokens({
     10: 64,
   },
   size: {
+    true: 16,
     0: 0,
     1: 4,
     2: 8,
@@ -105,10 +113,14 @@ export const tamaguiConfig = createTamagui({
   themes: {
     light: {
       background: '#F6F8FB',
+      backgroundHover: '#EEF3F5',
+      backgroundPress: '#E3F2EE',
       surface: '#FFFFFF',
       surfaceMuted: '#EEF3F5',
       color: '#17212B',
       colorMuted: '#5E6A75',
+      colorHover: '#0D6E5A',
+      colorPress: '#0D6E5A',
       borderColor: '#D7E0E5',
       primary: '#0D6E5A',
       primarySoft: '#E3F2EE',

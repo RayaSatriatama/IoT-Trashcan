@@ -5,6 +5,10 @@ vi.mock('expo-router', () => ({
   useRouter: () => ({ push: vi.fn() }),
 }));
 
+vi.mock('react-native', () => ({
+  Image: () => null,
+}));
+
 import { LOCATION_STATUS_FILTERS, SEARCH_INPUT_LABEL } from '../../app/locations';
 
 describe('locations route filter contracts', () => {

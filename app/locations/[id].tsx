@@ -17,8 +17,8 @@ export const LOCATION_EMPTY_DEVICES_COPY = {
   description: 'Device akan muncul setelah perangkat terhubung dan mengirimkan data.',
 } as const;
 
-export function deviceDetailHref(id: string): string {
-  return `/devices/${encodeURIComponent(id)}`;
+export function deviceDetailHref(id: string): `/devices/${string}` {
+  return `/devices/${encodeURIComponent(id)}` as `/devices/${string}`;
 }
 
 function StaleNotice({ onRetry }: { onRetry: () => void }) {
@@ -37,17 +37,19 @@ function StaleNotice({ onRetry }: { onRetry: () => void }) {
         <Text color="$color" fontSize="$2" flex={1}>
           Data terbaru belum tersedia. Menampilkan detail lokasi terakhir yang berhasil dimuat.
         </Text>
-        <Text
+        <Button
           color="$primary"
           fontSize="$2"
           fontWeight="700"
-          cursor="pointer"
+          minHeight={44}
+          paddingHorizontal="$2"
+          backgroundColor="transparent"
+          borderWidth={0}
           onPress={onRetry}
-          role="button"
           aria-label="Coba perbarui data"
         >
           Coba perbarui
-        </Text>
+        </Button>
       </XStack>
     </Card>
   );
