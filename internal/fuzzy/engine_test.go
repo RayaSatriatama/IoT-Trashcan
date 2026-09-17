@@ -1,6 +1,7 @@
 package fuzzy
 
 import (
+	"errors"
 	"math"
 	"testing"
 )
@@ -142,5 +143,54 @@ func TestEngineCentroidUsesAggregatedMembership(t *testing.T) {
 func TestNewEngineRejectsConfigurationWithoutRulesOrVersion(t *testing.T) {
 	if _, err := NewEngine(Config{}); err == nil {
 		t.Fatal("NewEngine accepted missing required configuration")
+	}
+}
+
+func TestNewEngineRejectsNonFiniteOutputRange(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Range)
+	}{
+		{"nan min", func(r *Range) { r.Min = math.NaN() }},
+		{"positive infinity max", func(r *Range) { r.Max = math.Inf(1) }},
+		{"nan step", func(r *Range) { r.Step = math.NaN() }},
+		{"positive infinity step", func(r *Range) { r.Step = math.Inf(1) }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testConfig()
+			tt.mutate(&cfg.OutputRange)
+			if _, err := NewEngine(cfg); !errors.Is(err, ErrInvalidConfig) {
+				t.Fatalf("NewEngine() error = %v, want ErrInvalidConfig", err)
+			}
+		})
+	}
+}
+
+type recordingMembership struct {
+	seen *[]float64
+}
+
+func (membership recordingMembership) Degree(x float64) float64 {
+	*membership.seen = append(*membership.seen, x)
+	return 1
+}
+
+func TestCentroidNeverSamplesBeyondConfiguredMaximum(t *testing.T) {
+	seen := make([]float64, 0, 2)
+	score, err := centroid(recordingMembership{seen: &seen}, Range{Min: 0, Max: 10, Step: 6})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(seen) != 2 || seen[0] != 0 || seen[1] != 6 {
+		t.Fatalf("centroid samples = %v, want [0 6]", seen)
+	}
+	for _, sample := range seen {
+		if sample > 10 {
+			t.Fatalf("centroid sampled %v beyond max 10", sample)
+		}
+	}
+	if score < 0 || score > 10 {
+		t.Fatalf("centroid score = %v, want within [0, 10]", score)
 	}
 }
