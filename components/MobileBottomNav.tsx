@@ -1,7 +1,15 @@
 import { Button, XStack } from 'tamagui';
+import type { LucideIcon } from 'lucide-react-native';
 
 import type { NavigationItem } from './DesktopSidebar';
 import { defaultNavigationItems } from './DesktopSidebar';
+import { Clock3, House, MapPin } from '../lib/ui/icons';
+
+const navigationIcons: Record<string, LucideIcon> = {
+  '/': House,
+  '/locations': MapPin,
+  '/history': Clock3,
+};
 
 export interface MobileBottomNavProps {
   items?: NavigationItem[];
@@ -31,9 +39,10 @@ export function MobileBottomNav({
       role="navigation"
       aria-label="Navigasi utama"
     >
-      {items.map((item) => {
-        const active = activePath === item.path;
-        return (
+        {items.map((item) => {
+          const active = activePath === item.path;
+          const Icon = navigationIcons[item.path] ?? House;
+          return (
           <Button
             key={item.path}
             flex={1}
@@ -47,7 +56,10 @@ export function MobileBottomNav({
             aria-label={`Buka ${item.label}`}
             type="button"
           >
-            {item.label === 'Ringkasan' ? 'Beranda' : item.label}
+            <XStack alignItems="center" justifyContent="center" gap="$2">
+              <Icon size={17} color={active ? '#0A9B62' : '#5D7397'} strokeWidth={active ? 2.4 : 2} aria-hidden={true} />
+              {item.label === 'Ringkasan' ? 'Beranda' : item.label}
+            </XStack>
           </Button>
         );
       })}

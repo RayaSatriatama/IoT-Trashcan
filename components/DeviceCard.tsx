@@ -1,5 +1,7 @@
 import type { DeviceDTO } from '../lib/api/types';
 import { formatTimestamp } from '../lib/format';
+import b3Artwork from '../assets/bin_b3_single_faithful.png';
+import inorganicArtwork from '../assets/bin_inorganic_single_faithful.png';
 import organicArtwork from '../assets/bin_organic_single_faithful.png';
 import { Image as RNImage } from 'react-native';
 import { Card, Text, XStack, YStack } from 'tamagui';
@@ -41,7 +43,11 @@ export function DeviceCard({ device, onPress }: DeviceCardProps) {
       cursor={onPress ? 'pointer' : undefined}
     >
       <XStack justifyContent="space-between" alignItems="flex-start" gap="$3">
-        <RNImage source={organicArtwork} accessibilityLabel="Ilustrasi device" resizeMode="contain" style={{ width: 48, height: 48 }} />
+        <XStack alignItems="center" gap="$1" backgroundColor="$surfaceMuted" borderRadius="$3" paddingHorizontal="$2" paddingVertical="$1">
+          <RNImage source={organicArtwork} accessibilityLabel="Ilustrasi slot organik" resizeMode="contain" style={{ width: 31, height: 38 }} />
+          <RNImage source={inorganicArtwork} accessibilityLabel="Ilustrasi slot anorganik" resizeMode="contain" style={{ width: 31, height: 38 }} />
+          <RNImage source={b3Artwork} accessibilityLabel="Ilustrasi slot B3" resizeMode="contain" style={{ width: 31, height: 38 }} />
+        </XStack>
         <YStack flex={1} gap="$1">
           <Text fontSize="$4" color="$color" fontWeight="700">
             {device.device_code}
@@ -74,3 +80,5 @@ export function DeviceCard({ device, onPress }: DeviceCardProps) {
     </Card>
   );
 }
+
+export const DeviceVisualCard = DeviceCard;

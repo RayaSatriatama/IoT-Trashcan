@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { Button, Separator, Text, XStack, YStack } from 'tamagui';
+import { Bell } from '../lib/ui/icons';
 
 export interface HeaderProps {
   title: string;
@@ -34,7 +35,7 @@ export function Header({ title, subtitle, actions }: HeaderProps) {
             fontSize="$4"
             paddingHorizontal="$2"
           >
-            !
+            <Bell size={18} color="#0A9B62" strokeWidth={2.2} aria-hidden={true} />
           </Button>
           <YStack paddingLeft="$3" borderLeftWidth={1} borderLeftColor="$borderColor" gap="$1">
             <Text color="$color" fontSize="$2" fontWeight="800">Admin</Text>

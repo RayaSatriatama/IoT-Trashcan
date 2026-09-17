@@ -1,6 +1,9 @@
 import type { LocationListItem } from '../lib/api/types';
+import { Image as RNImage } from 'react-native';
 import { Card, Text, XStack, YStack } from 'tamagui';
 
+import { ChevronRight } from '../lib/ui/icons';
+import { resolveLocationImage } from '../lib/ui/assets';
 import { StatusBadge } from './StatusBadge';
 
 export interface LocationCardProps {
@@ -20,33 +23,29 @@ export function LocationCard({ location, deviceCount, onPress }: LocationCardPro
       backgroundColor="$surface"
       borderRadius="$4"
       padding="$4"
-      gap="$4"
-      minHeight={166}
+      gap="$3"
+      minHeight={112}
+      overflow="hidden"
       pressStyle={onPress ? { opacity: 0.82 } : undefined}
       onPress={onPress}
       role={onPress ? 'button' : 'group'}
       aria-label={`Lokasi ${location.name}`}
       cursor={onPress ? 'pointer' : undefined}
     >
-      <XStack justifyContent="space-between" alignItems="flex-start" gap="$3">
-        <YStack flex={1} gap="$1">
-          <Text fontSize="$5" color="$color" fontWeight="800" letterSpacing={-0.3}>
-            {location.name}
-          </Text>
-          <Text fontSize="$2" color="$colorMuted">
-            {address}
-          </Text>
+      <XStack alignItems="center" gap="$3">
+        <RNImage source={resolveLocationImage(location.name)} accessibilityLabel={`Ilustrasi ${location.name}`} resizeMode="contain" style={{ width: 90, height: 72 }} />
+        <YStack flex={1} minWidth={0} gap="$1">
+          <Text fontSize="$4" color="$color" fontWeight="800" numberOfLines={1}>{location.name}</Text>
+          <Text fontSize="$2" color="$colorMuted" numberOfLines={2}>{address}</Text>
+          <XStack alignItems="center" gap="$2" marginTop="$1">
+            <StatusBadge status={location.status} compact />
+            {deviceLabel !== 'Belum tersedia' ? <Text fontSize="$1" color="$colorMuted">{deviceLabel} device</Text> : null}
+          </XStack>
         </YStack>
-        <StatusBadge status={location.status} compact />
-      </XStack>
-      <XStack justifyContent="space-between" alignItems="center" gap="$3" borderTopWidth={1} borderTopColor="$borderColor" paddingTop="$3">
-        <Text fontSize="$2" color="$colorMuted">
-          Perangkat terpantau
-        </Text>
-        <Text fontSize="$3" color="$color" fontWeight="600">
-          {deviceLabel === 'Belum tersedia' ? deviceLabel : `${deviceLabel} device`}
-        </Text>
+        <ChevronRight size={19} color="#5D7397" strokeWidth={2} aria-hidden={true} />
       </XStack>
     </Card>
   );
 }
+
+export const LocationVisualCard = LocationCard;

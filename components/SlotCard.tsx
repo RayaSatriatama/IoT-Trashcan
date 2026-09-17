@@ -66,6 +66,8 @@ export function SlotCard({ slot }: SlotCardProps) {
   );
 }
 
+export const SlotVisualCard = SlotCard;
+
 function MetricLine({ label, value }: { label: string; value: string }) {
   return (
     <XStack justifyContent="space-between" alignItems="flex-start" gap="$3">
