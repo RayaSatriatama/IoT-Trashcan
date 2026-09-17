@@ -30,7 +30,7 @@ export interface LocationDetail extends LocationListItem {
   devices: DeviceDTO[];
 }
 
-export interface DeviceDTO {
+export interface DeviceDetail {
   id: string;
   location_id: string;
   device_code: string;
@@ -50,7 +50,12 @@ export interface SlotDTO {
   dominant_reason: string | null;
   safety_state: string | null;
   recorded_at: string | null;
+  ogi: number | null;
+  accumulation_hours: number | null;
+  temperature: number | null;
 }
+
+export type DeviceDTO = DeviceDetail;
 
 export interface ResearchSlotDTO {
   stream: string;

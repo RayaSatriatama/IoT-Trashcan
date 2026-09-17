@@ -1,6 +1,6 @@
 import type {
   CanonicalStatus,
-  DeviceDTO,
+  DeviceDetail,
   LocationDetail,
   LocationListResponse,
   OverviewResponse,
@@ -55,7 +55,7 @@ export function createApiClient(fetcher: Fetcher = fetch): {
   fetchOverview(signal?: AbortSignal): Promise<OverviewResponse>;
   fetchLocations(params?: { query?: string; status?: CanonicalStatus }, signal?: AbortSignal): Promise<LocationListResponse>;
   fetchLocation(id: string, signal?: AbortSignal): Promise<LocationDetail>;
-  fetchDevice(id: string, signal?: AbortSignal): Promise<DeviceDTO>;
+  fetchDevice(id: string, signal?: AbortSignal): Promise<DeviceDetail>;
   fetchResearch(id: string, signal?: AbortSignal): Promise<ResearchResponse>;
 } {
   async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
@@ -77,7 +77,7 @@ export function createApiClient(fetcher: Fetcher = fetch): {
       return get<LocationListResponse>(`/api/locations${suffix}`, signal);
     },
     fetchLocation: (id, signal) => get<LocationDetail>(`/api/locations/${encodeId(id)}`, signal),
-    fetchDevice: (id, signal) => get<DeviceDTO>(`/api/devices/${encodeId(id)}`, signal),
+    fetchDevice: (id, signal) => get<DeviceDetail>(`/api/devices/${encodeId(id)}`, signal),
     fetchResearch: (id, signal) => get<ResearchResponse>(`/api/devices/${encodeId(id)}/research`, signal),
   };
 }

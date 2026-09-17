@@ -81,6 +81,7 @@ export function usePollingResource<T>(
   const [error, setError] = useState<Error | null>(null);
   const [stale, setStale] = useState(false);
 
+  // Callers should pass a useCallback-stable loader so unrelated renders do not restart polling.
   useEffect(() => {
     setLoading(dataRef.current === null);
     setError(null);
