@@ -137,7 +137,7 @@ func TestReadAPIHistoryUsesStableCursorPagination(t *testing.T) {
 	if err := json.Unmarshal(secondResponse.Body.Bytes(), &second); err != nil {
 		t.Fatal(err)
 	}
-	if len(second.Items) != 1 || second.Items[0].ReadingID != 1 || second.Page.HasMore {
+	if len(second.Items) != 2 || second.Items[0].ReadingID != 1 || second.Items[1].ReadingID != 4 || second.Page.HasMore {
 		t.Fatalf("second page items=%+v page=%+v", second.Items, second.Page)
 	}
 }

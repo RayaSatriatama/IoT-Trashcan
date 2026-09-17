@@ -3,6 +3,7 @@ package database_test
 import (
 	"context"
 	"database/sql"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -22,6 +23,28 @@ func TestOpenCreatesInitialSchema(t *testing.T) {
 		if err != nil {
 			t.Fatalf("table %q was not created: %v", table, err)
 		}
+	}
+}
+
+func TestOpenSupportsRelativePath(t *testing.T) {
+	dir := t.TempDir()
+	previous, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(previous) })
+
+	db, err := database.Open("sigap-relative.db")
+	if err != nil {
+		t.Fatalf("Open() relative path error = %v", err)
+	}
+	defer db.Close()
+
+	if _, err := os.Stat(filepath.Join(dir, "sigap-relative.db")); err != nil {
+		t.Fatalf("relative database file was not created: %v", err)
 	}
 }
 
