@@ -15,6 +15,10 @@ export interface OverviewResponse {
   recent_activity: EventDTO[];
 }
 
+export interface RuntimeResponse {
+  simulation: boolean;
+}
+
 export interface LocationListItem {
   id: string;
   name: string;

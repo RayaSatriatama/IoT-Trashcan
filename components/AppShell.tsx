@@ -4,6 +4,7 @@ import { useMedia, XStack, YStack } from 'tamagui';
 import { DesktopSidebar, type NavigationItem } from './DesktopSidebar';
 import { Header } from './Header';
 import { MobileBottomNav } from './MobileBottomNav';
+import { SimulationBanner } from './SimulationBanner';
 
 export interface AppShellProps {
   title: string;
@@ -33,6 +34,7 @@ export function AppShell({
       <YStack flex={1} minWidth={0}>
         <YStack width="100%" maxWidth={1280} alignSelf="center" paddingHorizontal="$4" paddingBottom={isWide ? '$10' : 96}>
           <Header title={title} subtitle={subtitle} />
+          <SimulationBanner />
           {children}
         </YStack>
       </YStack>

@@ -100,4 +100,15 @@ describe('monitoring API client', () => {
       '/api/export.csv?location_id=loc-1&status=Waspada',
     );
   });
+
+  it('reads safe runtime simulation metadata without credentials', async () => {
+    let requestUrl = '';
+    const client = createApiClient(async (input) => {
+      requestUrl = String(input);
+      return jsonResponse({ simulation: true });
+    });
+
+    await expect(client.fetchRuntime()).resolves.toEqual({ simulation: true });
+    expect(requestUrl).toBe('/api/runtime');
+  });
 });
