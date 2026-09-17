@@ -86,7 +86,7 @@ func TestReadAPIExportCSVUsesHistoryProjectionAndFilters(t *testing.T) {
 	if got := response.Header().Get("Content-Type"); got != "text/csv; charset=utf-8" {
 		t.Fatalf("Content-Type=%q", got)
 	}
-	if got := response.Header().Get("Content-Disposition"); got != `attachment; filename="sigap-export.csv"` {
+	if got := response.Header().Get("Content-Disposition"); got != "attachment; filename=\"sigap-export.csv\"" {
 		t.Fatalf("Content-Disposition=%q", got)
 	}
 	if strings.Contains(response.Body.String(), "credential_digest") || strings.Contains(response.Body.String(), "fixture-secret") || strings.Contains(response.Body.String(), "ppm") {
