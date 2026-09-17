@@ -102,6 +102,22 @@ func TestIngestPersistsConfiguredDecisionAndSafetyOverride(t *testing.T) {
 	}
 }
 
+func TestIngestPersistsEngineVersionWhenResultOmitsIt(t *testing.T) {
+	db, service := decisionTestService(t, &versionlessEngine{})
+	defer db.Close()
+
+	if _, err := service.Ingest(context.Background(), "fixture-token", decisionRequest(), []byte(`{"version":true}`)); err != nil {
+		t.Fatal(err)
+	}
+	var version string
+	if err := db.QueryRow(`SELECT fis_version FROM decisions ORDER BY reading_id LIMIT 1`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != "engine-version" {
+		t.Fatalf("fis_version = %q, want engine version", version)
+	}
+}
+
 func TestIngestRejectsSameTimestampWithDifferentRawPayloadWithoutWrites(t *testing.T) {
 	db, service := decisionTestService(t, testDecisionEngine(t))
 	defer db.Close()
@@ -194,6 +210,14 @@ func (e *recordingEngine) Evaluate(input fuzzy.Input) (fuzzy.Result, error) {
 }
 
 func (e *recordingEngine) Version() string { return "test-fis-v1" }
+
+type versionlessEngine struct{}
+
+func (e *versionlessEngine) Evaluate(fuzzy.Input) (fuzzy.Result, error) {
+	return fuzzy.Result{Score: 20, Status: "Normal", DominantReason: "version fixture"}, nil
+}
+
+func (e *versionlessEngine) Version() string { return "engine-version" }
 
 func testDecisionEngine(t *testing.T) fuzzy.Engine {
 	t.Helper()

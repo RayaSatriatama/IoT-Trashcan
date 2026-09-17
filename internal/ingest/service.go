@@ -227,7 +227,11 @@ func (s *Service) persistDecision(ctx context.Context, tx *sql.Tx, readingID int
 	if err != nil {
 		return fmt.Errorf("%w: evaluate decision: %v", ErrPersistence, err)
 	}
-	return insertDecision(ctx, tx, readingID, &result.Score, result.Status, result.Version, result.DominantReason, safetyResult.State)
+	version := result.Version
+	if version == "" {
+		version = s.engine.Version()
+	}
+	return insertDecision(ctx, tx, readingID, &result.Score, result.Status, version, result.DominantReason, safetyResult.State)
 }
 
 func insertDecision(ctx context.Context, tx *sql.Tx, readingID int64, score *float64, status string, version any, reason, safetyState string) error {
