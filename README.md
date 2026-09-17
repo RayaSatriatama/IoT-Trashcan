@@ -12,7 +12,39 @@ IoT-Trashcan memuat dokumentasi dan aset SIGAP Smart Bin, sistem pengelolaan sam
 
 ## Status project
 
-Repository saat ini berisi sumber dokumentasi, rancangan, dan aset visual. Implementasi aplikasi dan firmware belum tersedia di repository.
+SIGAP MVP memiliki satu runtime Go dengan SQLite embedded, authenticated ingest, monitoring read APIs, history, CSV export, dan frontend Expo Web yang di-embed saat release build. Nilai research final untuk FIS, safety, OGI, offline duration, verified-empty, dan event transition tetap deferred.
+
+## Menjalankan development
+
+Frontend:
+
+```bash
+npm ci
+npm test -- --run
+npm run typecheck
+npm run web
+```
+
+Go API:
+
+```bash
+SIGAP_DB_PATH=./sigap.db SIGAP_HTTP_ADDR=:8080 go run ./cmd/sigap
+```
+
+Monitoring frontend menggunakan relative same-origin `/api/...` pada web. `EXPO_PUBLIC_API_BASE_URL` hanya digunakan untuk development native bila diperlukan.
+
+## Release binary
+
+Gunakan script deterministic berikut. Script membangun Expo SPA, men-stage bundle sementara ke Go `go:embed`, menjalankan seluruh test dan vet/race check, lalu menghasilkan satu binary di `/tmp/sigap-release` tanpa menyimpan bundle generated ke Git.
+
+```bash
+SIGAP_RELEASE_OUTPUT=/tmp/sigap-release ./scripts/build-release.sh
+SIGAP_DB_PATH=./sigap.db SIGAP_HTTP_ADDR=:8080 /tmp/sigap-release
+```
+
+Runtime production menggunakan `SIGAP_DB_PATH`, `SIGAP_HTTP_ADDR`, dan optional `OFFLINE_AFTER_SECONDS`. Database SQLite tetap file external dan persistent, bukan bagian dari binary.
+
+Production FIS dan safety numeric configuration tetap research-blocked. Release runtime tidak menggunakan test fixture thresholds dan tidak memalsukan keputusan valid ketika engine production belum dikonfigurasi.
 
 ## Kontribusi
 

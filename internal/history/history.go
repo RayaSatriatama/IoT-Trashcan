@@ -140,8 +140,8 @@ func Query(ctx context.Context, db *sql.DB, filters Filters) ([]Record, error) {
 		args = append(args, filters.DeviceID)
 	}
 	if filters.Status != "" {
-		where = append(where, "CASE WHEN dec.safety_state = 'Safety Alert' THEN 'Safety Alert' ELSE dec.fis_status END = ?")
-		args = append(args, filters.Status)
+		where = append(where, "(dec.fis_status = ? OR (? = 'Safety Alert' AND dec.safety_state = 'Safety Alert'))")
+		args = append(args, filters.Status, filters.Status)
 	}
 	query := `
 		SELECT r.id, r.recorded_at,

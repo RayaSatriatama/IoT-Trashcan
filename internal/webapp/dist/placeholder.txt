@@ -1,0 +1,1 @@
+SIGAP frontend bundle placeholder. Run scripts/build-release.sh before production use.
