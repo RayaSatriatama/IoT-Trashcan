@@ -9,6 +9,7 @@ import { Card, Text, XStack, YStack } from 'tamagui';
 import { getStreamLabel } from './DeviceCard';
 import { MetricBar, type MetricBarTone } from './MetricBar';
 import { StatusBadge } from './StatusBadge';
+import { textStyles } from '../lib/ui/typography';
 
 const streamArtwork: Record<string, number> = {
   organic: organicArtwork,
@@ -50,7 +51,7 @@ export function SlotCard({ slot }: SlotCardProps) {
               style={{ width: 72, height: 72 }}
             />
           ) : null}
-          <Text fontSize="$5" color="$color" fontWeight="800">
+          <Text color="$color" {...textStyles.cardTitle} fontWeight="800">
             {getStreamLabel(slot.stream)}
           </Text>
         </XStack>
@@ -78,10 +79,10 @@ export const SlotVisualCard = SlotCard;
 function MetricLine({ label, value }: { label: string; value: string }) {
   return (
     <XStack justifyContent="space-between" alignItems="flex-start" gap="$3">
-      <Text fontSize="$2" color="$colorMuted">
+      <Text color="$colorMuted" {...textStyles.bodySecondary}>
         {label}
       </Text>
-      <Text fontSize="$2" color="$color" fontWeight="600" textAlign="right" flex={1}>
+      <Text color="$color" {...textStyles.bodySecondary} fontWeight="600" textAlign="right" flex={1}>
         {value}
       </Text>
     </XStack>

@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { ScrollView } from 'react-native';
 import { useMedia, XStack, YStack } from 'tamagui';
 
 import { DesktopSidebar, type NavigationItem } from './DesktopSidebar';
@@ -31,12 +32,24 @@ export function AppShell({
       {hasDesktopShell ? (
         <DesktopSidebar items={navigationItems} activePath={activePath} onNavigate={onNavigate} />
       ) : null}
-      <YStack flex={1} minWidth={0}>
-        <YStack width="100%" maxWidth={1320} alignSelf="center" paddingHorizontal={hasDesktopShell ? '$7' : '$4'} paddingBottom={hasDesktopShell ? '$10' : 104}>
-          <Header title={title} subtitle={subtitle} />
-          <SimulationBanner />
-          {children}
-        </YStack>
+      <YStack flex={1} minWidth={0} minHeight={0}>
+        <ScrollView
+          style={{ flex: 1 }}
+          contentContainerStyle={{ flexGrow: 1, paddingBottom: hasDesktopShell ? 40 : 112 }}
+          showsVerticalScrollIndicator
+          keyboardShouldPersistTaps="handled"
+        >
+          <YStack
+            width="100%"
+            maxWidth={1320}
+            alignSelf="center"
+            paddingHorizontal={hasDesktopShell ? '$7' : '$4'}
+          >
+            <Header title={title} subtitle={subtitle} />
+            <SimulationBanner />
+            {children}
+          </YStack>
+        </ScrollView>
       </YStack>
       {!hasDesktopShell ? (
         <MobileBottomNav items={navigationItems} activePath={activePath} onNavigate={onNavigate} />

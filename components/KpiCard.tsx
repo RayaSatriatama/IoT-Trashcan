@@ -1,5 +1,6 @@
 import type { LucideIcon } from 'lucide-react-native';
 import { Card, Text, XStack, YStack } from 'tamagui';
+import { textStyles } from '../lib/ui/typography';
 
 export type KpiTone = 'green' | 'blue' | 'orange' | 'red';
 
@@ -36,14 +37,14 @@ export function KpiCard({ label, value, description, icon: Icon, tone = 'green' 
     >
       <XStack alignItems="center" justifyContent="space-between" gap="$3">
         <YStack gap="$1" flex={1}>
-          <Text color="$colorMuted" fontSize="$2" fontWeight="700">{label}</Text>
-          <Text color={palette.color} fontSize="$8" lineHeight="$8" fontWeight="800" letterSpacing={-1}>{value}</Text>
+          <Text color="$colorMuted" {...textStyles.caption} fontWeight="700">{label}</Text>
+          <Text color={palette.color} {...textStyles.numericKpi} letterSpacing={-1}>{value}</Text>
         </YStack>
         <YStack width={44} height={44} borderRadius="$6" backgroundColor="$surface" alignItems="center" justifyContent="center">
           <Icon size={22} color={palette.color} strokeWidth={2.2} aria-hidden={true} />
         </YStack>
       </XStack>
-      {description ? <Text color="$colorMuted" fontSize="$1">{description}</Text> : null}
+      {description ? <Text color="$colorMuted" {...textStyles.caption}>{description}</Text> : null}
     </Card>
   );
 }

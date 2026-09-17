@@ -1,4 +1,5 @@
 import { formatNullableMetric } from '../lib/format';
+import { textStyles } from '../lib/ui/typography';
 import { Text, XStack, YStack } from 'tamagui';
 
 export type MetricBarTone = 'green' | 'blue' | 'red' | 'neutral';
@@ -38,10 +39,10 @@ export function MetricBar({
   return (
     <YStack gap="$2" aria-label={`${label}: ${valueLabel}`}>
       <XStack justifyContent="space-between" alignItems="center" gap="$2">
-        <Text fontSize="$2" color="$colorMuted">
+        <Text color="$colorMuted" {...textStyles.bodySecondary}>
           {label}
         </Text>
-        <Text fontSize="$2" color="$color" fontWeight="600">
+        <Text color="$color" {...textStyles.bodySecondary} fontWeight="600">
           {valueLabel}
         </Text>
       </XStack>

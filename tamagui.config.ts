@@ -4,8 +4,8 @@ const bodyFont = createFont({
   family: 'Arial',
   size: {
     true: 16,
-    1: 12,
-    2: 14,
+    1: 13,
+    2: 15,
     3: 16,
     4: 18,
     5: 20,
@@ -15,8 +15,8 @@ const bodyFont = createFont({
   },
   lineHeight: {
     true: 24,
-    1: 16,
-    2: 20,
+    1: 18,
+    2: 22,
     3: 24,
     4: 26,
     5: 28,

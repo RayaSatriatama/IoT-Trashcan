@@ -4,6 +4,7 @@ import { Card, Text, XStack, YStack } from 'tamagui';
 
 import { ChevronRight } from '../lib/ui/icons';
 import { resolveLocationImage } from '../lib/ui/assets';
+import { textStyles } from '../lib/ui/typography';
 import { StatusBadge } from './StatusBadge';
 
 export interface LocationCardProps {
@@ -35,11 +36,11 @@ export function LocationCard({ location, deviceCount, onPress }: LocationCardPro
       <XStack alignItems="center" gap="$3">
         <RNImage source={resolveLocationImage(location.name)} accessibilityLabel={`Ilustrasi ${location.name}`} resizeMode="contain" style={{ width: 90, height: 72 }} />
         <YStack flex={1} minWidth={0} gap="$1">
-          <Text fontSize="$4" color="$color" fontWeight="800" numberOfLines={1}>{location.name}</Text>
-          <Text fontSize="$2" color="$colorMuted" numberOfLines={2}>{address}</Text>
+          <Text color="$color" {...textStyles.cardTitle} numberOfLines={1}>{location.name}</Text>
+          <Text color="$colorMuted" {...textStyles.bodySecondary} numberOfLines={2}>{address}</Text>
           <XStack alignItems="center" gap="$2" marginTop="$1">
             <StatusBadge status={location.status} compact />
-            {deviceLabel !== 'Belum tersedia' ? <Text fontSize="$1" color="$colorMuted">{deviceLabel} device</Text> : null}
+            {deviceLabel !== 'Belum tersedia' ? <Text {...textStyles.caption} color="$colorMuted">{deviceLabel} device</Text> : null}
           </XStack>
         </YStack>
         <ChevronRight size={19} color="#5D7397" strokeWidth={2} aria-hidden={true} />

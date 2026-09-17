@@ -71,3 +71,19 @@ The runtime used real simulation API data from the embedded SPA binary. The simu
 ## Result
 
 passed for the visual correction scope
+
+## Readability and scroll pass
+
+The shell now uses one vertical `ScrollView` for the content column. This is required because React Native Web keeps the document body at `overflow: hidden`; the scroll surface now owns the page content while the desktop sidebar and mobile bottom navigation remain stable.
+
+ChromeDev evidence:
+
+- `/tmp/readability-home-1366.png`, `/tmp/readability-home-390.png`
+- `/tmp/readability-locations-1366.png`, `/tmp/readability-final-locations-390.png`
+- `/tmp/readability-location-detail-1366.png`, `/tmp/readability-location-detail-390.png`
+- `/tmp/readability-device-1366.png`, `/tmp/readability-device-390.png`
+- `/tmp/readability-history-1366.png`, `/tmp/readability-history-390.png`
+
+At 390x844, all five routes reached the bottom of their scroll surface with no horizontal overflow. The same six-viewport audit covered 360x800, 390x844, 768x1024, 1024x768, 1366x768, and 1440x900. Locations correctly remains non-scrollable at wide viewports when all content fits within the viewport.
+
+Typography now uses named styles in `lib/ui/typography.ts`, larger body and caption tokens, `$body` font binding for numeric and metadata styles, and stronger readable secondary text. The final ChromeDev route check reported no console messages and API/assets returned 200.
