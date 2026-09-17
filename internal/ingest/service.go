@@ -197,7 +197,10 @@ func insertReading(ctx context.Context, tx *sql.Tx, slotID, recordedAt, rawPaylo
 }
 
 func (s *Service) persistDecision(ctx context.Context, tx *sql.Tx, readingID int64, input Slot, normalized NormalizedReading, validation ValidationResult) error {
-	safetyResult := safety.Evaluate(safety.Input{Fill: input.Fill, Weight: input.Weight, Temperature: input.Temperature, GasRaw: input.GasRaw}, s.safetyConfig)
+	safetyResult, err := safety.Evaluate(safety.Input{Fill: input.Fill, Weight: input.Weight, Temperature: input.Temperature, GasRaw: input.GasRaw}, s.safetyConfig)
+	if err != nil {
+		return fmt.Errorf("%w: evaluate safety: %v", ErrPersistence, err)
+	}
 	if !validation.Valid {
 		var version any
 		if s.engine != nil {
