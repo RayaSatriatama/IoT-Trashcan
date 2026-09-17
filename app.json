@@ -1,0 +1,20 @@
+{
+  "expo": {
+    "name": "SIGAP Monitoring",
+    "slug": "sigap-monitoring",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/logo_mark_ui_generated.png",
+    "scheme": "sigap",
+    "userInterfaceStyle": "light",
+    "web": {
+      "bundler": "metro",
+      "output": "static",
+      "favicon": "./assets/logo_mark_ui_generated.png"
+    },
+    "plugins": ["expo-router"],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
