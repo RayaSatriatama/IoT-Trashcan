@@ -1,7 +1,7 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Image as RNImage } from 'react-native';
-import { Button, Card, Text, XStack, YStack } from 'tamagui';
+import { Button, Card, Text, XStack, YStack, useMedia } from 'tamagui';
 
 import deviceArtwork from '../../assets/device_detail_three_bin_with_device_card.png';
 import { AppShell } from '../../components/AppShell';
@@ -28,6 +28,7 @@ function StaleNotice({ onRetry }: { onRetry: () => void }) {
 
 export default function DeviceDetailRoute() {
   const router = useRouter();
+  const media = useMedia();
   const params = useLocalSearchParams<{ id: string | string[] }>();
   const id = Array.isArray(params.id) ? params.id[0] : params.id;
   const loader = useCallback((signal: AbortSignal) => apiClient.fetchDevice(id ?? '', signal), [id]);
@@ -46,7 +47,7 @@ export default function DeviceDetailRoute() {
     {stale && data ? <StaleNotice onRetry={retry} /> : null}{loading && !data ? <LoadingState label="Memuat detail device" rows={4} /> : null}{!data && !loading && error ? <ErrorState onRetry={retry} /> : null}
     {data ? <>
       <Card borderWidth={1} borderColor="$primarySoft" backgroundColor="$surface" borderRadius="$5" padding="$6" overflow="hidden"><XStack alignItems="center" gap="$5" flexWrap="wrap"><YStack flex={1} minWidth={250} gap="$3"><Text color="$primary" fontSize="$2" fontWeight="800">DETAIL PERANGKAT</Text><Text color="$color" fontSize="$8" lineHeight="$8" fontWeight="800" letterSpacing={-1}>{data.device_code}</Text><Text color="$colorMuted" fontSize="$3">{data.placement_label ?? DEVICE_UNAVAILABLE_COPY}</Text><XStack gap="$2" flexWrap="wrap" alignItems="center"><StatusBadge status={data.status ?? (data.online_state === 'Offline' ? 'Offline' : null)} />{data.online_state === 'Offline' && data.status && data.status !== 'Offline' ? <StatusBadge status="Offline" /> : null}<Text color="$colorMuted" fontSize="$2">Terakhir terlihat: {formatTimestamp(data.last_seen)}</Text></XStack></YStack><RNImage source={deviceArtwork} accessibilityLabel="Ilustrasi tiga jenis tempat sampah" resizeMode="contain" style={{ width: 340, height: 170, maxWidth: '100%' }} /></XStack></Card>
-      <YStack gap="$3"><YStack gap="$1"><Text color="$color" fontSize="$6" fontWeight="800">Kondisi slot</Text><Text color="$colorMuted" fontSize="$2">Nilai null ditampilkan sebagai belum tersedia, bukan nol.</Text></YStack>{data.slots.length ? <XStack gap="$3" flexWrap="wrap">{data.slots.map((slot) => <YStack key={slot.stream} width="100%" $wide={{ width: 'calc(33.333% - 8px)' }}><SlotCard slot={slot} /></YStack>)}</XStack> : <EmptyState title="Belum ada data slot" description="Metrik slot akan muncul setelah device mengirimkan pembacaan terbaru." />}</YStack>
+      <YStack gap="$3"><YStack gap="$1"><Text color="$color" fontSize="$6" fontWeight="800">Kondisi slot</Text><Text color="$colorMuted" fontSize="$3">Pantau keterisian, kapasitas, dan kondisi setiap jenis sampah.</Text></YStack>{data.slots.length ? <XStack gap="$3" flexWrap="wrap">{data.slots.map((slot) => <YStack key={slot.stream} width={media.wide ? 'calc(33.333% - 8px)' : media.tablet ? 'calc(50% - 6px)' : '100%'}><SlotCard slot={slot} /></YStack>)}</XStack> : <EmptyState title="Belum ada data slot" description="Metrik slot akan muncul setelah device mengirimkan pembacaan terbaru." />}</YStack>
       <ResearchPanel key={id ?? 'research'} data={researchData} loading={researchLoading} error={researchError} onRetry={loadResearch} onOpen={researchStarted ? undefined : loadResearch} />
     </> : null}
   </YStack></AppShell>;

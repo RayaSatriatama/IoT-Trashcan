@@ -1,9 +1,10 @@
-import { Button, XStack } from 'tamagui';
+import { Button, Text, XStack } from 'tamagui';
 import type { LucideIcon } from 'lucide-react-native';
 
 import type { NavigationItem } from './DesktopSidebar';
 import { defaultNavigationItems } from './DesktopSidebar';
 import { Clock3, House, MapPin } from '../lib/ui/icons';
+import { textStyles } from '../lib/ui/typography';
 
 const navigationIcons: Record<string, LucideIcon> = {
   '/': House,
@@ -59,7 +60,9 @@ export function MobileBottomNav({
           >
             <XStack alignItems="center" justifyContent="center" gap="$2">
               <Icon size={17} color={active ? '#0A9B62' : '#5D7397'} strokeWidth={active ? 2.4 : 2} aria-hidden={true} />
-              {displayLabel}
+              <Text {...textStyles.caption} color={active ? '$primary' : '$colorMuted'} fontWeight={active ? '700' : '600'}>
+                {displayLabel}
+              </Text>
             </XStack>
           </Button>
         );

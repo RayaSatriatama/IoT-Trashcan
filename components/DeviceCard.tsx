@@ -1,5 +1,6 @@
 import type { DeviceDTO } from '../lib/api/types';
 import { formatTimestamp } from '../lib/format';
+import { getStreamTone } from '../lib/ui/slotPresentation';
 import b3Artwork from '../assets/bin_b3_single_faithful.png';
 import inorganicArtwork from '../assets/bin_inorganic_single_faithful.png';
 import organicArtwork from '../assets/bin_organic_single_faithful.png';
@@ -60,17 +61,17 @@ export function DeviceCard({ device, onPress }: DeviceCardProps) {
         <StatusBadge status={device.status} compact />
       </XStack>
       <XStack flexWrap="wrap" gap="$2" alignItems="center" paddingVertical="$1">
-        <Text color="$colorMuted" {...textStyles.bodySecondary}>
-          Koneksi: {onlineLabel}
+        <Text color={device.online_state === 'Offline' ? '$statusOffline' : '$statusNormal'} {...textStyles.bodySecondary} fontWeight="700">
+          ● {onlineLabel}
         </Text>
-        <Text color="$colorMuted" {...textStyles.bodySecondary}>
-          Terakhir terlihat: {lastSeen}
+        <Text color="$colorMuted" {...textStyles.metadata}>
+          Update: {lastSeen}
         </Text>
       </XStack>
       <YStack gap="$3" borderTopWidth={1} borderTopColor="$borderColor" paddingTop="$3">
         {device.slots.length > 0 ? (
           device.slots.map((slot) => (
-            <MetricBar key={slot.stream} label={getStreamLabel(slot.stream)} value={slot.fill} />
+            <MetricBar key={slot.stream} label={getStreamLabel(slot.stream)} value={slot.fill} tone={getStreamTone(slot.stream)} />
           ))
         ) : (
           <Text color="$colorMuted" {...textStyles.bodySecondary}>

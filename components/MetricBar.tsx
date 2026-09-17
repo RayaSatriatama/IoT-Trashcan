@@ -11,6 +11,7 @@ export interface MetricBarProps {
   unit?: string;
   unavailableLabel?: string;
   tone?: MetricBarTone;
+  compact?: boolean;
 }
 
 const toneColor: Record<MetricBarTone, string> = {
@@ -31,6 +32,7 @@ export function MetricBar({
   unit = '%',
   unavailableLabel,
   tone = 'neutral',
+  compact = false,
 }: MetricBarProps) {
   const validValue = typeof value === 'number' && Number.isFinite(value);
   const percentage = validValue && max > 0 ? Math.min(100, Math.max(0, (value / max) * 100)) : 0;
@@ -47,7 +49,7 @@ export function MetricBar({
         </Text>
       </XStack>
       <YStack
-        height={10}
+        height={compact ? 8 : 10}
         borderRadius="$6"
         backgroundColor="$surfaceMuted"
         overflow="hidden"

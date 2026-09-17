@@ -46,8 +46,8 @@ export function Header({ title, subtitle, actions }: HeaderProps) {
             <Bell size={18} color="#0A9B62" strokeWidth={2.2} aria-hidden={true} />
           </YStack>
           <YStack paddingLeft="$3" borderLeftWidth={1} borderLeftColor="$borderColor" gap="$1">
-            <Text color="$color" fontSize="$2" fontWeight="800">Admin</Text>
-            <Text color="$colorMuted" fontSize="$1">Pengelola sistem</Text>
+            <Text color="$color" {...textStyles.bodySecondary} fontWeight="800">Admin</Text>
+            <Text color="$colorMuted" {...textStyles.metricLabel}>Pengelola sistem</Text>
           </YStack>
         </XStack>
         {actions ? <XStack alignItems="center" gap="$2">{actions}</XStack> : null}
