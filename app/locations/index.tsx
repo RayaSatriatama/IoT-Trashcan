@@ -108,9 +108,8 @@ export default function LocationsRoute() {
               Filter status
             </Text>
             <Select
-              value={status}
-              onValueChange={(value) => setStatus(value as CanonicalStatus | '')}
-              native="web"
+              value={status || 'all'}
+              onValueChange={(value) => setStatus(value === 'all' ? '' : value as CanonicalStatus)}
               name="location-status"
             >
               <Select.Trigger aria-label="Filter status" minHeight={48} width="100%" borderColor="$borderColor" backgroundColor="$background">
@@ -119,7 +118,7 @@ export default function LocationsRoute() {
               <Select.Content>
                 <Select.Viewport minWidth={280}>
                   {LOCATION_STATUS_FILTERS.map((filter, index) => (
-                    <Select.Item key={filter.value || 'all'} value={filter.value} index={index}>
+                    <Select.Item key={filter.value || 'all'} value={filter.value || 'all'} index={index}>
                       <Select.ItemText>{filter.label}</Select.ItemText>
                       <Select.ItemIndicator />
                     </Select.Item>
