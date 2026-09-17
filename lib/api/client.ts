@@ -1,6 +1,8 @@
 import type {
   CanonicalStatus,
   DeviceDetail,
+  HistoryFilters,
+  HistoryResponse,
   LocationDetail,
   LocationListResponse,
   OverviewResponse,
@@ -57,6 +59,8 @@ export function createApiClient(fetcher: Fetcher = fetch): {
   fetchLocation(id: string, signal?: AbortSignal): Promise<LocationDetail>;
   fetchDevice(id: string, signal?: AbortSignal): Promise<DeviceDetail>;
   fetchResearch(id: string, signal?: AbortSignal): Promise<ResearchResponse>;
+  fetchHistory(filters?: HistoryFilters, signal?: AbortSignal): Promise<HistoryResponse>;
+  buildExportURL(filters?: HistoryFilters): string;
 } {
   async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
     const response = await fetcher(pathWithBase(path), {
@@ -79,7 +83,27 @@ export function createApiClient(fetcher: Fetcher = fetch): {
     fetchLocation: (id, signal) => get<LocationDetail>(`/api/locations/${encodeId(id)}`, signal),
     fetchDevice: (id, signal) => get<DeviceDetail>(`/api/devices/${encodeId(id)}`, signal),
     fetchResearch: (id, signal) => get<ResearchResponse>(`/api/devices/${encodeId(id)}/research`, signal),
+    fetchHistory: (filters = {}, signal) => {
+      const query = serializeHistoryFilters(filters);
+      return get<HistoryResponse>(`/api/history${query ? `?${query}` : ''}`, signal);
+    },
+    buildExportURL,
   };
+}
+
+export function serializeHistoryFilters(filters: HistoryFilters = {}): string {
+  const query = new URLSearchParams();
+  if (filters.from) query.set('from', filters.from);
+  if (filters.to) query.set('to', filters.to);
+  if (filters.location_id) query.set('location_id', filters.location_id);
+  if (filters.device_id) query.set('device_id', filters.device_id);
+  if (filters.status) query.set('status', filters.status);
+  return query.toString();
+}
+
+export function buildExportURL(filters: HistoryFilters = {}): string {
+  const query = serializeHistoryFilters(filters);
+  return pathWithBase(`/api/export.csv${query ? `?${query}` : ''}`);
 }
 
 export const apiClient = createApiClient();

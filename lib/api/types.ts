@@ -95,3 +95,47 @@ export interface EventDTO {
   started_at: string;
   ended_at: string | null;
 }
+
+export interface HistoryFilters {
+  from?: string;
+  to?: string;
+  location_id?: string;
+  device_id?: string;
+  status?: CanonicalStatus;
+}
+
+export interface HistoryItem {
+  reading_id: number;
+  recorded_at: string;
+  location_id: string;
+  location_name: string;
+  device_id: string;
+  device_code: string;
+  placement_label: string | null;
+  slot_id: string;
+  stream: string;
+  fill: number | null;
+  weight: number | null;
+  weight_utilization: number | null;
+  gas_raw: number | null;
+  ogi: number | null;
+  accumulation_hours: number | null;
+  temperature: number | null;
+  fis_score: number | null;
+  fis_status: CanonicalStatus | null;
+  fis_version: string | null;
+  dominant_reason: string | null;
+  safety_state: string | null;
+  sensor_health: unknown;
+}
+
+export interface HistoryResponse {
+  items: HistoryItem[];
+  filters: {
+    from: string | null;
+    to: string | null;
+    location_id: string | null;
+    device_id: string | null;
+    status: CanonicalStatus | null;
+  };
+}

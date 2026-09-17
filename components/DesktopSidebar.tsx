@@ -10,6 +10,7 @@ export interface NavigationItem {
 export const defaultNavigationItems: NavigationItem[] = [
   { label: 'Ringkasan', path: '/' },
   { label: 'Lokasi', path: '/locations' },
+  { label: 'Riwayat', path: '/history' },
 ];
 
 export interface DesktopSidebarProps {

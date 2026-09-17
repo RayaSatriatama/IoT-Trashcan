@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { ApiError, createApiClient } from './client';
+import { ApiError, buildExportURL, createApiClient } from './client';
 import type { OverviewResponse } from './types';
 
 function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
@@ -70,5 +70,34 @@ describe('monitoring API client', () => {
       status: 200,
       name: 'ApiError',
     });
+  });
+
+  it('serializes history filters and fetches audit rows', async () => {
+    let requestUrl = '';
+    const client = createApiClient(async (input) => {
+      requestUrl = String(input);
+      return jsonResponse({
+        items: [],
+        filters: { from: null, to: null, location_id: null, device_id: null, status: null },
+      });
+    });
+
+    await client.fetchHistory({
+      from: '2026-09-01T00:00:00Z',
+      to: '2026-09-18T00:00:00Z',
+      location_id: 'loc/1',
+      device_id: 'SIGAP 01',
+      status: 'Safety Alert',
+    });
+
+    expect(requestUrl).toBe(
+      '/api/history?from=2026-09-01T00%3A00%3A00Z&to=2026-09-18T00%3A00%3A00Z&location_id=loc%2F1&device_id=SIGAP+01&status=Safety+Alert',
+    );
+  });
+
+  it('builds an export URL from the same history filter contract', () => {
+    expect(buildExportURL({ location_id: 'loc-1', status: 'Waspada' })).toBe(
+      '/api/export.csv?location_id=loc-1&status=Waspada',
+    );
   });
 });
