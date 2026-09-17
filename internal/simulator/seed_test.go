@@ -2,6 +2,8 @@ package simulator
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"path/filepath"
 	"testing"
 
@@ -45,5 +47,42 @@ func TestSeedIsIdempotentAndCreatesExpectedDataset(t *testing.T) {
 	}
 	if digest == first.Devices[0].Token || digest == "" {
 		t.Fatalf("credential digest is not safely stored: %q", digest)
+	}
+}
+
+func TestSeedRefreshesCredentialDigestWhenSeedChanges(t *testing.T) {
+	db, err := database.Open(filepath.Join(t.TempDir(), "sigap.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	first, err := Seed(context.Background(), db, 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := Seed(context.Background(), db, 99)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Devices[0].Token == second.Devices[0].Token {
+		t.Fatal("changing seed did not rotate deterministic simulator credential")
+	}
+
+	var digest string
+	if err := db.QueryRow(`SELECT credential_digest FROM devices WHERE id = ?`, second.Devices[0].ID).Scan(&digest); err != nil {
+		t.Fatal(err)
+	}
+	want := sha256.Sum256([]byte(second.Devices[0].Token))
+	if digest != hex.EncodeToString(want[:]) {
+		t.Fatalf("credential digest=%q want refreshed digest", digest)
+	}
+
+	var devices int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM devices WHERE id LIKE 'sim-%'`).Scan(&devices); err != nil {
+		t.Fatal(err)
+	}
+	if devices != 4 {
+		t.Fatalf("devices=%d want=4 after reseed", devices)
 	}
 }
