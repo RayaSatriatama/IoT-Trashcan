@@ -63,6 +63,13 @@ export const HISTORY_EMPTY_COPY = {
 
 export const HISTORY_MISSING_VALUE = 'Belum tersedia';
 
+export function effectiveHistoryStatus(
+  item: Pick<HistoryItem, 'fis_status' | 'safety_state'>,
+): CanonicalStatus | null {
+  if (item.safety_state === 'Safety Alert') return 'Safety Alert';
+  return item.fis_status;
+}
+
 function StaleNotice({ onRetry }: { onRetry: () => void }) {
   return (
     <Card
@@ -125,7 +132,7 @@ function HistoryDetails({ item, compact }: { item: HistoryItem; compact: boolean
     <XStack gap="$4" flexWrap="wrap" flexDirection={compact ? 'column' : 'row'} alignItems="flex-start">
       <YStack minWidth={130} gap="$1">
         <Text color="$colorMuted" fontSize="$1">Status</Text>
-        <StatusBadge status={item.fis_status as CanonicalStatus | null} compact />
+        <StatusBadge status={effectiveHistoryStatus(item)} compact />
       </YStack>
       <YStack minWidth={170} flex={1} gap="$1">
         <Text color="$colorMuted" fontSize="$1">Alasan</Text>
@@ -159,7 +166,7 @@ function HistoryRow({ item, compact }: { item: HistoryItem; compact: boolean }) 
         <HistorySummary item={item} compact={compact} />
         <YStack minWidth={130} alignItems={compact ? 'flex-start' : 'flex-end'} gap="$1">
           <Text color="$colorMuted" fontSize="$1">Status</Text>
-          <StatusBadge status={item.fis_status as CanonicalStatus | null} compact />
+          <StatusBadge status={effectiveHistoryStatus(item)} compact />
         </YStack>
       </XStack>
       <HistoryDetails item={item} compact={compact} />
