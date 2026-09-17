@@ -1,14 +1,18 @@
 import { useRouter } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
+import { Image as RNImage } from 'react-native';
 import { Button, Card, Input, Label, Select, Text, XStack, YStack, useMedia } from 'tamagui';
 
+import historyArtwork from '../../assets/history_report_analytics_illustration.png';
 import { AppShell } from '../../components/AppShell';
 import { EmptyState } from '../../components/EmptyState';
 import { ErrorState } from '../../components/ErrorState';
+import { KpiCard } from '../../components/KpiCard';
 import { LoadingState } from '../../components/LoadingState';
 import { StatusBadge } from '../../components/StatusBadge';
 import { apiClient } from '../../lib/api/client';
 import { usePollingResource } from '../../lib/api/hooks';
+import { Activity, Box, ShieldAlert, Truck } from '../../lib/ui/icons';
 import type { CanonicalStatus, HistoryItem, HistoryResponse, LocationListResponse } from '../../lib/api/types';
 import { formatNullableMetric, formatTimestamp } from '../../lib/format';
 
@@ -62,6 +66,27 @@ export const HISTORY_EMPTY_COPY = {
 
 export const HISTORY_MISSING_VALUE = 'Belum tersedia';
 
+export interface DailyStatusCount {
+  day: string;
+  normal: number;
+  pickup: number;
+  safety: number;
+}
+
+export function groupHistoryByDay(items: HistoryItem[]): DailyStatusCount[] {
+  const grouped = new Map<string, DailyStatusCount>();
+  for (const item of items) {
+    const day = item.recorded_at.slice(0, 10);
+    const entry = grouped.get(day) ?? { day, normal: 0, pickup: 0, safety: 0 };
+    const statusValue = effectiveHistoryStatus(item);
+    if (statusValue === 'Safety Alert') entry.safety += 1;
+    else if (statusValue === 'Angkat') entry.pickup += 1;
+    else if (statusValue === 'Normal') entry.normal += 1;
+    grouped.set(day, entry);
+  }
+  return Array.from(grouped.values()).sort((a, b) => a.day.localeCompare(b.day));
+}
+
 export function effectiveHistoryStatus(
   item: Pick<HistoryItem, 'fis_status' | 'safety_state'>,
 ): CanonicalStatus | null {
@@ -74,8 +99,8 @@ function StaleNotice({ onRetry }: { onRetry: () => void }) {
     <Card
       borderWidth={1}
       borderColor="$statusWaspada"
-      backgroundColor="$surface"
-      borderRadius="$3"
+      backgroundColor="$statusWaspadaSoft"
+      borderRadius="$4"
       paddingHorizontal="$4"
       paddingVertical="$3"
       role="status"
@@ -151,12 +176,21 @@ function HistoryDetails({ item, compact }: { item: HistoryItem; compact: boolean
 }
 
 function HistoryRow({ item, compact }: { item: HistoryItem; compact: boolean }) {
+  if (!compact) {
+    return <XStack alignItems="center" gap="$4" paddingHorizontal="$4" paddingVertical="$3" borderBottomWidth={1} borderBottomColor="$borderColor" role="group" aria-label={`Riwayat ${item.device_code} ${item.stream}`}>
+      <YStack width={178} gap="$1"><Text color="$color" fontSize="$2" fontWeight="700">{item.device_code}</Text><Text color="$colorMuted" fontSize="$1">{item.placement_label || HISTORY_MISSING_VALUE}</Text></YStack>
+      <YStack flex={1} minWidth={150} gap="$1"><Text color="$color" fontSize="$2" fontWeight="600">{item.location_name || HISTORY_MISSING_VALUE}</Text><Text color="$colorMuted" fontSize="$1">{item.stream}</Text></YStack>
+      <YStack width={142} gap="$1"><StatusBadge status={effectiveHistoryStatus(item)} compact /><Text color="$colorMuted" fontSize="$1">{item.safety_state || HISTORY_MISSING_VALUE}</Text></YStack>
+      <YStack width={156} gap="$1"><Text color="$color" fontSize="$2">{formatTimestamp(item.recorded_at)}</Text><Text color="$colorMuted" fontSize="$1">FIS {formatNullableMetric(item.fis_score)}</Text></YStack>
+      <Text color="$colorMuted" fontSize="$1" width={190} numberOfLines={2}>{item.dominant_reason || HISTORY_MISSING_VALUE}</Text>
+    </XStack>;
+  }
   return (
     <Card
       borderWidth={1}
       borderColor="$borderColor"
       backgroundColor="$surface"
-      borderRadius="$3"
+      borderRadius="$4"
       padding="$4"
       gap="$4"
       role="group"
@@ -178,6 +212,16 @@ function HistoryRow({ item, compact }: { item: HistoryItem; compact: boolean }) 
       </XStack>
     </Card>
   );
+}
+
+function HistoryTrend({ items }: { items: HistoryItem[] }) {
+  const days = groupHistoryByDay(items).slice(-7);
+  const maximum = Math.max(...days.map((day) => day.normal + day.pickup + day.safety), 1);
+  return <Card borderWidth={1} borderColor="$borderColor" backgroundColor="$surface" borderRadius="$4" padding="$4" gap="$4"><XStack alignItems="flex-end" justifyContent="space-between" gap="$3"><YStack gap="$1"><Text color="$color" fontSize="$5" fontWeight="800">Trend status</Text><Text color="$colorMuted" fontSize="$2">Distribusi pembacaan tujuh hari terakhir.</Text></YStack><XStack gap="$3" flexWrap="wrap"><XStack alignItems="center" gap="$1"><YStack width={8} height={8} borderRadius="$6" backgroundColor="$statusNormal" /><Text color="$colorMuted" fontSize="$1">Normal</Text></XStack><XStack alignItems="center" gap="$1"><YStack width={8} height={8} borderRadius="$6" backgroundColor="$statusAngkat" /><Text color="$colorMuted" fontSize="$1">Diangkat</Text></XStack><XStack alignItems="center" gap="$1"><YStack width={8} height={8} borderRadius="$6" backgroundColor="$statusSafetyAlert" /><Text color="$colorMuted" fontSize="$1">Safety</Text></XStack></XStack></XStack><XStack alignItems="flex-end" justifyContent="space-between" gap="$3" height={142}>{days.map((day) => { const total = day.normal + day.pickup + day.safety; return <YStack key={day.day} flex={1} alignItems="center" justifyContent="flex-end" gap="$2"><YStack width="70%" maxWidth={36} height={Math.max(10, (total / maximum) * 104)} borderRadius="$3" overflow="hidden" backgroundColor="$surfaceMuted"><YStack flex={day.safety} backgroundColor="$statusSafetyAlert" /><YStack flex={day.pickup} backgroundColor="$statusAngkat" /><YStack flex={day.normal} backgroundColor="$statusNormal" /></YStack><Text color="$colorMuted" fontSize="$1">{day.day.slice(5)}</Text></YStack>; })}</XStack></Card>;
+}
+
+function HistoryTableHeader() {
+  return <XStack alignItems="center" gap="$4" paddingHorizontal="$4" paddingVertical="$2" backgroundColor="$surfaceMuted"><Text color="$colorMuted" fontSize="$1" fontWeight="800" width={178}>DEVICE</Text><Text color="$colorMuted" fontSize="$1" fontWeight="800" flex={1} minWidth={150}>LOKASI / STREAM</Text><Text color="$colorMuted" fontSize="$1" fontWeight="800" width={142}>STATUS</Text><Text color="$colorMuted" fontSize="$1" fontWeight="800" width={156}>WAKTU</Text><Text color="$colorMuted" fontSize="$1" fontWeight="800" width={190}>DETAIL</Text></XStack>;
 }
 
 function LocationFilter({ value, onChange }: { value: string; onChange: (value: string) => void }) {
@@ -214,7 +258,7 @@ function Filters({ filters, onChange, onReset, onExport }: {
   onExport: () => void;
 }) {
   return (
-    <Card borderWidth={1} borderColor="$borderColor" backgroundColor="$surface" borderRadius="$3" padding="$4" gap="$4">
+    <Card borderWidth={1} borderColor="$borderColor" backgroundColor="$surface" borderRadius="$4" padding="$4" gap="$4">
       <XStack gap="$4" flexWrap="wrap">
         <YStack flex={1} minWidth={180} gap="$2">
           <Label htmlFor="history-from" color="$color" fontSize="$2" fontWeight="700">Dari tanggal</Label>
@@ -275,6 +319,16 @@ export default function HistoryRoute() {
   const loader = useCallback((signal: AbortSignal) => apiClient.fetchHistory(filters, signal), [filters]);
   const { data, loading, error, stale, retry } = usePollingResource<HistoryResponse>(loader);
   const displayFilters = useMemo(() => ({ ...filters, fromDate, toDate }), [filters, fromDate, toDate]);
+  const summary = useMemo(() => {
+    if (!data) return null;
+    const items = data.items;
+    return {
+      total: items.length,
+      normal: items.filter((item) => effectiveHistoryStatus(item) === 'Normal').length,
+      pickup: items.filter((item) => effectiveHistoryStatus(item) === 'Angkat').length,
+      safety: items.filter((item) => effectiveHistoryStatus(item) === 'Safety Alert').length,
+    };
+  }, [data]);
 
   const handleNavigate = useCallback((path: string) => router.push(path as never), [router]);
   const handleReset = useCallback(() => {
@@ -296,7 +350,10 @@ export default function HistoryRoute() {
       activePath="/history"
       onNavigate={handleNavigate}
     >
-      <YStack gap="$5" paddingBottom="$6">
+      <YStack gap="$6" paddingBottom="$6">
+        <Card borderWidth={1} borderColor="$primarySoft" backgroundColor="$surface" borderRadius="$5" padding="$5" overflow="hidden"><XStack alignItems="center" gap="$5" flexWrap="wrap"><YStack flex={1} minWidth={250} gap="$2"><Text color="$primary" fontSize="$2" fontWeight="800">AUDIT DAN LAPORAN</Text><Text color="$color" fontSize="$7" lineHeight="$7" fontWeight="800" letterSpacing={-0.8}>Riwayat pembacaan yang mudah ditindaklanjuti.</Text><Text color="$colorMuted" fontSize="$3">Gunakan filter untuk menelusuri data sensor dan keputusan operasional dari semua lokasi.</Text></YStack><RNImage source={historyArtwork} accessibilityLabel="Ilustrasi analisis riwayat" resizeMode="contain" style={{ width: 210, height: 112, maxWidth: '100%' }} /></XStack></Card>
+        <XStack gap="$3" flexWrap="wrap"><YStack width="calc(50% - 6px)" $wide={{ width: 'calc(25% - 9px)' }}><KpiCard label="Total pembacaan" value={summary ? summary.total : '—'} icon={Activity} tone="blue" /></YStack><YStack width="calc(50% - 6px)" $wide={{ width: 'calc(25% - 9px)' }}><KpiCard label="Normal" value={summary ? summary.normal : '—'} icon={Box} tone="green" /></YStack><YStack width="calc(50% - 6px)" $wide={{ width: 'calc(25% - 9px)' }}><KpiCard label="Perlu diangkat" value={summary ? summary.pickup : '—'} icon={Truck} tone="orange" /></YStack><YStack width="calc(50% - 6px)" $wide={{ width: 'calc(25% - 9px)' }}><KpiCard label="Safety Alert" value={summary ? summary.safety : '—'} icon={ShieldAlert} tone="red" /></YStack></XStack>
+        {data && data.items.length ? <HistoryTrend items={data.items} /> : null}
         <Filters filters={displayFilters} onChange={(patch) => {
           if (patch.fromDate !== undefined) setFromDate(patch.fromDate);
           if (patch.toDate !== undefined) setToDate(patch.toDate);
@@ -318,7 +375,7 @@ export default function HistoryRoute() {
                   <Text color="$colorMuted" fontSize="$2">Urut terbaru berdasarkan waktu perekaman.</Text>
                 </YStack>
               </XStack>
-              {data.items.map((item) => <HistoryRow key={`${item.reading_id}-${item.slot_id}`} item={item} compact={!media.wide} />)}
+              {media.wide ? <Card borderWidth={1} borderColor="$borderColor" backgroundColor="$surface" borderRadius="$4" overflow="hidden"><HistoryTableHeader />{data.items.map((item) => <HistoryRow key={`${item.reading_id}-${item.slot_id}`} item={item} compact={false} />)}</Card> : data.items.map((item) => <HistoryRow key={`${item.reading_id}-${item.slot_id}`} item={item} compact />)}
             </YStack>
           ) : (
             <EmptyState title={HISTORY_EMPTY_COPY.title} description={HISTORY_EMPTY_COPY.description} />

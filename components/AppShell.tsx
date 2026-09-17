@@ -24,21 +24,21 @@ export function AppShell({
   onNavigate,
 }: AppShellProps) {
   const media = useMedia();
-  const isWide = Boolean(media.wide);
+  const hasDesktopShell = Boolean(media.tablet);
 
   return (
     <XStack flex={1} minHeight="100vh" backgroundColor="$background">
-      {isWide ? (
+      {hasDesktopShell ? (
         <DesktopSidebar items={navigationItems} activePath={activePath} onNavigate={onNavigate} />
       ) : null}
       <YStack flex={1} minWidth={0}>
-        <YStack width="100%" maxWidth={1280} alignSelf="center" paddingHorizontal="$4" paddingBottom={isWide ? '$10' : 96}>
+        <YStack width="100%" maxWidth={1320} alignSelf="center" paddingHorizontal={hasDesktopShell ? '$7' : '$4'} paddingBottom={hasDesktopShell ? '$10' : 104}>
           <Header title={title} subtitle={subtitle} />
           <SimulationBanner />
           {children}
         </YStack>
       </YStack>
-      {!isWide ? (
+      {!hasDesktopShell ? (
         <MobileBottomNav items={navigationItems} activePath={activePath} onNavigate={onNavigate} />
       ) : null}
     </XStack>

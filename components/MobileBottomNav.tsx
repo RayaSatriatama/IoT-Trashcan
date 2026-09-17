@@ -1,7 +1,15 @@
 import { Button, XStack } from 'tamagui';
+import type { LucideIcon } from 'lucide-react-native';
 
 import type { NavigationItem } from './DesktopSidebar';
 import { defaultNavigationItems } from './DesktopSidebar';
+import { Clock3, House, MapPin } from '../lib/ui/icons';
+
+const navigationIcons: Record<string, LucideIcon> = {
+  '/': House,
+  '/locations': MapPin,
+  '/history': Clock3,
+};
 
 export interface MobileBottomNavProps {
   items?: NavigationItem[];
@@ -23,7 +31,7 @@ export function MobileBottomNav({
       zIndex="$3"
       paddingHorizontal="$2"
       paddingTop="$2"
-      paddingBottom="$4"
+      paddingBottom="$3"
       gap="$2"
       backgroundColor="$surface"
       borderTopWidth={1}
@@ -33,20 +41,26 @@ export function MobileBottomNav({
     >
       {items.map((item) => {
         const active = activePath === item.path;
+        const Icon = navigationIcons[item.path] ?? House;
+        const displayLabel = item.label === 'Ringkasan' ? 'Beranda' : item.label;
         return (
           <Button
             key={item.path}
             flex={1}
-            minHeight={48}
+            minHeight={54}
             paddingHorizontal="$2"
             backgroundColor={active ? '$primarySoft' : 'transparent'}
+            borderRadius="$3"
             color={active ? '$primary' : '$colorMuted'}
             fontWeight={active ? '700' : '500'}
             onPress={() => onNavigate?.(item.path)}
-            aria-label={`Buka ${item.label}`}
+            aria-label={`Buka ${displayLabel}`}
             type="button"
           >
-            {item.label}
+            <XStack alignItems="center" justifyContent="center" gap="$2">
+              <Icon size={17} color={active ? '#0A9B62' : '#5D7397'} strokeWidth={active ? 2.4 : 2} aria-hidden={true} />
+              {displayLabel}
+            </XStack>
           </Button>
         );
       })}

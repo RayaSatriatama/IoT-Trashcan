@@ -1,6 +1,8 @@
 export function formatNullableMetric(value: number | null | undefined, suffix = ''): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return 'Belum tersedia';
-  return `${value}${suffix}`;
+  const nearestInteger = Math.round(value);
+  const displayValue = Math.abs(value - nearestInteger) < 1e-9 ? nearestInteger : value;
+  return `${displayValue}${suffix}`;
 }
 
 export function formatTimestamp(value: string | null | undefined): string {

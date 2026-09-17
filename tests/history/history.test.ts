@@ -12,6 +12,7 @@ import {
   buildHistoryExportHref,
   dateInputToUtcRange,
   effectiveHistoryStatus,
+  groupHistoryByDay,
   HISTORY_STATUS_FILTERS,
   serializeHistoryFilters,
 } from '../../app/history';
@@ -53,5 +54,17 @@ describe('history filter contracts', () => {
 
   it('does not expose Offline until historical offline semantics exist', () => {
     expect(HISTORY_STATUS_FILTERS.some((filter) => filter.value === 'Offline')).toBe(false);
+  });
+
+  it('groups daily history into stacked trend status counts', () => {
+    const items = [
+      { recorded_at: '2026-09-02T10:00:00Z', fis_status: 'Normal', safety_state: 'Clear' },
+      { recorded_at: '2026-09-02T11:00:00Z', fis_status: 'Angkat', safety_state: 'Clear' },
+      { recorded_at: '2026-09-03T11:00:00Z', fis_status: 'Waspada', safety_state: 'Safety Alert' },
+    ] as never[];
+    expect(groupHistoryByDay(items)).toEqual([
+      { day: '2026-09-02', normal: 1, pickup: 1, safety: 0 },
+      { day: '2026-09-03', normal: 0, pickup: 0, safety: 1 },
+    ]);
   });
 });

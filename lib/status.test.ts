@@ -24,9 +24,11 @@ describe('status presentation', () => {
     expect(isCanonicalStatus('Unknown')).toBe(false);
   });
 
-  it('keeps unavailable metrics explicit instead of converting null to zero', () => {
+  it('keeps unavailable metrics explicit and removes only floating-point integer artifacts', () => {
     expect(formatNullableMetric(null)).toBe('Belum tersedia');
     expect(formatNullableMetric(undefined, '%')).toBe('Belum tersedia');
+    expect(formatNullableMetric(3.0000000001)).toBe('3');
+    expect(formatNullableMetric(3.25, '%')).toBe('3.25%');
     expect(formatNullableMetric(42.5, '%')).toBe('42.5%');
   });
 });
