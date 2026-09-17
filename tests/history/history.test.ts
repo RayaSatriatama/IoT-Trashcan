@@ -12,6 +12,7 @@ import {
   buildHistoryExportHref,
   dateInputToUtcRange,
   effectiveHistoryStatus,
+  HISTORY_STATUS_FILTERS,
   serializeHistoryFilters,
 } from '../../app/history';
 
@@ -48,5 +49,9 @@ describe('history filter contracts', () => {
     expect(effectiveHistoryStatus({ fis_status: 'Angkat', safety_state: 'Safety Alert' })).toBe('Safety Alert');
     expect(effectiveHistoryStatus({ fis_status: 'Waspada', safety_state: 'Clear' })).toBe('Waspada');
     expect(effectiveHistoryStatus({ fis_status: null, safety_state: null })).toBeNull();
+  });
+
+  it('does not expose Offline until historical offline semantics exist', () => {
+    expect(HISTORY_STATUS_FILTERS.some((filter) => filter.value === 'Offline')).toBe(false);
   });
 });
