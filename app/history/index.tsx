@@ -1,7 +1,9 @@
 import { useRouter } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
+import { Image as RNImage } from 'react-native';
 import { Button, Card, Input, Label, Select, Text, XStack, YStack, useMedia } from 'tamagui';
 
+import historyArtwork from '../../assets/history_report_analytics_illustration.png';
 import { AppShell } from '../../components/AppShell';
 import { EmptyState } from '../../components/EmptyState';
 import { ErrorState } from '../../components/ErrorState';
@@ -74,8 +76,8 @@ function StaleNotice({ onRetry }: { onRetry: () => void }) {
     <Card
       borderWidth={1}
       borderColor="$statusWaspada"
-      backgroundColor="$surface"
-      borderRadius="$3"
+      backgroundColor="$statusWaspadaSoft"
+      borderRadius="$4"
       paddingHorizontal="$4"
       paddingVertical="$3"
       role="status"
@@ -156,7 +158,7 @@ function HistoryRow({ item, compact }: { item: HistoryItem; compact: boolean }) 
       borderWidth={1}
       borderColor="$borderColor"
       backgroundColor="$surface"
-      borderRadius="$3"
+      borderRadius="$4"
       padding="$4"
       gap="$4"
       role="group"
@@ -214,7 +216,7 @@ function Filters({ filters, onChange, onReset, onExport }: {
   onExport: () => void;
 }) {
   return (
-    <Card borderWidth={1} borderColor="$borderColor" backgroundColor="$surface" borderRadius="$3" padding="$4" gap="$4">
+    <Card borderWidth={1} borderColor="$borderColor" backgroundColor="$surface" borderRadius="$4" padding="$4" gap="$4">
       <XStack gap="$4" flexWrap="wrap">
         <YStack flex={1} minWidth={180} gap="$2">
           <Label htmlFor="history-from" color="$color" fontSize="$2" fontWeight="700">Dari tanggal</Label>
@@ -275,6 +277,15 @@ export default function HistoryRoute() {
   const loader = useCallback((signal: AbortSignal) => apiClient.fetchHistory(filters, signal), [filters]);
   const { data, loading, error, stale, retry } = usePollingResource<HistoryResponse>(loader);
   const displayFilters = useMemo(() => ({ ...filters, fromDate, toDate }), [filters, fromDate, toDate]);
+  const summary = useMemo(() => {
+    const items = data?.items ?? [];
+    return {
+      total: items.length,
+      normal: items.filter((item) => effectiveHistoryStatus(item) === 'Normal').length,
+      pickup: items.filter((item) => effectiveHistoryStatus(item) === 'Angkat').length,
+      safety: items.filter((item) => effectiveHistoryStatus(item) === 'Safety Alert').length,
+    };
+  }, [data]);
 
   const handleNavigate = useCallback((path: string) => router.push(path as never), [router]);
   const handleReset = useCallback(() => {
@@ -296,7 +307,9 @@ export default function HistoryRoute() {
       activePath="/history"
       onNavigate={handleNavigate}
     >
-      <YStack gap="$5" paddingBottom="$6">
+      <YStack gap="$6" paddingBottom="$6">
+        <Card borderWidth={1} borderColor="$primarySoft" backgroundColor="$surface" borderRadius="$5" padding="$6" overflow="hidden"><XStack alignItems="center" gap="$5" flexWrap="wrap"><YStack flex={1} minWidth={250} gap="$3"><Text color="$primary" fontSize="$2" fontWeight="800">AUDIT DAN LAPORAN</Text><Text color="$color" fontSize="$7" lineHeight="$7" fontWeight="800" letterSpacing={-0.8}>Riwayat pembacaan yang mudah ditindaklanjuti.</Text><Text color="$colorMuted" fontSize="$3">Gunakan filter untuk menelusuri data sensor dan keputusan operasional dari semua lokasi.</Text></YStack><RNImage source={historyArtwork} accessibilityLabel="Ilustrasi analisis riwayat" resizeMode="contain" style={{ width: 240, height: 140, maxWidth: '100%' }} /></XStack></Card>
+        <XStack gap="$3" flexWrap="wrap"><Card width="calc(50% - 6px)" $wide={{ width: 'calc(25% - 9px)' }} borderWidth={1} borderColor="$borderColor" backgroundColor="$blueSoft" borderRadius="$4" padding="$4"><Text color="$blue" fontSize="$7" fontWeight="800">{summary.total}</Text><Text color="$colorMuted" fontSize="$2">Total pembacaan</Text></Card><Card width="calc(50% - 6px)" $wide={{ width: 'calc(25% - 9px)' }} borderWidth={1} borderColor="$borderColor" backgroundColor="$primarySoft" borderRadius="$4" padding="$4"><Text color="$primary" fontSize="$7" fontWeight="800">{summary.normal}</Text><Text color="$colorMuted" fontSize="$2">Normal</Text></Card><Card width="calc(50% - 6px)" $wide={{ width: 'calc(25% - 9px)' }} borderWidth={1} borderColor="$borderColor" backgroundColor="$orangeSoft" borderRadius="$4" padding="$4"><Text color="$statusAngkat" fontSize="$7" fontWeight="800">{summary.pickup}</Text><Text color="$colorMuted" fontSize="$2">Perlu diangkat</Text></Card><Card width="calc(50% - 6px)" $wide={{ width: 'calc(25% - 9px)' }} borderWidth={1} borderColor="$borderColor" backgroundColor="$redSoft" borderRadius="$4" padding="$4"><Text color="$statusSafetyAlert" fontSize="$7" fontWeight="800">{summary.safety}</Text><Text color="$colorMuted" fontSize="$2">Safety Alert</Text></Card></XStack>
         <Filters filters={displayFilters} onChange={(patch) => {
           if (patch.fromDate !== undefined) setFromDate(patch.fromDate);
           if (patch.toDate !== undefined) setToDate(patch.toDate);

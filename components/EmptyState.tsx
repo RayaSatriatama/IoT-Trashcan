@@ -12,8 +12,8 @@ export function EmptyState({ title, description, action }: EmptyStateProps) {
     <Card
       borderWidth={1}
       borderColor="$borderColor"
-      backgroundColor="$surface"
-      borderRadius="$3"
+      borderRadius="$4"
+      backgroundColor="$surfaceMuted"
       padding="$6"
       gap="$2"
       alignItems="center"

@@ -32,7 +32,7 @@ export function AppShell({
         <DesktopSidebar items={navigationItems} activePath={activePath} onNavigate={onNavigate} />
       ) : null}
       <YStack flex={1} minWidth={0}>
-        <YStack width="100%" maxWidth={1280} alignSelf="center" paddingHorizontal="$4" paddingBottom={isWide ? '$10' : 96}>
+        <YStack width="100%" maxWidth={1320} alignSelf="center" paddingHorizontal={isWide ? '$7' : '$4'} paddingBottom={isWide ? '$10' : 104}>
           <Header title={title} subtitle={subtitle} />
           <SimulationBanner />
           {children}

@@ -15,8 +15,8 @@ export function ErrorState({
     <Card
       borderWidth={1}
       borderColor="$statusSafetyAlert"
-      backgroundColor="$surface"
-      borderRadius="$3"
+      backgroundColor="$redSoft"
+      borderRadius="$4"
       padding="$5"
       gap="$3"
       role="alert"

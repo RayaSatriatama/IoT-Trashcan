@@ -28,8 +28,10 @@ export function DesktopSidebar({
     <YStack
       width={248}
       minHeight="100%"
-      padding="$5"
-      gap="$5"
+      paddingHorizontal="$5"
+      paddingTop="$6"
+      paddingBottom="$5"
+      gap="$6"
       borderRightWidth={1}
       borderRightColor="$borderColor"
       backgroundColor="$surface"
@@ -39,14 +41,14 @@ export function DesktopSidebar({
           source={logoArtwork}
           accessibilityLabel="Logo SIGAP"
           resizeMode="contain"
-          style={{ width: 36, height: 36 }}
+          style={{ width: 44, height: 44 }}
         />
         <YStack gap="$1">
-          <Text fontSize="$4" color="$color" fontWeight="700">
+          <Text fontSize="$5" color="$color" fontWeight="800" letterSpacing={-0.5}>
             SIGAP
           </Text>
           <Text fontSize="$1" color="$colorMuted">
-            Monitoring
+            Smart Bin Monitoring
           </Text>
         </YStack>
       </XStack>
@@ -57,10 +59,11 @@ export function DesktopSidebar({
           return (
             <Button
               key={item.path}
-              minHeight={48}
+              minHeight={52}
               width="100%"
               justifyContent="flex-start"
-              paddingHorizontal="$3"
+              paddingHorizontal="$4"
+              borderRadius="$3"
               backgroundColor={active ? '$primarySoft' : 'transparent'}
               color={active ? '$primary' : '$colorMuted'}
               fontWeight={active ? '700' : '500'}
@@ -68,10 +71,17 @@ export function DesktopSidebar({
               aria-label={`Buka ${item.label}`}
               type="button"
             >
-              {item.label}
+              <Text color={active ? '$primary' : '$colorMuted'} fontSize="$2" fontWeight={active ? '800' : '600'}>
+                {item.label === 'Ringkasan' ? 'Beranda' : item.label}
+              </Text>
             </Button>
           );
         })}
+      </YStack>
+      <YStack flex={1} justifyContent="flex-end" gap="$1">
+        <Text color="$primary" fontSize="$1" fontWeight="800">SIGAP</Text>
+        <Text color="$colorMuted" fontSize="$1">Smart Bin Monitoring</Text>
+        <Text color="$colorMuted" fontSize="$1">v1.0.0</Text>
       </YStack>
     </YStack>
   );

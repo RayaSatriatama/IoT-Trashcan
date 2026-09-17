@@ -1,5 +1,7 @@
 import type { DeviceDTO } from '../lib/api/types';
 import { formatTimestamp } from '../lib/format';
+import organicArtwork from '../assets/bin_organic_single_faithful.png';
+import { Image as RNImage } from 'react-native';
 import { Card, Text, XStack, YStack } from 'tamagui';
 
 import { MetricBar } from './MetricBar';
@@ -29,7 +31,7 @@ export function DeviceCard({ device, onPress }: DeviceCardProps) {
       borderWidth={1}
       borderColor="$borderColor"
       backgroundColor="$surface"
-      borderRadius="$3"
+      borderRadius="$4"
       padding="$4"
       gap="$4"
       pressStyle={onPress ? { opacity: 0.82 } : undefined}
@@ -39,6 +41,7 @@ export function DeviceCard({ device, onPress }: DeviceCardProps) {
       cursor={onPress ? 'pointer' : undefined}
     >
       <XStack justifyContent="space-between" alignItems="flex-start" gap="$3">
+        <RNImage source={organicArtwork} accessibilityLabel="Ilustrasi device" resizeMode="contain" style={{ width: 48, height: 48 }} />
         <YStack flex={1} gap="$1">
           <Text fontSize="$4" color="$color" fontWeight="700">
             {device.device_code}
@@ -49,7 +52,7 @@ export function DeviceCard({ device, onPress }: DeviceCardProps) {
         </YStack>
         <StatusBadge status={device.status} compact />
       </XStack>
-      <XStack flexWrap="wrap" gap="$2" alignItems="center">
+      <XStack flexWrap="wrap" gap="$2" alignItems="center" paddingVertical="$1">
         <Text fontSize="$2" color="$colorMuted">
           Koneksi: {onlineLabel}
         </Text>
@@ -57,7 +60,7 @@ export function DeviceCard({ device, onPress }: DeviceCardProps) {
           Terakhir terlihat: {lastSeen}
         </Text>
       </XStack>
-      <YStack gap="$3">
+      <YStack gap="$3" borderTopWidth={1} borderTopColor="$borderColor" paddingTop="$3">
         {device.slots.length > 0 ? (
           device.slots.map((slot) => (
             <MetricBar key={slot.stream} label={getStreamLabel(slot.stream)} value={slot.fill} />

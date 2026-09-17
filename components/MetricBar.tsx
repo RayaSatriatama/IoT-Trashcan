@@ -35,7 +35,7 @@ export function MetricBar({
         </Text>
       </XStack>
       <YStack
-        height={8}
+        height={10}
         borderRadius="$6"
         backgroundColor="$surfaceMuted"
         overflow="hidden"
@@ -50,7 +50,7 @@ export function MetricBar({
             height="100%"
             width={`${percentage}%`}
             minWidth={percentage > 0 ? 2 : 0}
-            backgroundColor="$primary"
+            backgroundColor={validValue && value >= 80 ? '$statusAngkat' : validValue && value >= 50 ? '$statusWaspada' : '$primary'}
             borderRadius="$6"
           />
         ) : null}

@@ -27,8 +27,8 @@ export function SimulationBanner() {
     <Card
       borderWidth={1}
       borderColor="$statusWaspada"
-      backgroundColor="$surface"
-      borderRadius="$3"
+      backgroundColor="$orangeSoft"
+      borderRadius="$4"
       paddingHorizontal="$4"
       paddingVertical="$3"
       marginBottom="$4"

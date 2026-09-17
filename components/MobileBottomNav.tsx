@@ -23,7 +23,7 @@ export function MobileBottomNav({
       zIndex="$3"
       paddingHorizontal="$2"
       paddingTop="$2"
-      paddingBottom="$4"
+      paddingBottom="$3"
       gap="$2"
       backgroundColor="$surface"
       borderTopWidth={1}
@@ -37,16 +37,17 @@ export function MobileBottomNav({
           <Button
             key={item.path}
             flex={1}
-            minHeight={48}
+            minHeight={54}
             paddingHorizontal="$2"
             backgroundColor={active ? '$primarySoft' : 'transparent'}
+            borderRadius="$3"
             color={active ? '$primary' : '$colorMuted'}
             fontWeight={active ? '700' : '500'}
             onPress={() => onNavigate?.(item.path)}
             aria-label={`Buka ${item.label}`}
             type="button"
           >
-            {item.label}
+            {item.label === 'Ringkasan' ? 'Beranda' : item.label}
           </Button>
         );
       })}

@@ -19,15 +19,16 @@ export function getStatusBadgePresentation(status: CanonicalStatus | null | unde
 export function StatusBadge({ status, compact = false }: StatusBadgeProps) {
   const presentation = getStatusBadgePresentation(status);
   const label = `Status: ${presentation.label}`;
+  const backgroundToken = status ? `$${presentation.token}Soft` : '$surfaceMuted';
 
   return (
     <XStack
       alignItems="center"
       gap="$2"
       paddingHorizontal={compact ? '$2' : '$3'}
-      paddingVertical="$1"
+      paddingVertical={compact ? '$1' : '$2'}
       borderRadius="$6"
-      backgroundColor="$surfaceMuted"
+      backgroundColor={backgroundToken}
       role="status"
       aria-label={label}
     >
@@ -38,7 +39,7 @@ export function StatusBadge({ status, compact = false }: StatusBadgeProps) {
         backgroundColor={`$${presentation.token}`}
         aria-hidden={true}
       />
-      <Text color="$color" fontSize="$2" fontWeight="600">
+      <Text color={`$${presentation.token}`} fontSize="$2" fontWeight="800">
         {presentation.label}
       </Text>
     </XStack>

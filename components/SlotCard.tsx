@@ -26,9 +26,10 @@ export function SlotCard({ slot }: SlotCardProps) {
       borderWidth={1}
       borderColor="$borderColor"
       backgroundColor="$surface"
-      borderRadius="$3"
+      borderRadius="$4"
       padding="$4"
       gap="$4"
+      minHeight={360}
       role="group"
       aria-label={`Slot ${getStreamLabel(slot.stream)}`}
     >
@@ -39,10 +40,10 @@ export function SlotCard({ slot }: SlotCardProps) {
               source={streamArtwork[slot.stream]}
               accessibilityLabel={`Ilustrasi slot ${getStreamLabel(slot.stream)}`}
               resizeMode="contain"
-              style={{ width: 56, height: 56 }}
+              style={{ width: 72, height: 72 }}
             />
           ) : null}
-          <Text fontSize="$4" color="$color" fontWeight="700">
+          <Text fontSize="$5" color="$color" fontWeight="800">
             {getStreamLabel(slot.stream)}
           </Text>
         </XStack>
@@ -52,7 +53,7 @@ export function SlotCard({ slot }: SlotCardProps) {
         <MetricBar label="Keterisian" value={slot.fill} />
         <MetricBar label="Utilisasi berat" value={slot.weight_utilization} />
       </YStack>
-      <YStack gap="$2">
+      <YStack gap="$2" borderTopWidth={1} borderTopColor="$borderColor" paddingTop="$3">
         <MetricLine label="Berat" value={formatNullableMetric(slot.weight, ' kg')} />
         <MetricLine label="OGI" value={formatNullableMetric(slot.ogi)} />
         <MetricLine label="Akumulasi" value={formatNullableMetric(slot.accumulation_hours, ' jam')} />

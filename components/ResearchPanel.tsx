@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { Button, Card, Separator, Text, XStack, YStack } from 'tamagui';
 
 import type { ResearchResponse, ResearchSlotDTO } from '../lib/api/types';
+import { formatNullableMetric } from '../lib/format';
 import { EmptyState } from './EmptyState';
 import { ErrorState } from './ErrorState';
 import { LoadingState } from './LoadingState';
@@ -36,6 +37,7 @@ export function formatResearchValue(
 ): string {
   if (value === null || value === undefined || value === '') return RESEARCH_UNAVAILABLE_COPY;
   if (typeof value === 'number' && !Number.isFinite(value)) return RESEARCH_UNAVAILABLE_COPY;
+  if (typeof value === 'number') return formatNullableMetric(value, unit ? ` ${unit}` : '');
   return unit ? `${value} ${unit}` : String(value);
 }
 
