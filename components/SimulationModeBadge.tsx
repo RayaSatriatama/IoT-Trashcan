@@ -21,8 +21,8 @@ export function SimulationModeBadge({ description = 'Data sintetis' }: Simulatio
     >
       <XStack alignItems="center" gap="$2">
         <FlaskConical size={15} color="#C76A00" strokeWidth={2.3} aria-hidden={true} />
-        <Text color="#B86200" fontSize="$1" fontWeight="800" letterSpacing={0.7}>MODE SIMULASI</Text>
-        <Text color="$colorMuted" fontSize="$1">· {description}</Text>
+        <Text color="#B86200" fontSize={12} lineHeight={18} fontWeight="800" letterSpacing={0.5}>MODE SIMULASI</Text>
+        <Text color="$colorMuted" fontSize={12} lineHeight={18}>· {description}</Text>
       </XStack>
     </Card>
   );
