@@ -7,4 +7,8 @@ export const textStyles = {
   bodySecondary: { fontFamily: '$body' as const, fontSize: 14, lineHeight: 22, fontWeight: '400' as const },
   caption: { fontFamily: '$body' as const, fontSize: 13, lineHeight: 20, fontWeight: '500' as const },
   overline: { fontFamily: '$body' as const, fontSize: 13, lineHeight: 20, fontWeight: '800' as const },
+  metricHero: { fontFamily: '$body' as const, fontSize: 34, lineHeight: 38, fontWeight: '800' as const },
+  metricValue: { fontFamily: '$body' as const, fontSize: 17, lineHeight: 24, fontWeight: '700' as const },
+  metricLabel: { fontFamily: '$body' as const, fontSize: 13, lineHeight: 18, fontWeight: '500' as const },
+  metadata: { fontFamily: '$body' as const, fontSize: 14, lineHeight: 20, fontWeight: '500' as const },
 } as const;

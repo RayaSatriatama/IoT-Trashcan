@@ -14,8 +14,12 @@ export {
   MapPin,
   Menu,
   Search,
+  Scale,
   ShieldAlert,
+  ShieldCheck,
   SlidersHorizontal,
+  Thermometer,
   Truck,
   TriangleAlert,
+  Wind,
 } from 'lucide-react-native';
