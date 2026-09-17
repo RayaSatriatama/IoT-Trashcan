@@ -37,6 +37,10 @@ func TestReadAPIHistorySupportsCombinedFiltersAndNulls(t *testing.T) {
 			LocationID *string `json:"location_id"`
 			Status     *string `json:"status"`
 		} `json:"filters"`
+		Page struct {
+			Limit   int  `json:"limit"`
+			HasMore bool `json:"has_more"`
+		} `json:"page"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
@@ -53,6 +57,9 @@ func TestReadAPIHistorySupportsCombinedFiltersAndNulls(t *testing.T) {
 	if body.Filters.LocationID == nil || *body.Filters.LocationID != "location-a" || body.Filters.Status == nil || *body.Filters.Status != "Safety Alert" {
 		t.Fatalf("filter echo=%+v", body.Filters)
 	}
+	if body.Page.Limit != 50 || body.Page.HasMore {
+		t.Fatalf("page=%+v", body.Page)
+	}
 }
 
 func TestReadAPIHistoryRejectsInvalidFilters(t *testing.T) {
@@ -63,6 +70,11 @@ func TestReadAPIHistoryRejectsInvalidFilters(t *testing.T) {
 		"/api/history?from=2026-09-18T00:00:00Z&to=2026-09-17T00:00:00Z",
 		"/api/history?status=unknown",
 		"/api/history?status=Offline",
+		"/api/history?limit=0",
+		"/api/history?limit=201",
+		"/api/history?before=2026-09-17T09:59:41Z",
+		"/api/history?before=not-a-date&before_id=2",
+		"/api/history?before=2026-09-17T09:59:41Z&before_id=0",
 	} {
 		request := httptest.NewRequest(http.MethodGet, path, nil)
 		response := httptest.NewRecorder()
@@ -73,10 +85,69 @@ func TestReadAPIHistoryRejectsInvalidFilters(t *testing.T) {
 	}
 }
 
+func TestReadAPIHistoryUsesStableCursorPagination(t *testing.T) {
+	api, db := readAPIFixture(t)
+	defer db.Close()
+	firstRequest := httptest.NewRequest(http.MethodGet, "/api/history?limit=2", nil)
+	firstResponse := httptest.NewRecorder()
+
+	api.History(firstResponse, firstRequest)
+
+	if firstResponse.Code != http.StatusOK {
+		t.Fatalf("first status=%d body=%s", firstResponse.Code, firstResponse.Body.String())
+	}
+	var first struct {
+		Items []struct {
+			ReadingID int64  `json:"reading_id"`
+			Recorded  string `json:"recorded_at"`
+		} `json:"items"`
+		Page struct {
+			Limit   int  `json:"limit"`
+			HasMore bool `json:"has_more"`
+			Next    *struct {
+				Recorded string `json:"recorded_at"`
+				ID       int64  `json:"reading_id"`
+			} `json:"next"`
+		} `json:"page"`
+	}
+	if err := json.Unmarshal(firstResponse.Body.Bytes(), &first); err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Items) != 2 || first.Items[0].ReadingID != 3 || first.Items[1].ReadingID != 2 {
+		t.Fatalf("first items=%+v", first.Items)
+	}
+	if first.Page.Limit != 2 || !first.Page.HasMore || first.Page.Next == nil || first.Page.Next.ID != 2 {
+		t.Fatalf("first page=%+v", first.Page)
+	}
+
+	secondRequest := httptest.NewRequest(http.MethodGet, "/api/history?limit=2&before=2026-09-17T09%3A59%3A41Z&before_id=2", nil)
+	secondResponse := httptest.NewRecorder()
+	api.History(secondResponse, secondRequest)
+	if secondResponse.Code != http.StatusOK {
+		t.Fatalf("second status=%d body=%s", secondResponse.Code, secondResponse.Body.String())
+	}
+	var second struct {
+		Items []struct {
+			ReadingID int64 `json:"reading_id"`
+		} `json:"items"`
+		Page struct {
+			HasMore bool `json:"has_more"`
+		} `json:"page"`
+	}
+	if err := json.Unmarshal(secondResponse.Body.Bytes(), &second); err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Items) != 1 || second.Items[0].ReadingID != 1 || second.Page.HasMore {
+		t.Fatalf("second page items=%+v page=%+v", second.Items, second.Page)
+	}
+}
+
 func TestReadAPIExportCSVUsesHistoryProjectionAndFilters(t *testing.T) {
 	api, db := readAPIFixture(t)
 	defer db.Close()
-	request := httptest.NewRequest(http.MethodGet, "/api/export.csv?device_id=device-a&status=Angkat", nil)
+	// The B3 fixture has underlying FIS=Angkat but an effective Safety Alert.
+	// Export must use the same effective-status filter semantics as History.
+	request := httptest.NewRequest(http.MethodGet, "/api/export.csv?device_id=device-a&status=Safety%20Alert", nil)
 	response := httptest.NewRecorder()
 
 	api.ExportCSV(response, request)
