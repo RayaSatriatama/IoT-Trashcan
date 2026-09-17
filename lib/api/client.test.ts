@@ -79,6 +79,7 @@ describe('monitoring API client', () => {
       return jsonResponse({
         items: [],
         filters: { from: null, to: null, location_id: null, device_id: null, status: null },
+        page: { limit: 50, has_more: false, next: null },
       });
     });
 
@@ -93,6 +94,28 @@ describe('monitoring API client', () => {
     expect(requestUrl).toBe(
       '/api/history?from=2026-09-01T00%3A00%3A00Z&to=2026-09-18T00%3A00%3A00Z&location_id=loc%2F1&device_id=SIGAP+01&status=Safety+Alert',
     );
+  });
+
+  it('serializes bounded history cursor pagination separately from export filters', async () => {
+    let requestUrl = '';
+    const client = createApiClient(async (input) => {
+      requestUrl = String(input);
+      return jsonResponse({
+        items: [],
+        filters: { from: null, to: null, location_id: null, device_id: null, status: null },
+        page: { limit: 30, has_more: false, next: null },
+      });
+    });
+
+    await client.fetchHistory(
+      { location_id: 'loc-1' },
+      { limit: 30, before: { recorded_at: '2026-09-17T10:00:00Z', reading_id: 42 } },
+    );
+
+    expect(requestUrl).toBe(
+      '/api/history?location_id=loc-1&limit=30&before=2026-09-17T10%3A00%3A00Z&before_id=42',
+    );
+    expect(buildExportURL({ location_id: 'loc-1' })).toBe('/api/export.csv?location_id=loc-1');
   });
 
   it('builds an export URL from the same history filter contract', () => {
