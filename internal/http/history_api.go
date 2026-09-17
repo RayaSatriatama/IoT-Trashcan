@@ -8,7 +8,7 @@ import (
 )
 
 type historyResponse struct {
-	Items   []history.Record   `json:"items"`
+	Items   []history.Record    `json:"items"`
 	Filters history.FilterState `json:"filters"`
 }
 
