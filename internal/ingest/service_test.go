@@ -31,6 +31,9 @@ func TestIngestPersistsThreeReadingsAndHeartbeat(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM readings`).Scan(&count); err != nil || count != 3 {
 		t.Fatalf("reading count = %d, err = %v", count, err)
 	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM decisions`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("decision count = %d, err = %v; unconfigured runtime must not fabricate decisions", count, err)
+	}
 	var lastSeen string
 	if err := db.QueryRow(`SELECT last_seen FROM devices WHERE device_code = 'SIGAP-01'`).Scan(&lastSeen); err != nil {
 		t.Fatal(err)
@@ -149,8 +152,9 @@ func testService(t *testing.T) (*sql.DB, *Service) {
 	}
 	schema := `
 		CREATE TABLE devices (id TEXT PRIMARY KEY, device_code TEXT NOT NULL UNIQUE, credential_digest TEXT NOT NULL, last_seen TEXT);
-		CREATE TABLE slots (id TEXT PRIMARY KEY, device_id TEXT NOT NULL, waste_stream TEXT NOT NULL, UNIQUE(device_id, waste_stream));
-		CREATE TABLE readings (id INTEGER PRIMARY KEY, slot_id TEXT NOT NULL, recorded_at TEXT NOT NULL, raw_payload TEXT NOT NULL, fill REAL, weight REAL, ogi REAL, accumulation REAL, temperature REAL, sensor_health TEXT);
+		CREATE TABLE slots (id TEXT PRIMARY KEY, device_id TEXT NOT NULL, waste_stream TEXT NOT NULL, operational_capacity REAL, UNIQUE(device_id, waste_stream));
+		CREATE TABLE readings (id INTEGER PRIMARY KEY, slot_id TEXT NOT NULL, recorded_at TEXT NOT NULL, raw_payload TEXT NOT NULL, fill REAL, weight REAL, weight_utilization REAL, ogi REAL, accumulation REAL, temperature REAL, sensor_health TEXT);
+		CREATE TABLE decisions (reading_id INTEGER PRIMARY KEY, fis_score REAL, fis_status TEXT, fis_version TEXT, dominant_reason TEXT, safety_state TEXT);
 	`
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()

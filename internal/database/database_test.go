@@ -77,11 +77,11 @@ func TestOpenMigrationIsIdempotent(t *testing.T) {
 	defer second.Close()
 
 	var count int
-	if err := second.QueryRow("SELECT COUNT(*) FROM schema_migrations WHERE name = '001_initial.sql'").Scan(&count); err != nil {
+	if err := second.QueryRow("SELECT COUNT(*) FROM schema_migrations WHERE name IN ('001_initial.sql', '002_normalized_reading.sql')").Scan(&count); err != nil {
 		t.Fatalf("read migration metadata: %v", err)
 	}
-	if count != 1 {
-		t.Fatalf("migration count = %d, want 1", count)
+	if count != 2 {
+		t.Fatalf("migration count = %d, want 2", count)
 	}
 }
 
@@ -103,7 +103,7 @@ func TestInitialSchemaMatchesSDDContract(t *testing.T) {
 		},
 		{
 			table:   "readings",
-			want:    []string{"id", "slot_id", "recorded_at", "raw_payload", "fill", "weight", "ogi", "accumulation", "temperature", "sensor_health"},
+			want:    []string{"id", "slot_id", "recorded_at", "raw_payload", "fill", "weight", "ogi", "accumulation", "temperature", "sensor_health", "weight_utilization"},
 			mustNot: []string{"fill_pct", "weight_kg", "accumulated_mass", "temperature_c"},
 		},
 		{

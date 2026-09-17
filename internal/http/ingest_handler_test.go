@@ -127,7 +127,9 @@ func TestIngestHandlerMapsServiceErrors(t *testing.T) {
 		want int
 	}{
 		{"unauthorized", ingest.ErrUnauthorized, http.StatusUnauthorized},
+		{"not-found", ingest.ErrNotFound, http.StatusNotFound},
 		{"invalid", ingest.ErrInvalidRequest, http.StatusBadRequest},
+		{"conflict", ingest.ErrConflict, http.StatusConflict},
 		{"persistence", errors.New("database unavailable"), http.StatusInternalServerError},
 	}
 
