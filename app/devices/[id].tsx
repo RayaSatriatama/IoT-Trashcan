@@ -95,7 +95,16 @@ export default function DeviceDetailRoute() {
   const [researchStarted, setResearchStarted] = useState(false);
   const researchAbort = useRef<AbortController | null>(null);
 
-  useEffect(() => () => researchAbort.current?.abort(), []);
+  useEffect(() => {
+    researchAbort.current?.abort();
+    researchAbort.current = null;
+    setResearchData(null);
+    setResearchLoading(false);
+    setResearchError(null);
+    setResearchStarted(false);
+
+    return () => researchAbort.current?.abort();
+  }, [id]);
 
   const loadResearch = useCallback(() => {
     if (!id || researchLoading) return;
@@ -195,6 +204,7 @@ export default function DeviceDetailRoute() {
             </YStack>
 
             <ResearchPanel
+              key={id ?? 'research'}
               data={researchData}
               loading={researchLoading}
               error={researchError}
