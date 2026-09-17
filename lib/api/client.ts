@@ -2,6 +2,7 @@ import type {
   CanonicalStatus,
   DeviceDetail,
   HistoryFilters,
+  HistoryPageRequest,
   HistoryResponse,
   LocationDetail,
   LocationListResponse,
@@ -61,7 +62,7 @@ export function createApiClient(fetcher: Fetcher = fetch): {
   fetchDevice(id: string, signal?: AbortSignal): Promise<DeviceDetail>;
   fetchResearch(id: string, signal?: AbortSignal): Promise<ResearchResponse>;
   fetchRuntime(signal?: AbortSignal): Promise<RuntimeResponse>;
-  fetchHistory(filters?: HistoryFilters, signal?: AbortSignal): Promise<HistoryResponse>;
+  fetchHistory(filters?: HistoryFilters, page?: HistoryPageRequest, signal?: AbortSignal): Promise<HistoryResponse>;
   buildExportURL(filters?: HistoryFilters): string;
 } {
   async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
@@ -86,9 +87,15 @@ export function createApiClient(fetcher: Fetcher = fetch): {
     fetchDevice: (id, signal) => get<DeviceDetail>(`/api/devices/${encodeId(id)}`, signal),
     fetchResearch: (id, signal) => get<ResearchResponse>(`/api/devices/${encodeId(id)}/research`, signal),
     fetchRuntime: (signal) => get<RuntimeResponse>('/api/runtime', signal),
-    fetchHistory: (filters = {}, signal) => {
-      const query = serializeHistoryFilters(filters);
-      return get<HistoryResponse>(`/api/history${query ? `?${query}` : ''}`, signal);
+    fetchHistory: (filters = {}, page = {}, signal) => {
+      const query = new URLSearchParams(serializeHistoryFilters(filters));
+      if (page.limit !== undefined) query.set('limit', String(page.limit));
+      if (page.before) {
+        query.set('before', page.before.recorded_at);
+        query.set('before_id', String(page.before.reading_id));
+      }
+      const suffix = query.toString() ? `?${query.toString()}` : '';
+      return get<HistoryResponse>(`/api/history${suffix}`, signal);
     },
     buildExportURL,
   };

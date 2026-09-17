@@ -19,6 +19,11 @@ import (
 
 var ErrInvalidFilter = errors.New("invalid history filter")
 
+const (
+	DefaultPageSize = 50
+	MaxPageSize     = 200
+)
+
 // Filters is the common filter contract for history and CSV export. From is
 // inclusive and To is exclusive. Empty strings and nil times mean unset.
 type Filters struct {
@@ -36,6 +41,28 @@ type FilterState struct {
 	LocationID *string `json:"location_id"`
 	DeviceID   *string `json:"device_id"`
 	Status     *string `json:"status"`
+}
+
+// Cursor identifies the last record of a history page. The next page asks for
+// rows strictly older than this tuple, which remains stable while new readings
+// are inserted at the head of the history stream.
+type Cursor struct {
+	RecordedAt string `json:"recorded_at"`
+	ReadingID  int64  `json:"reading_id"`
+}
+
+// PageOptions controls bounded history reads. CSV export intentionally does
+// not use this type so filtered exports remain complete.
+type PageOptions struct {
+	Limit  int
+	Before *Cursor
+}
+
+// PageResult contains one bounded history page plus the cursor for older rows.
+type PageResult struct {
+	Items   []Record
+	HasMore bool
+	Next    *Cursor
 }
 
 func (filters Filters) State() FilterState {
@@ -115,14 +142,55 @@ type Record struct {
 	SensorHealth      json.RawMessage `json:"sensor_health"`
 }
 
-// Query returns one audit row per persisted reading in deterministic newest-
-// first order. Both HTTP history and CSV export call this function.
+// Query returns the complete filtered audit set in deterministic newest-first
+// order. CSV export uses this path so export semantics remain complete.
 func Query(ctx context.Context, db *sql.DB, filters Filters) ([]Record, error) {
+	return queryRecords(ctx, db, filters, nil)
+}
+
+// QueryPage returns a bounded page suitable for the interactive History UI.
+// It fetches one extra row to determine whether older data is available.
+func QueryPage(ctx context.Context, db *sql.DB, filters Filters, options PageOptions) (PageResult, error) {
+	limit := options.Limit
+	if limit == 0 {
+		limit = DefaultPageSize
+	}
+	if limit < 1 || limit > MaxPageSize {
+		return PageResult{}, fmt.Errorf("%w: limit must be between 1 and %d", ErrInvalidFilter, MaxPageSize)
+	}
+	if options.Before != nil {
+		if strings.TrimSpace(options.Before.RecordedAt) == "" || options.Before.ReadingID <= 0 {
+			return PageResult{}, fmt.Errorf("%w: invalid history cursor", ErrInvalidFilter)
+		}
+		if _, err := time.Parse(time.RFC3339Nano, options.Before.RecordedAt); err != nil {
+			return PageResult{}, fmt.Errorf("%w: invalid history cursor", ErrInvalidFilter)
+		}
+	}
+
+	queryOptions := PageOptions{Limit: limit + 1, Before: options.Before}
+	items, err := queryRecords(ctx, db, filters, &queryOptions)
+	if err != nil {
+		return PageResult{}, err
+	}
+
+	hasMore := len(items) > limit
+	if hasMore {
+		items = items[:limit]
+	}
+	var next *Cursor
+	if hasMore && len(items) > 0 {
+		last := items[len(items)-1]
+		next = &Cursor{RecordedAt: last.RecordedAt, ReadingID: last.ReadingID}
+	}
+	return PageResult{Items: items, HasMore: hasMore, Next: next}, nil
+}
+
+func queryRecords(ctx context.Context, db *sql.DB, filters Filters, page *PageOptions) ([]Record, error) {
 	if db == nil {
 		return nil, errors.New("history database is unavailable")
 	}
 	where := []string{"1 = 1"}
-	args := make([]any, 0, 5)
+	args := make([]any, 0, 9)
 	if filters.From != nil {
 		where = append(where, "r.recorded_at >= ?")
 		args = append(args, filters.From.UTC().Format(time.RFC3339Nano))
@@ -143,6 +211,11 @@ func Query(ctx context.Context, db *sql.DB, filters Filters) ([]Record, error) {
 		where = append(where, "CASE WHEN dec.safety_state = 'Safety Alert' THEN 'Safety Alert' ELSE dec.fis_status END = ?")
 		args = append(args, filters.Status)
 	}
+	if page != nil && page.Before != nil {
+		where = append(where, "(r.recorded_at < ? OR (r.recorded_at = ? AND r.id < ?))")
+		args = append(args, page.Before.RecordedAt, page.Before.RecordedAt, page.Before.ReadingID)
+	}
+
 	query := `
 		SELECT r.id, r.recorded_at,
 			l.id, l.name,
@@ -159,6 +232,11 @@ func Query(ctx context.Context, db *sql.DB, filters Filters) ([]Record, error) {
 		LEFT JOIN decisions dec ON dec.reading_id = r.id
 		WHERE ` + strings.Join(where, " AND ") + `
 		ORDER BY r.recorded_at DESC, r.id DESC`
+	if page != nil {
+		query += "\n\t\tLIMIT ?"
+		args = append(args, page.Limit)
+	}
+
 	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err

@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/url"
+	"path/filepath"
 	"strings"
 
 	_ "modernc.org/sqlite"
@@ -51,7 +52,11 @@ func sqliteDSN(path string) (string, error) {
 		return uri.String(), nil
 	}
 
-	uri := &url.URL{Scheme: "file", Path: path}
+	absolutePath, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve sqlite path: %w", err)
+	}
+	uri := &url.URL{Scheme: "file", Path: absolutePath}
 	query := uri.Query()
 	query.Set("_pragma", "foreign_keys(1)")
 	uri.RawQuery = query.Encode()
