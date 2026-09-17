@@ -108,6 +108,16 @@ export interface HistoryFilters {
   status?: CanonicalStatus;
 }
 
+export interface HistoryCursor {
+  recorded_at: string;
+  reading_id: number;
+}
+
+export interface HistoryPageRequest {
+  limit?: number;
+  before?: HistoryCursor;
+}
+
 export interface HistoryItem {
   reading_id: number;
   recorded_at: string;
@@ -141,5 +151,10 @@ export interface HistoryResponse {
     location_id: string | null;
     device_id: string | null;
     status: CanonicalStatus | null;
+  };
+  page: {
+    limit: number;
+    has_more: boolean;
+    next: HistoryCursor | null;
   };
 }
