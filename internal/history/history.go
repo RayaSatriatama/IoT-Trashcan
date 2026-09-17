@@ -140,8 +140,8 @@ func Query(ctx context.Context, db *sql.DB, filters Filters) ([]Record, error) {
 		args = append(args, filters.DeviceID)
 	}
 	if filters.Status != "" {
-		where = append(where, "(dec.fis_status = ? OR (? = 'Safety Alert' AND dec.safety_state = 'Safety Alert'))")
-		args = append(args, filters.Status, filters.Status)
+		where = append(where, "CASE WHEN dec.safety_state = 'Safety Alert' THEN 'Safety Alert' ELSE dec.fis_status END = ?")
+		args = append(args, filters.Status)
 	}
 	query := `
 		SELECT r.id, r.recorded_at,
@@ -250,7 +250,7 @@ func rawGas(payload, stream string) *float64 {
 
 func isPublicStatus(value string) bool {
 	switch device.Status(value) {
-	case device.StatusNormal, device.StatusWaspada, device.StatusAngkat, device.StatusSafetyAlert, device.StatusOffline, device.StatusDataInvalid:
+	case device.StatusNormal, device.StatusWaspada, device.StatusAngkat, device.StatusSafetyAlert, device.StatusDataInvalid:
 		return true
 	default:
 		return false
