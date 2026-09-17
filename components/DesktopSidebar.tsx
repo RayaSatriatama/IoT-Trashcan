@@ -65,6 +65,7 @@ export function DesktopSidebar({
         {items.map((item) => {
           const active = activePath === item.path;
           const Icon = navigationIcons[item.path] ?? House;
+          const displayLabel = item.label === 'Ringkasan' ? 'Beranda' : item.label;
           return (
             <Button
               key={item.path}
@@ -77,13 +78,13 @@ export function DesktopSidebar({
               color={active ? '$primary' : '$colorMuted'}
               fontWeight={active ? '700' : '500'}
               onPress={() => onNavigate?.(item.path)}
-              aria-label={`Buka ${item.label}`}
+              aria-label={`Buka ${displayLabel}`}
               type="button"
             >
               <XStack alignItems="center" gap="$3">
                 <Icon size={18} color={active ? '#0A9B62' : '#5D7397'} strokeWidth={active ? 2.4 : 2} aria-hidden={true} />
                 <Text color={active ? '$primary' : '$colorMuted'} fontSize="$2" fontWeight={active ? '800' : '600'}>
-                  {item.label === 'Ringkasan' ? 'Beranda' : item.label}
+                  {displayLabel}
                 </Text>
               </XStack>
             </Button>

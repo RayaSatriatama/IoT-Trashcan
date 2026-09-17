@@ -25,28 +25,33 @@ export function AppShell({
   onNavigate,
 }: AppShellProps) {
   const media = useMedia();
-  const isWide = Boolean(media.wide);
+  const hasDesktopShell = Boolean(media.tablet);
 
   return (
     <XStack flex={1} minHeight="100vh" backgroundColor="$background">
-      {isWide ? (
+      {hasDesktopShell ? (
         <DesktopSidebar items={navigationItems} activePath={activePath} onNavigate={onNavigate} />
       ) : null}
       <YStack flex={1} minWidth={0} minHeight={0}>
         <ScrollView
           style={{ flex: 1 }}
-          contentContainerStyle={{ flexGrow: 1, paddingBottom: isWide ? 40 : 112 }}
+          contentContainerStyle={{ flexGrow: 1, paddingBottom: hasDesktopShell ? 40 : 112 }}
           showsVerticalScrollIndicator
           keyboardShouldPersistTaps="handled"
         >
-          <YStack width="100%" maxWidth={1320} alignSelf="center" paddingHorizontal={isWide ? '$7' : '$4'}>
+          <YStack
+            width="100%"
+            maxWidth={1320}
+            alignSelf="center"
+            paddingHorizontal={hasDesktopShell ? '$7' : '$4'}
+          >
             <Header title={title} subtitle={subtitle} />
             <SimulationBanner />
             {children}
           </YStack>
         </ScrollView>
       </YStack>
-      {!isWide ? (
+      {!hasDesktopShell ? (
         <MobileBottomNav items={navigationItems} activePath={activePath} onNavigate={onNavigate} />
       ) : null}
     </XStack>

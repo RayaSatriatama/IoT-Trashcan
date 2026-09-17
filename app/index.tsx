@@ -18,7 +18,7 @@ import { Activity, ArrowRight, Box, MapPin, ShieldAlert, Truck } from '../lib/ui
 import type { EventDTO, OverviewResponse } from '../lib/api/types';
 import { formatTimestamp } from '../lib/format';
 
-export const HOME_KPI_LABELS = ['Total lokasi', 'Total perangkat', 'Perlu diangkat', 'Safety Alert'] as const;
+export const HOME_KPI_LABELS = ['Total lokasi', 'Total perangkat', 'Perlu diangkat', 'Peringatan keselamatan'] as const;
 export const RECENT_ACTIVITY_LIMIT = 3;
 export const PRIORITY_EMPTY_COPY = {
   title: 'Tidak ada lokasi prioritas',
