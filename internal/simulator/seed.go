@@ -36,7 +36,9 @@ type Dataset struct {
 }
 
 // Seed creates the small local-only dataset and reuses stable rows on every
-// startup. It never deletes readings, decisions, or events.
+// startup. It never deletes readings, decisions, or events. Simulator-owned
+// metadata is refreshed on conflict so changing the simulation seed also
+// rotates the deterministic local credential digest without duplicating rows.
 func Seed(ctx context.Context, db *sql.DB, seed int64) (Dataset, error) {
 	dataset := defaultDataset(seed)
 	tx, err := db.BeginTx(ctx, nil)
@@ -45,18 +47,18 @@ func Seed(ctx context.Context, db *sql.DB, seed int64) (Dataset, error) {
 	}
 	defer tx.Rollback()
 	for _, location := range dataset.Locations {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO locations (id, name, address_text) VALUES (?, ?, ?) ON CONFLICT(id) DO NOTHING`, location.ID, location.Name, location.Address); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO locations (id, name, address_text) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET name = excluded.name, address_text = excluded.address_text`, location.ID, location.Name, location.Address); err != nil {
 			return Dataset{}, fmt.Errorf("seed location %s: %w", location.ID, err)
 		}
 	}
 	for _, device := range dataset.Devices {
 		digest := sha256.Sum256([]byte(device.Token))
-		if _, err := tx.ExecContext(ctx, `INSERT INTO devices (id, location_id, device_code, placement_label, credential_digest) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING`, device.ID, device.LocationID, device.Code, device.Placement, hex.EncodeToString(digest[:])); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO devices (id, location_id, device_code, placement_label, credential_digest) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET location_id = excluded.location_id, device_code = excluded.device_code, placement_label = excluded.placement_label, credential_digest = excluded.credential_digest`, device.ID, device.LocationID, device.Code, device.Placement, hex.EncodeToString(digest[:])); err != nil {
 			return Dataset{}, fmt.Errorf("seed device %s: %w", device.ID, err)
 		}
 	}
 	for _, slot := range dataset.Slots {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO slots (id, device_id, waste_stream, operational_capacity) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO NOTHING`, slot.ID, slot.DeviceID, slot.Stream, 20.0); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO slots (id, device_id, waste_stream, operational_capacity) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET device_id = excluded.device_id, waste_stream = excluded.waste_stream, operational_capacity = excluded.operational_capacity`, slot.ID, slot.DeviceID, slot.Stream, 20.0); err != nil {
 			return Dataset{}, fmt.Errorf("seed slot %s: %w", slot.ID, err)
 		}
 	}
