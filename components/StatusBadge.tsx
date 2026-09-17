@@ -1,5 +1,6 @@
 import type { CanonicalStatus } from '../lib/api/types';
 import { getStatusPresentation } from '../lib/status';
+import { textStyles } from '../lib/ui/typography';
 import { Text, XStack } from 'tamagui';
 
 export interface StatusBadgeProps {
@@ -39,7 +40,7 @@ export function StatusBadge({ status, compact = false }: StatusBadgeProps) {
         backgroundColor={`$${presentation.token}`}
         aria-hidden={true}
       />
-      <Text color={`$${presentation.token}`} fontSize="$2" fontWeight="800">
+      <Text color={`$${presentation.token}`} {...textStyles.caption} fontWeight="800">
         {presentation.label}
       </Text>
     </XStack>

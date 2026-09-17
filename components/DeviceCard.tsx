@@ -8,6 +8,7 @@ import { Card, Text, XStack, YStack } from 'tamagui';
 
 import { MetricBar } from './MetricBar';
 import { StatusBadge } from './StatusBadge';
+import { textStyles } from '../lib/ui/typography';
 
 export interface DeviceCardProps {
   device: DeviceDTO;
@@ -49,20 +50,20 @@ export function DeviceCard({ device, onPress }: DeviceCardProps) {
           <RNImage source={b3Artwork} accessibilityLabel="Ilustrasi slot B3" resizeMode="contain" style={{ width: 31, height: 38 }} />
         </XStack>
         <YStack flex={1} gap="$1">
-          <Text fontSize="$4" color="$color" fontWeight="700">
+          <Text color="$color" {...textStyles.cardTitle}>
             {device.device_code}
           </Text>
-          <Text fontSize="$2" color="$colorMuted">
+          <Text color="$colorMuted" {...textStyles.bodySecondary}>
             {device.placement_label ?? 'Belum tersedia'}
           </Text>
         </YStack>
         <StatusBadge status={device.status} compact />
       </XStack>
       <XStack flexWrap="wrap" gap="$2" alignItems="center" paddingVertical="$1">
-        <Text fontSize="$2" color="$colorMuted">
+        <Text color="$colorMuted" {...textStyles.bodySecondary}>
           Koneksi: {onlineLabel}
         </Text>
-        <Text fontSize="$2" color="$colorMuted">
+        <Text color="$colorMuted" {...textStyles.bodySecondary}>
           Terakhir terlihat: {lastSeen}
         </Text>
       </XStack>
@@ -72,7 +73,7 @@ export function DeviceCard({ device, onPress }: DeviceCardProps) {
             <MetricBar key={slot.stream} label={getStreamLabel(slot.stream)} value={slot.fill} />
           ))
         ) : (
-          <Text fontSize="$2" color="$colorMuted">
+          <Text color="$colorMuted" {...textStyles.bodySecondary}>
             Belum ada data slot
           </Text>
         )}

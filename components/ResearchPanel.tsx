@@ -3,6 +3,7 @@ import { Button, Card, Separator, Text, XStack, YStack } from 'tamagui';
 
 import type { ResearchResponse, ResearchSlotDTO } from '../lib/api/types';
 import { formatNullableMetric } from '../lib/format';
+import { textStyles } from '../lib/ui/typography';
 import { EmptyState } from './EmptyState';
 import { ErrorState } from './ErrorState';
 import { LoadingState } from './LoadingState';
@@ -66,10 +67,10 @@ function MetricRow({
 }) {
   return (
     <XStack justifyContent="space-between" alignItems="flex-start" gap="$3" paddingVertical="$2">
-      <Text color="$colorMuted" fontSize="$2" flex={1}>
+      <Text color="$colorMuted" {...textStyles.bodySecondary} flex={1}>
         {label}
       </Text>
-      <Text color="$color" fontSize="$2" fontWeight="600" textAlign="right" flex={1}>
+      <Text color="$color" {...textStyles.bodySecondary} fontWeight="600" textAlign="right" flex={1}>
         {formatResearchValue(value, unit)}
       </Text>
     </XStack>
@@ -121,7 +122,7 @@ function ResearchSlot({ slot }: { slot: ResearchSlotDTO }) {
             Terekam: {formatResearchValue(slot.recorded_at)}
           </Text>
         </YStack>
-        <Text color="$colorMuted" fontSize="$2" accessibilityLabel={`Stream ${slot.stream}`}>
+          <Text color="$colorMuted" {...textStyles.bodySecondary} accessibilityLabel={`Stream ${slot.stream}`}>
           Audit sensor
         </Text>
       </XStack>
@@ -162,10 +163,10 @@ function ResearchSlot({ slot }: { slot: ResearchSlotDTO }) {
 
       <Section title="Sensor health">
         <XStack justifyContent="space-between" alignItems="flex-start" gap="$3" paddingVertical="$2">
-          <Text color="$colorMuted" fontSize="$2" flex={1}>
+          <Text color="$colorMuted" {...textStyles.bodySecondary} flex={1}>
             sensor_health
           </Text>
-          <Text color="$color" fontSize="$2" fontWeight="600" textAlign="right" flex={1}>
+          <Text color="$color" {...textStyles.bodySecondary} fontWeight="600" textAlign="right" flex={1}>
             {formatSensorHealth(slot.sensor_health)}
           </Text>
         </XStack>

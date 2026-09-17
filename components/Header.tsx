@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
-import { Button, Separator, Text, XStack, YStack } from 'tamagui';
+import { Button, Separator, Text, XStack, YStack, useMedia } from 'tamagui';
 import { Bell } from '../lib/ui/icons';
+import { textStyles } from '../lib/ui/typography';
 
 export interface HeaderProps {
   title: string;
@@ -9,15 +10,16 @@ export interface HeaderProps {
 }
 
 export function Header({ title, subtitle, actions }: HeaderProps) {
+  const media = useMedia();
   return (
     <YStack gap="$4" paddingTop="$6" paddingBottom="$4">
       <XStack alignItems="center" justifyContent="space-between" gap="$4" flexWrap="wrap">
         <YStack flex={1} minWidth={220} gap="$1">
-          <Text fontSize="$7" lineHeight="$7" color="$color" fontWeight="800" letterSpacing={-0.8}>
+          <Text fontFamily="$body" fontSize={media.wide ? textStyles.pageTitle.fontSize : 30} lineHeight={media.wide ? textStyles.pageTitle.lineHeight : 36} color="$color" fontWeight="800" letterSpacing={-0.8}>
             {title}
           </Text>
           {subtitle ? (
-            <Text fontSize="$3" color="$colorMuted" lineHeight="$4">
+            <Text color="$colorMuted" {...textStyles.bodySecondary}>
               {subtitle}
             </Text>
           ) : null}
