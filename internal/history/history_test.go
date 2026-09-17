@@ -94,6 +94,39 @@ func TestQueryHistoryStatusUsesSafetyOverride(t *testing.T) {
 	}
 }
 
+func TestQueryHistoryEffectiveStatusExcludesSafetyOverrideFromUnderlyingFISFilter(t *testing.T) {
+	db := historyFixture(t)
+	defer db.Close()
+
+	result, err := db.Exec(`INSERT INTO readings (slot_id, recorded_at, raw_payload, fill) VALUES ('slot-c', '2026-09-17T10:00:03Z', '{"slots":[{"stream":"b3","gas_raw":99}]}', 65)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readingID, err := result.LastInsertId()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO decisions (reading_id, fis_score, fis_status, fis_version, dominant_reason, safety_state) VALUES (?, 55, 'Waspada', 'fixture-v1', 'fixture warning', 'Safety Alert')`, readingID); err != nil {
+		t.Fatal(err)
+	}
+
+	warnings, err := Query(context.Background(), db, Filters{Status: "Waspada"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("Waspada filter included Safety Alert override: %+v", warnings)
+	}
+
+	alerts, err := Query(context.Background(), db, Filters{Status: "Safety Alert"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(alerts) != 2 || alerts[0].ReadingID != readingID {
+		t.Fatalf("Safety Alert filter did not include effective overrides: %+v", alerts)
+	}
+}
+
 func TestQueryHistoryDateFiltersAreHalfOpen(t *testing.T) {
 	db := historyFixture(t)
 	defer db.Close()
