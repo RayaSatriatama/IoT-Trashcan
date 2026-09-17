@@ -4,12 +4,27 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/RayaSatriatama/IoT-Trashcan/internal/device"
 	"github.com/RayaSatriatama/IoT-Trashcan/internal/history"
 )
 
 type historyResponse struct {
 	Items   []history.Record    `json:"items"`
 	Filters history.FilterState `json:"filters"`
+}
+
+func parseHistoryFilters(r *http.Request) (history.Filters, error) {
+	filters, err := history.ParseFilters(r.URL.Query())
+	if err != nil {
+		return history.Filters{}, err
+	}
+	// Offline is derived from the current device heartbeat, not persisted as a
+	// historical reading/decision state. Reject it until historical offline
+	// semantics are explicitly defined rather than returning a misleading empty set.
+	if filters.Status == string(device.StatusOffline) {
+		return history.Filters{}, history.ErrInvalidFilter
+	}
+	return filters, nil
 }
 
 // History returns audit rows from readings and decisions using the shared
@@ -19,7 +34,7 @@ func (api *ReadAPI) History(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	filters, err := history.ParseFilters(r.URL.Query())
+	filters, err := parseHistoryFilters(r)
 	if err != nil {
 		if errors.Is(err, history.ErrInvalidFilter) || errors.Is(errors.Unwrap(err), history.ErrInvalidFilter) {
 			writeError(w, http.StatusBadRequest, "invalid history filter")
@@ -43,7 +58,7 @@ func (api *ReadAPI) ExportCSV(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	filters, err := history.ParseFilters(r.URL.Query())
+	filters, err := parseHistoryFilters(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid history filter")
 		return
