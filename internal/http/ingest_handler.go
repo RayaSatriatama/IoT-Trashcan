@@ -49,10 +49,14 @@ func NewIngestHandler(service IngestService) http.Handler {
 		result, err := service.Ingest(r.Context(), token, request, rawPayload)
 		if err != nil {
 			switch {
-			case errors.Is(err, ingest.ErrUnauthorized), errors.Is(err, ingest.ErrNotFound):
+			case errors.Is(err, ingest.ErrUnauthorized):
 				writeError(w, http.StatusUnauthorized, "unauthorized")
+			case errors.Is(err, ingest.ErrNotFound):
+				writeError(w, http.StatusNotFound, "not found")
 			case errors.Is(err, ingest.ErrInvalidRequest):
 				writeError(w, http.StatusBadRequest, "invalid ingestion payload")
+			case errors.Is(err, ingest.ErrConflict):
+				writeError(w, http.StatusConflict, "conflicting ingestion replay")
 			default:
 				writeError(w, http.StatusInternalServerError, "internal server error")
 			}

@@ -16,6 +16,12 @@ var (
 	ErrNotFound = errors.New("ingest resource not found")
 	// ErrPersistence means a database operation could not be completed.
 	ErrPersistence = errors.New("ingest persistence failed")
+	// ErrConflict means a device submitted a different payload for a timestamp
+	// that has already been persisted.
+	ErrConflict = errors.New("conflicting ingest replay")
+	// ErrInvalidCapacity distinguishes a missing capacity from a broken
+	// operational-capacity configuration.
+	ErrInvalidCapacity = errors.New("invalid operational capacity")
 )
 
 // Request is the stable device-ingestion payload. Numeric pointers retain the
@@ -41,4 +47,22 @@ type Result struct {
 	DeviceID       string    `json:"device_id"`
 	RecordedAt     time.Time `json:"recorded_at"`
 	ReadingsStored int       `json:"readings_stored"`
+	Deduplicated   bool      `json:"deduplicated"`
+}
+
+// ValidationResult captures operational sensor validity without losing the
+// original raw reading. Structural request errors still use ErrInvalidRequest.
+type ValidationResult struct {
+	Valid   bool
+	Reasons []string
+}
+
+// NormalizedReading contains only values whose semantics are currently
+// source-backed. Nil represents unavailable data, never a fabricated zero.
+type NormalizedReading struct {
+	FillPct           *float64
+	WeightUtilization *float64
+	OGI               *float64
+	AccumulationHours *float64
+	Temperature       *float64
 }
