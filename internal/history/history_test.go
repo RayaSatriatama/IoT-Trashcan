@@ -102,7 +102,7 @@ func TestWriteCSVUsesStableHeaderEscapesValuesAndLeavesNullEmpty(t *testing.T) {
 		SlotID:         "slot-1",
 		Stream:         "organic",
 		GasRaw:         floatPtr(42),
-		FisStatus:      stringPtr("Normal"),
+		FISStatus:      stringPtr("Normal"),
 	}}
 	var output strings.Builder
 	if err := WriteCSV(&output, items); err != nil {
