@@ -104,8 +104,8 @@ export function HomeMonitoringWorkspace({
         <YStack gap="$3">
           <SectionHeader
             title={`${operationalFilter === 'Angkat' ? 'Perangkat perlu diangkat di' : 'Peringatan di'} ${selected.location.name}`}
-            description={`${selectedDevices.length} perangkat terdampak`}
-            action={<XStack alignItems="center" gap="$2" flexWrap="wrap" justifyContent="flex-end"><SectionPager page={devicePages.page} totalPages={devicePages.totalPages} onPrevious={() => onDevicePageChange(Math.max(1, devicePages.page - 1))} onNext={() => onDevicePageChange(Math.min(devicePages.totalPages, devicePages.page + 1))} /><AppButton variant="ghost" size="sm" onPress={() => onOpenLocation(selected.location.id)} ariaLabel="Lihat Detail">Lihat Detail <ArrowRight size={15} color="#0A9B62" strokeWidth={2.2} aria-hidden={true} /></AppButton></XStack>}
+            description={operationalFilter === 'Angkat' ? 'Hanya perangkat dengan status Perlu diangkat yang ditampilkan.' : 'Hanya perangkat dengan Safety Alert yang ditampilkan.'}
+            action={<XStack alignItems="center" gap="$2" flexWrap="wrap" justifyContent="flex-end"><Text color="$colorMuted" fontSize="$2" fontWeight="600">{selectedDevices.length} perangkat</Text><SectionPager page={devicePages.page} totalPages={devicePages.totalPages} onPrevious={() => onDevicePageChange(Math.max(1, devicePages.page - 1))} onNext={() => onDevicePageChange(Math.min(devicePages.totalPages, devicePages.page + 1))} /><AppButton variant="ghost" size="sm" onPress={() => onOpenLocation(selected.location.id)} ariaLabel="Lihat Detail">Lihat Detail <ArrowRight size={15} color="#0A9B62" strokeWidth={2.2} aria-hidden={true} /></AppButton></XStack>}
           />
           <XStack gap="$3" flexWrap="wrap">
             {devicePages.items.map((device) => (
