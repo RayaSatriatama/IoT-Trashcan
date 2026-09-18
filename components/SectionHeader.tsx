@@ -31,11 +31,13 @@ export function DescriptionHint({
         aria-label={ariaLabel}
         aria-expanded={open}
         aria-controls={tooltipId}
-        onHoverIn={() => setOpen(true)}
-        onHoverOut={() => setOpen(false)}
+        aria-describedby={open ? tooltipId : undefined}
+        onMouseEnter={() => setOpen(true)}
+        onMouseLeave={() => setOpen(false)}
         onFocus={() => setOpen(true)}
         onBlur={() => setOpen(false)}
-        onPress={() => setOpen((current) => !current)}
+        onPress={() => setOpen(true)}
+        onClick={() => setOpen(true)}
         hoverStyle={{ borderColor: '$primary', backgroundColor: '$primarySoft' }}
         focusStyle={{ borderColor: '$primary' }}
         type="button"
@@ -58,7 +60,7 @@ export function DescriptionHint({
           borderColor="$borderColor"
           borderRadius="$3"
           backgroundColor="$surface"
-          elevate
+          elevation="$3"
           role="tooltip"
         >
           <Text color="$color" {...textStyles.bodySecondary}>
