@@ -526,13 +526,12 @@ export default function HistoryRoute() {
           <XStack alignItems="center" gap="$3" flexWrap="wrap">
             <YStack flex={1} minWidth={220} gap="$1">
               <Text color="$primary" fontSize="$2" fontWeight="800">AUDIT DAN LAPORAN</Text>
-              <XStack alignItems="center" gap="$2" flexWrap="wrap">
+              <YStack gap="$2">
                 <Text color="$color" fontSize={30} lineHeight={36} fontWeight="800" $compact={{ fontSize: 28, lineHeight: 34 }} letterSpacing={-0.6}>Riwayat pembacaan yang mudah ditindaklanjuti.</Text>
-                <DescriptionHint
-                  description="Gunakan filter untuk menelusuri data sensor dan keputusan operasional dari semua lokasi."
-                  ariaLabel="Lihat informasi tentang riwayat dan laporan"
-                />
-              </XStack>
+                <Text color="$colorMuted" {...textStyles.bodySecondary}>
+                  Gunakan filter untuk menelusuri data sensor dan keputusan operasional dari semua lokasi.
+                </Text>
+              </YStack>
             </YStack>
             <RNImage source={historyArtwork} accessibilityLabel="Ilustrasi analisis riwayat" resizeMode="contain" style={{ width: 160, height: 86, maxWidth: '100%' }} />
           </XStack>
