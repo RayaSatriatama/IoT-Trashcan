@@ -10,6 +10,7 @@ import { ErrorState } from '../../components/ErrorState';
 import { AppButton } from '../../components/AppButton';
 import { KpiCard } from '../../components/KpiCard';
 import { LoadingState } from '../../components/LoadingState';
+import { DescriptionHint, SectionHeader } from '../../components/SectionHeader';
 import { StatusBadge } from '../../components/StatusBadge';
 import { apiClient } from '../../lib/api/client';
 import { usePollingResource } from '../../lib/api/hooks';
@@ -247,11 +248,8 @@ function HistoryTrend({ items }: { items: HistoryItem[] }) {
 
   return (
     <Card borderWidth={1} borderColor="$borderColor" backgroundColor="$surface" borderRadius="$4" padding="$4" gap="$4">
-      <XStack alignItems="flex-end" justifyContent="space-between" gap="$3" flexWrap="wrap">
-        <YStack gap="$1">
-          <Text color="$color" {...textStyles.sectionTitle} fontSize={24}>Trend status</Text>
-          <Text color="$colorMuted" {...textStyles.bodySecondary}>Distribusi status pada halaman yang sedang ditampilkan.</Text>
-        </YStack>
+      <XStack alignItems="center" justifyContent="space-between" gap="$3" flexWrap="wrap">
+        <SectionHeader title="Trend status" description="Distribusi status pada halaman yang sedang ditampilkan." />
         <XStack gap="$3" flexWrap="wrap">
           <XStack alignItems="center" gap="$1"><YStack width={8} height={8} borderRadius="$6" backgroundColor="$statusNormal" /><Text color="$colorMuted" {...textStyles.caption}>Normal</Text></XStack>
           <XStack alignItems="center" gap="$1"><YStack width={8} height={8} borderRadius="$6" backgroundColor="$statusAngkat" /><Text color="$colorMuted" {...textStyles.caption}>Diangkat</Text></XStack>
@@ -474,8 +472,13 @@ export default function HistoryRoute() {
           <XStack alignItems="center" gap="$5" flexWrap="wrap">
             <YStack flex={1} minWidth={250} gap="$2">
               <Text color="$primary" fontSize="$2" fontWeight="800">AUDIT DAN LAPORAN</Text>
-              <Text color="$color" fontSize="$7" lineHeight="$7" fontWeight="800" letterSpacing={-0.8}>Riwayat pembacaan yang mudah ditindaklanjuti.</Text>
-              <Text color="$colorMuted" fontSize="$3">Gunakan filter untuk menelusuri data sensor dan keputusan operasional dari semua lokasi.</Text>
+              <XStack alignItems="center" gap="$2" flexWrap="wrap">
+                <Text color="$color" fontSize="$7" lineHeight="$7" fontWeight="800" letterSpacing={-0.8}>Riwayat pembacaan yang mudah ditindaklanjuti.</Text>
+                <DescriptionHint
+                  description="Gunakan filter untuk menelusuri data sensor dan keputusan operasional dari semua lokasi."
+                  ariaLabel="Lihat informasi tentang riwayat dan laporan"
+                />
+              </XStack>
             </YStack>
             <RNImage source={historyArtwork} accessibilityLabel="Ilustrasi analisis riwayat" resizeMode="contain" style={{ width: 210, height: 112, maxWidth: '100%' }} />
           </XStack>
@@ -499,10 +502,13 @@ export default function HistoryRoute() {
           data.items.length ? (
             <YStack gap="$3">
               <XStack alignItems="center" justifyContent="space-between" gap="$3" flexWrap="wrap">
-                <YStack gap="$1">
+                <XStack alignItems="center" gap="$2" flexWrap="wrap">
                   <Text color="$color" fontSize="$5" fontWeight="700">{data.items.length} pembacaan · halaman {pageNumber}</Text>
-                  <Text color="$colorMuted" fontSize="$2">Riwayat interaktif dibatasi per halaman agar tetap responsif. CSV tetap mengekspor seluruh hasil filter.</Text>
-                </YStack>
+                  <DescriptionHint
+                    description="Riwayat interaktif dibatasi per halaman agar tetap responsif. CSV tetap mengekspor seluruh hasil filter."
+                    ariaLabel="Lihat informasi tentang pagination riwayat"
+                  />
+                </XStack>
               </XStack>
 
               {media.wide ? (
