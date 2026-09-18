@@ -539,6 +539,8 @@ export default function HistoryRoute() {
 
         <Filters draft={draft} onChange={handleFilterChange} onApply={handleApply} onReset={handleReset} onExport={handleExport} compact={media.compact} />
 
+        {data && data.items.length ? <HistoryTrend items={data.items} /> : null}
+
         <XStack gap="$3" flexWrap="wrap">
           <YStack width="calc(50% - 6px)" $wide={{ width: 'calc(25% - 9px)' }}><KpiCard label="Ditampilkan" value={summary ? summary.total : '—'} icon={Activity} tone="blue" /></YStack>
           <YStack width="calc(50% - 6px)" $wide={{ width: 'calc(25% - 9px)' }}><KpiCard label="Normal" value={summary ? summary.normal : '—'} icon={Box} tone="green" /></YStack>
@@ -550,7 +552,6 @@ export default function HistoryRoute() {
         {loading && !data ? <LoadingState label="Memuat riwayat" rows={4} /> : null}
         {!data && !loading && error ? <ErrorState onRetry={retry} /> : null}
 
-        {data && data.items.length ? <HistoryTrend items={data.items} /> : null}
         {data ? <YStack gap="$3">
           <XStack alignItems="center" justifyContent="space-between" gap="$3" flexWrap="wrap">
             <Text color="$color" {...textStyles.sectionTitle} $compact={textStyles.sectionTitleCompact}>Riwayat pembacaan</Text>
