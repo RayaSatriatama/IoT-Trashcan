@@ -26,8 +26,8 @@ export function LocationCard({ location, deviceCount, onPress, selected = false 
       borderRadius="$4"
       padding="$4"
       gap="$3"
-      height={172}
-      $compact={{ height: 160 }}
+      minHeight={172}
+      $compact={{ minHeight: 160 }}
       overflow="hidden"
       pressStyle={onPress ? { opacity: 0.82 } : undefined}
       onPress={onPress}
@@ -41,12 +41,16 @@ export function LocationCard({ location, deviceCount, onPress, selected = false 
         <YStack flex={1} minWidth={0} gap="$1">
           <Text color="$color" {...textStyles.cardTitle} numberOfLines={2}>{location.name}</Text>
           <Text color="$colorMuted" {...textStyles.bodySecondary} numberOfLines={2}>{address}</Text>
-          <XStack alignItems="center" gap="$2" marginTop="$1">
-            <StatusBadge status={location.status} compact />
-            {deviceLabel !== 'Belum tersedia' ? <Text {...textStyles.caption} color="$colorMuted">{deviceLabel} device</Text> : null}
-          </XStack>
         </YStack>
         <ChevronRight size={19} color="#5D7397" strokeWidth={2} aria-hidden={true} />
+      </XStack>
+      <XStack alignItems="center" gap="$2" marginTop="$1" flexWrap="wrap" rowGap="$1">
+        <StatusBadge status={location.status} compact />
+        {deviceLabel !== 'Belum tersedia' ? (
+          <Text {...textStyles.caption} color="$colorMuted" flexShrink={0} numberOfLines={1}>
+            {deviceLabel} device
+          </Text>
+        ) : null}
       </XStack>
     </Card>
   );
