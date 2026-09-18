@@ -1,6 +1,6 @@
 import { useRouter } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
-import { Image as RNImage } from 'react-native';
+import { Image as RNImage, Modal, Pressable, ScrollView } from 'react-native';
 import { Card, Input, Label, Select, Text, XStack, YStack, useMedia } from 'tamagui';
 
 import historyArtwork from '../../assets/history_report_analytics_illustration.png';
@@ -21,7 +21,7 @@ import type {
   HistoryResponse,
   LocationListResponse,
 } from '../../lib/api/types';
-import { Activity, Box, ChevronRight, ShieldAlert, Truck } from '../../lib/ui/icons';
+import { Activity, Box, ChevronDown, ChevronRight, ChevronUp, Filter as FilterIcon, ShieldAlert, Truck } from '../../lib/ui/icons';
 import { textStyles } from '../../lib/ui/typography';
 
 export interface HistoryFilterValues {
@@ -319,8 +319,9 @@ function LocationFilter({ value, onChange }: { value: string; onChange: (value: 
     <YStack width="100%" $tablet={{ width: 'calc(50% - 8px)' }} $wide={{ width: 'calc(20% - 13px)' }} gap="$2">
       <Text color="$color" {...textStyles.caption} fontWeight="700">Lokasi</Text>
       <Select value={value || 'all'} onValueChange={(next) => onChange(next === 'all' ? '' : next)} name="history-location">
-        <Select.Trigger aria-label="Filter lokasi" minHeight={48} width="100%" borderColor="$borderColor" backgroundColor="$background">
-          <Select.Value placeholder="Semua lokasi" />
+        <Select.Trigger aria-label="Filter lokasi" minHeight={44} width="100%" borderColor="$borderColor" backgroundColor="$background">
+          <Select.Value placeholder="Semua lokasi" fontSize={14} />
+          <Select.Icon><ChevronDown size={16} color="#60789F" aria-hidden /></Select.Icon>
         </Select.Trigger>
         <Select.Content>
           <Select.Viewport minWidth={280}>
@@ -348,23 +349,23 @@ function FilterFields({ draft, onChange }: { draft: HistoryDraft; onChange: (pat
         <XStack gap="$2">
           <YStack flex={1} gap="$1">
             <Label htmlFor="history-from" color="$colorMuted" {...textStyles.caption}>Dari tanggal</Label>
-            <Input id="history-from" type="date" value={draft.fromDate} onChangeText={(value) => onChange({ fromDate: value })} minHeight={44} fontSize={16} borderColor="$borderColor" backgroundColor="$background" />
+            <Input id="history-from" type="date" value={draft.fromDate} onChangeText={(value) => onChange({ fromDate: value })} minHeight={44} fontSize={14} borderColor="$borderColor" backgroundColor="$background" />
           </YStack>
           <YStack flex={1} gap="$1">
             <Label htmlFor="history-to" color="$colorMuted" {...textStyles.caption}>Sampai tanggal</Label>
-            <Input id="history-to" type="date" value={draft.toDate} onChangeText={(value) => onChange({ toDate: value })} minHeight={44} fontSize={16} borderColor="$borderColor" backgroundColor="$background" />
+            <Input id="history-to" type="date" value={draft.toDate} onChangeText={(value) => onChange({ toDate: value })} minHeight={44} fontSize={14} borderColor="$borderColor" backgroundColor="$background" />
           </YStack>
         </XStack>
       </YStack>
       <LocationFilter value={draft.location_id ?? ''} onChange={(location_id) => onChange({ location_id })} />
       <YStack width="100%" $tablet={{ width: 'calc(50% - 8px)' }} $wide={{ width: 'calc(20% - 13px)' }} gap="$2">
         <Label htmlFor="history-device" color="$color" {...textStyles.caption} fontWeight="700">Perangkat</Label>
-        <Input id="history-device" value={draft.device_id ?? ''} onChangeText={(value) => onChange({ device_id: value })} placeholder="Nama atau ID perangkat" minHeight={44} fontSize={16} borderColor="$borderColor" backgroundColor="$background" />
+        <Input id="history-device" value={draft.device_id ?? ''} onChangeText={(value) => onChange({ device_id: value })} placeholder="Nama atau ID perangkat" minHeight={44} fontSize={14} borderColor="$borderColor" backgroundColor="$background" />
       </YStack>
       <YStack width="100%" $tablet={{ width: 'calc(50% - 8px)' }} $wide={{ width: 'calc(20% - 13px)' }} gap="$2">
         <Text color="$color" {...textStyles.caption} fontWeight="700">Status</Text>
         <Select value={draft.status || 'all'} onValueChange={(value) => onChange({ status: value === 'all' ? undefined : value as CanonicalStatus })} name="history-status">
-          <Select.Trigger aria-label="Filter status" minHeight={44} width="100%" borderColor="$borderColor" backgroundColor="$background"><Select.Value placeholder="Semua status" /></Select.Trigger>
+          <Select.Trigger aria-label="Filter status" minHeight={44} width="100%" borderColor="$borderColor" backgroundColor="$background"><Select.Value placeholder="Semua status" fontSize={14} /><Select.Icon><ChevronDown size={16} color="#60789F" aria-hidden /></Select.Icon></Select.Trigger>
           <Select.Content><Select.Viewport minWidth={280}>{HISTORY_STATUS_FILTERS.map((filter, index) => <Select.Item key={filter.value || 'all'} value={filter.value || 'all'} index={index}><Select.ItemText>{filter.label}</Select.ItemText><Select.ItemIndicator /></Select.Item>)}</Select.Viewport></Select.Content>
         </Select>
       </YStack>
@@ -374,13 +375,78 @@ function FilterFields({ draft, onChange }: { draft: HistoryDraft; onChange: (pat
 
 function Filters({ draft, onChange, onApply, onReset, onExport, compact }: { draft: HistoryDraft; onChange: (patch: Partial<HistoryDraft>) => void; onApply: () => void; onReset: () => void; onExport: () => void; compact: boolean }) {
   const [open, setOpen] = useState(!compact);
+  const handleApply = useCallback(() => {
+    onApply();
+    if (compact) setOpen(false);
+  }, [compact, onApply]);
+  const filterFields = <FilterFields draft={draft} onChange={onChange} />;
+  const filterActions = (
+    <XStack gap="$2" justifyContent="flex-end" flexWrap="wrap">
+      <AppButton size="sm" variant="secondary" onPress={onReset} ariaLabel="Reset filter">Reset</AppButton>
+      <AppButton size="sm" variant="primary" onPress={handleApply} ariaLabel="Terapkan filter">Terapkan filter</AppButton>
+    </XStack>
+  );
   return (
-    <YStack gap="$3">
-      <XStack gap="$3" justifyContent="space-between" flexWrap="wrap">
-        <AppButton size="md" variant="secondary" onPress={() => setOpen((value) => !value)} ariaLabel="Buka filter riwayat" ariaExpanded={open}>{open ? 'Tutup filter' : 'Filter'}</AppButton>
-        <AppButton size="md" variant="primary" onPress={onExport} ariaLabel="Unduh CSV">Unduh CSV</AppButton>
-      </XStack>
-      {open ? <Card borderWidth={1} borderColor="$borderColor" backgroundColor="$surface" borderRadius="$4" padding="$4" gap="$3"><FilterFields draft={draft} onChange={onChange} /><XStack gap="$3" justifyContent="flex-end" flexWrap="wrap"><AppButton size="md" variant="secondary" onPress={onReset} ariaLabel="Reset filter">Reset</AppButton><AppButton size="md" variant="primary" onPress={onApply} ariaLabel="Terapkan filter">Terapkan filter</AppButton></XStack></Card> : null}
+    <YStack gap="$2">
+      {compact ? (
+        <XStack gap="$3" justifyContent="space-between" alignItems="center">
+          <AppButton size="md" variant="secondary" onPress={() => setOpen(true)} ariaLabel="Buka filter riwayat" ariaExpanded={open}>
+            <FilterIcon size={16} color="#1D3566" aria-hidden /> Filter
+          </AppButton>
+          <AppButton size="md" variant="primary" onPress={onExport} ariaLabel="Unduh CSV">Unduh CSV</AppButton>
+        </XStack>
+      ) : (
+        <XStack gap="$3" justifyContent="space-between" alignItems="center" flexWrap="wrap">
+          <XStack alignItems="center" gap="$2">
+            <Text color="$color" {...textStyles.sectionTitle}>Filter riwayat</Text>
+            <DescriptionHint description="Gunakan periode, lokasi, perangkat, dan status untuk mempersempit audit pembacaan." ariaLabel="Lihat informasi tentang filter riwayat" />
+          </XStack>
+          <XStack gap="$2" alignItems="center" flexWrap="wrap">
+            <AppButton size="sm" variant="ghost" onPress={() => setOpen((value) => !value)} ariaLabel={open ? 'Sembunyikan filter' : 'Tampilkan filter'} ariaExpanded={open}>
+              {open ? <ChevronUp size={16} color="#0A9B62" aria-hidden /> : <ChevronDown size={16} color="#0A9B62" aria-hidden />} {open ? 'Sembunyikan filter' : 'Tampilkan filter'}
+            </AppButton>
+            <AppButton size="sm" variant="primary" onPress={onExport} ariaLabel="Unduh CSV">Unduh CSV</AppButton>
+          </XStack>
+        </XStack>
+      )}
+      {compact ? (
+        <Modal transparent visible={open} animationType="slide" onRequestClose={() => setOpen(false)}>
+          <YStack flex={1} justifyContent="flex-end" backgroundColor="rgba(10, 31, 70, 0.24)">
+            <Pressable
+              accessibilityLabel="Tutup filter"
+              onPress={() => setOpen(false)}
+              style={{ flex: 1 }}
+            />
+            <Card
+              padding="$4"
+              backgroundColor="$surface"
+              borderTopLeftRadius="$5"
+              borderTopRightRadius="$5"
+              maxHeight="88%"
+              elevation="$4"
+            >
+              <ScrollView contentContainerStyle={{ paddingBottom: 24 }}>
+                <YStack gap="$4">
+                  <XStack alignItems="center" justifyContent="space-between" gap="$3">
+                    <XStack alignItems="center" gap="$2">
+                      <Text color="$color" {...textStyles.sectionTitle}>Filter riwayat</Text>
+                      <DescriptionHint description="Gunakan periode, lokasi, perangkat, dan status untuk mempersempit audit pembacaan." ariaLabel="Lihat informasi tentang filter riwayat" />
+                    </XStack>
+                    <AppButton size="sm" variant="ghost" onPress={() => setOpen(false)} ariaLabel="Tutup filter">Tutup</AppButton>
+                  </XStack>
+                  {filterFields}
+                  {filterActions}
+                </YStack>
+              </ScrollView>
+            </Card>
+          </YStack>
+        </Modal>
+      ) : open ? (
+        <Card borderWidth={1} borderColor="$borderColor" backgroundColor="$surface" borderRadius="$4" padding="$3" gap="$3">
+          {filterFields}
+          {filterActions}
+        </Card>
+      ) : null}
     </YStack>
   );
 }
@@ -454,20 +520,20 @@ export default function HistoryRoute() {
       activePath="/history"
       onNavigate={handleNavigate}
     >
-      <YStack gap="$5" paddingBottom="$6">
-        <Card borderWidth={1} borderColor="$primarySoft" backgroundColor="$surface" borderRadius="$5" padding="$5" overflow="hidden">
-          <XStack alignItems="center" gap="$5" flexWrap="wrap">
-            <YStack flex={1} minWidth={250} gap="$2">
+      <YStack gap="$4" paddingBottom="$6">
+        <Card borderWidth={1} borderColor="$primarySoft" backgroundColor="$surface" borderRadius="$5" padding="$4" overflow="hidden">
+          <XStack alignItems="center" gap="$3" flexWrap="wrap">
+            <YStack flex={1} minWidth={220} gap="$1">
               <Text color="$primary" fontSize="$2" fontWeight="800">AUDIT DAN LAPORAN</Text>
               <XStack alignItems="center" gap="$2" flexWrap="wrap">
-                <Text color="$color" {...textStyles.pageTitle} $compact={textStyles.pageTitleCompact} letterSpacing={-0.8}>Riwayat pembacaan yang mudah ditindaklanjuti.</Text>
+                <Text color="$color" fontSize={30} lineHeight={36} fontWeight="800" $compact={{ fontSize: 28, lineHeight: 34 }} letterSpacing={-0.6}>Riwayat pembacaan yang mudah ditindaklanjuti.</Text>
                 <DescriptionHint
                   description="Gunakan filter untuk menelusuri data sensor dan keputusan operasional dari semua lokasi."
                   ariaLabel="Lihat informasi tentang riwayat dan laporan"
                 />
               </XStack>
             </YStack>
-            <RNImage source={historyArtwork} accessibilityLabel="Ilustrasi analisis riwayat" resizeMode="contain" style={{ width: 210, height: 112, maxWidth: '100%' }} />
+            <RNImage source={historyArtwork} accessibilityLabel="Ilustrasi analisis riwayat" resizeMode="contain" style={{ width: 160, height: 86, maxWidth: '100%' }} />
           </XStack>
         </Card>
 
