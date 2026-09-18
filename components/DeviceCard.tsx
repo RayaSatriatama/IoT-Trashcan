@@ -14,6 +14,7 @@ import { textStyles } from '../lib/ui/typography';
 export interface DeviceCardProps {
   device: DeviceDTO;
   onPress?: () => void;
+  locationName?: string;
 }
 
 const streamLabels: Record<string, string> = {
@@ -26,9 +27,10 @@ export function getStreamLabel(stream: string): string {
   return streamLabels[stream] ?? stream;
 }
 
-export function DeviceCard({ device, onPress }: DeviceCardProps) {
+export function DeviceCard({ device, onPress, locationName }: DeviceCardProps) {
   const onlineLabel = device.online_state ?? 'Belum tersedia';
   const lastSeen = formatTimestamp(device.last_seen);
+  const placement = device.placement_label ?? 'Belum tersedia';
 
   return (
     <Card
@@ -55,7 +57,7 @@ export function DeviceCard({ device, onPress }: DeviceCardProps) {
             {device.device_code}
           </Text>
           <Text color="$colorMuted" {...textStyles.bodySecondary}>
-            {device.placement_label ?? 'Belum tersedia'}
+            {locationName ? `${locationName} · ${placement}` : placement}
           </Text>
         </YStack>
         <StatusBadge status={device.status} compact />
