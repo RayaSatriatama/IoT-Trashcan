@@ -72,15 +72,15 @@ export function HomeDeviceWorkspace({
 
   const current = paginate(data?.devices ?? [], page, pageSize);
   const title = data ? `Perangkat di ${data.name}` : 'Perangkat di lokasi';
-  const description = data ? `${data.devices.length} perangkat terhubung` : 'Pilih lokasi untuk memuat perangkat.';
 
   return (
     <YStack gap="$3">
       <SectionHeader
         title={title}
-        description={description}
+        description={data ? 'Pilih perangkat untuk membuka detail kondisi dan slot.' : 'Pilih lokasi untuk memuat perangkat.'}
         action={data ? (
           <XStack alignItems="center" gap="$2" flexWrap="wrap" justifyContent="flex-end">
+            <Text color="$colorMuted" fontSize="$2" fontWeight="600">{data.devices.length} perangkat</Text>
             <SectionPager page={current.page} totalPages={current.totalPages} onPrevious={() => onPageChange(Math.max(1, current.page - 1))} onNext={() => onPageChange(Math.min(current.totalPages, current.page + 1))} />
             <AppButton variant="ghost" size="sm" onPress={() => onOpenLocation(data.id)} ariaLabel="Lihat Detail">
               Lihat Detail <ArrowRight size={15} color="#0A9B62" strokeWidth={2.2} aria-hidden={true} />
