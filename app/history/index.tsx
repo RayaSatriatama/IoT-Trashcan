@@ -37,6 +37,18 @@ export const HISTORY_PAGE_SIZE = 10;
 export const HISTORY_PAGE_SIZES = [10, 20, 50] as const;
 const HISTORY_POLL_INTERVAL_MS = 60_000;
 
+export const HISTORY_TABLE_COLUMNS = [
+  'WAKTU',
+  'PERANGKAT',
+  'PENEMPATAN',
+  'LOKASI',
+  'STREAM',
+  'STATUS',
+  'KETERISIAN',
+  'BERAT',
+  'AKSI',
+] as const;
+
 export const HISTORY_STATUS_FILTERS: ReadonlyArray<{ label: string; value: CanonicalStatus | '' }> = [
   { label: 'Semua status', value: '' },
   { label: 'Normal', value: 'Normal' },
@@ -191,10 +203,12 @@ function HistoryRow({ item, compact }: { item: HistoryItem; compact: boolean }) 
         <XStack justifyContent="space-between" alignItems="flex-start" gap="$3">
           <YStack flex={1} minWidth={0} gap="$1">
             <Text color="$color" {...textStyles.cardTitle} numberOfLines={1}>{item.device_code || '—'}</Text>
-            <Text color="$colorMuted" {...textStyles.bodySecondary} numberOfLines={2}>{item.location_name || '—'} · {historyStreamLabel(item.stream)}</Text>
+            <Text color="$colorMuted" {...textStyles.bodySecondary} numberOfLines={1}>{item.location_name || '—'}</Text>
+            <Text color="$colorMuted" {...textStyles.caption} numberOfLines={1}>{item.placement_label || '—'}</Text>
           </YStack>
           <StatusBadge status={status} compact />
         </XStack>
+        <XStack alignItems="center" gap="$2"><YStack width={8} height={8} borderRadius={99} backgroundColor={streamColor} /><Text color="$color" {...textStyles.bodySecondary}>{historyStreamLabel(item.stream)}</Text></XStack>
         <Text color="$colorMuted" {...textStyles.metadata}>{formatTimestamp(item.recorded_at)}</Text>
         <XStack gap="$4" flexWrap="wrap" borderTopWidth={1} borderTopColor="$borderColor" paddingTop="$3">
           <YStack flex={1} minWidth={100} gap="$1"><Text color="$colorMuted" {...textStyles.caption}>Keterisian</Text><Text color="$color" {...textStyles.metricValue}>{compactMetric(item.fill, '%')}</Text></YStack>
@@ -211,13 +225,14 @@ function HistoryRow({ item, compact }: { item: HistoryItem; compact: boolean }) 
   return (
     <YStack role="row">
       <XStack alignItems="center" gap="$3" paddingHorizontal="$4" paddingVertical="$3" minHeight={64} borderBottomWidth={1} borderBottomColor="$borderColor" hoverStyle={{ backgroundColor: '$surfaceMuted' }}>
-        <Text color="$colorMuted" {...textStyles.metadata} width={150}>{formatTimestamp(item.recorded_at)}</Text>
-        <YStack width={170} minWidth={130} gap="$1"><Text color="$color" {...textStyles.metadata} fontWeight="700" numberOfLines={1}>{item.device_code || '—'}</Text><Text color="$colorMuted" {...textStyles.caption} numberOfLines={1}>{item.placement_label || '—'}</Text></YStack>
-        <YStack flex={1} minWidth={130} gap="$1"><Text color="$color" {...textStyles.metadata} numberOfLines={1}>{item.location_name || '—'}</Text></YStack>
-        <XStack width={110} minWidth={90} alignItems="center" gap="$2"><YStack width={8} height={8} borderRadius={99} backgroundColor={streamColor} /><Text color="$color" {...textStyles.bodySecondary}>{historyStreamLabel(item.stream)}</Text></XStack>
-        <YStack width={150} minWidth={130}><StatusBadge status={status} compact /></YStack>
-        <Text color="$color" {...textStyles.metadata} width={90} textAlign="right">{compactMetric(item.fill, '%')}</Text>
-        <Text color="$color" {...textStyles.metadata} width={90} textAlign="right">{compactMetric(item.weight, ' kg')}</Text>
+        <Text color="$colorMuted" {...textStyles.metadata} width={145}>{formatTimestamp(item.recorded_at)}</Text>
+        <YStack width={145} minWidth={125}><Text color="$color" {...textStyles.metadata} fontWeight="700" numberOfLines={1}>{item.device_code || '—'}</Text></YStack>
+        <YStack width={145} minWidth={125}><Text color="$colorMuted" {...textStyles.metadata} numberOfLines={1}>{item.placement_label || '—'}</Text></YStack>
+        <YStack flex={1} minWidth={125}><Text color="$color" {...textStyles.metadata} numberOfLines={1}>{item.location_name || '—'}</Text></YStack>
+        <XStack width={100} minWidth={90} alignItems="center" gap="$2"><YStack width={8} height={8} borderRadius={99} backgroundColor={streamColor} /><Text color="$color" {...textStyles.bodySecondary}>{historyStreamLabel(item.stream)}</Text></XStack>
+        <YStack width={140} minWidth={125}><StatusBadge status={status} compact /></YStack>
+        <Text color="$color" {...textStyles.metadata} width={80} textAlign="right">{compactMetric(item.fill, '%')}</Text>
+        <Text color="$color" {...textStyles.metadata} width={80} textAlign="right">{compactMetric(item.weight, ' kg')}</Text>
         <AppButton size="sm" variant="ghost" onPress={() => setExpanded((value) => !value)} ariaLabel={`${expanded ? 'Tutup' : 'Buka'} detail riwayat ${item.device_code}`} ariaExpanded={expanded}>{expanded ? 'Tutup' : 'Detail'}</AppButton>
       </XStack>
       {expanded ? <HistoryRowDetail item={item} /> : null}
@@ -261,14 +276,15 @@ function HistoryTrend({ items }: { items: HistoryItem[] }) {
 function HistoryTableHeader() {
   return (
     <XStack alignItems="center" gap="$3" paddingHorizontal="$4" paddingVertical="$3" backgroundColor="$surfaceMuted" role="row">
-      <Text color="$colorMuted" {...textStyles.caption} fontWeight="800" width={150}>WAKTU</Text>
-      <Text color="$colorMuted" {...textStyles.caption} fontWeight="800" width={170}>PERANGKAT</Text>
-      <Text color="$colorMuted" {...textStyles.caption} fontWeight="800" flex={1} minWidth={130}>LOKASI</Text>
-      <Text color="$colorMuted" {...textStyles.caption} fontWeight="800" width={110}>STREAM</Text>
-      <Text color="$colorMuted" {...textStyles.caption} fontWeight="800" width={150}>STATUS</Text>
-      <Text color="$colorMuted" {...textStyles.caption} fontWeight="800" width={90} textAlign="right">KETERISIAN</Text>
-      <Text color="$colorMuted" {...textStyles.caption} fontWeight="800" width={90} textAlign="right">BERAT</Text>
-      <Text color="$colorMuted" {...textStyles.caption} fontWeight="800" width={72}>AKSI</Text>
+      <Text color="$colorMuted" {...textStyles.caption} fontWeight="800" width={145}>{HISTORY_TABLE_COLUMNS[0]}</Text>
+      <Text color="$colorMuted" {...textStyles.caption} fontWeight="800" width={145}>{HISTORY_TABLE_COLUMNS[1]}</Text>
+      <Text color="$colorMuted" {...textStyles.caption} fontWeight="800" width={145}>{HISTORY_TABLE_COLUMNS[2]}</Text>
+      <Text color="$colorMuted" {...textStyles.caption} fontWeight="800" flex={1} minWidth={125}>{HISTORY_TABLE_COLUMNS[3]}</Text>
+      <Text color="$colorMuted" {...textStyles.caption} fontWeight="800" width={100}>{HISTORY_TABLE_COLUMNS[4]}</Text>
+      <Text color="$colorMuted" {...textStyles.caption} fontWeight="800" width={140}>{HISTORY_TABLE_COLUMNS[5]}</Text>
+      <Text color="$colorMuted" {...textStyles.caption} fontWeight="800" width={80} textAlign="right">{HISTORY_TABLE_COLUMNS[6]}</Text>
+      <Text color="$colorMuted" {...textStyles.caption} fontWeight="800" width={80} textAlign="right">{HISTORY_TABLE_COLUMNS[7]}</Text>
+      <Text color="$colorMuted" {...textStyles.caption} fontWeight="800" width={68}>{HISTORY_TABLE_COLUMNS[8]}</Text>
     </XStack>
   );
 }
@@ -442,6 +458,7 @@ export default function HistoryRoute() {
         {loading && !data ? <LoadingState label="Memuat riwayat" rows={4} /> : null}
         {!data && !loading && error ? <ErrorState onRetry={retry} /> : null}
 
+        {data && data.items.length ? <HistoryTrend items={data.items} /> : null}
         {data ? <YStack gap="$3">
           <XStack alignItems="center" justifyContent="space-between" gap="$3" flexWrap="wrap">
             <Text color="$color" {...textStyles.sectionTitle} $compact={textStyles.sectionTitleCompact}>Riwayat pembacaan</Text>
@@ -453,7 +470,6 @@ export default function HistoryRoute() {
           <Text color="$colorMuted" {...textStyles.caption}>{data.page.total_count ? `${Math.min((pageNumber - 1) * pageSize + 1, data.page.total_count)}–${Math.min(pageNumber * pageSize, data.page.total_count)} dari ${data.page.total_count} data` : 'Tidak ada data pada filter ini'}</Text>
           {data.items.length ? (media.wide ? <Card borderWidth={1} borderColor="$borderColor" backgroundColor="$surface" borderRadius="$4" overflow="hidden" role="table"><HistoryTableHeader />{data.items.map((item) => <HistoryRow key={`${item.reading_id}-${item.slot_id}`} item={item} compact={false} />)}</Card> : <YStack gap="$3">{data.items.map((item) => <HistoryRow key={`${item.reading_id}-${item.slot_id}`} item={item} compact />)}</YStack>) : <EmptyState title={HISTORY_EMPTY_COPY.title} description={HISTORY_EMPTY_COPY.description} />}
         </YStack> : null}
-        {data && data.items.length ? <HistoryTrend items={data.items} /> : null}
       </YStack>
     </AppShell>
   );

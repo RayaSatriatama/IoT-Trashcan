@@ -14,6 +14,7 @@ import {
   effectiveHistoryStatus,
   groupHistoryByDay,
   HISTORY_STATUS_FILTERS,
+  HISTORY_TABLE_COLUMNS,
   serializeHistoryFilters,
   totalHistoryPages,
   formatHistoryScore,
@@ -76,5 +77,19 @@ describe('history filter contracts', () => {
     expect(totalHistoryPages(21, 20)).toBe(2);
     expect(formatHistoryScore(13.33333333333332)).toBe('13.33');
     expect(formatHistoryScore(null)).toBe('—');
+  });
+
+  it('keeps device identity and placement as separate table columns', () => {
+    expect(HISTORY_TABLE_COLUMNS).toEqual([
+      'WAKTU',
+      'PERANGKAT',
+      'PENEMPATAN',
+      'LOKASI',
+      'STREAM',
+      'STATUS',
+      'KETERISIAN',
+      'BERAT',
+      'AKSI',
+    ]);
   });
 });
