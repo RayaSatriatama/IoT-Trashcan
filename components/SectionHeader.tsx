@@ -16,8 +16,6 @@ export function DescriptionHint({
     <YStack
       position="relative"
       zIndex={open ? 20 : 1}
-      onHoverIn={() => setOpen(true)}
-      onHoverOut={() => setOpen(false)}
     >
       <Button
         minWidth={34}
@@ -33,6 +31,8 @@ export function DescriptionHint({
         aria-label={ariaLabel}
         aria-expanded={open}
         aria-controls={tooltipId}
+        onHoverIn={() => setOpen(true)}
+        onHoverOut={() => setOpen(false)}
         onFocus={() => setOpen(true)}
         onBlur={() => setOpen(false)}
         onPress={() => setOpen((current) => !current)}
@@ -52,7 +52,7 @@ export function DescriptionHint({
           top={40}
           right={0}
           width={280}
-          maxWidth="80vw"
+          maxWidth={280}
           padding="$3"
           borderWidth={1}
           borderColor="$borderColor"
