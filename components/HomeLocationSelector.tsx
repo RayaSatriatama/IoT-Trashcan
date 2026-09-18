@@ -12,6 +12,7 @@ export interface HomeLocationSelectorProps {
   page: number;
   pageSize: number;
   onSelect: (id: string) => void;
+  onOpenLocation: (id: string) => void;
   onPrevious: () => void;
   onNext: () => void;
 }
@@ -22,6 +23,7 @@ export function HomeLocationSelector({
   page,
   pageSize,
   onSelect,
+  onOpenLocation,
   onPrevious,
   onNext,
 }: HomeLocationSelectorProps) {
@@ -41,6 +43,7 @@ export function HomeLocationSelector({
                 location={location}
                 selected={selectedLocationId === location.id}
                 onPress={() => onSelect(location.id)}
+                onDetail={() => onOpenLocation(location.id)}
               />
             </YStack>
           ))}

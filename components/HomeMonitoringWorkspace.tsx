@@ -93,6 +93,7 @@ export function HomeMonitoringWorkspace({
                 deviceCount={devices.length}
                 selected={selectedAttentionLocationId === location.id}
                 onPress={() => onSelectAttentionLocation(location.id)}
+                onDetail={() => onOpenLocation(location.id)}
               />
             </YStack>
           ))}

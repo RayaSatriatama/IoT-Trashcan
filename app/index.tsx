@@ -207,6 +207,7 @@ export default function HomeRoute() {
                 page={locationPages.page}
                 pageSize={locationPageSize}
                 onSelect={handleLocationSelect}
+                onOpenLocation={(id) => handleNavigate(`/locations/${encodeURIComponent(id)}`)}
                 onPrevious={() => setLocationPage((current) => Math.max(1, current - 1))}
                 onNext={() => setLocationPage((current) => Math.min(locationPages.totalPages, current + 1))}
               />
