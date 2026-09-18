@@ -1,10 +1,11 @@
 import { Link, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback } from 'react';
 import { Image as RNImage } from 'react-native';
-import { Button, Card, Text, XStack, YStack } from 'tamagui';
+import { Card, Text, XStack, YStack } from 'tamagui';
 
 import { AppShell } from '../../components/AppShell';
 import { DeviceCard } from '../../components/DeviceCard';
+import { AppButton } from '../../components/AppButton';
 import { EmptyState } from '../../components/EmptyState';
 import { ErrorState } from '../../components/ErrorState';
 import { LoadingState } from '../../components/LoadingState';
@@ -19,7 +20,7 @@ export const LOCATION_EMPTY_DEVICES_COPY = { title: 'Belum ada device', descript
 export function deviceDetailHref(id: string): `/devices/${string}` { return `/devices/${encodeURIComponent(id)}` as `/devices/${string}`; }
 
 function StaleNotice({ onRetry }: { onRetry: () => void }) {
-  return <Card borderWidth={1} borderColor="$statusWaspada" backgroundColor="$statusWaspadaSoft" borderRadius="$4" paddingHorizontal="$4" paddingVertical="$3" role="status"><XStack alignItems="center" justifyContent="space-between" gap="$3" flexWrap="wrap"><Text color="$color" fontSize="$2" flex={1}>Data terbaru belum tersedia. Menampilkan detail lokasi terakhir.</Text><Button color="$statusWaspada" fontSize="$2" fontWeight="800" minHeight={44} backgroundColor="transparent" borderWidth={0} onPress={onRetry}>Coba perbarui</Button></XStack></Card>;
+  return <Card borderWidth={1} borderColor="$statusWaspada" backgroundColor="$statusWaspadaSoft" borderRadius="$4" paddingHorizontal="$4" paddingVertical="$3" role="status"><XStack alignItems="center" justifyContent="space-between" gap="$3" flexWrap="wrap"><Text color="$color" fontSize="$2" flex={1}>Data terbaru belum tersedia. Menampilkan detail lokasi terakhir.</Text><AppButton variant="ghost" size="sm" onPress={onRetry} ariaLabel="Coba perbarui detail lokasi">Coba perbarui</AppButton></XStack></Card>;
 }
 
 export default function LocationDetailRoute() {
@@ -30,11 +31,11 @@ export default function LocationDetailRoute() {
   const { data, loading, error, stale, retry } = usePollingResource<LocationDetail>(loader);
   const handleNavigate = useCallback((path: string) => router.push(path as never), [router]);
 
-  return <AppShell title={data?.name ?? 'Detail lokasi'} subtitle="Kelola perangkat dan kondisi slot di area ini." activePath="/locations" onNavigate={handleNavigate}><YStack gap="$6" paddingBottom="$6"><Button alignSelf="flex-start" minHeight={44} paddingHorizontal="$3" backgroundColor="transparent" borderWidth={0} color="$primary" fontWeight="800" onPress={() => router.back()} aria-label="Kembali ke lokasi"><ArrowLeft size={17} color="#0A9B62" strokeWidth={2.3} aria-hidden={true} /> Kembali ke lokasi</Button>
+  return <AppShell title={data?.name ?? 'Detail lokasi'} subtitle="Kelola perangkat dan kondisi slot di area ini." activePath="/locations" onNavigate={handleNavigate}><YStack gap="$6" paddingBottom="$6"><AppButton variant="ghost" size="sm" onPress={() => router.back()} ariaLabel="Kembali ke lokasi"><ArrowLeft size={17} color="#0A9B62" strokeWidth={2.3} aria-hidden={true} /> Kembali ke lokasi</AppButton>
     {stale && data ? <StaleNotice onRetry={retry} /> : null}{loading && !data ? <LoadingState label="Memuat detail lokasi" rows={3} /> : null}{!data && !loading && error ? <ErrorState onRetry={retry} /> : null}
     {data ? <>
       <Card borderWidth={1} borderColor="$primarySoft" backgroundColor="$surface" borderRadius="$5" padding="$6" overflow="hidden"><XStack alignItems="center" gap="$5" flexWrap="wrap"><YStack flex={1} minWidth={240} gap="$3"><Text color="$primary" fontSize="$2" fontWeight="800">RINGKASAN LOKASI</Text><Text color="$color" fontSize="$8" lineHeight="$8" fontWeight="800" letterSpacing={-1}>{data.name}</Text><Text color="$colorMuted" fontSize="$3">{data.address_text ?? 'Alamat belum tersedia'}</Text><XStack alignItems="center" gap="$3" flexWrap="wrap"><StatusBadge status={data.status} /><Text color="$colorMuted" fontSize="$2">{data.devices.length} device terhubung</Text></XStack></YStack><RNImage source={resolveLocationImage(data.name)} accessibilityLabel={`Ilustrasi ${data.name}`} resizeMode="contain" style={{ width: 300, height: 150, maxWidth: '100%' }} /></XStack></Card>
-      <YStack gap="$3"><XStack alignItems="flex-end" justifyContent="space-between" gap="$3" flexWrap="wrap"><YStack gap="$1" flexShrink={1}><Text color="$color" fontSize="$6" fontWeight="800">Perangkat terhubung</Text><Text color="$colorMuted" fontSize="$2">Perangkat di {data.name}, dengan tiga slot operasional.</Text></YStack><Text color="$colorMuted" fontSize="$2">{data.devices.length} perangkat</Text></XStack>{data.devices.length ? <XStack gap="$3" flexWrap="wrap">{data.devices.map((device) => <YStack key={device.id} width="100%" $wide={{ width: 'calc(33.333% - 8px)' }}><Link href={deviceDetailHref(device.id)} asChild><DeviceCard device={device} /></Link></YStack>)}</XStack> : <EmptyState title={LOCATION_EMPTY_DEVICES_COPY.title} description={LOCATION_EMPTY_DEVICES_COPY.description} />}</YStack>
+      <YStack gap="$3"><XStack alignItems="flex-end" justifyContent="space-between" gap="$3" flexWrap="wrap"><YStack gap="$1" flexShrink={1}><Text color="$color" fontSize="$6" fontWeight="800">Perangkat terhubung</Text><Text color="$colorMuted" fontSize="$2">Perangkat di {data.name}, dengan tiga slot operasional.</Text></YStack><Text color="$colorMuted" fontSize="$2">{data.devices.length} perangkat</Text></XStack>{data.devices.length ? <XStack gap="$3" flexWrap="wrap">{data.devices.map((device) => <YStack key={device.id} width="100%" $tablet={{ width: 'calc(50% - 6px)' }} $wide={{ width: 'calc(33.333% - 8px)' }}><Link href={deviceDetailHref(device.id)} asChild><DeviceCard device={device} locationName={data.name} /></Link></YStack>)}</XStack> : <EmptyState title={LOCATION_EMPTY_DEVICES_COPY.title} description={LOCATION_EMPTY_DEVICES_COPY.description} />}</YStack>
     </> : null}
   </YStack></AppShell>;
 }

@@ -54,7 +54,7 @@ export function DeviceCard({ device, onPress, locationName }: DeviceCardProps) {
           <RNImage source={b3Artwork} accessibilityLabel="Ilustrasi slot B3" resizeMode="contain" style={{ width: 31, height: 38 }} />
         </XStack>
         <YStack flex={1} minWidth={0} gap="$1" alignItems="stretch">
-          <Text color="$color" {...textStyles.cardTitle} alignSelf="stretch" textAlign="left" minHeight={56} numberOfLines={2}>
+          <Text color="$color" {...textStyles.cardTitle} alignSelf="stretch" textAlign="left" minHeight={28} numberOfLines={1} ellipsizeMode="tail">
             {device.device_code}
           </Text>
           <Text color="$colorMuted" {...textStyles.bodySecondary} alignSelf="stretch" textAlign="left" minHeight={44} numberOfLines={2}>

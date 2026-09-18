@@ -1,4 +1,4 @@
-import type { CanonicalStatus, DeviceDetail, LocationDetail } from '../api/types';
+import type { CanonicalStatus, DeviceDetail, DeviceSummary, LocationDetail } from '../api/types';
 
 export type HomeMonitoringMode = 'locations' | 'devices' | 'attention';
 export type HomeOperationalFilter = 'Angkat' | 'Safety Alert' | null;
@@ -15,6 +15,25 @@ export interface HomeAffectedLocation {
 
 export function flattenHomeDevices(locations: LocationDetail[]): HomeDeviceEntry[] {
   return locations.flatMap((location) => location.devices.map((device) => ({ device, location })));
+}
+
+export function groupDeviceSummaries(devices: DeviceSummary[]): LocationDetail[] {
+  const groups = new Map<string, LocationDetail>();
+  for (const device of devices) {
+    const existing = groups.get(device.location_id);
+    if (existing) {
+      existing.devices.push(device);
+      continue;
+    }
+    groups.set(device.location_id, {
+      id: device.location_id,
+      name: device.location_name,
+      address_text: device.location_address_text,
+      status: device.location_status,
+      devices: [device],
+    });
+  }
+  return [...groups.values()];
 }
 
 export function getAffectedLocations(

@@ -15,8 +15,8 @@ import {
   RECENT_ACTIVITY_LIMIT,
   recentActivityItems,
 } from '../../app/index';
-import { flattenHomeDevices, getAffectedLocations } from '../../lib/ui/homeMonitoring';
-import type { LocationDetail } from '../../lib/api/types';
+import { flattenHomeDevices, getAffectedLocations, groupDeviceSummaries } from '../../lib/ui/homeMonitoring';
+import type { DeviceSummary, LocationDetail } from '../../lib/api/types';
 
 const fixtureLocations: LocationDetail[] = [
   {
@@ -70,6 +70,19 @@ describe('home route display contracts', () => {
     ]);
     expect(getAffectedLocations(fixtureLocations, 'Safety Alert')).toEqual([
       { location: fixtureLocations[0], devices: [fixtureLocations[0].devices[0]] },
+    ]);
+  });
+
+  it('groups global device summaries while preserving location context', () => {
+    const devices: DeviceSummary[] = fixtureLocations.flatMap((location) => location.devices.map((device) => ({
+      ...device,
+      location_name: location.name,
+      location_address_text: location.address_text,
+      location_status: location.status,
+    })));
+    expect(groupDeviceSummaries(devices).map((location) => [location.id, location.devices.length])).toEqual([
+      ['loc-a', 2],
+      ['loc-b', 1],
     ]);
   });
 });

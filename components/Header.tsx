@@ -1,7 +1,8 @@
 import type { ReactNode } from 'react';
-import { Separator, Text, XStack, YStack, useMedia } from 'tamagui';
-import { Bell } from '../lib/ui/icons';
+import { Button, Popover, PopoverContent, PopoverTrigger, Separator, Text, XStack, YStack, useMedia } from 'tamagui';
+import { Bell, CircleUserRound } from '../lib/ui/icons';
 import { textStyles } from '../lib/ui/typography';
+import { SimulationIndicator } from './SimulationIndicator';
 
 export interface HeaderProps {
   title: string;
@@ -31,21 +32,47 @@ export function Header({ title, subtitle, actions }: HeaderProps) {
             </Text>
           ) : null}
         </YStack>
-        <XStack alignItems="center" gap="$3">
-          <YStack
-            width={44}
-            height={44}
+        <XStack alignItems="center" gap="$2">
+          <SimulationIndicator />
+          <Button
+            minWidth={44}
+            minHeight={44}
+            padding={0}
             borderRadius="$6"
             backgroundColor="$surface"
             borderWidth={1}
             borderColor="$borderColor"
-            alignItems="center"
-            justifyContent="center"
-            aria-hidden={true}
+            hoverStyle={{ borderColor: '$primary' }}
+            aria-label="Notifikasi"
+            type="button"
           >
             <Bell size={18} color="#0A9B62" strokeWidth={2.2} aria-hidden={true} />
-          </YStack>
-          <YStack paddingLeft="$3" borderLeftWidth={1} borderLeftColor="$borderColor" gap="$1">
+          </Button>
+          <Popover placement="bottom-end" allowFlip>
+            <PopoverTrigger asChild>
+              <Button
+                minWidth={44}
+                minHeight={44}
+                padding={0}
+                borderRadius="$6"
+                backgroundColor="$surface"
+                borderWidth={1}
+                borderColor="$borderColor"
+                hoverStyle={{ borderColor: '$primary' }}
+                aria-label="Buka profil Admin"
+                type="button"
+              >
+                <CircleUserRound size={20} color="#0A9B62" strokeWidth={2.1} aria-hidden={true} />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent elevate bordered borderColor="$borderColor" backgroundColor="$surface" padding="$3" width={190}>
+              <YStack gap="$1">
+                <Text color="$color" {...textStyles.bodySecondary} fontWeight="800">Admin</Text>
+                <Text color="$colorMuted" {...textStyles.caption}>Pengelola sistem</Text>
+              </YStack>
+            </PopoverContent>
+          </Popover>
+          <YStack display={media.compact ? 'none' : 'flex'} paddingLeft="$3" borderLeftWidth={1} borderLeftColor="$borderColor" gap="$1">
             <Text color="$color" {...textStyles.bodySecondary} fontWeight="800">Admin</Text>
             <Text color="$colorMuted" {...textStyles.metricLabel}>Pengelola sistem</Text>
           </YStack>

@@ -7,6 +7,7 @@ export const ArrowLeft = TestIcon;
 export const ArrowRight = TestIcon;
 export const Bell = TestIcon;
 export const Box = TestIcon;
+export const CircleUserRound = TestIcon;
 export const ChevronRight = TestIcon;
 export const Clock3 = TestIcon;
 export const Filter = TestIcon;

@@ -147,6 +147,33 @@ func (api *ReadAPI) Location(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, location)
 }
 
+// Devices returns one flattened, read-only device summary per device. It is
+// intended for monitoring workspaces that need location context without
+// issuing one request per location from the browser.
+func (api *ReadAPI) Devices(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	locations, err := api.locations(r.Context(), "")
+	if err != nil {
+		api.writeReadError(w, err)
+		return
+	}
+	items := make([]deviceSummaryDTO, 0)
+	for _, location := range locations {
+		for _, item := range location.Devices {
+			items = append(items, deviceSummaryDTO{
+				deviceDTO:       item,
+				LocationName:    location.Name,
+				LocationAddress: location.Address,
+				LocationStatus:  location.Status,
+			})
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"devices": items})
+}
+
 // Device returns one device's current operational summary.
 func (api *ReadAPI) Device(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -223,6 +250,13 @@ type deviceDTO struct {
 	LastSeen       *string   `json:"last_seen"`
 	Status         *string   `json:"status"`
 	Slots          []slotDTO `json:"slots"`
+}
+
+type deviceSummaryDTO struct {
+	deviceDTO
+	LocationName    string  `json:"location_name"`
+	LocationAddress *string `json:"location_address_text"`
+	LocationStatus  *string `json:"location_status"`
 }
 
 type slotDTO struct {

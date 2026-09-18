@@ -106,6 +106,32 @@ func TestReadAPIOverviewLimitsRecentActivityToNewestThree(t *testing.T) {
 	}
 }
 
+func TestReadAPIDevicesReturnsLocationContextInOneSummaryResponse(t *testing.T) {
+	api, _ := readAPIFixture(t)
+	request := httptest.NewRequest(http.MethodGet, "/api/devices", nil)
+	response := httptest.NewRecorder()
+
+	api.Devices(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var body struct {
+		Devices []struct {
+			ID           string `json:"id"`
+			LocationName string `json:"location_name"`
+			DeviceCode   string `json:"device_code"`
+		} `json:"devices"`
+	}
+	decodeBody(t, response, &body)
+	if len(body.Devices) != 2 {
+		t.Fatalf("devices=%d, want 2", len(body.Devices))
+	}
+	if body.Devices[0].ID == "" || body.Devices[0].DeviceCode == "" || body.Devices[0].LocationName == "" {
+		t.Fatalf("device summary lost identity context: %+v", body.Devices[0])
+	}
+}
+
 func TestReadAPILocationsSupportsSearchAndStatusFilter(t *testing.T) {
 	api, _ := readAPIFixture(t)
 	request := httptest.NewRequest(http.MethodGet, "/api/locations?q=alpha&status=Safety%20Alert", nil)

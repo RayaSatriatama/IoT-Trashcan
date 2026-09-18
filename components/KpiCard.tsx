@@ -46,14 +46,14 @@ export function KpiCard({ label, value, description, icon: Icon, tone = 'green',
     >
       <XStack alignItems="center" justifyContent="space-between" gap="$3">
         <YStack gap="$1" flex={1}>
-          <Text color="$colorMuted" {...textStyles.caption} fontWeight="700">{label}</Text>
+          <Text color="$colorMuted" {...textStyles.caption} fontWeight="700" minHeight={20} numberOfLines={2}>{label}</Text>
           <Text color={palette.color} {...textStyles.numericKpi} letterSpacing={-1} fontVariant={['tabular-nums']}>{value}</Text>
         </YStack>
         <YStack width={44} height={44} borderRadius="$6" backgroundColor="$surface" alignItems="center" justifyContent="center">
           <Icon size={22} color={palette.color} strokeWidth={2.2} aria-hidden={true} />
         </YStack>
       </XStack>
-      {description ? <Text color="$colorMuted" {...textStyles.caption}>{description}</Text> : null}
+      {description ? <Text color="$colorMuted" {...textStyles.caption} $compact={{ display: 'none' }}>{description}</Text> : null}
     </Card>
   );
 }

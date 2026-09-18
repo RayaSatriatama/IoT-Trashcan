@@ -55,6 +55,7 @@ func NewRouter(service IngestService, options ...RouterOption) http.Handler {
 		mux.Handle("GET /api/overview", http.HandlerFunc(config.readAPI.Overview))
 		mux.Handle("GET /api/locations", http.HandlerFunc(config.readAPI.Locations))
 		mux.Handle("GET /api/locations/{id}", http.HandlerFunc(config.readAPI.Location))
+		mux.Handle("GET /api/devices", http.HandlerFunc(config.readAPI.Devices))
 		mux.Handle("GET /api/devices/{id}", http.HandlerFunc(config.readAPI.Device))
 		mux.Handle("GET /api/devices/{id}/research", http.HandlerFunc(config.readAPI.Research))
 		mux.Handle("GET /api/history", http.HandlerFunc(config.readAPI.History))

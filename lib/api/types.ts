@@ -45,6 +45,16 @@ export interface DeviceDetail {
   slots: SlotDTO[];
 }
 
+export interface DeviceSummary extends DeviceDetail {
+  location_name: string;
+  location_address_text: string | null;
+  location_status: CanonicalStatus | null;
+}
+
+export interface DeviceSummaryResponse {
+  devices: DeviceSummary[];
+}
+
 export interface SlotDTO {
   stream: 'organic' | 'inorganic' | 'b3' | string;
   fill: number | null;

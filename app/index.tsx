@@ -17,13 +17,13 @@ import { SectionHeader } from '../components/SectionHeader';
 import { StatusBadge } from '../components/StatusBadge';
 import { apiClient } from '../lib/api/client';
 import { usePollingResource } from '../lib/api/hooks';
-import type { EventDTO, LocationDetail, LocationListResponse, OverviewResponse } from '../lib/api/types';
+import type { DeviceSummaryResponse, EventDTO, LocationListResponse, OverviewResponse } from '../lib/api/types';
 import { formatTimestamp } from '../lib/format';
 import { Activity, ArrowRight, Box, MapPin, ShieldAlert, Truck } from '../lib/ui/icons';
 import { paginate } from '../lib/ui/pagination';
 import { textStyles } from '../lib/ui/typography';
 import type { HomeMonitoringMode, HomeOperationalFilter } from '../lib/ui/homeMonitoring';
-import { getAffectedLocations } from '../lib/ui/homeMonitoring';
+import { getAffectedLocations, groupDeviceSummaries } from '../lib/ui/homeMonitoring';
 
 export const HOME_KPI_LABELS = ['Total lokasi', 'Total perangkat', 'Perlu diangkat', 'Peringatan keselamatan'] as const;
 export const RECENT_ACTIVITY_LIMIT = 3;
@@ -75,56 +75,22 @@ export default function HomeRoute() {
   const locationsLoader = useCallback((signal: AbortSignal) => apiClient.fetchLocations({}, signal), []);
   const overview = usePollingResource<OverviewResponse>(overviewLoader);
   const locationsResource = usePollingResource<LocationListResponse>(locationsLoader);
+  const devicesLoader = useCallback((signal: AbortSignal) => apiClient.fetchDevices(signal), []);
+  const devicesResource = usePollingResource<DeviceSummaryResponse>(devicesLoader);
   const [selectedLocationId, setSelectedLocationId] = useState<string | null>(null);
   const [locationPage, setLocationPage] = useState(1);
   const [devicePage, setDevicePage] = useState(1);
   const [monitoringMode, setMonitoringMode] = useState<HomeMonitoringMode>('locations');
   const [operationalFilter, setOperationalFilter] = useState<HomeOperationalFilter>(null);
-  const [directory, setDirectory] = useState<LocationDetail[]>([]);
-  const [directoryLoading, setDirectoryLoading] = useState(false);
-  const [directoryError, setDirectoryError] = useState<Error | null>(null);
   const [selectedAttentionLocationId, setSelectedAttentionLocationId] = useState<string | null>(null);
 
   const locations = locationsResource.data?.locations ?? [];
+  const directory = useMemo(() => groupDeviceSummaries(devicesResource.data?.devices ?? []), [devicesResource.data]);
   const locationPageSize = media.wide ? 4 : media.tablet ? 2 : 3;
   const devicePageSize = media.wide ? 3 : media.tablet ? 2 : 1;
   const locationPages = paginate(locations, locationPage, locationPageSize);
   const preferredLocationId = overview.data?.priority_locations.find((priority) => locations.some((location) => location.id === priority.id))?.id;
   const defaultLocationId = preferredLocationId ?? locations[0]?.id ?? null;
-  const locationIdsKey = locations.map((location) => location.id).join('|');
-
-  const loadDirectory = useCallback(() => {
-    if (!locations.length) {
-      setDirectory([]);
-      setDirectoryError(null);
-      setDirectoryLoading(false);
-      return () => undefined;
-    }
-    const controller = new AbortController();
-    setDirectoryLoading(true);
-    setDirectoryError(null);
-    Promise.all(locations.map((location) => apiClient.fetchLocation(location.id, controller.signal)))
-      .then((details) => {
-        if (!controller.signal.aborted) setDirectory(details);
-      })
-      .catch((reason: unknown) => {
-        if (!controller.signal.aborted) setDirectoryError(reason instanceof Error ? reason : new Error('Gagal memuat daftar perangkat'));
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setDirectoryLoading(false);
-      });
-    return () => controller.abort();
-  }, [locationIdsKey]);
-
-  useEffect(() => {
-    if (monitoringMode === 'locations') {
-      setDirectoryLoading(false);
-      setDirectoryError(null);
-      return () => undefined;
-    }
-    return loadDirectory();
-  }, [loadDirectory, monitoringMode]);
-
   const affectedLocations = useMemo(
     () => operationalFilter ? getAffectedLocations(directory, operationalFilter) : [],
     [directory, operationalFilter],
@@ -156,8 +122,6 @@ export default function HomeRoute() {
   const handleMonitoringMode = useCallback((mode: HomeMonitoringMode, filter: HomeOperationalFilter) => {
     setMonitoringMode(mode);
     setOperationalFilter(filter);
-    setDirectory([]);
-    setDirectoryError(null);
     setDevicePage(1);
     setLocationPage(1);
     setSelectedAttentionLocationId(null);
@@ -226,7 +190,7 @@ export default function HomeRoute() {
             ) : null}
 
             {monitoringMode !== 'locations' ? (
-              directoryLoading && !directory.length ? <LoadingState label="Memuat perangkat" rows={devicePageSize} /> : directoryError && !directory.length ? <ErrorState title="Daftar perangkat tidak dapat dimuat" onRetry={loadDirectory} /> : <HomeMonitoringWorkspace
+              devicesResource.loading && !directory.length ? <LoadingState label="Memuat perangkat" rows={devicePageSize} /> : devicesResource.error && !directory.length ? <ErrorState title="Daftar perangkat tidak dapat dimuat" onRetry={devicesResource.retry} /> : <HomeMonitoringWorkspace
                 mode={monitoringMode}
                 operationalFilter={operationalFilter}
                 locations={directory}

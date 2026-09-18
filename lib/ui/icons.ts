@@ -4,6 +4,7 @@ export {
   ArrowRight,
   Bell,
   Box,
+  CircleUserRound,
   Clock3,
   ChevronRight,
   Download,
