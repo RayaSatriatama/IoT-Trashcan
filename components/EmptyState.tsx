@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { Card, Text, YStack } from 'tamagui';
+import { textStyles } from '../lib/ui/typography';
 
 export interface EmptyStateProps {
   title: string;
@@ -21,11 +22,11 @@ export function EmptyState({ title, description, action }: EmptyStateProps) {
       aria-label={title}
     >
       <YStack alignItems="center" gap="$2" maxWidth={520}>
-        <Text fontSize="$4" color="$color" fontWeight="700" textAlign="center">
+        <Text {...textStyles.cardTitle} color="$color" textAlign="center">
           {title}
         </Text>
         {description ? (
-          <Text fontSize="$2" color="$colorMuted" textAlign="center">
+          <Text {...textStyles.bodySecondary} color="$colorMuted" textAlign="center">
             {description}
           </Text>
         ) : null}

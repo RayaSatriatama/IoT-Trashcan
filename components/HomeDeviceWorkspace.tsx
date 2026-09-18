@@ -9,7 +9,6 @@ import { ErrorState } from './ErrorState';
 import { LoadingState } from './LoadingState';
 import { SectionHeader } from './SectionHeader';
 import { SectionPager } from './SectionPager';
-import { StatusBadge } from './StatusBadge';
 import { ArrowRight } from '../lib/ui/icons';
 import { Text, XStack, YStack } from 'tamagui';
 
@@ -82,10 +81,9 @@ export function HomeDeviceWorkspace({
         description={description}
         action={data ? (
           <XStack alignItems="center" gap="$2" flexWrap="wrap" justifyContent="flex-end">
-            <StatusBadge status={data.status} compact />
             <SectionPager page={current.page} totalPages={current.totalPages} onPrevious={() => onPageChange(Math.max(1, current.page - 1))} onNext={() => onPageChange(Math.min(current.totalPages, current.page + 1))} />
-            <AppButton variant="ghost" size="sm" onPress={() => onOpenLocation(data.id)} ariaLabel="Lihat detail lokasi">
-              Lihat detail lokasi <ArrowRight size={15} color="#0A9B62" strokeWidth={2.2} aria-hidden={true} />
+            <AppButton variant="ghost" size="sm" onPress={() => onOpenLocation(data.id)} ariaLabel="Lihat Detail">
+              Lihat Detail <ArrowRight size={15} color="#0A9B62" strokeWidth={2.2} aria-hidden={true} />
             </AppButton>
           </XStack>
         ) : null}
