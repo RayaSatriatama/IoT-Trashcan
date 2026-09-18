@@ -9,6 +9,7 @@ import { AppButton } from '../../components/AppButton';
 import { EmptyState } from '../../components/EmptyState';
 import { ErrorState } from '../../components/ErrorState';
 import { LoadingState } from '../../components/LoadingState';
+import { SectionHeader } from '../../components/SectionHeader';
 import { ResearchPanel } from '../../components/ResearchPanel';
 import { SlotCard } from '../../components/SlotCard';
 import { StatusBadge } from '../../components/StatusBadge';
@@ -48,7 +49,7 @@ export default function DeviceDetailRoute() {
     {stale && data ? <StaleNotice onRetry={retry} /> : null}{loading && !data ? <LoadingState label="Memuat detail device" rows={4} /> : null}{!data && !loading && error ? <ErrorState onRetry={retry} /> : null}
     {data ? <>
       <Card borderWidth={1} borderColor="$primarySoft" backgroundColor="$surface" borderRadius="$5" padding="$6" overflow="hidden"><XStack alignItems="center" gap="$5" flexWrap="wrap"><YStack flex={1} minWidth={250} gap="$3"><Text color="$primary" fontSize="$2" fontWeight="800">DETAIL PERANGKAT</Text><Text color="$color" fontSize="$8" lineHeight="$8" fontWeight="800" letterSpacing={-1}>{data.device_code}</Text><Text color="$colorMuted" fontSize="$3">{data.placement_label ?? DEVICE_UNAVAILABLE_COPY}</Text><XStack gap="$2" flexWrap="wrap" alignItems="center"><StatusBadge status={data.status ?? (data.online_state === 'Offline' ? 'Offline' : null)} />{data.online_state === 'Offline' && data.status && data.status !== 'Offline' ? <StatusBadge status="Offline" /> : null}<Text color="$colorMuted" fontSize="$2">Terakhir terlihat: {formatTimestamp(data.last_seen)}</Text></XStack></YStack><RNImage source={deviceArtwork} accessibilityLabel="Ilustrasi tiga jenis tempat sampah" resizeMode="contain" style={{ width: 340, height: 170, maxWidth: '100%' }} /></XStack></Card>
-      <YStack gap="$3"><YStack gap="$1"><Text color="$color" fontSize="$6" fontWeight="800">Kondisi slot</Text><Text color="$colorMuted" fontSize="$3">Pantau keterisian, kapasitas, dan kondisi setiap jenis sampah.</Text></YStack>{data.slots.length ? <XStack gap="$3" flexWrap="wrap">{data.slots.map((slot) => <YStack key={slot.stream} width={media.wide ? 'calc(33.333% - 8px)' : media.tablet ? 'calc(50% - 6px)' : '100%'}><SlotCard slot={slot} /></YStack>)}</XStack> : <EmptyState title="Belum ada data slot" description="Metrik slot akan muncul setelah device mengirimkan pembacaan terbaru." />}</YStack>
+      <YStack gap="$3"><SectionHeader title="Kondisi slot" description="Pantau keterisian, kapasitas, dan kondisi setiap jenis sampah." />{data.slots.length ? <XStack gap="$3" flexWrap="wrap">{data.slots.map((slot) => <YStack key={slot.stream} width={media.wide ? 'calc(33.333% - 8px)' : media.tablet ? 'calc(50% - 6px)' : '100%'}><SlotCard slot={slot} /></YStack>)}</XStack> : <EmptyState title="Belum ada data slot" description="Metrik slot akan muncul setelah device mengirimkan pembacaan terbaru." />}</YStack>
       <ResearchPanel key={id ?? 'research'} data={researchData} loading={researchLoading} error={researchError} onRetry={loadResearch} onOpen={researchStarted ? undefined : loadResearch} />
     </> : null}
   </YStack></AppShell>;
