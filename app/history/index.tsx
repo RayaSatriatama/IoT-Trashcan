@@ -1,12 +1,13 @@
 import { useRouter } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
 import { Image as RNImage } from 'react-native';
-import { Button, Card, Input, Label, Select, Text, XStack, YStack, useMedia } from 'tamagui';
+import { Card, Input, Label, Select, Text, XStack, YStack, useMedia } from 'tamagui';
 
 import historyArtwork from '../../assets/history_report_analytics_illustration.png';
 import { AppShell } from '../../components/AppShell';
 import { EmptyState } from '../../components/EmptyState';
 import { ErrorState } from '../../components/ErrorState';
+import { AppButton } from '../../components/AppButton';
 import { KpiCard } from '../../components/KpiCard';
 import { LoadingState } from '../../components/LoadingState';
 import { StatusBadge } from '../../components/StatusBadge';
@@ -21,6 +22,7 @@ import type {
 } from '../../lib/api/types';
 import { formatNullableMetric, formatTimestamp } from '../../lib/format';
 import { Activity, Box, ShieldAlert, Truck } from '../../lib/ui/icons';
+import { textStyles } from '../../lib/ui/typography';
 
 export interface HistoryFilterValues {
   from?: string;
@@ -116,22 +118,12 @@ function StaleNotice({ onRetry }: { onRetry: () => void }) {
       aria-label="Data mungkin sudah lama"
     >
       <XStack alignItems="center" justifyContent="space-between" gap="$3" flexWrap="wrap">
-        <Text color="$color" fontSize="$2" flex={1}>
+        <Text color="$color" {...textStyles.bodySecondary} flex={1}>
           Data terbaru belum tersedia. Menampilkan hasil riwayat terakhir yang berhasil dimuat.
         </Text>
-        <Button
-          color="$primary"
-          fontSize="$2"
-          fontWeight="700"
-          minHeight={44}
-          paddingHorizontal="$2"
-          backgroundColor="transparent"
-          borderWidth={0}
-          onPress={onRetry}
-          aria-label="Coba perbarui riwayat"
-        >
+        <AppButton variant="ghost" size="sm" onPress={onRetry} ariaLabel="Coba perbarui riwayat">
           Coba perbarui
-        </Button>
+        </AppButton>
       </XStack>
     </Card>
   );
@@ -141,21 +133,21 @@ function HistorySummary({ item, compact }: { item: HistoryItem; compact: boolean
   return (
     <XStack gap="$4" flexWrap="wrap" flexDirection={compact ? 'column' : 'row'} flex={1}>
       <YStack minWidth={160} flex={1} gap="$1">
-        <Text color="$colorMuted" fontSize="$1">Waktu</Text>
-        <Text color="$color" fontSize="$2" fontWeight="600">{formatTimestamp(item.recorded_at)}</Text>
+        <Text color="$colorMuted" {...textStyles.caption}>Waktu</Text>
+        <Text color="$color" {...textStyles.metadata}>{formatTimestamp(item.recorded_at)}</Text>
       </YStack>
       <YStack minWidth={160} flex={1} gap="$1">
-        <Text color="$colorMuted" fontSize="$1">Lokasi</Text>
-        <Text color="$color" fontSize="$2" fontWeight="600">{item.location_name || HISTORY_MISSING_VALUE}</Text>
+        <Text color="$colorMuted" {...textStyles.caption}>Lokasi</Text>
+        <Text color="$color" {...textStyles.metadata}>{item.location_name || HISTORY_MISSING_VALUE}</Text>
       </YStack>
       <YStack minWidth={160} flex={1} gap="$1">
-        <Text color="$colorMuted" fontSize="$1">Device</Text>
-        <Text color="$color" fontSize="$2" fontWeight="600">{item.device_code || HISTORY_MISSING_VALUE}</Text>
-        <Text color="$colorMuted" fontSize="$1">ID: {item.device_id}</Text>
+        <Text color="$colorMuted" {...textStyles.caption}>Device</Text>
+        <Text color="$color" {...textStyles.metadata}>{item.device_code || HISTORY_MISSING_VALUE}</Text>
+        <Text color="$colorMuted" {...textStyles.caption}>ID: {item.device_id}</Text>
       </YStack>
       <YStack minWidth={100} gap="$1">
-        <Text color="$colorMuted" fontSize="$1">Stream</Text>
-        <Text color="$color" fontSize="$2" fontWeight="600">{item.stream}</Text>
+        <Text color="$colorMuted" {...textStyles.caption}>Stream</Text>
+        <Text color="$color" {...textStyles.metadata}>{item.stream}</Text>
       </YStack>
     </XStack>
   );
@@ -165,20 +157,20 @@ function HistoryDetails({ item, compact }: { item: HistoryItem; compact: boolean
   return (
     <XStack gap="$4" flexWrap="wrap" flexDirection={compact ? 'column' : 'row'} alignItems="flex-start">
       <YStack minWidth={130} gap="$1">
-        <Text color="$colorMuted" fontSize="$1">Status</Text>
+        <Text color="$colorMuted" {...textStyles.caption}>Status</Text>
         <StatusBadge status={effectiveHistoryStatus(item)} compact />
       </YStack>
       <YStack minWidth={170} flex={1} gap="$1">
-        <Text color="$colorMuted" fontSize="$1">Alasan</Text>
-        <Text color="$color" fontSize="$2">{item.dominant_reason || HISTORY_MISSING_VALUE}</Text>
+        <Text color="$colorMuted" {...textStyles.caption}>Alasan</Text>
+        <Text color="$color" {...textStyles.bodySecondary}>{item.dominant_reason || HISTORY_MISSING_VALUE}</Text>
       </YStack>
       <YStack minWidth={130} gap="$1">
-        <Text color="$colorMuted" fontSize="$1">Keselamatan</Text>
-        <Text color="$color" fontSize="$2">{item.safety_state || HISTORY_MISSING_VALUE}</Text>
+        <Text color="$colorMuted" {...textStyles.caption}>Keselamatan</Text>
+        <Text color="$color" {...textStyles.bodySecondary}>{item.safety_state || HISTORY_MISSING_VALUE}</Text>
       </YStack>
       <YStack minWidth={130} gap="$1">
-        <Text color="$colorMuted" fontSize="$1">FIS score</Text>
-        <Text color="$color" fontSize="$2">{formatNullableMetric(item.fis_score)}</Text>
+        <Text color="$colorMuted" {...textStyles.caption}>FIS score</Text>
+        <Text color="$color" {...textStyles.bodySecondary}>{formatNullableMetric(item.fis_score)}</Text>
       </YStack>
     </XStack>
   );
@@ -198,22 +190,22 @@ function HistoryRow({ item, compact }: { item: HistoryItem; compact: boolean }) 
         aria-label={`Riwayat ${item.device_code} ${item.stream}`}
       >
         <YStack width={178} gap="$1">
-          <Text color="$color" fontSize="$2" fontWeight="700">{item.device_code}</Text>
-          <Text color="$colorMuted" fontSize="$1">{item.placement_label || HISTORY_MISSING_VALUE}</Text>
+          <Text color="$color" {...textStyles.metadata} fontWeight="700">{item.device_code}</Text>
+          <Text color="$colorMuted" {...textStyles.caption}>{item.placement_label || HISTORY_MISSING_VALUE}</Text>
         </YStack>
         <YStack flex={1} minWidth={150} gap="$1">
-          <Text color="$color" fontSize="$2" fontWeight="600">{item.location_name || HISTORY_MISSING_VALUE}</Text>
-          <Text color="$colorMuted" fontSize="$1">{item.stream}</Text>
+          <Text color="$color" {...textStyles.metadata} fontWeight="600">{item.location_name || HISTORY_MISSING_VALUE}</Text>
+          <Text color="$colorMuted" {...textStyles.caption}>{item.stream}</Text>
         </YStack>
         <YStack width={142} gap="$1">
           <StatusBadge status={effectiveHistoryStatus(item)} compact />
-          <Text color="$colorMuted" fontSize="$1">{item.safety_state || HISTORY_MISSING_VALUE}</Text>
+          <Text color="$colorMuted" {...textStyles.caption}>{item.safety_state || HISTORY_MISSING_VALUE}</Text>
         </YStack>
         <YStack width={156} gap="$1">
-          <Text color="$color" fontSize="$2">{formatTimestamp(item.recorded_at)}</Text>
-          <Text color="$colorMuted" fontSize="$1">FIS {formatNullableMetric(item.fis_score)}</Text>
+          <Text color="$color" {...textStyles.bodySecondary}>{formatTimestamp(item.recorded_at)}</Text>
+          <Text color="$colorMuted" {...textStyles.caption}>FIS {formatNullableMetric(item.fis_score)}</Text>
         </YStack>
-        <Text color="$colorMuted" fontSize="$1" width={190} numberOfLines={2}>
+        <Text color="$colorMuted" {...textStyles.caption} width={190} numberOfLines={2}>
           {item.dominant_reason || HISTORY_MISSING_VALUE}
         </Text>
       </XStack>
@@ -234,16 +226,16 @@ function HistoryRow({ item, compact }: { item: HistoryItem; compact: boolean }) 
       <XStack gap="$4" alignItems="flex-start" flexWrap="wrap">
         <HistorySummary item={item} compact />
         <YStack minWidth={130} alignItems="flex-start" gap="$1">
-          <Text color="$colorMuted" fontSize="$1">Status</Text>
+          <Text color="$colorMuted" {...textStyles.caption}>Status</Text>
           <StatusBadge status={effectiveHistoryStatus(item)} compact />
         </YStack>
       </XStack>
       <HistoryDetails item={item} compact />
       <XStack gap="$4" flexWrap="wrap" borderTopWidth={1} borderTopColor="$borderColor" paddingTop="$3">
-        <Text color="$colorMuted" fontSize="$2">Fill: {formatNullableMetric(item.fill, '%')}</Text>
-        <Text color="$colorMuted" fontSize="$2">Berat: {formatNullableMetric(item.weight, ' kg')}</Text>
-        <Text color="$colorMuted" fontSize="$2">Utilisasi: {formatNullableMetric(item.weight_utilization, '%')}</Text>
-        <Text color="$colorMuted" fontSize="$2">OGI: {formatNullableMetric(item.ogi)}</Text>
+        <Text color="$colorMuted" {...textStyles.bodySecondary}>Fill: {formatNullableMetric(item.fill, '%')}</Text>
+        <Text color="$colorMuted" {...textStyles.bodySecondary}>Berat: {formatNullableMetric(item.weight, ' kg')}</Text>
+        <Text color="$colorMuted" {...textStyles.bodySecondary}>Utilisasi: {formatNullableMetric(item.weight_utilization, '%')}</Text>
+        <Text color="$colorMuted" {...textStyles.bodySecondary}>OGI: {formatNullableMetric(item.ogi)}</Text>
       </XStack>
     </Card>
   );
@@ -257,13 +249,13 @@ function HistoryTrend({ items }: { items: HistoryItem[] }) {
     <Card borderWidth={1} borderColor="$borderColor" backgroundColor="$surface" borderRadius="$4" padding="$4" gap="$4">
       <XStack alignItems="flex-end" justifyContent="space-between" gap="$3" flexWrap="wrap">
         <YStack gap="$1">
-          <Text color="$color" fontSize="$5" fontWeight="800">Trend status</Text>
-          <Text color="$colorMuted" fontSize="$2">Distribusi status pada halaman yang sedang ditampilkan.</Text>
+          <Text color="$color" {...textStyles.sectionTitle} fontSize={24}>Trend status</Text>
+          <Text color="$colorMuted" {...textStyles.bodySecondary}>Distribusi status pada halaman yang sedang ditampilkan.</Text>
         </YStack>
         <XStack gap="$3" flexWrap="wrap">
-          <XStack alignItems="center" gap="$1"><YStack width={8} height={8} borderRadius="$6" backgroundColor="$statusNormal" /><Text color="$colorMuted" fontSize="$1">Normal</Text></XStack>
-          <XStack alignItems="center" gap="$1"><YStack width={8} height={8} borderRadius="$6" backgroundColor="$statusAngkat" /><Text color="$colorMuted" fontSize="$1">Diangkat</Text></XStack>
-          <XStack alignItems="center" gap="$1"><YStack width={8} height={8} borderRadius="$6" backgroundColor="$statusSafetyAlert" /><Text color="$colorMuted" fontSize="$1">Safety</Text></XStack>
+          <XStack alignItems="center" gap="$1"><YStack width={8} height={8} borderRadius="$6" backgroundColor="$statusNormal" /><Text color="$colorMuted" {...textStyles.caption}>Normal</Text></XStack>
+          <XStack alignItems="center" gap="$1"><YStack width={8} height={8} borderRadius="$6" backgroundColor="$statusAngkat" /><Text color="$colorMuted" {...textStyles.caption}>Diangkat</Text></XStack>
+          <XStack alignItems="center" gap="$1"><YStack width={8} height={8} borderRadius="$6" backgroundColor="$statusSafetyAlert" /><Text color="$colorMuted" {...textStyles.caption}>Safety</Text></XStack>
         </XStack>
       </XStack>
       <XStack alignItems="flex-end" justifyContent="space-between" gap="$3" height={142}>
@@ -276,7 +268,7 @@ function HistoryTrend({ items }: { items: HistoryItem[] }) {
                 <YStack flex={day.pickup} backgroundColor="$statusAngkat" />
                 <YStack flex={day.normal} backgroundColor="$statusNormal" />
               </YStack>
-              <Text color="$colorMuted" fontSize="$1">{day.day.slice(5)}</Text>
+              <Text color="$colorMuted" {...textStyles.caption}>{day.day.slice(5)}</Text>
             </YStack>
           );
         })}
@@ -288,11 +280,11 @@ function HistoryTrend({ items }: { items: HistoryItem[] }) {
 function HistoryTableHeader() {
   return (
     <XStack alignItems="center" gap="$4" paddingHorizontal="$4" paddingVertical="$2" backgroundColor="$surfaceMuted">
-      <Text color="$colorMuted" fontSize="$1" fontWeight="800" width={178}>DEVICE</Text>
-      <Text color="$colorMuted" fontSize="$1" fontWeight="800" flex={1} minWidth={150}>LOKASI / STREAM</Text>
-      <Text color="$colorMuted" fontSize="$1" fontWeight="800" width={142}>STATUS</Text>
-      <Text color="$colorMuted" fontSize="$1" fontWeight="800" width={156}>WAKTU</Text>
-      <Text color="$colorMuted" fontSize="$1" fontWeight="800" width={190}>DETAIL</Text>
+      <Text color="$colorMuted" {...textStyles.caption} fontWeight="800" width={178}>DEVICE</Text>
+      <Text color="$colorMuted" {...textStyles.caption} fontWeight="800" flex={1} minWidth={150}>LOKASI / STREAM</Text>
+      <Text color="$colorMuted" {...textStyles.caption} fontWeight="800" width={142}>STATUS</Text>
+      <Text color="$colorMuted" {...textStyles.caption} fontWeight="800" width={156}>WAKTU</Text>
+      <Text color="$colorMuted" {...textStyles.caption} fontWeight="800" width={190}>DETAIL</Text>
     </XStack>
   );
 }
@@ -303,8 +295,8 @@ function LocationFilter({ value, onChange }: { value: string; onChange: (value: 
   const locations = data?.locations ?? [];
 
   return (
-    <YStack flex={1} minWidth={220} gap="$2">
-      <Text color="$color" fontSize="$2" fontWeight="700">Lokasi</Text>
+    <YStack width="100%" $tablet={{ width: 'calc(50% - 8px)' }} $wide={{ width: 'calc(20% - 13px)' }} gap="$2">
+      <Text color="$color" {...textStyles.caption} fontWeight="700">Lokasi</Text>
       <Select value={value || 'all'} onValueChange={(next) => onChange(next === 'all' ? '' : next)} name="history-location">
         <Select.Trigger aria-label="Filter lokasi" minHeight={48} width="100%" borderColor="$borderColor" backgroundColor="$background">
           <Select.Value placeholder="Semua lokasi" />
@@ -332,23 +324,23 @@ function Filters({ filters, onChange, onReset, onExport }: {
   onExport: () => void;
 }) {
   return (
-    <Card borderWidth={1} borderColor="$borderColor" backgroundColor="$surface" borderRadius="$4" padding="$4" gap="$4">
-      <XStack gap="$4" flexWrap="wrap">
-        <YStack flex={1} minWidth={180} gap="$2">
-          <Label htmlFor="history-from" color="$color" fontSize="$2" fontWeight="700">Dari tanggal</Label>
-          <Input id="history-from" type="date" value={filters.fromDate} onChangeText={(value) => onChange({ fromDate: value })} minHeight={48} borderColor="$borderColor" backgroundColor="$background" />
+    <Card borderWidth={1} borderColor="$borderColor" backgroundColor="$surface" borderRadius="$4" padding="$4" gap="$3">
+      <XStack gap="$3" flexWrap="wrap">
+        <YStack width="100%" $tablet={{ width: 'calc(50% - 8px)' }} $wide={{ width: 'calc(20% - 13px)' }} gap="$2">
+          <Label htmlFor="history-from" color="$color" {...textStyles.caption} fontWeight="700">Dari tanggal</Label>
+          <Input id="history-from" type="date" value={filters.fromDate} onChangeText={(value) => onChange({ fromDate: value })} minHeight={48} fontSize={16} borderColor="$borderColor" backgroundColor="$background" />
         </YStack>
-        <YStack flex={1} minWidth={180} gap="$2">
-          <Label htmlFor="history-to" color="$color" fontSize="$2" fontWeight="700">Sampai tanggal</Label>
-          <Input id="history-to" type="date" value={filters.toDate} onChangeText={(value) => onChange({ toDate: value })} minHeight={48} borderColor="$borderColor" backgroundColor="$background" />
+        <YStack width="100%" $tablet={{ width: 'calc(50% - 8px)' }} $wide={{ width: 'calc(20% - 13px)' }} gap="$2">
+          <Label htmlFor="history-to" color="$color" {...textStyles.caption} fontWeight="700">Sampai tanggal</Label>
+          <Input id="history-to" type="date" value={filters.toDate} onChangeText={(value) => onChange({ toDate: value })} minHeight={48} fontSize={16} borderColor="$borderColor" backgroundColor="$background" />
         </YStack>
         <LocationFilter value={filters.location_id ?? ''} onChange={(location_id) => onChange({ location_id })} />
-        <YStack flex={1} minWidth={220} gap="$2">
-          <Label htmlFor="history-device" color="$color" fontSize="$2" fontWeight="700">Device ID (internal)</Label>
-          <Input id="history-device" value={filters.device_id ?? ''} onChangeText={(value) => onChange({ device_id: value })} placeholder="Contoh: dev-a" minHeight={48} borderColor="$borderColor" backgroundColor="$background" />
+        <YStack width="100%" $tablet={{ width: 'calc(50% - 8px)' }} $wide={{ width: 'calc(20% - 13px)' }} gap="$2">
+          <Label htmlFor="history-device" color="$color" {...textStyles.caption} fontWeight="700">Device ID (internal)</Label>
+          <Input id="history-device" value={filters.device_id ?? ''} onChangeText={(value) => onChange({ device_id: value })} placeholder="Contoh: dev-a" minHeight={48} fontSize={16} borderColor="$borderColor" backgroundColor="$background" />
         </YStack>
-        <YStack flex={1} minWidth={220} gap="$2">
-          <Text color="$color" fontSize="$2" fontWeight="700">Status</Text>
+        <YStack width="100%" $tablet={{ width: 'calc(50% - 8px)' }} $wide={{ width: 'calc(20% - 13px)' }} gap="$2">
+          <Text color="$color" {...textStyles.caption} fontWeight="700">Status</Text>
           <Select value={filters.status || 'all'} onValueChange={(value) => onChange({ status: value === 'all' ? undefined : value as CanonicalStatus })} name="history-status">
             <Select.Trigger aria-label="Filter status" minHeight={48} width="100%" borderColor="$borderColor" backgroundColor="$background">
               <Select.Value placeholder="Semua status" />
@@ -366,9 +358,9 @@ function Filters({ filters, onChange, onReset, onExport }: {
           </Select>
         </YStack>
       </XStack>
-      <XStack gap="$3" flexWrap="wrap" justifyContent="flex-end">
-        <Button minHeight={48} borderWidth={1} borderColor="$borderColor" backgroundColor="$surface" color="$color" onPress={onReset} aria-label="Reset filter">Reset filter</Button>
-        <Button minHeight={48} backgroundColor="$primary" color="$white" onPress={onExport} aria-label="Unduh CSV">Unduh CSV</Button>
+      <XStack gap="$3" flexWrap="wrap" justifyContent="flex-end" paddingTop="$1">
+        <AppButton size="md" variant="secondary" onPress={onReset} ariaLabel="Reset filter">Reset filter</AppButton>
+        <AppButton size="md" variant="primary" onPress={onExport} ariaLabel="Unduh CSV">Unduh CSV</AppButton>
       </XStack>
     </Card>
   );
@@ -389,32 +381,14 @@ function PaginationControls({
 }) {
   return (
     <XStack alignItems="center" justifyContent="space-between" gap="$3" flexWrap="wrap">
-      <Text color="$colorMuted" fontSize="$2">Halaman {pageNumber} · maksimum {HISTORY_PAGE_SIZE} pembacaan</Text>
+      <Text color="$colorMuted" {...textStyles.bodySecondary}>Halaman {pageNumber} · maksimum {HISTORY_PAGE_SIZE} pembacaan</Text>
       <XStack gap="$2">
-        <Button
-          minHeight={44}
-          borderWidth={1}
-          borderColor="$borderColor"
-          backgroundColor="$surface"
-          color="$color"
-          disabled={!canGoNewer}
-          opacity={canGoNewer ? 1 : 0.45}
-          onPress={onNewer}
-          aria-label="Tampilkan riwayat yang lebih baru"
-        >
+        <AppButton size="md" variant="secondary" disabled={!canGoNewer} onPress={onNewer} ariaLabel="Tampilkan riwayat yang lebih baru">
           Lebih baru
-        </Button>
-        <Button
-          minHeight={44}
-          backgroundColor="$primary"
-          color="$white"
-          disabled={!canGoOlder}
-          opacity={canGoOlder ? 1 : 0.45}
-          onPress={onOlder}
-          aria-label="Tampilkan riwayat yang lebih lama"
-        >
+        </AppButton>
+        <AppButton size="md" variant="primary" disabled={!canGoOlder} onPress={onOlder} ariaLabel="Tampilkan riwayat yang lebih lama">
           Lebih lama
-        </Button>
+        </AppButton>
       </XStack>
     </XStack>
   );
