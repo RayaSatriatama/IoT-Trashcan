@@ -95,7 +95,7 @@ export function HomeDeviceWorkspace({
         <XStack gap="$3" flexWrap="wrap">
           {current.items.map((device: DeviceDetail) => (
             <YStack key={device.id} width="100%" $tablet={{ width: 'calc(50% - 6px)' }} $wide={{ width: 'calc(33.333% - 8px)' }}>
-              <DeviceCard device={device} onPress={() => onOpenDevice(device.id)} />
+              <DeviceCard device={device} locationName={data.name} onPress={() => onOpenDevice(device.id)} />
             </YStack>
           ))}
         </XStack>

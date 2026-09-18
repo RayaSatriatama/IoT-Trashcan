@@ -40,6 +40,7 @@ export function DeviceCard({ device, onPress, locationName }: DeviceCardProps) {
       borderRadius="$4"
       padding="$4"
       gap="$4"
+      minHeight={330}
       pressStyle={onPress ? { opacity: 0.82 } : undefined}
       onPress={onPress}
       role={onPress ? 'button' : 'group'}
@@ -52,23 +53,25 @@ export function DeviceCard({ device, onPress, locationName }: DeviceCardProps) {
           <RNImage source={inorganicArtwork} accessibilityLabel="Ilustrasi slot anorganik" resizeMode="contain" style={{ width: 31, height: 38 }} />
           <RNImage source={b3Artwork} accessibilityLabel="Ilustrasi slot B3" resizeMode="contain" style={{ width: 31, height: 38 }} />
         </XStack>
-        <YStack flex={1} gap="$1">
-          <Text color="$color" {...textStyles.cardTitle}>
+        <YStack flex={1} minWidth={0} gap="$1" alignItems="stretch">
+          <Text color="$color" {...textStyles.cardTitle} alignSelf="stretch" textAlign="left" minHeight={56} numberOfLines={2}>
             {device.device_code}
           </Text>
-          <Text color="$colorMuted" {...textStyles.bodySecondary}>
+          <Text color="$colorMuted" {...textStyles.bodySecondary} alignSelf="stretch" textAlign="left" minHeight={44} numberOfLines={2}>
             {locationName ? `${locationName} · ${placement}` : placement}
           </Text>
         </YStack>
-        <StatusBadge status={device.status} compact />
       </XStack>
-      <XStack flexWrap="wrap" gap="$2" alignItems="center" paddingVertical="$1">
-        <Text color={device.online_state === 'Offline' ? '$statusOffline' : '$statusNormal'} {...textStyles.bodySecondary} fontWeight="700">
-          ● {onlineLabel}
-        </Text>
-        <Text color="$colorMuted" {...textStyles.metadata}>
-          Update: {lastSeen}
-        </Text>
+      <XStack flexWrap="wrap" gap="$2" alignItems="center" justifyContent="space-between" paddingVertical="$1">
+        <XStack flex={1} minWidth={0} flexWrap="wrap" gap="$2" alignItems="center">
+          <Text color={device.online_state === 'Offline' ? '$statusOffline' : '$statusNormal'} {...textStyles.bodySecondary} fontWeight="700">
+            {onlineLabel}
+          </Text>
+          <Text color="$colorMuted" {...textStyles.metadata} numberOfLines={1}>
+            Update: {lastSeen}
+          </Text>
+        </XStack>
+        <StatusBadge status={device.status} compact />
       </XStack>
       <YStack gap="$3" borderTopWidth={1} borderTopColor="$borderColor" paddingTop="$3">
         {device.slots.length > 0 ? (

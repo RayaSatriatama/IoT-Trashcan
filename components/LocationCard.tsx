@@ -20,12 +20,12 @@ export function LocationCard({ location, deviceCount, onPress, onDetail, selecte
   const deviceLabel = deviceCount === null || deviceCount === undefined ? 'Belum tersedia' : `${deviceCount}`;
 
   const cardContent = (
-    <YStack gap="$3" flex={1}>
+    <YStack gap="$3" flex={1} alignItems="stretch">
       <XStack alignItems="center" gap="$3" paddingRight="$3">
         <RNImage source={resolveLocationImage(location.name)} accessibilityLabel={`Ilustrasi ${location.name}`} resizeMode="contain" style={{ width: 64, height: 56 }} />
         <YStack flex={1} minWidth={0} gap="$1">
-          <Text color="$color" {...textStyles.cardTitle} minHeight={48} numberOfLines={2}>{location.name}</Text>
-          <Text color="$colorMuted" {...textStyles.bodySecondary} minHeight={44} numberOfLines={2}>{address}</Text>
+          <Text color="$color" {...textStyles.cardTitle} alignSelf="stretch" textAlign="left" minHeight={48} numberOfLines={2}>{location.name}</Text>
+          <Text color="$colorMuted" {...textStyles.bodySecondary} alignSelf="stretch" textAlign="left" minHeight={44} numberOfLines={2}>{address}</Text>
         </YStack>
       </XStack>
       <XStack alignItems="center" gap="$2" marginTop="$1" flexWrap="wrap" rowGap="$1">
