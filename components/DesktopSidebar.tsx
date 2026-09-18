@@ -50,10 +50,10 @@ export function DesktopSidebar({
           source={logoArtwork}
           accessibilityLabel="Logo SIGAP"
           resizeMode="contain"
-          style={{ width: 44, height: 44 }}
+          style={{ width: 36, height: 36 }}
         />
         <YStack gap="$1">
-          <Text fontSize="$5" color="$color" fontWeight="800" letterSpacing={-0.5}>
+          <Text fontSize="$4" color="$color" fontWeight="800" letterSpacing={-0.4}>
             SIGAP
           </Text>
           <Text {...textStyles.metricLabel} color="$colorMuted">

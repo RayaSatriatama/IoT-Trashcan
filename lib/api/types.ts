@@ -166,5 +166,6 @@ export interface HistoryResponse {
     limit: number;
     has_more: boolean;
     next: HistoryCursor | null;
+    total_count: number;
   };
 }

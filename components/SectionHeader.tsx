@@ -1,5 +1,5 @@
-import { useId, useState, type ReactNode } from 'react';
-import { Button, Card, Text, XStack, YStack } from 'tamagui';
+import type { ReactNode } from 'react';
+import { Button, Text, Tooltip, XStack } from 'tamagui';
 import { textStyles } from '../lib/ui/typography';
 
 export function DescriptionHint({
@@ -9,66 +9,43 @@ export function DescriptionHint({
   description: string;
   ariaLabel?: string;
 }) {
-  const [open, setOpen] = useState(false);
-  const tooltipId = useId();
-
   return (
-    <YStack
-      position="relative"
-      zIndex={open ? 20 : 1}
-    >
-      <Button
-        minWidth={32}
-        minHeight={32}
-        width={32}
-        height={32}
-        padding={0}
-        borderRadius="$6"
-        borderWidth={1}
-        borderColor="$borderColor"
-        backgroundColor="$surface"
-        color="$colorMuted"
-        aria-label={ariaLabel}
-        aria-expanded={open}
-        aria-controls={tooltipId}
-        aria-describedby={open ? tooltipId : undefined}
-        onMouseEnter={() => setOpen(true)}
-        onMouseLeave={() => setOpen(false)}
-        onFocus={() => setOpen(true)}
-        onBlur={() => setOpen(false)}
-        onPress={() => setOpen(true)}
-        onClick={() => setOpen(true)}
-        hoverStyle={{ borderColor: '$primary', backgroundColor: '$primarySoft' }}
-        focusStyle={{ borderColor: '$primary' }}
-        type="button"
-      >
-        <Text color="$colorMuted" fontSize={13} lineHeight={17} fontWeight="800">
-          i
-        </Text>
-      </Button>
-
-      {open ? (
-        <Card
-          id={tooltipId}
-          position="absolute"
-          top={38}
-          right={0}
-          width={280}
-          maxWidth={280}
-          padding="$3"
+    <Tooltip delay={0} restMs={120} placement="bottom-end" allowFlip zIndex={1000} focus={{ enabled: true }}>
+      <Tooltip.Trigger asChild>
+        <Button
+          minWidth={32}
+          minHeight={32}
+          width={32}
+          height={32}
+          padding={0}
+          borderRadius="$6"
           borderWidth={1}
           borderColor="$borderColor"
-          borderRadius="$3"
           backgroundColor="$surface"
-          elevation="$3"
-          role="tooltip"
+          color="$colorMuted"
+          aria-label={ariaLabel}
+          hoverStyle={{ borderColor: '$primary', backgroundColor: '$primarySoft' }}
+          focusStyle={{ borderColor: '$primary', outlineColor: '$primary', outlineWidth: 2, outlineStyle: 'solid' }}
+          type="button"
         >
-          <Text color="$color" {...textStyles.bodySecondary}>
-            {description}
-          </Text>
-        </Card>
-      ) : null}
-    </YStack>
+          <Text color="$colorMuted" fontSize={13} lineHeight={17} fontWeight="800">i</Text>
+        </Button>
+      </Tooltip.Trigger>
+      <Tooltip.Content
+        enterStyle={{ opacity: 0, scale: 0.98 }}
+        exitStyle={{ opacity: 0, scale: 0.98 }}
+        elevate
+        bordered
+        borderColor="$borderColor"
+        backgroundColor="$surface"
+        padding="$3"
+        width={280}
+        maxWidth="calc(100vw - 24px)"
+        role="tooltip"
+      >
+        <Text color="$color" {...textStyles.bodySecondary}>{description}</Text>
+      </Tooltip.Content>
+    </Tooltip>
   );
 }
 

@@ -30,9 +30,9 @@ export function Header({ actions }: HeaderProps) {
               source={logoArtwork}
               accessibilityLabel="Logo SIGAP"
               resizeMode="contain"
-              style={{ width: 34, height: 34 }}
+              style={{ width: 28, height: 28 }}
             />
-            <Text color="$color" {...textStyles.cardTitle} fontSize={18} fontWeight="800">
+            <Text color="$color" {...textStyles.cardTitle} fontSize={17} fontWeight="800" letterSpacing={-0.2}>
               SIGAP
             </Text>
           </XStack>

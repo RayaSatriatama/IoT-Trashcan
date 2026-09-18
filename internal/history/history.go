@@ -60,9 +60,10 @@ type PageOptions struct {
 
 // PageResult contains one bounded history page plus the cursor for older rows.
 type PageResult struct {
-	Items   []Record
-	HasMore bool
-	Next    *Cursor
+	Items      []Record
+	HasMore    bool
+	Next       *Cursor
+	TotalCount int
 }
 
 func (filters Filters) State() FilterState {
@@ -182,13 +183,14 @@ func QueryPage(ctx context.Context, db *sql.DB, filters Filters, options PageOpt
 		last := items[len(items)-1]
 		next = &Cursor{RecordedAt: last.RecordedAt, ReadingID: last.ReadingID}
 	}
-	return PageResult{Items: items, HasMore: hasMore, Next: next}, nil
+	totalCount, err := countRecords(ctx, db, filters)
+	if err != nil {
+		return PageResult{}, err
+	}
+	return PageResult{Items: items, HasMore: hasMore, Next: next, TotalCount: totalCount}, nil
 }
 
-func queryRecords(ctx context.Context, db *sql.DB, filters Filters, page *PageOptions) ([]Record, error) {
-	if db == nil {
-		return nil, errors.New("history database is unavailable")
-	}
+func historyWhere(filters Filters, before *Cursor) ([]string, []any) {
 	where := []string{"1 = 1"}
 	args := make([]any, 0, 9)
 	if filters.From != nil {
@@ -204,17 +206,49 @@ func queryRecords(ctx context.Context, db *sql.DB, filters Filters, page *PageOp
 		args = append(args, filters.LocationID)
 	}
 	if filters.DeviceID != "" {
-		where = append(where, "d.id = ?")
-		args = append(args, filters.DeviceID)
+		where = append(where, "(d.id = ? OR d.device_code = ?)")
+		args = append(args, filters.DeviceID, filters.DeviceID)
 	}
 	if filters.Status != "" {
 		where = append(where, "CASE WHEN dec.safety_state = 'Safety Alert' THEN 'Safety Alert' ELSE dec.fis_status END = ?")
 		args = append(args, filters.Status)
 	}
-	if page != nil && page.Before != nil {
+	if before != nil {
 		where = append(where, "(r.recorded_at < ? OR (r.recorded_at = ? AND r.id < ?))")
-		args = append(args, page.Before.RecordedAt, page.Before.RecordedAt, page.Before.ReadingID)
+		args = append(args, before.RecordedAt, before.RecordedAt, before.ReadingID)
 	}
+	return where, args
+}
+
+func countRecords(ctx context.Context, db *sql.DB, filters Filters) (int, error) {
+	if db == nil {
+		return 0, errors.New("history database is unavailable")
+	}
+	where, args := historyWhere(filters, nil)
+	query := `
+		SELECT COUNT(*)
+		FROM readings r
+		JOIN slots s ON s.id = r.slot_id
+		JOIN devices d ON d.id = s.device_id
+		JOIN locations l ON l.id = d.location_id
+		LEFT JOIN decisions dec ON dec.reading_id = r.id
+		WHERE ` + strings.Join(where, " AND ")
+	var count int
+	if err := db.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+func queryRecords(ctx context.Context, db *sql.DB, filters Filters, page *PageOptions) ([]Record, error) {
+	if db == nil {
+		return nil, errors.New("history database is unavailable")
+	}
+	var before *Cursor
+	if page != nil {
+		before = page.Before
+	}
+	where, args := historyWhere(filters, before)
 
 	query := `
 		SELECT r.id, r.recorded_at,

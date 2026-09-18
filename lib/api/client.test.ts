@@ -90,7 +90,7 @@ describe('monitoring API client', () => {
       return jsonResponse({
         items: [],
         filters: { from: null, to: null, location_id: null, device_id: null, status: null },
-        page: { limit: 50, has_more: false, next: null },
+        page: { limit: 50, has_more: false, next: null, total_count: 0 },
       });
     });
 
@@ -114,7 +114,7 @@ describe('monitoring API client', () => {
       return jsonResponse({
         items: [],
         filters: { from: null, to: null, location_id: null, device_id: null, status: null },
-        page: { limit: 30, has_more: false, next: null },
+        page: { limit: 30, has_more: false, next: null, total_count: 0 },
       });
     });
 

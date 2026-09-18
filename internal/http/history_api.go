@@ -12,9 +12,10 @@ import (
 )
 
 type historyPageState struct {
-	Limit   int             `json:"limit"`
-	HasMore bool            `json:"has_more"`
-	Next    *history.Cursor `json:"next"`
+	Limit      int             `json:"limit"`
+	HasMore    bool            `json:"has_more"`
+	Next       *history.Cursor `json:"next"`
+	TotalCount int             `json:"total_count"`
 }
 
 type historyResponse struct {
@@ -102,9 +103,10 @@ func (api *ReadAPI) History(w http.ResponseWriter, r *http.Request) {
 		Items:   result.Items,
 		Filters: filters.State(),
 		Page: historyPageState{
-			Limit:   page.Limit,
-			HasMore: result.HasMore,
-			Next:    result.Next,
+			Limit:      page.Limit,
+			HasMore:    result.HasMore,
+			Next:       result.Next,
+			TotalCount: result.TotalCount,
 		},
 	})
 }

@@ -38,8 +38,9 @@ func TestReadAPIHistorySupportsCombinedFiltersAndNulls(t *testing.T) {
 			Status     *string `json:"status"`
 		} `json:"filters"`
 		Page struct {
-			Limit   int  `json:"limit"`
-			HasMore bool `json:"has_more"`
+			Limit      int  `json:"limit"`
+			HasMore    bool `json:"has_more"`
+			TotalCount int  `json:"total_count"`
 		} `json:"page"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
@@ -57,7 +58,7 @@ func TestReadAPIHistorySupportsCombinedFiltersAndNulls(t *testing.T) {
 	if body.Filters.LocationID == nil || *body.Filters.LocationID != "location-a" || body.Filters.Status == nil || *body.Filters.Status != "Safety Alert" {
 		t.Fatalf("filter echo=%+v", body.Filters)
 	}
-	if body.Page.Limit != 50 || body.Page.HasMore {
+	if body.Page.Limit != 50 || body.Page.HasMore || body.Page.TotalCount != 1 {
 		t.Fatalf("page=%+v", body.Page)
 	}
 }
@@ -85,6 +86,33 @@ func TestReadAPIHistoryRejectsInvalidFilters(t *testing.T) {
 	}
 }
 
+func TestReadAPIHistoryAcceptsDeviceCodeSearch(t *testing.T) {
+	api, db := readAPIFixture(t)
+	defer db.Close()
+	request := httptest.NewRequest(http.MethodGet, "/api/history?device_id=SIGAP-A&limit=10", nil)
+	response := httptest.NewRecorder()
+
+	api.History(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var body struct {
+		Items []struct {
+			DeviceCode string `json:"device_code"`
+		} `json:"items"`
+		Page struct {
+			TotalCount int `json:"total_count"`
+		} `json:"page"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Items) != 3 || body.Page.TotalCount != 3 || body.Items[0].DeviceCode != "SIGAP-A" {
+		t.Fatalf("device code filter=%+v", body)
+	}
+}
+
 func TestReadAPIHistoryUsesStableCursorPagination(t *testing.T) {
 	api, db := readAPIFixture(t)
 	defer db.Close()
@@ -102,9 +130,10 @@ func TestReadAPIHistoryUsesStableCursorPagination(t *testing.T) {
 			Recorded  string `json:"recorded_at"`
 		} `json:"items"`
 		Page struct {
-			Limit   int  `json:"limit"`
-			HasMore bool `json:"has_more"`
-			Next    *struct {
+			Limit      int  `json:"limit"`
+			HasMore    bool `json:"has_more"`
+			TotalCount int  `json:"total_count"`
+			Next       *struct {
 				Recorded string `json:"recorded_at"`
 				ID       int64  `json:"reading_id"`
 			} `json:"next"`
@@ -116,7 +145,7 @@ func TestReadAPIHistoryUsesStableCursorPagination(t *testing.T) {
 	if len(first.Items) != 2 || first.Items[0].ReadingID != 3 || first.Items[1].ReadingID != 2 {
 		t.Fatalf("first items=%+v", first.Items)
 	}
-	if first.Page.Limit != 2 || !first.Page.HasMore || first.Page.Next == nil || first.Page.Next.ID != 2 {
+	if first.Page.Limit != 2 || !first.Page.HasMore || first.Page.TotalCount != 4 || first.Page.Next == nil || first.Page.Next.ID != 2 {
 		t.Fatalf("first page=%+v", first.Page)
 	}
 
@@ -131,13 +160,14 @@ func TestReadAPIHistoryUsesStableCursorPagination(t *testing.T) {
 			ReadingID int64 `json:"reading_id"`
 		} `json:"items"`
 		Page struct {
-			HasMore bool `json:"has_more"`
+			HasMore    bool `json:"has_more"`
+			TotalCount int  `json:"total_count"`
 		} `json:"page"`
 	}
 	if err := json.Unmarshal(secondResponse.Body.Bytes(), &second); err != nil {
 		t.Fatal(err)
 	}
-	if len(second.Items) != 2 || second.Items[0].ReadingID != 1 || second.Items[1].ReadingID != 4 || second.Page.HasMore {
+	if len(second.Items) != 2 || second.Items[0].ReadingID != 1 || second.Items[1].ReadingID != 4 || second.Page.HasMore || second.Page.TotalCount != 4 {
 		t.Fatalf("second page items=%+v page=%+v", second.Items, second.Page)
 	}
 }
