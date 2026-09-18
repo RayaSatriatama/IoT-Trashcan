@@ -12,9 +12,12 @@ import {
   buildHistoryExportHref,
   dateInputToUtcRange,
   effectiveHistoryStatus,
+  formatHistoryCount,
+  formatHistoryTimestamp,
   groupHistoryByDay,
   HISTORY_STATUS_FILTERS,
   HISTORY_TABLE_COLUMNS,
+  historyRangeLabel,
   serializeHistoryFilters,
   totalHistoryPages,
   formatHistoryScore,
@@ -77,18 +80,20 @@ describe('history filter contracts', () => {
     expect(totalHistoryPages(21, 20)).toBe(2);
     expect(formatHistoryScore(13.33333333333332)).toBe('13.33');
     expect(formatHistoryScore(null)).toBe('—');
+    expect(formatHistoryCount(4689)).toBe('4.689');
+    expect(historyRangeLabel(1, 10, 4689)).toBe('1–10 dari 4.689 data');
+    expect(formatHistoryTimestamp('2026-09-18T06:07:00Z')).toEqual({ time: '13:07', date: '18 Sep 2026' });
   });
 
-  it('keeps device identity and placement as separate table columns', () => {
+  it('keeps device identity and placement separate within the device cell', () => {
     expect(HISTORY_TABLE_COLUMNS).toEqual([
-      'WAKTU',
       'PERANGKAT',
-      'PENEMPATAN',
       'LOKASI',
       'STREAM',
       'STATUS',
       'KETERISIAN',
       'BERAT',
+      'WAKTU',
       'AKSI',
     ]);
   });

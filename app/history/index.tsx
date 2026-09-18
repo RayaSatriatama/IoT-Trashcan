@@ -21,8 +21,7 @@ import type {
   HistoryResponse,
   LocationListResponse,
 } from '../../lib/api/types';
-import { formatTimestamp } from '../../lib/format';
-import { Activity, Box, ShieldAlert, Truck } from '../../lib/ui/icons';
+import { Activity, Box, ChevronRight, ShieldAlert, Truck } from '../../lib/ui/icons';
 import { textStyles } from '../../lib/ui/typography';
 
 export interface HistoryFilterValues {
@@ -38,14 +37,13 @@ export const HISTORY_PAGE_SIZES = [10, 20, 50] as const;
 const HISTORY_POLL_INTERVAL_MS = 60_000;
 
 export const HISTORY_TABLE_COLUMNS = [
-  'WAKTU',
   'PERANGKAT',
-  'PENEMPATAN',
   'LOKASI',
   'STREAM',
   'STATUS',
   'KETERISIAN',
   'BERAT',
+  'WAKTU',
   'AKSI',
 ] as const;
 
@@ -81,6 +79,30 @@ export function totalHistoryPages(totalCount: number, pageSize: number): number 
 export function formatHistoryScore(value: number | null | undefined): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return '—';
   return value.toFixed(2);
+}
+
+export function formatHistoryCount(value: number): string {
+  return new Intl.NumberFormat('id-ID').format(Math.max(0, Math.trunc(value)));
+}
+
+export function historyRangeLabel(pageNumber: number, pageSize: number, totalCount: number): string {
+  if (totalCount <= 0) return 'Tidak ada data pada filter ini';
+  const start = Math.min(Math.max(1, (pageNumber - 1) * pageSize + 1), totalCount);
+  const end = Math.min(Math.max(start, pageNumber * pageSize), totalCount);
+  return `${formatHistoryCount(start)}–${formatHistoryCount(end)} dari ${formatHistoryCount(totalCount)} data`;
+}
+
+export function formatHistoryTimestamp(value: string | null | undefined): { time: string; date: string } {
+  if (!value) return { time: '—', date: '—' };
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return { time: '—', date: '—' };
+  const parts = new Intl.DateTimeFormat('id-ID', { timeZone: 'Asia/Jakarta', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(date);
+  const hour = parts.find((part) => part.type === 'hour')?.value ?? '—';
+  const minute = parts.find((part) => part.type === 'minute')?.value ?? '—';
+  return {
+    time: `${hour}:${minute}`,
+    date: new Intl.DateTimeFormat('id-ID', { timeZone: 'Asia/Jakarta', day: '2-digit', month: 'short', year: 'numeric' }).format(date),
+  };
 }
 
 function compactMetric(value: number | null | undefined, suffix = ''): string {
@@ -197,6 +219,7 @@ function HistoryRow({ item, compact }: { item: HistoryItem; compact: boolean }) 
   const [expanded, setExpanded] = useState(false);
   const status = effectiveHistoryStatus(item);
   const streamColor = historyStreamColor(item.stream);
+  const timestamp = formatHistoryTimestamp(item.recorded_at);
   if (compact) {
     return (
       <Card borderWidth={1} borderColor="$borderColor" backgroundColor="$surface" borderRadius="$4" padding="$4" gap="$3" role="article" aria-label={`Riwayat ${item.device_code} ${historyStreamLabel(item.stream)}`}>
@@ -209,14 +232,14 @@ function HistoryRow({ item, compact }: { item: HistoryItem; compact: boolean }) 
           <StatusBadge status={status} compact />
         </XStack>
         <XStack alignItems="center" gap="$2"><YStack width={8} height={8} borderRadius={99} backgroundColor={streamColor} /><Text color="$color" {...textStyles.bodySecondary}>{historyStreamLabel(item.stream)}</Text></XStack>
-        <Text color="$colorMuted" {...textStyles.metadata}>{formatTimestamp(item.recorded_at)}</Text>
+        <Text color="$colorMuted" {...textStyles.metadata}>{timestamp.time} · {timestamp.date}</Text>
         <XStack gap="$4" flexWrap="wrap" borderTopWidth={1} borderTopColor="$borderColor" paddingTop="$3">
           <YStack flex={1} minWidth={100} gap="$1"><Text color="$colorMuted" {...textStyles.caption}>Keterisian</Text><Text color="$color" {...textStyles.metricValue}>{compactMetric(item.fill, '%')}</Text></YStack>
           <YStack flex={1} minWidth={100} gap="$1"><Text color="$colorMuted" {...textStyles.caption}>Berat</Text><Text color="$color" {...textStyles.metricValue}>{compactMetric(item.weight, ' kg')}</Text></YStack>
         </XStack>
         {expanded ? <HistoryRowDetail item={item} /> : null}
         <AppButton size="sm" variant="ghost" onPress={() => setExpanded((value) => !value)} ariaLabel={`${expanded ? 'Tutup' : 'Buka'} detail riwayat ${item.device_code}`} ariaExpanded={expanded}>
-          {expanded ? 'Tutup detail' : 'Detail'}
+          {expanded ? 'Tutup detail' : 'Detail'} <ChevronRight size={15} color="#0A9B62" strokeWidth={2.2} aria-hidden={true} />
         </AppButton>
       </Card>
     );
@@ -225,15 +248,14 @@ function HistoryRow({ item, compact }: { item: HistoryItem; compact: boolean }) 
   return (
     <YStack role="row">
       <XStack alignItems="center" gap="$3" paddingHorizontal="$4" paddingVertical="$3" minHeight={64} borderBottomWidth={1} borderBottomColor="$borderColor" hoverStyle={{ backgroundColor: '$surfaceMuted' }}>
-        <Text color="$colorMuted" {...textStyles.metadata} width={145}>{formatTimestamp(item.recorded_at)}</Text>
-        <YStack width={145} minWidth={125}><Text color="$color" {...textStyles.metadata} fontWeight="700" numberOfLines={1}>{item.device_code || '—'}</Text></YStack>
-        <YStack width={145} minWidth={125}><Text color="$colorMuted" {...textStyles.metadata} numberOfLines={1}>{item.placement_label || '—'}</Text></YStack>
-        <YStack flex={1} minWidth={125}><Text color="$color" {...textStyles.metadata} numberOfLines={1}>{item.location_name || '—'}</Text></YStack>
-        <XStack width={100} minWidth={90} alignItems="center" gap="$2"><YStack width={8} height={8} borderRadius={99} backgroundColor={streamColor} /><Text color="$color" {...textStyles.bodySecondary}>{historyStreamLabel(item.stream)}</Text></XStack>
-        <YStack width={140} minWidth={125}><StatusBadge status={status} compact /></YStack>
+        <YStack width={210} minWidth={180} gap="$1"><Text color="$color" {...textStyles.metadata} fontWeight="700" numberOfLines={1}>{item.device_code || '—'}</Text><Text color="$colorMuted" {...textStyles.caption} numberOfLines={1}>{item.placement_label || '—'}</Text></YStack>
+        <YStack flex={1} minWidth={145}><Text color="$color" {...textStyles.metadata} numberOfLines={1}>{item.location_name || '—'}</Text></YStack>
+        <XStack width={105} minWidth={95} alignItems="center" gap="$2"><YStack width={8} height={8} borderRadius={99} backgroundColor={streamColor} /><Text color="$color" {...textStyles.bodySecondary}>{historyStreamLabel(item.stream)}</Text></XStack>
+        <YStack width={200} minWidth={190} alignItems="flex-start"><StatusBadge status={status} compact /></YStack>
         <Text color="$color" {...textStyles.metadata} width={80} textAlign="right">{compactMetric(item.fill, '%')}</Text>
         <Text color="$color" {...textStyles.metadata} width={80} textAlign="right">{compactMetric(item.weight, ' kg')}</Text>
-        <AppButton size="sm" variant="ghost" onPress={() => setExpanded((value) => !value)} ariaLabel={`${expanded ? 'Tutup' : 'Buka'} detail riwayat ${item.device_code}`} ariaExpanded={expanded}>{expanded ? 'Tutup' : 'Detail'}</AppButton>
+        <YStack width={115} gap="$1"><Text color="$color" {...textStyles.metadata} fontWeight="700">{timestamp.time}</Text><Text color="$colorMuted" {...textStyles.caption}>{timestamp.date}</Text></YStack>
+        <XStack width={68} justifyContent="flex-end"><AppButton size="sm" variant="ghost" onPress={() => setExpanded((value) => !value)} ariaLabel={`${expanded ? 'Tutup' : 'Buka'} detail riwayat ${item.device_code}`} ariaExpanded={expanded}>{expanded ? 'Tutup' : 'Detail'} <ChevronRight size={15} color="#0A9B62" strokeWidth={2.2} aria-hidden={true} /></AppButton></XStack>
       </XStack>
       {expanded ? <HistoryRowDetail item={item} /> : null}
     </YStack>
@@ -276,15 +298,14 @@ function HistoryTrend({ items }: { items: HistoryItem[] }) {
 function HistoryTableHeader() {
   return (
     <XStack alignItems="center" gap="$3" paddingHorizontal="$4" paddingVertical="$3" backgroundColor="$surfaceMuted" role="row">
-      <Text color="$colorMuted" {...textStyles.caption} fontWeight="800" width={145}>{HISTORY_TABLE_COLUMNS[0]}</Text>
-      <Text color="$colorMuted" {...textStyles.caption} fontWeight="800" width={145}>{HISTORY_TABLE_COLUMNS[1]}</Text>
-      <Text color="$colorMuted" {...textStyles.caption} fontWeight="800" width={145}>{HISTORY_TABLE_COLUMNS[2]}</Text>
-      <Text color="$colorMuted" {...textStyles.caption} fontWeight="800" flex={1} minWidth={125}>{HISTORY_TABLE_COLUMNS[3]}</Text>
-      <Text color="$colorMuted" {...textStyles.caption} fontWeight="800" width={100}>{HISTORY_TABLE_COLUMNS[4]}</Text>
-      <Text color="$colorMuted" {...textStyles.caption} fontWeight="800" width={140}>{HISTORY_TABLE_COLUMNS[5]}</Text>
-      <Text color="$colorMuted" {...textStyles.caption} fontWeight="800" width={80} textAlign="right">{HISTORY_TABLE_COLUMNS[6]}</Text>
-      <Text color="$colorMuted" {...textStyles.caption} fontWeight="800" width={80} textAlign="right">{HISTORY_TABLE_COLUMNS[7]}</Text>
-      <Text color="$colorMuted" {...textStyles.caption} fontWeight="800" width={68}>{HISTORY_TABLE_COLUMNS[8]}</Text>
+      <Text color="$colorMuted" {...textStyles.caption} fontWeight="800" width={210}>{HISTORY_TABLE_COLUMNS[0]}</Text>
+      <Text color="$colorMuted" {...textStyles.caption} fontWeight="800" flex={1} minWidth={145}>{HISTORY_TABLE_COLUMNS[1]}</Text>
+      <Text color="$colorMuted" {...textStyles.caption} fontWeight="800" width={105}>{HISTORY_TABLE_COLUMNS[2]}</Text>
+      <Text color="$colorMuted" {...textStyles.caption} fontWeight="800" width={200}>{HISTORY_TABLE_COLUMNS[3]}</Text>
+      <Text color="$colorMuted" {...textStyles.caption} fontWeight="800" width={80} textAlign="right">{HISTORY_TABLE_COLUMNS[4]}</Text>
+      <Text color="$colorMuted" {...textStyles.caption} fontWeight="800" width={80} textAlign="right">{HISTORY_TABLE_COLUMNS[5]}</Text>
+      <Text color="$colorMuted" {...textStyles.caption} fontWeight="800" width={115}>{HISTORY_TABLE_COLUMNS[6]}</Text>
+      <Text color="$colorMuted" {...textStyles.caption} fontWeight="800" width={68} textAlign="right">{HISTORY_TABLE_COLUMNS[7]}</Text>
     </XStack>
   );
 }
@@ -322,17 +343,22 @@ type HistoryDraft = HistoryFilterValues & { fromDate: string; toDate: string };
 function FilterFields({ draft, onChange }: { draft: HistoryDraft; onChange: (patch: Partial<HistoryDraft>) => void }) {
   return (
     <XStack gap="$3" flexWrap="wrap">
-        <YStack width="100%" $tablet={{ width: 'calc(50% - 8px)' }} $wide={{ width: 'calc(20% - 13px)' }} gap="$2">
-        <Label htmlFor="history-from" color="$color" {...textStyles.caption} fontWeight="700">Periode · Dari tanggal</Label>
-        <Input id="history-from" type="date" value={draft.fromDate} onChangeText={(value) => onChange({ fromDate: value })} minHeight={44} fontSize={16} borderColor="$borderColor" backgroundColor="$background" />
-      </YStack>
-        <YStack width="100%" $tablet={{ width: 'calc(50% - 8px)' }} $wide={{ width: 'calc(20% - 13px)' }} gap="$2">
-        <Label htmlFor="history-to" color="$color" {...textStyles.caption} fontWeight="700">Periode · Sampai tanggal</Label>
-        <Input id="history-to" type="date" value={draft.toDate} onChangeText={(value) => onChange({ toDate: value })} minHeight={44} fontSize={16} borderColor="$borderColor" backgroundColor="$background" />
+      <YStack width="100%" $wide={{ width: 'calc(40% - 10px)' }} gap="$2">
+        <Text color="$color" {...textStyles.caption} fontWeight="700">Periode</Text>
+        <XStack gap="$2">
+          <YStack flex={1} gap="$1">
+            <Label htmlFor="history-from" color="$colorMuted" {...textStyles.caption}>Dari tanggal</Label>
+            <Input id="history-from" type="date" value={draft.fromDate} onChangeText={(value) => onChange({ fromDate: value })} minHeight={44} fontSize={16} borderColor="$borderColor" backgroundColor="$background" />
+          </YStack>
+          <YStack flex={1} gap="$1">
+            <Label htmlFor="history-to" color="$colorMuted" {...textStyles.caption}>Sampai tanggal</Label>
+            <Input id="history-to" type="date" value={draft.toDate} onChangeText={(value) => onChange({ toDate: value })} minHeight={44} fontSize={16} borderColor="$borderColor" backgroundColor="$background" />
+          </YStack>
+        </XStack>
       </YStack>
       <LocationFilter value={draft.location_id ?? ''} onChange={(location_id) => onChange({ location_id })} />
       <YStack width="100%" $tablet={{ width: 'calc(50% - 8px)' }} $wide={{ width: 'calc(20% - 13px)' }} gap="$2">
-        <Label htmlFor="history-device" color="$color" {...textStyles.caption} fontWeight="700">Cari perangkat</Label>
+        <Label htmlFor="history-device" color="$color" {...textStyles.caption} fontWeight="700">Perangkat</Label>
         <Input id="history-device" value={draft.device_id ?? ''} onChangeText={(value) => onChange({ device_id: value })} placeholder="Nama atau ID perangkat" minHeight={44} fontSize={16} borderColor="$borderColor" backgroundColor="$background" />
       </YStack>
       <YStack width="100%" $tablet={{ width: 'calc(50% - 8px)' }} $wide={{ width: 'calc(20% - 13px)' }} gap="$2">
@@ -462,12 +488,14 @@ export default function HistoryRoute() {
         {data ? <YStack gap="$3">
           <XStack alignItems="center" justifyContent="space-between" gap="$3" flexWrap="wrap">
             <Text color="$color" {...textStyles.sectionTitle} $compact={textStyles.sectionTitleCompact}>Riwayat pembacaan</Text>
-            <XStack alignItems="center" gap="$3" flexWrap="wrap">
-              <XStack alignItems="center" gap="$2"><Text color="$colorMuted" {...textStyles.metadata}>Baris:</Text><Select value={String(pageSize)} onValueChange={handlePageSize} name="history-page-size"><Select.Trigger aria-label="Jumlah baris per halaman" minHeight={40} width={82} borderColor="$borderColor" backgroundColor="$surface"><Select.Value /></Select.Trigger><Select.Content><Select.Viewport minWidth={100}>{HISTORY_PAGE_SIZES.map((size, index) => <Select.Item key={size} value={String(size)} index={index}><Select.ItemText>{size}</Select.ItemText><Select.ItemIndicator /></Select.Item>)}</Select.Viewport></Select.Content></Select></XStack>
-              <HistoryPager pageNumber={pageNumber} totalPages={totalPages} canGoNewer={cursorStack.length > 0} canGoOlder={data.page.has_more && data.page.next !== null} onNewer={handleNewer} onOlder={handleOlder} />
+            <XStack alignItems="center" gap="$3" flexWrap="wrap" width={media.compact ? '100%' : undefined} justifyContent={media.compact ? 'flex-end' : 'space-between'}>
+              <Text color="$colorMuted" {...textStyles.metadata}>{historyRangeLabel(pageNumber, pageSize, data.page.total_count)}</Text>
+              <XStack alignItems="center" gap="$3" flexWrap="wrap" width={media.compact ? '100%' : undefined} justifyContent={media.compact ? 'space-between' : undefined}>
+                <XStack alignItems="center" gap="$2"><Text color="$colorMuted" {...textStyles.metadata}>Tampilkan</Text><Select value={String(pageSize)} onValueChange={handlePageSize} name="history-page-size"><Select.Trigger aria-label="Jumlah baris per halaman" minHeight={40} width={68} borderColor="$borderColor" backgroundColor="$surface"><Select.Value /></Select.Trigger><Select.Content><Select.Viewport minWidth={100}>{HISTORY_PAGE_SIZES.map((size, index) => <Select.Item key={size} value={String(size)} index={index}><Select.ItemText>{size}</Select.ItemText><Select.ItemIndicator /></Select.Item>)}</Select.Viewport></Select.Content></Select><Text color="$colorMuted" {...textStyles.metadata}>baris</Text></XStack>
+                <HistoryPager pageNumber={pageNumber} totalPages={totalPages} canGoNewer={cursorStack.length > 0} canGoOlder={data.page.has_more && data.page.next !== null} onNewer={handleNewer} onOlder={handleOlder} />
+              </XStack>
             </XStack>
           </XStack>
-          <Text color="$colorMuted" {...textStyles.caption}>{data.page.total_count ? `${Math.min((pageNumber - 1) * pageSize + 1, data.page.total_count)}–${Math.min(pageNumber * pageSize, data.page.total_count)} dari ${data.page.total_count} data` : 'Tidak ada data pada filter ini'}</Text>
           {data.items.length ? (media.wide ? <Card borderWidth={1} borderColor="$borderColor" backgroundColor="$surface" borderRadius="$4" overflow="hidden" role="table"><HistoryTableHeader />{data.items.map((item) => <HistoryRow key={`${item.reading_id}-${item.slot_id}`} item={item} compact={false} />)}</Card> : <YStack gap="$3">{data.items.map((item) => <HistoryRow key={`${item.reading_id}-${item.slot_id}`} item={item} compact />)}</YStack>) : <EmptyState title={HISTORY_EMPTY_COPY.title} description={HISTORY_EMPTY_COPY.description} />}
         </YStack> : null}
       </YStack>

@@ -32,6 +32,7 @@ export function StatusBadge({ status, compact = false }: StatusBadgeProps) {
       backgroundColor={backgroundToken}
       role="status"
       aria-label={label}
+      flexShrink={0}
     >
       <XStack
         width={8}
@@ -40,7 +41,7 @@ export function StatusBadge({ status, compact = false }: StatusBadgeProps) {
         backgroundColor={`$${presentation.token}`}
         aria-hidden={true}
       />
-      <Text color={`$${presentation.token}`} {...textStyles.caption} fontWeight="800">
+      <Text color={`$${presentation.token}`} {...textStyles.caption} fontWeight="800" numberOfLines={1} ellipsizeMode="tail" flexShrink={0}>
         {presentation.label}
       </Text>
     </XStack>
