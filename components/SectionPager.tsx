@@ -11,6 +11,8 @@ export interface SectionPagerProps {
 export function SectionPager({ page, totalPages, onPrevious, onNext }: SectionPagerProps) {
   const safeTotal = Math.max(1, totalPages);
   const safePage = Math.min(safeTotal, Math.max(1, page));
+  if (safeTotal <= 1) return null;
+
   return (
     <XStack alignItems="center" gap="$1" aria-label={`Halaman ${safePage} dari ${safeTotal}`}>
       <Button

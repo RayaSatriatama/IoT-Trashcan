@@ -42,6 +42,7 @@ export function AppButton({
       {...styles}
       {...variantStyles}
       width={fullWidth ? '100%' : undefined}
+      alignSelf={fullWidth ? 'stretch' : 'flex-start'}
       fontSize={size === 'sm' ? 13 : 14}
       fontWeight="700"
       disabled={disabled}
