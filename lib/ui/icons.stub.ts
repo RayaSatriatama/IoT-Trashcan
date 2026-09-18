@@ -14,6 +14,7 @@ export const Filter = TestIcon;
 export const FlaskConical = TestIcon;
 export const History = TestIcon;
 export const House = TestIcon;
+export const Info = TestIcon;
 export const MapPin = TestIcon;
 export const Menu = TestIcon;
 export const Search = TestIcon;

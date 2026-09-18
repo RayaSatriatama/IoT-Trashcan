@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { Button, Text, Tooltip, XStack } from 'tamagui';
+import { Info } from '../lib/ui/icons';
 import { textStyles } from '../lib/ui/typography';
 
 export function DescriptionHint({
@@ -13,22 +14,23 @@ export function DescriptionHint({
     <Tooltip delay={0} restMs={120} placement="bottom-end" allowFlip zIndex={1000} focus={{ enabled: true }}>
       <Tooltip.Trigger asChild>
         <Button
-          minWidth={32}
-          minHeight={32}
-          width={32}
-          height={32}
+          minWidth={34}
+          minHeight={34}
+          width={34}
+          height={34}
           padding={0}
           borderRadius="$6"
-          borderWidth={1}
-          borderColor="$borderColor"
-          backgroundColor="$surface"
-          color="$colorMuted"
+          borderWidth={0}
+          backgroundColor="transparent"
+          alignItems="center"
+          justifyContent="center"
           aria-label={ariaLabel}
-          hoverStyle={{ borderColor: '$primary', backgroundColor: '$primarySoft' }}
-          focusStyle={{ borderColor: '$primary', outlineColor: '$primary', outlineWidth: 2, outlineStyle: 'solid' }}
+          hoverStyle={{ backgroundColor: '$surfaceMuted' }}
+          pressStyle={{ backgroundColor: '$primarySoft' }}
+          focusStyle={{ backgroundColor: '$primarySoft', outlineColor: '$primary', outlineWidth: 2, outlineStyle: 'solid' }}
           type="button"
         >
-          <Text color="$colorMuted" fontSize={13} lineHeight={17} fontWeight="800">i</Text>
+          <Info size={17} strokeWidth={2} color="#60789F" aria-hidden />
         </Button>
       </Tooltip.Trigger>
       <Tooltip.Content

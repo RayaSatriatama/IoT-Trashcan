@@ -12,6 +12,7 @@ export {
   FlaskConical,
   History,
   House,
+  Info,
   MapPin,
   Menu,
   Search,
