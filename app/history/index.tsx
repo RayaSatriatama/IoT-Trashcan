@@ -473,7 +473,7 @@ export default function HistoryRoute() {
             <YStack flex={1} minWidth={250} gap="$2">
               <Text color="$primary" fontSize="$2" fontWeight="800">AUDIT DAN LAPORAN</Text>
               <XStack alignItems="center" gap="$2" flexWrap="wrap">
-                <Text color="$color" fontSize="$7" lineHeight="$7" fontWeight="800" letterSpacing={-0.8}>Riwayat pembacaan yang mudah ditindaklanjuti.</Text>
+                <Text color="$color" {...textStyles.pageTitle} $compact={textStyles.pageTitleCompact} letterSpacing={-0.8}>Riwayat pembacaan yang mudah ditindaklanjuti.</Text>
                 <DescriptionHint
                   description="Gunakan filter untuk menelusuri data sensor dan keputusan operasional dari semua lokasi."
                   ariaLabel="Lihat informasi tentang riwayat dan laporan"

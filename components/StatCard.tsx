@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { Card, Text, XStack, YStack } from 'tamagui';
 import { Image as RNImage } from 'react-native';
+import { textStyles } from '../lib/ui/typography';
 
 export interface StatCardProps {
   label: string;
@@ -27,10 +28,10 @@ export function StatCard({ label, value, description, accent = '$primary', icon 
     >
       <XStack alignItems="center" justifyContent="space-between" gap="$3">
         <YStack gap="$1" flex={1}>
-          <Text fontSize="$2" color="$colorMuted" fontWeight="700">
+          <Text {...textStyles.caption} color="$colorMuted" fontWeight="700">
           {label}
           </Text>
-          <Text fontSize="$8" lineHeight="$8" color={accent} fontWeight="800" letterSpacing={-1}>
+          <Text {...textStyles.numericKpi} $compact={textStyles.numericKpiCompact} color={accent} letterSpacing={-1}>
             {value}
           </Text>
         </YStack>
@@ -41,7 +42,7 @@ export function StatCard({ label, value, description, accent = '$primary', icon 
         ) : null}
       </XStack>
       {description ? (
-        <Text fontSize="$2" color="$colorMuted">
+        <Text {...textStyles.bodySecondary} color="$colorMuted">
           {description}
         </Text>
       ) : null}

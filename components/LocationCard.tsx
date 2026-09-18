@@ -24,7 +24,7 @@ export function LocationCard({ location, deviceCount, onPress, onDetail, selecte
       <XStack alignItems="center" gap="$3" paddingRight="$3">
         <RNImage source={resolveLocationImage(location.name)} accessibilityLabel={`Ilustrasi ${location.name}`} resizeMode="contain" style={{ width: 64, height: 56 }} />
         <YStack flex={1} minWidth={0} gap="$1">
-          <Text color="$color" {...textStyles.cardTitle} alignSelf="stretch" textAlign="left" minHeight={48} numberOfLines={2}>{location.name}</Text>
+          <Text color="$color" {...textStyles.cardTitle} $compact={textStyles.cardTitleCompact} alignSelf="stretch" textAlign="left" minHeight={48} numberOfLines={2}>{location.name}</Text>
           <Text color="$colorMuted" {...textStyles.bodySecondary} alignSelf="stretch" textAlign="left" minHeight={44} numberOfLines={2}>{address}</Text>
         </YStack>
       </XStack>

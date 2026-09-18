@@ -22,7 +22,7 @@ export function EmptyState({ title, description, action }: EmptyStateProps) {
       aria-label={title}
     >
       <YStack alignItems="center" gap="$2" maxWidth={520}>
-        <Text {...textStyles.cardTitle} color="$color" textAlign="center">
+        <Text {...textStyles.cardTitle} $compact={textStyles.cardTitleCompact} color="$color" textAlign="center">
           {title}
         </Text>
         {description ? (

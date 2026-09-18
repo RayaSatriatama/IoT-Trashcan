@@ -26,7 +26,7 @@ export function ErrorState({
     >
       <YStack gap="$3" alignItems="flex-start">
         <YStack gap="$1">
-          <Text {...textStyles.cardTitle} color="$color">
+          <Text {...textStyles.cardTitle} $compact={textStyles.cardTitleCompact} color="$color">
           {title}
           </Text>
           <Text {...textStyles.bodySecondary} color="$colorMuted">

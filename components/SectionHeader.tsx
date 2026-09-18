@@ -18,10 +18,10 @@ export function DescriptionHint({
       zIndex={open ? 20 : 1}
     >
       <Button
-        minWidth={34}
-        minHeight={34}
-        width={34}
-        height={34}
+        minWidth={32}
+        minHeight={32}
+        width={32}
+        height={32}
         padding={0}
         borderRadius="$6"
         borderWidth={1}
@@ -42,7 +42,7 @@ export function DescriptionHint({
         focusStyle={{ borderColor: '$primary' }}
         type="button"
       >
-        <Text color="$colorMuted" fontSize={14} lineHeight={18} fontWeight="800">
+        <Text color="$colorMuted" fontSize={13} lineHeight={17} fontWeight="800">
           i
         </Text>
       </Button>
@@ -51,7 +51,7 @@ export function DescriptionHint({
         <Card
           id={tooltipId}
           position="absolute"
-          top={40}
+          top={38}
           right={0}
           width={280}
           maxWidth={280}
@@ -84,7 +84,7 @@ export function SectionHeader({
   return (
     <XStack alignItems="center" justifyContent="space-between" gap="$3" flexWrap="wrap">
       <XStack alignItems="center" gap="$2" flex={1} minWidth={220}>
-        <Text color="$color" {...textStyles.sectionTitle}>
+        <Text color="$color" {...textStyles.sectionTitle} $compact={textStyles.sectionTitleCompact}>
           {title}
         </Text>
         {description ? (

@@ -137,7 +137,7 @@ export default function HomeRoute() {
             <YStack flex={1} minWidth={260} gap="$3">
               <Text color="$primary" {...textStyles.overline} letterSpacing={1}>SIGAP MONITORING</Text>
               <XStack alignItems="center" gap="$2" flexWrap="wrap">
-                <Text color="$color" {...textStyles.pageTitle} fontSize={media.wide ? 36 : 30}>Satu pandangan untuk semua lokasi.</Text>
+                <Text color="$color" {...textStyles.pageTitle} $compact={textStyles.pageTitleCompact}>Satu pandangan untuk semua lokasi.</Text>
               </XStack>
               <Text color="$colorMuted" {...textStyles.bodySecondary}>
                 Pantau perangkat, temukan prioritas, dan tindak lanjuti kondisi terbaru dari satu dashboard.
