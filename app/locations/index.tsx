@@ -14,7 +14,8 @@ import { StatusBadge } from '../../components/StatusBadge';
 import { SectionHeader } from '../../components/SectionHeader';
 import { apiClient } from '../../lib/api/client';
 import { usePollingResource } from '../../lib/api/hooks';
-import { MapPin, Search, ShieldAlert, TriangleAlert } from '../../lib/ui/icons';
+import { Filter, MapPin, Search, ShieldAlert, TriangleAlert } from '../../lib/ui/icons';
+import { textStyles } from '../../lib/ui/typography';
 import type { CanonicalStatus, LocationListResponse } from '../../lib/api/types';
 
 export const SEARCH_INPUT_LABEL = 'Cari lokasi';
@@ -90,6 +91,6 @@ export default function LocationsRoute() {
     </Card>
 
     {stale && data ? <StaleNotice onRetry={retry} /> : null}{loading && !data ? <LoadingState label="Memuat lokasi" rows={4} /> : null}{!data && !loading && error ? <ErrorState onRetry={retry} /> : null}
-    {data ? data.locations.length ? <YStack gap="$3"><XStack alignItems="center" justifyContent="space-between"><YStack gap="$1"><Text color="$color" fontSize="$6" fontWeight="800">Daftar lokasi</Text><Text color="$colorMuted" fontSize="$2">{data.locations.length} lokasi ditemukan</Text></YStack>{status ? <StatusBadge status={status} compact /> : <Text color="$colorMuted" fontSize="$1">Semua</Text>}</XStack><XStack gap="$3" flexWrap="wrap">{data.locations.map((location) => <YStack key={location.id} width="100%" $wide={{ width: 'calc(33.333% - 8px)' }}><Link href={`/locations/${encodeURIComponent(location.id)}`} asChild><LocationCard location={location} /></Link></YStack>)}</XStack></YStack> : <EmptyState title={query.trim() || status ? 'Lokasi tidak ditemukan' : 'Belum ada lokasi'} description={query.trim() || status ? 'Coba ubah kata kunci atau filter status.' : 'Lokasi akan muncul setelah perangkat mengirimkan data.'} /> : null}
+    {data ? data.locations.length ? <YStack gap="$3"><XStack alignItems="center" justifyContent="space-between"><YStack gap="$1"><Text color="$color" {...textStyles.sectionTitle} $compact={textStyles.sectionTitleCompact}>Daftar lokasi</Text><Text color="$colorMuted" {...textStyles.metadata}>{data.locations.length} lokasi ditemukan</Text></YStack>{status ? <StatusBadge status={status} compact /> : <Text color="$colorMuted" {...textStyles.metadata}>Semua</Text>}</XStack><XStack gap="$3" flexWrap="wrap">{data.locations.map((location) => <YStack key={location.id} width="100%" $wide={{ width: 'calc(33.333% - 8px)' }}><Link href={`/locations/${encodeURIComponent(location.id)}`} asChild><LocationCard location={location} /></Link></YStack>)}</XStack></YStack> : <EmptyState title={query.trim() || status ? 'Lokasi tidak ditemukan' : 'Belum ada lokasi'} description={query.trim() || status ? 'Coba ubah kata kunci atau filter status.' : 'Lokasi akan muncul setelah perangkat mengirimkan data.'} /> : null}
   </YStack></AppShell>;
 }

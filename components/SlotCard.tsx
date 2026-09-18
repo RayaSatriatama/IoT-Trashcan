@@ -67,7 +67,7 @@ export function SlotCard({ slot }: SlotCardProps) {
             />
           ) : null}
           <YStack gap="$1" minWidth={0}>
-            <Text color="$color" {...textStyles.cardTitle} $compact={textStyles.cardTitleCompact} fontWeight="800" numberOfLines={1}>
+            <Text color="$color" {...textStyles.cardTitle} $compact={textStyles.cardTitleCompact} numberOfLines={1}>
               {streamLabel}
             </Text>
             <Text color="$colorMuted" {...textStyles.metricLabel}>

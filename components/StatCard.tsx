@@ -28,7 +28,7 @@ export function StatCard({ label, value, description, accent = '$primary', icon 
     >
       <XStack alignItems="center" justifyContent="space-between" gap="$3">
         <YStack gap="$1" flex={1}>
-          <Text {...textStyles.caption} color="$colorMuted" fontWeight="700">
+          <Text {...textStyles.kpiLabel} color="$colorMuted">
           {label}
           </Text>
           <Text {...textStyles.numericKpi} $compact={textStyles.numericKpiCompact} color={accent} letterSpacing={-1}>

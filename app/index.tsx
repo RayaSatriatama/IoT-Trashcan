@@ -55,7 +55,7 @@ function ActivityItem({ event }: { event: EventDTO }) {
           <Activity size={20} color="#0A9B62" strokeWidth={2.2} aria-hidden={true} />
         </YStack>
         <YStack flex={1} gap="$1">
-          <Text color="$color" {...textStyles.cardTitle} fontSize={17}>{event.event_type}</Text>
+          <Text color="$color" {...textStyles.cardTitle}>{event.event_type}</Text>
           <Text color="$colorMuted" {...textStyles.bodySecondary}>Device {event.device_id}</Text>
         </YStack>
         <StatusBadge status={null} compact />

@@ -116,7 +116,7 @@ function ResearchSlot({ slot }: { slot: ResearchSlotDTO }) {
     >
       <XStack justifyContent="space-between" alignItems="flex-start" gap="$3" flexWrap="wrap">
         <YStack gap="$1" flex={1} minWidth={160}>
-          <Text color="$color" {...textStyles.cardTitle} fontSize={18}>
+          <Text color="$color" {...textStyles.cardTitle}>
             {slot.stream}
           </Text>
           <Text color="$colorMuted" {...textStyles.caption}>
@@ -206,7 +206,7 @@ export function ResearchPanel({
     >
       <XStack alignItems="center" justifyContent="space-between" gap="$3" flexWrap="wrap">
         <YStack gap="$1" flex={1} minWidth={180}>
-          <Text color="$color" {...textStyles.cardTitle} fontSize={22}>
+          <Text color="$color" {...textStyles.cardTitle}>
             {RESEARCH_PANEL_TITLE}
           </Text>
           <Text color="$colorMuted" {...textStyles.bodySecondary}>

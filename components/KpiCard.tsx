@@ -46,7 +46,7 @@ export function KpiCard({ label, value, description, icon: Icon, tone = 'green',
     >
       <XStack alignItems="center" justifyContent="space-between" gap="$3">
         <YStack gap="$1" flex={1}>
-          <Text color="$colorMuted" {...textStyles.caption} fontWeight="700" minHeight={20} numberOfLines={2}>{label}</Text>
+          <Text color="$colorMuted" {...textStyles.kpiLabel} minHeight={20} numberOfLines={2}>{label}</Text>
           <Text color={palette.color} {...textStyles.numericKpi} $compact={textStyles.numericKpiCompact} letterSpacing={-1} fontVariant={['tabular-nums']}>{value}</Text>
         </YStack>
         <YStack width={44} height={44} borderRadius="$6" backgroundColor="$surface" alignItems="center" justifyContent="center">
