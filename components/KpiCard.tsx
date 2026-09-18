@@ -17,9 +17,11 @@ export interface KpiCardProps {
   description?: string;
   icon: LucideIcon;
   tone?: KpiTone;
+  selected?: boolean;
+  onPress?: () => void;
 }
 
-export function KpiCard({ label, value, description, icon: Icon, tone = 'green' }: KpiCardProps) {
+export function KpiCard({ label, value, description, icon: Icon, tone = 'green', selected = false, onPress }: KpiCardProps) {
   const palette = tones[tone];
   return (
     <Card
@@ -28,12 +30,19 @@ export function KpiCard({ label, value, description, icon: Icon, tone = 'green' 
       minHeight={132}
       padding="$4"
       gap="$3"
-      borderWidth={1}
-      borderColor="$borderColor"
+      borderColor={selected ? palette.color : '$borderColor'}
       backgroundColor={palette.background}
       borderRadius="$4"
-      role="group"
+      borderWidth={selected ? 2 : 1}
+      pressStyle={onPress ? { opacity: 0.84, scale: 0.99 } : undefined}
+      hoverStyle={onPress ? { borderColor: palette.color, shadowColor: palette.color, shadowOpacity: 0.12, shadowRadius: 8 } : undefined}
+      focusStyle={onPress ? { borderColor: palette.color, borderWidth: 2, outlineColor: palette.color, outlineWidth: 2, outlineStyle: 'solid' } : undefined}
+      onPress={onPress}
+      role={onPress ? 'button' : 'group'}
       aria-label={label}
+      aria-pressed={onPress ? selected : undefined}
+      tabIndex={onPress ? 0 : undefined}
+      cursor={onPress ? 'pointer' : undefined}
     >
       <XStack alignItems="center" justifyContent="space-between" gap="$3">
         <YStack gap="$1" flex={1}>
