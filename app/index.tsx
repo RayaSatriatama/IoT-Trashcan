@@ -13,7 +13,7 @@ import { HomeMonitoringWorkspace } from '../components/HomeMonitoringWorkspace';
 import { HomeLocationSelector } from '../components/HomeLocationSelector';
 import { KpiCard } from '../components/KpiCard';
 import { LoadingState } from '../components/LoadingState';
-import { SectionHeader } from '../components/SectionHeader';
+import { DescriptionHint, SectionHeader } from '../components/SectionHeader';
 import { StatusBadge } from '../components/StatusBadge';
 import { apiClient } from '../lib/api/client';
 import { usePollingResource } from '../lib/api/hooks';
@@ -136,8 +136,13 @@ export default function HomeRoute() {
           <XStack alignItems="center" gap="$4" flexWrap="wrap">
             <YStack flex={1} minWidth={260} gap="$3">
               <Text color="$primary" {...textStyles.overline} letterSpacing={1}>SIGAP MONITORING</Text>
-              <Text color="$color" {...textStyles.pageTitle} fontSize={media.wide ? 36 : 30}>Satu pandangan untuk semua lokasi.</Text>
-              <Text color="$colorMuted" {...textStyles.body}>Pantau perangkat, temukan prioritas, dan tindak lanjuti kondisi terbaru dari satu dashboard.</Text>
+              <XStack alignItems="center" gap="$2" flexWrap="wrap">
+                <Text color="$color" {...textStyles.pageTitle} fontSize={media.wide ? 36 : 30}>Satu pandangan untuk semua lokasi.</Text>
+                <DescriptionHint
+                  description="Pantau perangkat, temukan prioritas, dan tindak lanjuti kondisi terbaru dari satu dashboard."
+                  ariaLabel="Lihat informasi tentang dashboard SIGAP"
+                />
+              </XStack>
               <AppButton size="md" onPress={() => handleNavigate('/locations')} ariaLabel="Lihat semua lokasi">
                 Lihat semua lokasi <ArrowRight size={17} color="#FFFFFF" strokeWidth={2.3} aria-hidden={true} />
               </AppButton>
