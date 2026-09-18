@@ -1,5 +1,8 @@
 import type { ReactNode } from 'react';
+import { Image as RNImage } from 'react-native';
 import { Button, Popover, PopoverContent, PopoverTrigger, Separator, Text, XStack, YStack, useMedia } from 'tamagui';
+
+import logoArtwork from '../assets/logo_mark_ui_generated.png';
 import { Bell, CircleUserRound } from '../lib/ui/icons';
 import { textStyles } from '../lib/ui/typography';
 import { SimulationIndicator } from './SimulationIndicator';
@@ -10,28 +13,31 @@ export interface HeaderProps {
   actions?: ReactNode;
 }
 
-export function Header({ title, subtitle, actions }: HeaderProps) {
+export function Header({ actions }: HeaderProps) {
   const media = useMedia();
+
   return (
-    <YStack gap="$4" paddingTop="$6" paddingBottom="$4">
-      <XStack alignItems="center" justifyContent="space-between" gap="$4" flexWrap="wrap">
-        <YStack flex={1} minWidth={220} gap="$1">
-          <Text
-            fontFamily="$body"
-            fontSize={media.wide ? textStyles.pageTitle.fontSize : 30}
-            lineHeight={media.wide ? textStyles.pageTitle.lineHeight : 36}
-            color="$color"
-            fontWeight="800"
-            letterSpacing={-0.8}
-          >
-            {title}
-          </Text>
-          {subtitle ? (
-            <Text color="$colorMuted" {...textStyles.bodySecondary}>
-              {subtitle}
+    <YStack gap="$2" paddingTop="$3" paddingBottom="$2">
+      <XStack
+        alignItems="center"
+        justifyContent={media.compact ? 'space-between' : 'flex-end'}
+        gap="$3"
+        minHeight={48}
+      >
+        {media.compact ? (
+          <XStack alignItems="center" gap="$2" minWidth={0}>
+            <RNImage
+              source={logoArtwork}
+              accessibilityLabel="Logo SIGAP"
+              resizeMode="contain"
+              style={{ width: 34, height: 34 }}
+            />
+            <Text color="$color" {...textStyles.cardTitle} fontSize={18} fontWeight="800">
+              SIGAP
             </Text>
-          ) : null}
-        </YStack>
+          </XStack>
+        ) : null}
+
         <XStack alignItems="center" gap="$2">
           <SimulationIndicator />
           <Button
@@ -76,8 +82,8 @@ export function Header({ title, subtitle, actions }: HeaderProps) {
             <Text color="$color" {...textStyles.bodySecondary} fontWeight="800">Admin</Text>
             <Text color="$colorMuted" {...textStyles.metricLabel}>Pengelola sistem</Text>
           </YStack>
+          {actions ? <XStack alignItems="center" gap="$2">{actions}</XStack> : null}
         </XStack>
-        {actions ? <XStack alignItems="center" gap="$2">{actions}</XStack> : null}
       </XStack>
       <Separator borderColor="$borderColor" opacity={0.75} />
     </YStack>
