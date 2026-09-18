@@ -1,9 +1,10 @@
 import { useRef, useState } from 'react';
-import { Button, Card, Separator, Text, XStack, YStack } from 'tamagui';
+import { Card, Separator, Text, XStack, YStack } from 'tamagui';
 
 import type { ResearchResponse, ResearchSlotDTO } from '../lib/api/types';
 import { formatNullableMetric } from '../lib/format';
 import { textStyles } from '../lib/ui/typography';
+import { AppButton } from './AppButton';
 import { EmptyState } from './EmptyState';
 import { ErrorState } from './ErrorState';
 import { LoadingState } from './LoadingState';
@@ -86,7 +87,7 @@ function Section({
 }) {
   return (
     <YStack gap="$1">
-      <Text color="$color" fontSize="$3" fontWeight="700">
+      <Text color="$color" {...textStyles.metricValue}>
         {title}
       </Text>
       <Card
@@ -115,10 +116,10 @@ function ResearchSlot({ slot }: { slot: ResearchSlotDTO }) {
     >
       <XStack justifyContent="space-between" alignItems="flex-start" gap="$3" flexWrap="wrap">
         <YStack gap="$1" flex={1} minWidth={160}>
-          <Text color="$color" fontSize="$4" fontWeight="700">
+          <Text color="$color" {...textStyles.cardTitle} fontSize={18}>
             {slot.stream}
           </Text>
-          <Text color="$colorMuted" fontSize="$2">
+          <Text color="$colorMuted" {...textStyles.caption}>
             Terekam: {formatResearchValue(slot.recorded_at)}
           </Text>
         </YStack>
@@ -205,25 +206,22 @@ export function ResearchPanel({
     >
       <XStack alignItems="center" justifyContent="space-between" gap="$3" flexWrap="wrap">
         <YStack gap="$1" flex={1} minWidth={180}>
-          <Text color="$color" fontSize="$5" fontWeight="700">
+          <Text color="$color" {...textStyles.cardTitle} fontSize={22}>
             {RESEARCH_PANEL_TITLE}
           </Text>
-          <Text color="$colorMuted" fontSize="$2">
+          <Text color="$colorMuted" {...textStyles.bodySecondary}>
             Raw, normalized, and decision fields per slot.
           </Text>
         </YStack>
-        <Button
-          minHeight={48}
-          paddingHorizontal="$4"
-          backgroundColor="$primary"
-          color="$white"
+        <AppButton
+          variant="secondary"
+          size="md"
           onPress={toggle}
-          aria-label={expanded ? 'Tutup detail riset' : 'Buka detail riset'}
-          aria-expanded={expanded}
-          type="button"
+          ariaLabel={expanded ? 'Tutup detail riset' : 'Buka detail riset'}
+          ariaExpanded={expanded}
         >
           {expanded ? 'Tutup' : 'Buka'}
-        </Button>
+        </AppButton>
       </XStack>
 
       {expanded ? (

@@ -11,6 +11,7 @@ export interface AppButtonProps {
   onPress?: () => void;
   disabled?: boolean;
   ariaLabel?: string;
+  ariaExpanded?: boolean;
   fullWidth?: boolean;
 }
 
@@ -27,6 +28,7 @@ export function AppButton({
   onPress,
   disabled = false,
   ariaLabel,
+  ariaExpanded,
   fullWidth = false,
 }: AppButtonProps) {
   const styles = sizeStyles[size];
@@ -43,15 +45,16 @@ export function AppButton({
       {...variantStyles}
       width={fullWidth ? '100%' : undefined}
       alignSelf={fullWidth ? 'stretch' : 'flex-start'}
-    fontSize={size === 'sm' ? 13 : 14}
-    fontWeight="700"
-    disabled={disabled}
-    opacity={disabled ? 0.5 : 1}
-    hoverStyle={disabled ? undefined : { opacity: 0.9 }}
-    pressStyle={disabled ? undefined : { opacity: 0.78, scale: 0.99 }}
-    focusStyle={disabled ? undefined : { outlineColor: '$primary', outlineWidth: 2, outlineStyle: 'solid' }}
-    onPress={onPress}
+      fontSize={size === 'sm' ? 13 : 14}
+      fontWeight="700"
+      disabled={disabled}
+      opacity={disabled ? 0.5 : 1}
+      hoverStyle={disabled ? undefined : { opacity: 0.9 }}
+      pressStyle={disabled ? undefined : { opacity: 0.78, scale: 0.99 }}
+      focusStyle={disabled ? undefined : { outlineColor: '$primary', outlineWidth: 2, outlineStyle: 'solid' }}
+      onPress={onPress}
       aria-label={ariaLabel}
+      aria-expanded={ariaExpanded}
       type="button"
     >
       {children}
