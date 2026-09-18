@@ -1,4 +1,4 @@
-import type { CanonicalStatus, LocationDetail } from '../lib/api/types';
+import type { LocationDetail } from '../lib/api/types';
 import { getAffectedLocations, getOperationalFilterLabel, flattenHomeDevices, type HomeMonitoringMode, type HomeOperationalFilter } from '../lib/ui/homeMonitoring';
 import { paginate } from '../lib/ui/pagination';
 import { AppButton } from './AppButton';
@@ -73,8 +73,6 @@ export function HomeMonitoringWorkspace({
   const selectedDevices = selected?.devices ?? [];
   const devicePages = paginate(selectedDevices, devicePage, devicePageSize);
   const label = getOperationalFilterLabel(operationalFilter);
-  const locationStatus = operationalFilter as CanonicalStatus;
-
   if (!affectedLocations.length) {
     return <EmptyState title={`Tidak ada ${label.toLowerCase()}`} description={operationalFilter === 'Angkat' ? 'Semua perangkat saat ini tidak memerlukan tindakan pengangkatan.' : 'Tidak ada perangkat dengan Safety Alert saat ini.'} />;
   }
@@ -91,7 +89,7 @@ export function HomeMonitoringWorkspace({
           {locationPages.items.map(({ location, devices }) => (
             <YStack key={location.id} width="100%" $tablet={{ width: 'calc(50% - 6px)' }} $wide={{ width: 'calc(25% - 9px)' }}>
               <LocationCard
-                location={{ ...location, status: locationStatus }}
+                location={location}
                 deviceCount={devices.length}
                 selected={selectedAttentionLocationId === location.id}
                 onPress={() => onSelectAttentionLocation(location.id)}
