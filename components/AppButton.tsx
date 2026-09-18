@@ -16,7 +16,7 @@ export interface AppButtonProps {
 }
 
 const sizeStyles: Record<AppButtonSize, { minHeight: number; paddingHorizontal: string; borderRadius: string }> = {
-  sm: { minHeight: 36, paddingHorizontal: '$3', borderRadius: '$3' },
+  sm: { minHeight: 40, paddingHorizontal: '$3', borderRadius: '$3' },
   md: { minHeight: 44, paddingHorizontal: '$4', borderRadius: '$3' },
   lg: { minHeight: 48, paddingHorizontal: '$5', borderRadius: '$3' },
 };
