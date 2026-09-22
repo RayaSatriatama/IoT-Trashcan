@@ -6,6 +6,7 @@ import logoArtwork from '../assets/logo_mark_ui_generated.png';
 import { Bell, CircleUserRound } from '../lib/ui/icons';
 import { textStyles } from '../lib/ui/typography';
 import { SimulationIndicator } from './SimulationIndicator';
+import { useReducedMotion } from '../lib/ui/motionContext';
 
 export interface HeaderProps {
   title: string;
@@ -15,6 +16,7 @@ export interface HeaderProps {
 
 export function Header({ actions }: HeaderProps) {
   const media = useMedia();
+  const reduceMotion = useReducedMotion();
 
   return (
     <YStack gap="$2" paddingTop="$3" paddingBottom="$2">
@@ -51,6 +53,8 @@ export function Header({ actions }: HeaderProps) {
             hoverStyle={{ borderColor: '$primary' }}
             aria-label="Notifikasi"
             type="button"
+            transition={reduceMotion ? undefined : 'quick'}
+            pressStyle={{ opacity: 0.72, scale: 0.96 }}
           >
             <Bell size={18} color="#0A9B62" strokeWidth={2.2} aria-hidden={true} />
           </Button>
@@ -67,6 +71,8 @@ export function Header({ actions }: HeaderProps) {
                 hoverStyle={{ borderColor: '$primary' }}
                 aria-label="Buka profil Admin"
                 type="button"
+                transition={reduceMotion ? undefined : 'quick'}
+                pressStyle={{ opacity: 0.72, scale: 0.96 }}
               >
                 <CircleUserRound size={20} color="#0A9B62" strokeWidth={2.1} aria-hidden={true} />
               </Button>

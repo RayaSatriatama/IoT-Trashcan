@@ -2,6 +2,7 @@ import type { MetricBarTone } from './MetricBar';
 import { textStyles } from '../lib/ui/typography';
 import { Circle, Svg } from 'react-native-svg';
 import { Text, YStack } from 'tamagui';
+import { useAnimatedNumber } from '../lib/ui/useAnimatedNumber';
 
 const SIZE = 116;
 const STROKE = 11;
@@ -22,7 +23,9 @@ export interface SlotFillGaugeProps {
 
 export function SlotFillGauge({ value, tone }: SlotFillGaugeProps) {
   const valid = typeof value === 'number' && Number.isFinite(value);
-  const clamped = valid ? Math.max(0, Math.min(100, value)) : 0;
+  const animatedValue = useAnimatedNumber(valid ? value : null, { precision: 0 });
+  const visualValue = animatedValue ?? (valid ? value : null);
+  const clamped = visualValue === null ? 0 : Math.max(0, Math.min(100, visualValue));
   const offset = CIRCUMFERENCE - (clamped / 100) * CIRCUMFERENCE;
 
   return (
@@ -61,7 +64,7 @@ export function SlotFillGauge({ value, tone }: SlotFillGaugeProps) {
         ) : null}
       </Svg>
       <Text {...textStyles.metricHero} color="$color" fontVariant={['tabular-nums']}>
-        {valid ? `${Math.round(value)}%` : '—'}
+        {visualValue !== null ? `${Math.round(visualValue)}%` : '—'}
       </Text>
     </YStack>
   );

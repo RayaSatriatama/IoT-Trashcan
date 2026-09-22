@@ -6,6 +6,8 @@ export interface SlotMetricPresentation {
   label: string;
   value: string;
   accessibilityLabel: string;
+  numericValue?: number | null;
+  unit?: string;
 }
 
 export function getStreamTone(stream: string): MetricBarTone {
@@ -40,11 +42,13 @@ export function formatShortTime(value: string | null | undefined): string {
 }
 
 export function buildSlotMetrics(slot: SlotDTO): SlotMetricPresentation[] {
-  const metrics = [
+  const metrics: SlotMetricPresentation[] = [
     {
       label: 'Berat',
       value: formatNullableDisplay(slot.weight, ' kg'),
       accessibilityLabel: 'Berat',
+      numericValue: slot.weight,
+      unit: ' kg',
     },
   ];
 
@@ -54,6 +58,8 @@ export function buildSlotMetrics(slot: SlotDTO): SlotMetricPresentation[] {
         label: 'Suhu',
         value: formatNullableDisplay(slot.temperature, ' °C'),
         accessibilityLabel: 'Suhu',
+        numericValue: slot.temperature,
+        unit: ' °C',
       },
       {
         label: 'Keselamatan',
@@ -67,6 +73,8 @@ export function buildSlotMetrics(slot: SlotDTO): SlotMetricPresentation[] {
         label: 'OGI',
         value: formatNullableDisplay(slot.ogi),
         accessibilityLabel: 'OGI',
+        numericValue: slot.ogi,
+        unit: '',
       },
       {
         label: 'Update',

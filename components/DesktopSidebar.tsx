@@ -4,6 +4,7 @@ import type { LucideIcon } from 'lucide-react-native';
 import { Button, Separator, Text, XStack, YStack } from 'tamagui';
 import { Clock3, House, MapPin } from '../lib/ui/icons';
 import { textStyles } from '../lib/ui/typography';
+import { useReducedMotion } from '../lib/ui/motionContext';
 
 export interface NavigationItem {
   label: string;
@@ -33,6 +34,7 @@ export function DesktopSidebar({
   activePath = '/',
   onNavigate,
 }: DesktopSidebarProps) {
+  const reduceMotion = useReducedMotion();
   return (
     <YStack
       width={216}
@@ -81,6 +83,9 @@ export function DesktopSidebar({
               onPress={() => onNavigate?.(item.path)}
               aria-label={`Buka ${displayLabel}`}
               type="button"
+              transition={reduceMotion ? undefined : 'quick'}
+              hoverStyle={{ backgroundColor: active ? '$primarySoft' : '$surfaceMuted' }}
+              pressStyle={{ opacity: 0.76, x: 1 }}
             >
               <XStack alignItems="center" gap="$3">
                 <Icon size={18} color={active ? '#0A9B62' : '#5D7397'} strokeWidth={active ? 2.4 : 2} aria-hidden={true} />

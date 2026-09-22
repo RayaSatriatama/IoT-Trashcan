@@ -1,5 +1,6 @@
 import { ArrowLeft, ArrowRight } from '../lib/ui/icons';
 import { Button, Text, XStack } from 'tamagui';
+import { useReducedMotion } from '../lib/ui/motionContext';
 
 export interface SectionPagerProps {
   page: number;
@@ -9,6 +10,7 @@ export interface SectionPagerProps {
 }
 
 export function SectionPager({ page, totalPages, onPrevious, onNext }: SectionPagerProps) {
+  const reduceMotion = useReducedMotion();
   const safeTotal = Math.max(1, totalPages);
   const safePage = Math.min(safeTotal, Math.max(1, page));
   if (safeTotal <= 1) return null;
@@ -28,6 +30,8 @@ export function SectionPager({ page, totalPages, onPrevious, onNext }: SectionPa
         onPress={onPrevious}
         aria-label="Halaman sebelumnya"
         type="button"
+        transition={reduceMotion ? undefined : 'quick'}
+        pressStyle={safePage <= 1 ? undefined : { opacity: 0.72, scale: 0.96 }}
       >
         <ArrowLeft size={17} color="#10275B" strokeWidth={2.2} aria-hidden={true} />
       </Button>
@@ -47,6 +51,8 @@ export function SectionPager({ page, totalPages, onPrevious, onNext }: SectionPa
         onPress={onNext}
         aria-label="Halaman berikutnya"
         type="button"
+        transition={reduceMotion ? undefined : 'quick'}
+        pressStyle={safePage >= safeTotal ? undefined : { opacity: 0.72, scale: 0.96 }}
       >
         <ArrowRight size={17} color="#10275B" strokeWidth={2.2} aria-hidden={true} />
       </Button>

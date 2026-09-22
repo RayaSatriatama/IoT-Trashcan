@@ -117,6 +117,8 @@ export function SlotCard({ slot }: SlotCardProps) {
             value={metric.value}
             label={metric.label}
             accessibilityLabel={`${metric.accessibilityLabel}: ${metric.value}`}
+            numericValue={metric.numericValue}
+            unit={metric.unit}
           />
         ))}
       </XStack>

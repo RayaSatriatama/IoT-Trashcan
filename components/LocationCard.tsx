@@ -6,6 +6,7 @@ import { ChevronRight } from '../lib/ui/icons';
 import { resolveLocationImage } from '../lib/ui/assets';
 import { textStyles } from '../lib/ui/typography';
 import { StatusBadge } from './StatusBadge';
+import { useReducedMotion } from '../lib/ui/motionContext';
 
 export interface LocationCardProps {
   location: LocationListItem;
@@ -16,6 +17,7 @@ export interface LocationCardProps {
 }
 
 export function LocationCard({ location, deviceCount, onPress, onDetail, selected = false }: LocationCardProps) {
+  const reduceMotion = useReducedMotion();
   const address = location.address_text ?? 'Belum tersedia';
   const deviceLabel = deviceCount === null || deviceCount === undefined ? 'Belum tersedia' : `${deviceCount}`;
 
@@ -50,6 +52,8 @@ export function LocationCard({ location, deviceCount, onPress, onDetail, selecte
       $compact={{ minHeight: 160 }}
       position="relative"
       overflow="hidden"
+      transition={reduceMotion ? undefined : 'standard'}
+      enterStyle={reduceMotion ? undefined : { opacity: 0, y: 4 }}
     >
       {onPress ? (
         <Button
@@ -68,6 +72,7 @@ export function LocationCard({ location, deviceCount, onPress, onDetail, selecte
           aria-pressed={selected}
           cursor="pointer"
           type="button"
+          transition={reduceMotion ? undefined : 'quick'}
         >
           {cardContent}
         </Button>
@@ -93,6 +98,7 @@ export function LocationCard({ location, deviceCount, onPress, onDetail, selecte
           onPress={onDetail}
           aria-label={`Lihat detail lokasi ${location.name}`}
           type="button"
+          transition={reduceMotion ? undefined : 'quick'}
         >
           <ChevronRight size={19} color="#5D7397" strokeWidth={2} aria-hidden={true} />
         </Button>

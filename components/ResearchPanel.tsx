@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { Card, Separator, Text, XStack, YStack } from 'tamagui';
+import { AnimatePresence, Card, Separator, Text, XStack, YStack } from 'tamagui';
 
 import type { ResearchResponse, ResearchSlotDTO } from '../lib/api/types';
 import { formatNullableMetric } from '../lib/format';
@@ -8,6 +8,7 @@ import { AppButton } from './AppButton';
 import { EmptyState } from './EmptyState';
 import { ErrorState } from './ErrorState';
 import { LoadingState } from './LoadingState';
+import { useReducedMotion } from '../lib/ui/motionContext';
 
 export const RESEARCH_PANEL_TITLE = 'Detail Riset';
 export const RESEARCH_UNAVAILABLE_COPY = 'Belum tersedia';
@@ -185,6 +186,7 @@ export function ResearchPanel({
 }: ResearchPanelProps) {
   const [expanded, setExpanded] = useState(false);
   const hasOpened = useRef(false);
+  const reduceMotion = useReducedMotion();
 
   const toggle = () => {
     const nextExpanded = !expanded;
@@ -224,8 +226,15 @@ export function ResearchPanel({
         </AppButton>
       </XStack>
 
-      {expanded ? (
-        <YStack gap="$3">
+      <AnimatePresence>
+        {expanded ? (
+        <YStack
+          key="research-content"
+          gap="$3"
+          transition={reduceMotion ? undefined : 'standard'}
+          enterStyle={reduceMotion ? undefined : { opacity: 0, y: -4 }}
+          exitStyle={reduceMotion ? undefined : { opacity: 0, y: -4 }}
+        >
           {getResearchPanelState({ data, loading, error }) === 'loading' ? (
             <LoadingState label="Memuat detail riset" rows={2} />
           ) : null}
@@ -244,7 +253,8 @@ export function ResearchPanel({
           ) : null}
           {data?.slots.map((slot) => <ResearchSlot key={slot.stream} slot={slot} />)}
         </YStack>
-      ) : null}
+        ) : null}
+      </AnimatePresence>
     </Card>
   );
 }

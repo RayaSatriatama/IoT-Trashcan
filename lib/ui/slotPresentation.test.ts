@@ -45,16 +45,16 @@ describe('slot presentation helpers', () => {
   });
 
   it('builds stream-specific footer metrics', () => {
-    expect(buildSlotMetrics(baseSlot).map((metric) => [metric.label, metric.value])).toEqual([
-      ['Berat', '5 kg'],
-      ['OGI', '—'],
-      ['Update', '00:04'],
+    expect(buildSlotMetrics(baseSlot).map((metric) => [metric.label, metric.value, metric.numericValue, metric.unit])).toEqual([
+      ['Berat', '5 kg', 5, ' kg'],
+      ['OGI', '—', null, ''],
+      ['Update', '00:04', undefined, undefined],
     ]);
 
-    expect(buildSlotMetrics({ ...baseSlot, stream: 'b3', temperature: 32, safety_state: 'Clear' }).map((metric) => [metric.label, metric.value])).toEqual([
-      ['Berat', '5 kg'],
-      ['Suhu', '32 °C'],
-      ['Keselamatan', 'Aman'],
+    expect(buildSlotMetrics({ ...baseSlot, stream: 'b3', temperature: 32, safety_state: 'Clear' }).map((metric) => [metric.label, metric.value, metric.numericValue, metric.unit])).toEqual([
+      ['Berat', '5 kg', 5, ' kg'],
+      ['Suhu', '32 °C', 32, ' °C'],
+      ['Keselamatan', 'Aman', undefined, undefined],
     ]);
   });
 

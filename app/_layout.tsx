@@ -11,6 +11,7 @@ import { useEffect } from 'react';
 import { Platform } from 'react-native';
 import { TamaguiProvider } from 'tamagui';
 
+import { MotionProvider } from '../components/MotionProvider';
 import { tamaguiConfig } from '../tamagui.config';
 
 export default function RootLayout() {
@@ -35,7 +36,9 @@ export default function RootLayout() {
 
   return (
     <TamaguiProvider config={tamaguiConfig} defaultTheme="light">
-      <Slot />
+      <MotionProvider>
+        <Slot />
+      </MotionProvider>
     </TamaguiProvider>
   );
 }

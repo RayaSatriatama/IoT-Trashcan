@@ -1,4 +1,11 @@
+import { createAnimations } from '@tamagui/animations-css';
 import { createFont, createTamagui, createTokens } from 'tamagui';
+
+const animations = createAnimations({
+  quick: 'ease-out 120ms',
+  standard: 'ease-out 180ms',
+  data: 'ease-out 400ms',
+});
 
 const bodyFont = createFont({
   family: 'Inter',
@@ -126,6 +133,7 @@ export const tokens = createTokens({
 });
 
 export const tamaguiConfig = createTamagui({
+  animations,
   fonts: {
     body: bodyFont,
     heading: bodyFont,

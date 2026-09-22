@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { Button, Text, Tooltip, XStack } from 'tamagui';
 import { Info } from '../lib/ui/icons';
 import { textStyles } from '../lib/ui/typography';
+import { useReducedMotion } from '../lib/ui/motionContext';
 
 export function DescriptionHint({
   description,
@@ -10,6 +11,7 @@ export function DescriptionHint({
   description: string;
   ariaLabel?: string;
 }) {
+  const reduceMotion = useReducedMotion();
   return (
     <Tooltip delay={0} restMs={120} placement="bottom-end" allowFlip zIndex={1000} focus={{ enabled: true }}>
       <Tooltip.Trigger asChild>
@@ -29,11 +31,13 @@ export function DescriptionHint({
           pressStyle={{ backgroundColor: '$primarySoft' }}
           focusStyle={{ backgroundColor: '$primarySoft', outlineColor: '$primary', outlineWidth: 2, outlineStyle: 'solid' }}
           type="button"
+          transition={reduceMotion ? undefined : 'quick'}
         >
           <Info size={17} strokeWidth={2} color="#60789F" aria-hidden />
         </Button>
       </Tooltip.Trigger>
       <Tooltip.Content
+        transition={reduceMotion ? undefined : 'quick'}
         enterStyle={{ opacity: 0, scale: 0.98 }}
         exitStyle={{ opacity: 0, scale: 0.98 }}
         elevate

@@ -4,9 +4,11 @@ import { Button, Popover, PopoverContent, PopoverTrigger, Text, XStack, YStack }
 import { apiClient } from '../lib/api/client';
 import { FlaskConical } from '../lib/ui/icons';
 import { textStyles } from '../lib/ui/typography';
+import { useReducedMotion } from '../lib/ui/motionContext';
 
 export function SimulationIndicator() {
   const [simulation, setSimulation] = useState(false);
+  const reduceMotion = useReducedMotion();
 
   useEffect(() => {
     const controller = new AbortController();
@@ -34,6 +36,7 @@ export function SimulationIndicator() {
           pressStyle={{ opacity: 0.78 }}
           aria-label="Mode simulasi aktif"
           type="button"
+          transition={reduceMotion ? undefined : 'quick'}
         >
           <XStack alignItems="center" gap="$2">
             <FlaskConical size={17} color="#B86200" strokeWidth={2.2} aria-hidden={true} />

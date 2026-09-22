@@ -2,6 +2,7 @@ import type { CanonicalStatus } from '../lib/api/types';
 import { getStatusPresentation } from '../lib/status';
 import { textStyles } from '../lib/ui/typography';
 import { Text, XStack } from 'tamagui';
+import { useReducedMotion } from '../lib/ui/motionContext';
 
 export interface StatusBadgeProps {
   status: CanonicalStatus | null | undefined;
@@ -18,6 +19,7 @@ export function getStatusBadgePresentation(status: CanonicalStatus | null | unde
 }
 
 export function StatusBadge({ status, compact = false }: StatusBadgeProps) {
+  const reduceMotion = useReducedMotion();
   const presentation = getStatusBadgePresentation(status);
   const label = `Status: ${presentation.label}`;
   const backgroundToken = status ? `$${presentation.token}Soft` : '$surfaceMuted';
@@ -33,6 +35,7 @@ export function StatusBadge({ status, compact = false }: StatusBadgeProps) {
       role="status"
       aria-label={label}
       flexShrink={0}
+      transition={reduceMotion ? undefined : 'standard'}
     >
       <XStack
         width={8}

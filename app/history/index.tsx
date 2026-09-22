@@ -2,7 +2,7 @@ import { useRouter } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Image as RNImage, Modal, Pressable, ScrollView } from 'react-native';
-import { Card, Input, Label, Select, Text, XStack, YStack, useMedia } from 'tamagui';
+import { AnimatePresence, Card, Input, Label, Select, Text, XStack, YStack, useMedia } from 'tamagui';
 
 import historyArtwork from '../../assets/history_report_analytics_illustration.png';
 import { AppShell } from '../../components/AppShell';
@@ -24,6 +24,8 @@ import type {
 } from '../../lib/api/types';
 import { Activity, Box, ChevronDown, ChevronRight, ChevronUp, Filter as FilterIcon, ShieldAlert, Truck } from '../../lib/ui/icons';
 import { textStyles } from '../../lib/ui/typography';
+import { useReducedMotion } from '../../lib/ui/motionContext';
+import { useAnimatedNumber } from '../../lib/ui/useAnimatedNumber';
 
 export interface HistoryFilterValues {
   from?: string;
@@ -194,6 +196,7 @@ function StaleNotice({ onRetry }: { onRetry: () => void }) {
 }
 
 function HistoryRowDetail({ item }: { item: HistoryItem }) {
+  const reduceMotion = useReducedMotion();
   const details = [
     ['Status efektif', effectiveHistoryStatus(item) || '—'],
     ['Keselamatan', item.safety_state || '—'],
@@ -205,7 +208,18 @@ function HistoryRowDetail({ item }: { item: HistoryItem }) {
     ['Suhu', compactMetric(item.temperature, ' °C')],
   ];
   return (
-    <XStack flexWrap="wrap" gap="$4" paddingHorizontal="$4" paddingVertical="$3" backgroundColor="$surfaceMuted" borderBottomWidth={1} borderBottomColor="$borderColor">
+    <XStack
+      flexWrap="wrap"
+      gap="$4"
+      paddingHorizontal="$4"
+      paddingVertical="$3"
+      backgroundColor="$surfaceMuted"
+      borderBottomWidth={1}
+      borderBottomColor="$borderColor"
+      transition={reduceMotion ? undefined : 'standard'}
+      enterStyle={reduceMotion ? undefined : { opacity: 0, y: -4 }}
+      exitStyle={reduceMotion ? undefined : { opacity: 0, y: -4 }}
+    >
       {details.map(([label, value]) => (
         <YStack key={label} minWidth={150} flex={1} gap="$1">
           <Text color="$colorMuted" {...textStyles.caption}>{label}</Text>
@@ -218,12 +232,17 @@ function HistoryRowDetail({ item }: { item: HistoryItem }) {
 
 function HistoryRow({ item, compact }: { item: HistoryItem; compact: boolean }) {
   const [expanded, setExpanded] = useState(false);
+  const reduceMotion = useReducedMotion();
   const status = effectiveHistoryStatus(item);
   const streamColor = historyStreamColor(item.stream);
   const timestamp = formatHistoryTimestamp(item.recorded_at);
+  const animatedFill = useAnimatedNumber(item.fill, { precision: 1 });
+  const animatedWeight = useAnimatedNumber(item.weight, { precision: 1 });
+  const fillLabel = compactMetric(animatedFill, '%');
+  const weightLabel = compactMetric(animatedWeight, ' kg');
   if (compact) {
     return (
-      <Card borderWidth={1} borderColor="$borderColor" backgroundColor="$surface" borderRadius="$4" padding="$4" gap="$3" role="article" aria-label={`Riwayat ${item.device_code} ${historyStreamLabel(item.stream)}`}>
+      <Card borderWidth={1} borderColor="$borderColor" backgroundColor="$surface" borderRadius="$4" padding="$4" gap="$3" role="article" aria-label={`Riwayat ${item.device_code} ${historyStreamLabel(item.stream)}`} transition={reduceMotion ? undefined : 'standard'} enterStyle={reduceMotion ? undefined : { opacity: 0, y: 4 }}>
         <XStack justifyContent="space-between" alignItems="flex-start" gap="$3">
           <YStack flex={1} minWidth={0} gap="$1">
             <Text color="$color" {...textStyles.cardTitle} numberOfLines={1}>{item.device_code || '—'}</Text>
@@ -235,10 +254,10 @@ function HistoryRow({ item, compact }: { item: HistoryItem; compact: boolean }) 
         <XStack alignItems="center" gap="$2"><YStack width={8} height={8} borderRadius={99} backgroundColor={streamColor} /><Text color="$color" {...textStyles.bodySecondary}>{historyStreamLabel(item.stream)}</Text></XStack>
         <Text color="$colorMuted" {...textStyles.metadata}>{timestamp.time} · {timestamp.date}</Text>
         <XStack gap="$4" flexWrap="wrap" borderTopWidth={1} borderTopColor="$borderColor" paddingTop="$3">
-          <YStack flex={1} minWidth={100} gap="$1"><Text color="$colorMuted" {...textStyles.caption}>Keterisian</Text><Text color="$color" {...textStyles.metricValue}>{compactMetric(item.fill, '%')}</Text></YStack>
-          <YStack flex={1} minWidth={100} gap="$1"><Text color="$colorMuted" {...textStyles.caption}>Berat</Text><Text color="$color" {...textStyles.metricValue}>{compactMetric(item.weight, ' kg')}</Text></YStack>
+          <YStack flex={1} minWidth={100} gap="$1"><Text color="$colorMuted" {...textStyles.caption}>Keterisian</Text><Text color="$color" {...textStyles.metricValue}>{fillLabel}</Text></YStack>
+          <YStack flex={1} minWidth={100} gap="$1"><Text color="$colorMuted" {...textStyles.caption}>Berat</Text><Text color="$color" {...textStyles.metricValue}>{weightLabel}</Text></YStack>
         </XStack>
-        {expanded ? <HistoryRowDetail item={item} /> : null}
+        <AnimatePresence>{expanded ? <HistoryRowDetail key="mobile-history-detail" item={item} /> : null}</AnimatePresence>
         <AppButton size="sm" variant="ghost" onPress={() => setExpanded((value) => !value)} ariaLabel={`${expanded ? 'Tutup' : 'Buka'} detail riwayat ${item.device_code}`} ariaExpanded={expanded}>
           {expanded ? 'Tutup detail' : 'Detail'} <ChevronRight size={15} color="#0A9B62" strokeWidth={2.2} aria-hidden={true} />
         </AppButton>
@@ -247,18 +266,41 @@ function HistoryRow({ item, compact }: { item: HistoryItem; compact: boolean }) 
   }
 
   return (
-    <YStack role="row">
+    <YStack role="row" transition={reduceMotion ? undefined : 'standard'} enterStyle={reduceMotion ? undefined : { opacity: 0, y: 3 }}>
       <XStack alignItems="center" gap="$3" paddingHorizontal="$4" paddingVertical="$3" minHeight={64} borderBottomWidth={1} borderBottomColor="$borderColor" hoverStyle={{ backgroundColor: '$surfaceMuted' }}>
         <YStack width={210} minWidth={180} gap="$1"><Text color="$color" {...textStyles.metadata} fontWeight="700" numberOfLines={1}>{item.device_code || '—'}</Text><Text color="$colorMuted" {...textStyles.caption} numberOfLines={1}>{item.placement_label || '—'}</Text></YStack>
         <YStack flex={1} minWidth={145}><Text color="$color" {...textStyles.metadata} numberOfLines={1}>{item.location_name || '—'}</Text></YStack>
         <XStack width={105} minWidth={95} alignItems="center" gap="$2"><YStack width={8} height={8} borderRadius={99} backgroundColor={streamColor} /><Text color="$color" {...textStyles.bodySecondary}>{historyStreamLabel(item.stream)}</Text></XStack>
         <YStack width={180} minWidth={170} alignItems="flex-start"><StatusBadge status={status} compact /></YStack>
-        <Text color="$color" {...textStyles.metadata} width={80} textAlign="right" fontVariant={['tabular-nums']}>{compactMetric(item.fill, '%')}</Text>
-        <Text color="$color" {...textStyles.metadata} width={80} textAlign="right" fontVariant={['tabular-nums']}>{compactMetric(item.weight, ' kg')}</Text>
+        <Text color="$color" {...textStyles.metadata} width={80} textAlign="right" fontVariant={['tabular-nums']}>{fillLabel}</Text>
+        <Text color="$color" {...textStyles.metadata} width={80} textAlign="right" fontVariant={['tabular-nums']}>{weightLabel}</Text>
         <YStack width={115} gap="$1"><Text color="$color" {...textStyles.metadata} fontWeight="700" fontVariant={['tabular-nums']}>{timestamp.time}</Text><Text color="$colorMuted" {...textStyles.caption}>{timestamp.date}</Text></YStack>
         <XStack width={68} justifyContent="flex-end"><AppButton size="sm" variant="ghost" onPress={() => setExpanded((value) => !value)} ariaLabel={`${expanded ? 'Tutup' : 'Buka'} detail riwayat ${item.device_code}`} ariaExpanded={expanded}><XStack alignItems="center" gap="$1">{expanded ? 'Tutup' : 'Detail'} <ChevronRight size={15} color="#0A9B62" strokeWidth={2.2} aria-hidden={true} /></XStack></AppButton></XStack>
       </XStack>
-      {expanded ? <HistoryRowDetail item={item} /> : null}
+      <AnimatePresence>{expanded ? <HistoryRowDetail key="desktop-history-detail" item={item} /> : null}</AnimatePresence>
+    </YStack>
+  );
+}
+
+function HistoryTrendBar({ day, maximum }: { day: DailyStatusCount; maximum: number }) {
+  const total = day.normal + day.pickup + day.safety;
+  const targetHeight = Math.max(10, (total / maximum) * 104);
+  const animatedHeight = useAnimatedNumber(targetHeight, { precision: 1 });
+  return (
+    <YStack flex={1} alignItems="center" justifyContent="flex-end" gap="$2">
+      <YStack
+        width="70%"
+        maxWidth={36}
+        height={animatedHeight ?? targetHeight}
+        borderRadius="$3"
+        overflow="hidden"
+        backgroundColor="$surfaceMuted"
+      >
+        <YStack flex={day.safety} backgroundColor="$statusSafetyAlert" />
+        <YStack flex={day.pickup} backgroundColor="$statusAngkat" />
+        <YStack flex={day.normal} backgroundColor="$statusNormal" />
+      </YStack>
+      <Text color="$colorMuted" {...textStyles.caption}>{day.day.slice(5)}</Text>
     </YStack>
   );
 }
@@ -278,19 +320,7 @@ function HistoryTrend({ items }: { items: HistoryItem[] }) {
         </XStack>
       </XStack>
       <XStack alignItems="flex-end" justifyContent="space-between" gap="$3" height={142}>
-        {days.map((day) => {
-          const total = day.normal + day.pickup + day.safety;
-          return (
-            <YStack key={day.day} flex={1} alignItems="center" justifyContent="flex-end" gap="$2">
-              <YStack width="70%" maxWidth={36} height={Math.max(10, (total / maximum) * 104)} borderRadius="$3" overflow="hidden" backgroundColor="$surfaceMuted">
-                <YStack flex={day.safety} backgroundColor="$statusSafetyAlert" />
-                <YStack flex={day.pickup} backgroundColor="$statusAngkat" />
-                <YStack flex={day.normal} backgroundColor="$statusNormal" />
-              </YStack>
-              <Text color="$colorMuted" {...textStyles.caption}>{day.day.slice(5)}</Text>
-            </YStack>
-          );
-        })}
+        {days.map((day) => <HistoryTrendBar key={day.day} day={day} maximum={maximum} />)}
       </XStack>
     </Card>
   );
@@ -377,6 +407,7 @@ function FilterFields({ draft, onChange, actions }: { draft: HistoryDraft; onCha
 
 function Filters({ draft, onChange, onApply, onReset, onExport, compact }: { draft: HistoryDraft; onChange: (patch: Partial<HistoryDraft>) => void; onApply: () => void; onReset: () => void; onExport: () => void; compact: boolean }) {
   const [open, setOpen] = useState(!compact);
+  const reduceMotion = useReducedMotion();
   const handleApply = useCallback(() => {
     onApply();
     if (compact) setOpen(false);
@@ -412,7 +443,7 @@ function Filters({ draft, onChange, onApply, onReset, onExport, compact }: { dra
         </XStack>
       )}
       {compact ? (
-        <Modal transparent visible={open} animationType="slide" onRequestClose={() => setOpen(false)}>
+        <Modal transparent visible={open} animationType={reduceMotion ? 'none' : 'slide'} onRequestClose={() => setOpen(false)}>
           <YStack flex={1} justifyContent="flex-end" backgroundColor="rgba(10, 31, 70, 0.24)">
             <Pressable
               accessibilityLabel="Tutup filter"
@@ -443,11 +474,26 @@ function Filters({ draft, onChange, onApply, onReset, onExport, compact }: { dra
             </Card>
           </YStack>
         </Modal>
-      ) : open ? (
-        <Card borderWidth={1} borderColor="$borderColor" backgroundColor="$surface" borderRadius="$4" padding="$3" gap="$3">
-          <FilterFields draft={draft} onChange={onChange} actions={filterActions} />
-        </Card>
-      ) : null}
+      ) : (
+        <AnimatePresence>
+          {open ? (
+            <Card
+              key="history-filter-panel"
+              borderWidth={1}
+              borderColor="$borderColor"
+              backgroundColor="$surface"
+              borderRadius="$4"
+              padding="$3"
+              gap="$3"
+              transition={reduceMotion ? undefined : 'standard'}
+              enterStyle={reduceMotion ? undefined : { opacity: 0, y: -4 }}
+              exitStyle={reduceMotion ? undefined : { opacity: 0, y: -4 }}
+            >
+              <FilterFields draft={draft} onChange={onChange} actions={filterActions} />
+            </Card>
+          ) : null}
+        </AnimatePresence>
+      )}
     </YStack>
   );
 }

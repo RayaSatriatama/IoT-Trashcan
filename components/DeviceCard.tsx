@@ -10,6 +10,7 @@ import { Card, Text, XStack, YStack } from 'tamagui';
 import { MetricBar } from './MetricBar';
 import { StatusBadge } from './StatusBadge';
 import { textStyles } from '../lib/ui/typography';
+import { useReducedMotion } from '../lib/ui/motionContext';
 
 export interface DeviceCardProps {
   device: DeviceDTO;
@@ -28,6 +29,7 @@ export function getStreamLabel(stream: string): string {
 }
 
 export function DeviceCard({ device, onPress, locationName }: DeviceCardProps) {
+  const reduceMotion = useReducedMotion();
   const onlineLabel = device.online_state ?? 'Belum tersedia';
   const lastSeen = formatTimestamp(device.last_seen);
   const placement = device.placement_label ?? 'Belum tersedia';
@@ -46,6 +48,9 @@ export function DeviceCard({ device, onPress, locationName }: DeviceCardProps) {
       role={onPress ? 'button' : 'group'}
       aria-label={`Device ${device.device_code}`}
       cursor={onPress ? 'pointer' : undefined}
+      transition={reduceMotion ? undefined : 'standard'}
+      enterStyle={reduceMotion ? undefined : { opacity: 0, y: 4 }}
+      hoverStyle={onPress ? { borderColor: '$primary', y: -2 } : undefined}
     >
       <XStack justifyContent="space-between" alignItems="flex-start" gap="$3">
         <XStack alignItems="center" gap="$1" backgroundColor="$surfaceMuted" borderRadius="$3" paddingHorizontal="$2" paddingVertical="$1">

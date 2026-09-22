@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { Button } from 'tamagui';
+import { useReducedMotion } from '../lib/ui/motionContext';
 
 export type AppButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger';
 export type AppButtonSize = 'sm' | 'md' | 'lg';
@@ -31,6 +32,7 @@ export function AppButton({
   ariaExpanded,
   fullWidth = false,
 }: AppButtonProps) {
+  const reduceMotion = useReducedMotion();
   const styles = sizeStyles[size];
   const variantStyles = {
     primary: { backgroundColor: '$primary', color: '$white', borderWidth: 0 },
@@ -56,6 +58,7 @@ export function AppButton({
       aria-label={ariaLabel}
       aria-expanded={ariaExpanded}
       type="button"
+      transition={reduceMotion ? undefined : 'quick'}
     >
       {children}
     </Button>
