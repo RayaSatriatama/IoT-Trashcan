@@ -170,7 +170,7 @@ func TestWriteCSVUsesStableHeaderEscapesValuesAndLeavesNullEmpty(t *testing.T) {
 	if len(rows) != 2 || rows[0][0] != "recorded_at" || rows[0][11] != "gas_raw" {
 		t.Fatalf("CSV header/rows = %+v", rows)
 	}
-	if rows[1][2] != `Lab, "Alpha"` || rows[1][11] != "42" {
+	if rows[1][2] != `Lab, "Alpha"` || rows[1][4] != "SIGAP-A" || rows[1][5] != "North" || rows[1][11] != "42" {
 		t.Fatalf("CSV escaping/raw gas = %+v", rows[1])
 	}
 	if rows[1][9] != "" || rows[1][12] != "" {

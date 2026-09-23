@@ -3,6 +3,8 @@ import { Image as RNImage } from 'react-native';
 import type { LucideIcon } from 'lucide-react-native';
 import { Button, Separator, Text, XStack, YStack } from 'tamagui';
 import { Clock3, House, MapPin } from '../lib/ui/icons';
+import { textStyles } from '../lib/ui/typography';
+import { useReducedMotion } from '../lib/ui/motionContext';
 
 export interface NavigationItem {
   label: string;
@@ -32,6 +34,7 @@ export function DesktopSidebar({
   activePath = '/',
   onNavigate,
 }: DesktopSidebarProps) {
+  const reduceMotion = useReducedMotion();
   return (
     <YStack
       width={216}
@@ -49,13 +52,13 @@ export function DesktopSidebar({
           source={logoArtwork}
           accessibilityLabel="Logo SIGAP"
           resizeMode="contain"
-          style={{ width: 44, height: 44 }}
+          style={{ width: 36, height: 36 }}
         />
         <YStack gap="$1">
-          <Text fontSize="$5" color="$color" fontWeight="800" letterSpacing={-0.5}>
+          <Text fontSize="$4" color="$color" fontWeight="800" letterSpacing={-0.4}>
             SIGAP
           </Text>
-          <Text fontSize="$1" color="$colorMuted">
+          <Text {...textStyles.metricLabel} color="$colorMuted">
             Smart Bin Monitoring
           </Text>
         </YStack>
@@ -80,10 +83,13 @@ export function DesktopSidebar({
               onPress={() => onNavigate?.(item.path)}
               aria-label={`Buka ${displayLabel}`}
               type="button"
+              transition={reduceMotion ? undefined : 'quick'}
+              hoverStyle={{ backgroundColor: active ? '$primarySoft' : '$surfaceMuted' }}
+              pressStyle={{ opacity: 0.76, x: 1 }}
             >
               <XStack alignItems="center" gap="$3">
                 <Icon size={18} color={active ? '#0A9B62' : '#5D7397'} strokeWidth={active ? 2.4 : 2} aria-hidden={true} />
-                <Text color={active ? '$primary' : '$colorMuted'} fontSize="$2" fontWeight={active ? '800' : '600'}>
+                <Text {...textStyles.bodySecondary} color={active ? '$primary' : '$colorMuted'} fontWeight={active ? '800' : '600'}>
                   {displayLabel}
                 </Text>
               </XStack>
@@ -92,9 +98,9 @@ export function DesktopSidebar({
         })}
       </YStack>
       <YStack flex={1} justifyContent="flex-end" gap="$1">
-        <Text color="$primary" fontSize="$1" fontWeight="800">SIGAP</Text>
-        <Text color="$colorMuted" fontSize="$1">Smart Bin Monitoring</Text>
-        <Text color="$colorMuted" fontSize="$1">v1.0.0</Text>
+        <Text color="$primary" {...textStyles.caption} fontWeight="800">SIGAP</Text>
+        <Text color="$colorMuted" {...textStyles.caption}>Smart Bin Monitoring</Text>
+        <Text color="$colorMuted" {...textStyles.caption}>v1.0.0</Text>
       </YStack>
     </YStack>
   );

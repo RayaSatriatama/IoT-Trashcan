@@ -1,4 +1,6 @@
-import { Button, Card, Text, YStack } from 'tamagui';
+import { Card, Text, YStack } from 'tamagui';
+import { AppButton } from './AppButton';
+import { textStyles } from '../lib/ui/typography';
 
 export interface ErrorStateProps {
   title?: string;
@@ -17,31 +19,24 @@ export function ErrorState({
       borderColor="$statusSafetyAlert"
       backgroundColor="$redSoft"
       borderRadius="$4"
-      padding="$5"
+      padding="$4"
       gap="$3"
       role="alert"
       aria-label={title}
     >
-      <YStack gap="$2">
-        <Text fontSize="$4" color="$color" fontWeight="700">
+      <YStack gap="$3" alignItems="flex-start">
+        <YStack gap="$1">
+          <Text {...textStyles.cardTitle} $compact={textStyles.cardTitleCompact} color="$color">
           {title}
-        </Text>
-        <Text fontSize="$2" color="$colorMuted">
-          {message}
-        </Text>
+          </Text>
+          <Text {...textStyles.bodySecondary} color="$colorMuted">
+            {message}
+          </Text>
+        </YStack>
         {onRetry ? (
-          <Button
-            alignSelf="flex-start"
-            minHeight={48}
-            paddingHorizontal="$4"
-            backgroundColor="$primary"
-            color="$white"
-            onPress={onRetry}
-            aria-label="Coba muat ulang"
-            type="button"
-          >
+          <AppButton size="md" variant="primary" onPress={onRetry} ariaLabel="Coba muat ulang">
             Coba lagi
-          </Button>
+          </AppButton>
         ) : null}
       </YStack>
     </Card>

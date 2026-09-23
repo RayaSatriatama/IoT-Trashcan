@@ -1,7 +1,14 @@
+import { createAnimations } from '@tamagui/animations-css';
 import { createFont, createTamagui, createTokens } from 'tamagui';
 
+const animations = createAnimations({
+  quick: 'ease-out 120ms',
+  standard: 'ease-out 180ms',
+  data: 'ease-out 400ms',
+});
+
 const bodyFont = createFont({
-  family: 'Arial',
+  family: 'Inter',
   size: {
     true: 16,
     1: 13,
@@ -30,6 +37,13 @@ const bodyFont = createFont({
     2: '500',
     3: '600',
     4: '700',
+  },
+  face: {
+    400: { normal: 'Inter_400Regular' },
+    500: { normal: 'Inter_500Medium' },
+    600: { normal: 'Inter_600SemiBold' },
+    700: { normal: 'Inter_700Bold' },
+    800: { normal: 'Inter_800ExtraBold' },
   },
   letterSpacing: {
     true: 0,
@@ -119,6 +133,7 @@ export const tokens = createTokens({
 });
 
 export const tamaguiConfig = createTamagui({
+  animations,
   fonts: {
     body: bodyFont,
     heading: bodyFont,
@@ -159,6 +174,9 @@ export const tamaguiConfig = createTamagui({
       statusDataInvalid: '#7A4EA3',
       statusDataInvalidSoft: '#F0E9F8',
     },
+  },
+  settings: {
+    defaultFont: 'body',
   },
   media: {
     compact: { maxWidth: 767 },

@@ -2,12 +2,14 @@ package ingest
 
 import "fmt"
 
-// Normalize applies the source-backed normalization mechanics only. OGI and
-// accumulation stay unavailable until their authoritative definitions exist.
+// Normalize applies source-backed values only. OGI and accumulation are copied
+// when the producer explicitly supplies them and are never inferred here.
 func Normalize(slot Slot, operationalCapacity *float64) (NormalizedReading, error) {
 	normalized := NormalizedReading{
-		FillPct:     slot.Fill,
-		Temperature: slot.Temperature,
+		FillPct:           slot.Fill,
+		OGI:               slot.OGI,
+		AccumulationHours: slot.AccumulationHours,
+		Temperature:       slot.Temperature,
 	}
 	if slot.Weight == nil {
 		return normalized, nil

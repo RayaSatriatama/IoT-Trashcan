@@ -47,6 +47,17 @@ describe('monitoring API client', () => {
     expect(requestUrl).toBe('/api/locations?q=Alpha+Lab&status=Safety+Alert');
   });
 
+  it('fetches the flattened device summary endpoint without location fan-out', async () => {
+    let requestUrl = '';
+    const client = createApiClient(async (input) => {
+      requestUrl = String(input);
+      return jsonResponse({ devices: [] });
+    });
+
+    await expect(client.fetchDevices()).resolves.toEqual({ devices: [] });
+    expect(requestUrl).toBe('/api/devices');
+  });
+
   it('surfaces JSON error text for non-success responses as an ApiError', async () => {
     const client = createApiClient(async () =>
       jsonResponse({ error: 'not found' }, { status: 404 }),
@@ -79,7 +90,7 @@ describe('monitoring API client', () => {
       return jsonResponse({
         items: [],
         filters: { from: null, to: null, location_id: null, device_id: null, status: null },
-        page: { limit: 50, has_more: false, next: null },
+        page: { limit: 50, has_more: false, next: null, total_count: 0 },
       });
     });
 
@@ -103,7 +114,7 @@ describe('monitoring API client', () => {
       return jsonResponse({
         items: [],
         filters: { from: null, to: null, location_id: null, device_id: null, status: null },
-        page: { limit: 30, has_more: false, next: null },
+        page: { limit: 30, has_more: false, next: null, total_count: 0 },
       });
     });
 

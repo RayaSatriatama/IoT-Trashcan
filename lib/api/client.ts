@@ -1,6 +1,7 @@
 import type {
   CanonicalStatus,
   DeviceDetail,
+  DeviceSummaryResponse,
   HistoryFilters,
   HistoryPageRequest,
   HistoryResponse,
@@ -60,6 +61,7 @@ export function createApiClient(fetcher: Fetcher = fetch): {
   fetchLocations(params?: { query?: string; status?: CanonicalStatus }, signal?: AbortSignal): Promise<LocationListResponse>;
   fetchLocation(id: string, signal?: AbortSignal): Promise<LocationDetail>;
   fetchDevice(id: string, signal?: AbortSignal): Promise<DeviceDetail>;
+  fetchDevices(signal?: AbortSignal): Promise<DeviceSummaryResponse>;
   fetchResearch(id: string, signal?: AbortSignal): Promise<ResearchResponse>;
   fetchRuntime(signal?: AbortSignal): Promise<RuntimeResponse>;
   fetchHistory(filters?: HistoryFilters, page?: HistoryPageRequest, signal?: AbortSignal): Promise<HistoryResponse>;
@@ -85,6 +87,7 @@ export function createApiClient(fetcher: Fetcher = fetch): {
     },
     fetchLocation: (id, signal) => get<LocationDetail>(`/api/locations/${encodeId(id)}`, signal),
     fetchDevice: (id, signal) => get<DeviceDetail>(`/api/devices/${encodeId(id)}`, signal),
+    fetchDevices: (signal) => get<DeviceSummaryResponse>('/api/devices', signal),
     fetchResearch: (id, signal) => get<ResearchResponse>(`/api/devices/${encodeId(id)}/research`, signal),
     fetchRuntime: (signal) => get<RuntimeResponse>('/api/runtime', signal),
     fetchHistory: (filters = {}, page = {}, signal) => {

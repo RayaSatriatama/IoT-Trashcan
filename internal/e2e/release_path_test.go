@@ -35,7 +35,7 @@ func TestReleasePathIngestReadHistoryCSVAndRestart(t *testing.T) {
 	service := ingest.NewService(db,
 		ingest.WithDecisionEngine(engine),
 		ingest.WithSafetyConfig(safety.Config{Thresholds: []safety.Threshold{{
-			Signal: safety.SignalGasRaw, AtOrAbove: 50, Reason: "test-only B3 gas fixture",
+			Signal: safety.SignalMQ7CO, AtOrAbove: 0.8, Reason: "test-only B3 CO fixture",
 		}}}),
 	)
 	handler := httpapi.NewRouter(service, httpapi.WithReadDatabase(db,
@@ -43,7 +43,7 @@ func TestReleasePathIngestReadHistoryCSVAndRestart(t *testing.T) {
 		httpapi.WithReadClock(func() time.Time { return time.Date(2026, 9, 17, 12, 1, 0, 0, time.UTC) }),
 	))
 
-	validRaw := []byte(`{"device_id":"SIGAP-E2E","recorded_at":"2026-09-17T12:00:00Z","health":{"battery":91},"slots":[{"stream":"organic","fill":72,"weight":12},{"stream":"inorganic","fill":40,"weight":4},{"stream":"b3","fill":10,"gas_raw":99}]}`)
+	validRaw := []byte(`{"device_id":"SIGAP-E2E","recorded_at":"2026-09-17T12:00:00Z","health":{"battery":91},"slots":[{"stream":"organic","fill":72,"weight":12},{"stream":"inorganic","fill":40,"weight":4},{"stream":"b3","fill":10,"weight":2,"gas_raw":99,"sensors":[{"sensor_id":"b3-mq7","sensor_type":"mq7","parameter":"co","raw_value":99,"normalized_value":0.99,"unit":"index","sensor_state":"VALID"}]}]}`)
 	post := ingestRequest(t, handler, validRaw, e2eToken)
 	if post.Code != http.StatusOK {
 		t.Fatalf("valid ingest status=%d body=%s", post.Code, post.Body.String())
@@ -121,7 +121,7 @@ func TestReleasePathIngestReadHistoryCSVAndRestart(t *testing.T) {
 	invalidRaw := []byte(strings.Replace(string(validRaw), "12:00:00Z", "12:00:02Z", 1))
 	invalidRaw = []byte(strings.Replace(string(invalidRaw), `"fill":72`, `"fill":101`, 1))
 	invalidRaw = []byte(strings.Replace(string(invalidRaw), `"fill":40`, `"fill":101`, 1))
-	invalidRaw = []byte(strings.Replace(string(invalidRaw), `"fill":10,"gas_raw"`, `"fill":101,"gas_raw"`, 1))
+	invalidRaw = []byte(strings.Replace(string(invalidRaw), `"fill":10,"weight":2`, `"fill":101,"weight":2`, 1))
 	invalid := ingestRequest(t, handler, invalidRaw, e2eToken)
 	if invalid.Code != http.StatusOK {
 		t.Fatalf("invalid ingest status=%d body=%s", invalid.Code, invalid.Body.String())

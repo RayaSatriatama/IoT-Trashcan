@@ -12,9 +12,15 @@ import {
   buildHistoryExportHref,
   dateInputToUtcRange,
   effectiveHistoryStatus,
+  formatHistoryCount,
+  formatHistoryTimestamp,
   groupHistoryByDay,
   HISTORY_STATUS_FILTERS,
+  HISTORY_TABLE_COLUMNS,
+  historyRangeLabel,
   serializeHistoryFilters,
+  totalHistoryPages,
+  formatHistoryScore,
 } from '../../app/history';
 
 describe('history filter contracts', () => {
@@ -65,6 +71,30 @@ describe('history filter contracts', () => {
     expect(groupHistoryByDay(items)).toEqual([
       { day: '2026-09-02', normal: 1, pickup: 1, safety: 0 },
       { day: '2026-09-03', normal: 0, pickup: 0, safety: 1 },
+    ]);
+  });
+
+  it('computes bounded page counts and formats audit scores', () => {
+    expect(totalHistoryPages(0, 10)).toBe(1);
+    expect(totalHistoryPages(21, 10)).toBe(3);
+    expect(totalHistoryPages(21, 20)).toBe(2);
+    expect(formatHistoryScore(13.33333333333332)).toBe('13.33');
+    expect(formatHistoryScore(null)).toBe('—');
+    expect(formatHistoryCount(4689)).toBe('4.689');
+    expect(historyRangeLabel(1, 10, 4689)).toBe('1–10 dari 4.689 data');
+    expect(formatHistoryTimestamp('2026-09-18T06:07:00Z')).toEqual({ time: '13:07', date: '18 Sep 2026' });
+  });
+
+  it('keeps device identity and placement separate within the device cell', () => {
+    expect(HISTORY_TABLE_COLUMNS).toEqual([
+      'PERANGKAT',
+      'LOKASI',
+      'STREAM',
+      'STATUS',
+      'KETERISIAN',
+      'BERAT',
+      'WAKTU',
+      'AKSI',
     ]);
   });
 });

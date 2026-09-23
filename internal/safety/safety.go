@@ -16,10 +16,13 @@ var ErrInvalidConfig = errors.New("invalid safety configuration")
 type Signal string
 
 const (
-	SignalFill        Signal = "fill"
-	SignalWeight      Signal = "weight"
-	SignalTemperature Signal = "temperature"
-	SignalGasRaw      Signal = "gas_raw"
+	SignalFill               Signal = "fill"
+	SignalWeight             Signal = "weight"
+	SignalTemperature        Signal = "temperature"
+	SignalGasRaw             Signal = "gas_raw"
+	SignalMQ7CO              Signal = "mq7_co"
+	SignalMQ8H2              Signal = "mq8_h2"
+	SignalDS18B20Temperature Signal = "ds18b20_temperature"
 )
 
 const (
@@ -32,10 +35,13 @@ const (
 // Input contains raw operational values. Values remain optional to preserve
 // the difference between a missing reading and numeric zero.
 type Input struct {
-	Fill        *float64
-	Weight      *float64
-	Temperature *float64
-	GasRaw      *float64
+	Fill               *float64
+	Weight             *float64
+	Temperature        *float64
+	GasRaw             *float64
+	MQ7CO              *float64
+	MQ8H2              *float64
+	DS18B20Temperature *float64
 }
 
 // Threshold is an explicitly supplied safety boundary. Task 02 deliberately
@@ -121,7 +127,7 @@ func validateConfig(config Config) error {
 
 func validSignal(signal Signal) bool {
 	switch signal {
-	case SignalFill, SignalWeight, SignalTemperature, SignalGasRaw:
+	case SignalFill, SignalWeight, SignalTemperature, SignalGasRaw, SignalMQ7CO, SignalMQ8H2, SignalDS18B20Temperature:
 		return true
 	default:
 		return false
@@ -142,6 +148,12 @@ func (input Input) value(signal Signal) *float64 {
 		return input.Temperature
 	case SignalGasRaw:
 		return input.GasRaw
+	case SignalMQ7CO:
+		return input.MQ7CO
+	case SignalMQ8H2:
+		return input.MQ8H2
+	case SignalDS18B20Temperature:
+		return input.DS18B20Temperature
 	default:
 		return nil
 	}

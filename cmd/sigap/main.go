@@ -41,7 +41,7 @@ func main() {
 		if seedErr != nil {
 			log.Fatalf("seed simulation dataset: %v", seedErr)
 		}
-		serviceOptions = append(serviceOptions, ingest.WithDecisionEngine(simulator.DemoEngine()), ingest.WithSafetyConfig(simulator.DemoSafetyConfig()))
+		serviceOptions = append(serviceOptions, ingest.WithDecisionProfiles(simulator.DemoEngines()), ingest.WithSafetyConfig(simulator.DemoSafetyConfig()))
 		service = ingest.NewService(db, serviceOptions...)
 		simulation = simulator.New(service, dataset, simulationConfig)
 		log.Printf("================================")

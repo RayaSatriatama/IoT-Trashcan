@@ -1,12 +1,17 @@
-import { useRef, useState } from 'react';
-import { Button, Card, Separator, Text, XStack, YStack } from 'tamagui';
+import { Card, Separator, Text, XStack, YStack, useMedia } from 'tamagui';
 
 import type { ResearchResponse, ResearchSlotDTO } from '../lib/api/types';
 import { formatNullableMetric } from '../lib/format';
+import { buildDerivedResearchRows, buildResearchSensorRows, formatResearchNumber, formatResearchTimestamp, getSensorParameterLabel, getStreamLabel } from '../lib/ui/slotPresentation';
 import { textStyles } from '../lib/ui/typography';
+import { useReducedMotion } from '../lib/ui/motionContext';
+import { AnimatePresence } from 'tamagui';
+import { AppButton } from './AppButton';
 import { EmptyState } from './EmptyState';
 import { ErrorState } from './ErrorState';
+import { FuzzyTrace } from './FuzzyTrace';
 import { LoadingState } from './LoadingState';
+import { SensorStateBadge } from './SensorStateBadge';
 
 export const RESEARCH_PANEL_TITLE = 'Detail Riset';
 export const RESEARCH_UNAVAILABLE_COPY = 'Belum tersedia';
@@ -21,21 +26,14 @@ export interface ResearchPanelProps {
 
 export type ResearchPanelState = 'loading' | 'error' | 'empty' | 'data';
 
-export function getResearchPanelState({
-  data,
-  loading = false,
-  error = null,
-}: Pick<ResearchPanelProps, 'data' | 'loading' | 'error'>): ResearchPanelState {
+export function getResearchPanelState({ data, loading = false, error = null }: Pick<ResearchPanelProps, 'data' | 'loading' | 'error'>): ResearchPanelState {
   if (loading) return 'loading';
   if (error) return 'error';
   if (!data || data.slots.length === 0) return 'empty';
   return 'data';
 }
 
-export function formatResearchValue(
-  value: number | string | null | undefined,
-  unit?: string,
-): string {
+export function formatResearchValue(value: number | string | null | undefined, unit?: string): string {
   if (value === null || value === undefined || value === '') return RESEARCH_UNAVAILABLE_COPY;
   if (typeof value === 'number' && !Number.isFinite(value)) return RESEARCH_UNAVAILABLE_COPY;
   if (typeof value === 'number') return formatNullableMetric(value, unit ? ` ${unit}` : '');
@@ -44,209 +42,35 @@ export function formatResearchValue(
 
 export function formatSensorHealth(value: unknown): string {
   if (value === null || value === undefined || value === '') return RESEARCH_UNAVAILABLE_COPY;
-  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
-    return String(value);
-  }
-
-  try {
-    const serialized = JSON.stringify(value);
-    return serialized && serialized !== '{}' ? serialized : RESEARCH_UNAVAILABLE_COPY;
-  } catch {
-    return RESEARCH_UNAVAILABLE_COPY;
-  }
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return String(value);
+  try { const serialized = JSON.stringify(value); return serialized && serialized !== '{}' ? serialized : RESEARCH_UNAVAILABLE_COPY; } catch { return RESEARCH_UNAVAILABLE_COPY; }
 }
 
-function MetricRow({
-  label,
-  value,
-  unit,
-}: {
-  label: string;
-  value: number | string | null | undefined;
-  unit?: string;
-}) {
-  return (
-    <XStack justifyContent="space-between" alignItems="flex-start" gap="$3" paddingVertical="$2">
-      <Text color="$colorMuted" {...textStyles.bodySecondary} flex={1}>
-        {label}
-      </Text>
-      <Text color="$color" {...textStyles.bodySecondary} fontWeight="600" textAlign="right" flex={1}>
-        {formatResearchValue(value, unit)}
-      </Text>
-    </XStack>
-  );
+function DataCell({ children, width, muted = false }: { children: React.ReactNode; width?: string; muted?: boolean }) {
+  return <Text {...textStyles.caption} color={muted ? '$colorMuted' : '$color'} width={width} flex={width ? undefined : 1} minWidth={0}>{children}</Text>;
 }
 
-function Section({
-  title,
-  children,
-}: {
-  title: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <YStack gap="$1">
-      <Text color="$color" fontSize="$3" fontWeight="700">
-        {title}
-      </Text>
-      <Card
-        borderWidth={1}
-        borderColor="$borderColor"
-        backgroundColor="$background"
-        borderRadius="$2"
-        paddingHorizontal="$3"
-        paddingVertical="$1"
-      >
-        {children}
-      </Card>
-    </YStack>
-  );
+function SensorRow({ row, mobile }: { row: ReturnType<typeof buildResearchSensorRows>[number]; mobile: boolean }) {
+  if (mobile) return <Card borderWidth={1} borderColor="$borderColor" backgroundColor="$surface" borderRadius="$3" padding="$3" gap="$2"><XStack justifyContent="space-between" alignItems="flex-start" gap="$2"><YStack flex={1} minWidth={0}><Text {...textStyles.bodySecondary} color="$color" fontWeight="700" numberOfLines={1}>{row.label}</Text><Text {...textStyles.caption} color="$colorMuted" numberOfLines={1}>{row.parameter}</Text></YStack><SensorStateBadge state={row.state} /></XStack><XStack gap="$2" flexWrap="wrap"><DataCell width="50%" muted>Aktual {row.actual}</DataCell><DataCell width="45%" muted>Raw {row.raw}</DataCell><DataCell width="50%" muted>{row.normalizedLabel} {row.normalized}</DataCell><DataCell width="45%" muted>Fuzzy {row.membership}</DataCell></XStack><Text {...textStyles.caption} color="$colorMuted">Role: {row.role}</Text></Card>;
+  return <YStack gap="$1" paddingVertical="$2" borderBottomWidth={1} borderBottomColor="$borderColor"><XStack alignItems="center" gap="$2"><YStack flex={1} minWidth={0}><Text {...textStyles.bodySecondary} color="$color" fontWeight="700" numberOfLines={1}>{row.label}</Text><Text {...textStyles.caption} color="$colorMuted" numberOfLines={1}>{row.parameter}</Text></YStack><SensorStateBadge state={row.state} /></XStack><XStack gap="$2" flexWrap="wrap"><DataCell width="48%" muted>Aktual {row.actual}</DataCell><DataCell width="48%" muted>Raw {row.raw}</DataCell><DataCell width="48%" muted>{row.normalizedLabel} {row.normalized}</DataCell><DataCell width="48%" muted>Fuzzy {row.membership}</DataCell><DataCell width="100%" muted>Role: {row.role}</DataCell></XStack></YStack>;
+}
+
+function SafetyEvidence({ slot }: { slot: ResearchSlotDTO }) {
+  if (slot.stream !== 'b3' || !slot.safety) return null;
+  const alert = slot.safety.state === 'Safety Alert';
+  return <YStack gap="$2" padding="$3" borderRadius="$3" backgroundColor={alert ? '$statusSafetyAlertSoft' : '$statusNormalSoft'} borderWidth={1} borderColor={alert ? '$statusSafetyAlert' : '$statusNormalSoft'}><Text {...textStyles.bodySecondary} color={alert ? '$statusSafetyAlert' : '$statusNormal'} fontWeight="700">Safety monitoring: {slot.safety.state === 'Clear' ? 'Aman' : slot.safety.state || 'Belum tersedia'}</Text>{slot.safety.reason ? <Text {...textStyles.caption} color="$colorMuted">{slot.safety.reason}</Text> : null}<XStack gap="$3" flexWrap="wrap">{slot.safety.channels.map((channel) => { const hasEngineeringValue = channel.value !== null && channel.value !== undefined; return <YStack key={channel.sensor_id} minWidth={100} gap="$1"><Text {...textStyles.caption} color="$colorMuted">{getSensorParameterLabel(channel.parameter || channel.sensor_type)}</Text><Text {...textStyles.bodySecondary} color="$color" fontWeight="700">{hasEngineeringValue ? formatResearchNumber(channel.value, channel.unit ? ` ${channel.unit}` : '') : formatResearchNumber(channel.normalized, ' index')}</Text><SensorStateBadge state={channel.sensor_state} /></YStack>; })}</XStack></YStack>;
 }
 
 function ResearchSlot({ slot }: { slot: ResearchSlotDTO }) {
-  return (
-    <Card
-      borderWidth={1}
-      borderColor="$borderColor"
-      backgroundColor="$surface"
-      borderRadius="$3"
-      padding="$4"
-      gap="$3"
-    >
-      <XStack justifyContent="space-between" alignItems="flex-start" gap="$3" flexWrap="wrap">
-        <YStack gap="$1" flex={1} minWidth={160}>
-          <Text color="$color" fontSize="$4" fontWeight="700">
-            {slot.stream}
-          </Text>
-          <Text color="$colorMuted" fontSize="$2">
-            Terekam: {formatResearchValue(slot.recorded_at)}
-          </Text>
-        </YStack>
-          <Text color="$colorMuted" {...textStyles.bodySecondary} accessibilityLabel={`Stream ${slot.stream}`}>
-          Audit sensor
-        </Text>
-      </XStack>
-
-      <Section title="Raw">
-        <MetricRow label="fill" value={slot.raw.fill} unit="%" />
-        <Separator borderColor="$borderColor" />
-        <MetricRow label="weight" value={slot.raw.weight} unit="kg" />
-        <Separator borderColor="$borderColor" />
-        <MetricRow label="gas_raw" value={slot.raw.gas_raw} />
-        <Separator borderColor="$borderColor" />
-        <MetricRow label="temperature" value={slot.raw.temperature} unit="°C" />
-      </Section>
-
-      <Section title="Normalized">
-        <MetricRow label="fill_pct" value={slot.normalized.fill_pct} unit="%" />
-        <Separator borderColor="$borderColor" />
-        <MetricRow label="weight_utilization" value={slot.normalized.weight_utilization} unit="%" />
-        <Separator borderColor="$borderColor" />
-        <MetricRow label="ogi" value={slot.normalized.ogi} />
-        <Separator borderColor="$borderColor" />
-        <MetricRow label="accumulation_hours" value={slot.normalized.accumulation_hours} unit="jam" />
-        <Separator borderColor="$borderColor" />
-        <MetricRow label="temperature" value={slot.normalized.temperature} unit="°C" />
-      </Section>
-
-      <Section title="Decision">
-        <MetricRow label="fis_score" value={slot.fis_score} />
-        <Separator borderColor="$borderColor" />
-        <MetricRow label="fis_status" value={slot.fis_status} />
-        <Separator borderColor="$borderColor" />
-        <MetricRow label="fis_version" value={slot.fis_version} />
-        <Separator borderColor="$borderColor" />
-        <MetricRow label="dominant_reason" value={slot.dominant_reason} />
-        <Separator borderColor="$borderColor" />
-        <MetricRow label="safety_state" value={slot.safety_state} />
-      </Section>
-
-      <Section title="Sensor health">
-        <XStack justifyContent="space-between" alignItems="flex-start" gap="$3" paddingVertical="$2">
-          <Text color="$colorMuted" {...textStyles.bodySecondary} flex={1}>
-            sensor_health
-          </Text>
-          <Text color="$color" {...textStyles.bodySecondary} fontWeight="600" textAlign="right" flex={1}>
-            {formatSensorHealth(slot.sensor_health)}
-          </Text>
-        </XStack>
-      </Section>
-    </Card>
-  );
+  const media = useMedia();
+  const mobile = !media.tablet;
+  const sensorRows = buildResearchSensorRows(slot);
+  const derivedRows = buildDerivedResearchRows(slot);
+  return <Card borderWidth={1} borderColor="$borderColor" backgroundColor="$surface" borderRadius="$3" padding="$3" gap="$3" flex={1} minWidth={mobile ? '100%' : 300}><XStack alignItems="center" justifyContent="space-between" gap="$2"><Text {...textStyles.cardTitle} color="$color">{getStreamLabel(slot.stream)}</Text><Text {...textStyles.caption} color="$colorMuted">{formatResearchTimestamp(slot.recorded_at)}</Text></XStack><YStack gap="$2"><Text {...textStyles.caption} color="$colorMuted">Sensor fisik</Text><YStack gap="$1">{sensorRows.map((row) => <SensorRow key={row.id} row={row} mobile={mobile} />)}</YStack></YStack><Separator borderColor="$borderColor" /><YStack gap="$2"><Text {...textStyles.caption} color="$colorMuted">Derived parameter</Text>{derivedRows.map((row) => <XStack key={row.id} alignItems="center" gap="$2" flexWrap="wrap"><DataCell width="48%">{row.label}</DataCell><DataCell width="48%" muted>{row.actual}</DataCell><DataCell width="48%" muted>{row.normalizedLabel} {row.normalized}</DataCell><DataCell width="48%" muted>{row.membership}</DataCell></XStack>)}</YStack><SafetyEvidence slot={slot} /><FuzzyTrace trace={slot.fis_trace} /></Card>;
 }
 
-export function ResearchPanel({
-  data = null,
-  loading = false,
-  error = null,
-  onRetry,
-  onOpen,
-}: ResearchPanelProps) {
-  const [expanded, setExpanded] = useState(false);
-  const hasOpened = useRef(false);
-
-  const toggle = () => {
-    const nextExpanded = !expanded;
-    setExpanded(nextExpanded);
-    if (nextExpanded && !hasOpened.current) {
-      hasOpened.current = true;
-      onOpen?.();
-    }
-  };
-
-  return (
-    <Card
-      borderWidth={1}
-      borderColor="$borderColor"
-      backgroundColor="$surface"
-      borderRadius="$3"
-      padding="$4"
-      gap="$4"
-    >
-      <XStack alignItems="center" justifyContent="space-between" gap="$3" flexWrap="wrap">
-        <YStack gap="$1" flex={1} minWidth={180}>
-          <Text color="$color" fontSize="$5" fontWeight="700">
-            {RESEARCH_PANEL_TITLE}
-          </Text>
-          <Text color="$colorMuted" fontSize="$2">
-            Raw, normalized, and decision fields per slot.
-          </Text>
-        </YStack>
-        <Button
-          minHeight={48}
-          paddingHorizontal="$4"
-          backgroundColor="$primary"
-          color="$white"
-          onPress={toggle}
-          aria-label={expanded ? 'Tutup detail riset' : 'Buka detail riset'}
-          aria-expanded={expanded}
-          type="button"
-        >
-          {expanded ? 'Tutup' : 'Buka'}
-        </Button>
-      </XStack>
-
-      {expanded ? (
-        <YStack gap="$3">
-          {getResearchPanelState({ data, loading, error }) === 'loading' ? (
-            <LoadingState label="Memuat detail riset" rows={2} />
-          ) : null}
-          {getResearchPanelState({ data, loading, error }) === 'error' ? (
-            <ErrorState
-              title="Detail riset tidak dapat dimuat"
-              message="Periksa koneksi API lalu coba lagi."
-              onRetry={onRetry}
-            />
-          ) : null}
-          {getResearchPanelState({ data, loading, error }) === 'empty' ? (
-            <EmptyState
-              title="Data riset belum tersedia"
-              description="Pembacaan audit per slot akan muncul setelah tersedia dari API."
-            />
-          ) : null}
-          {data?.slots.map((slot) => <ResearchSlot key={slot.stream} slot={slot} />)}
-        </YStack>
-      ) : null}
-    </Card>
-  );
+export function ResearchPanel({ data = null, loading = false, error = null, onRetry, onOpen }: ResearchPanelProps) {
+  const reduceMotion = useReducedMotion();
+  const state = getResearchPanelState({ data, loading, error });
+  return <Card borderWidth={1} borderColor="$borderColor" backgroundColor="$surface" borderRadius="$3" padding="$4" gap="$3"><XStack alignItems="center" justifyContent="space-between" gap="$3"><YStack gap="$1" flex={1} minWidth={0}><Text color="$color" {...textStyles.sectionTitle}>Detail Riset</Text><Text color="$colorMuted" {...textStyles.bodySecondary}>Nilai aktual per sensor, normalisasi, dan status fuzzy per slot.</Text></YStack>{onOpen ? <AppButton variant="ghost" size="sm" onPress={onOpen} ariaLabel="Muat detail riset">Perbarui</AppButton> : null}</XStack><AnimatePresence>{state === 'loading' ? <LoadingState label="Memuat detail riset" rows={2} /> : null}{state === 'error' ? <ErrorState title="Detail riset tidak dapat dimuat" message="Periksa koneksi API lalu coba lagi." onRetry={onRetry} /> : null}{state === 'empty' ? <EmptyState title="Data riset belum tersedia" description="Pembacaan audit per slot akan muncul setelah tersedia dari API." /> : null}{state === 'data' && data ? <XStack gap="$3" flexWrap="wrap" transition={reduceMotion ? undefined : 'standard'} enterStyle={reduceMotion ? undefined : { opacity: 0, y: -4 }}><>{data.slots.map((slot) => <ResearchSlot key={slot.stream} slot={slot} />)}</></XStack> : null}</AnimatePresence></Card>;
 }
