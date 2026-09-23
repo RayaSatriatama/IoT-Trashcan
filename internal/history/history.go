@@ -403,13 +403,17 @@ func trendScope(filters Filters, now time.Time) (time.Time, time.Time, bool) {
 	if filters.From == nil && filters.To == nil {
 		return today.AddDate(0, 0, -29), today.AddDate(0, 0, 1), true
 	}
-	from := today.AddDate(0, 0, -29)
-	to := today.AddDate(0, 0, 1)
-	if filters.From != nil {
-		from = filters.From.In(jakartaLocation)
+	if filters.From == nil {
+		to := filters.To.In(jakartaLocation)
+		return to.AddDate(0, 0, -30), to, false
 	}
+	from := filters.From.In(jakartaLocation)
 	if filters.To != nil {
-		to = filters.To.In(jakartaLocation)
+		return from, filters.To.In(jakartaLocation), false
+	}
+	to := now.In(jakartaLocation)
+	if from.After(to) {
+		to = from
 	}
 	return from, to, false
 }
