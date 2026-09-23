@@ -23,6 +23,19 @@ func (e *mamdaniEngine) Evaluate(input Input) (Result, error) {
 		return Result{}, fmt.Errorf("%w: engine is nil", ErrInvalidConfig)
 	}
 
+	memberships := make(map[string]map[string]float64, len(e.config.Inputs))
+	for variableName, variable := range e.config.Inputs {
+		value, exists := input[variableName]
+		if !exists || !finite(value) {
+			return Result{}, fmt.Errorf("%w: %s", ErrMissingInput, variableName)
+		}
+		degrees := make(map[string]float64, len(variable.Sets))
+		for setName, membership := range variable.Sets {
+			degrees[setName] = boundedDegree(membership.Degree(value))
+		}
+		memberships[variableName] = degrees
+	}
+
 	results := make([]RuleResult, 0, len(e.config.Rules))
 	outputs := make(map[string][]Membership)
 	var dominant *RuleResult
@@ -59,12 +72,13 @@ func (e *mamdaniEngine) Evaluate(input Input) (Result, error) {
 		return Result{}, err
 	}
 	return Result{
-		Score:          score,
-		Status:         e.config.Outputs[dominant.Output].Status,
-		DominantReason: dominant.Reason,
-		Version:        e.config.Version,
-		Rules:          results,
-		Aggregated:     aggregated,
+		Score:            score,
+		Status:           e.config.Outputs[dominant.Output].Status,
+		DominantReason:   dominant.Reason,
+		Version:          e.config.Version,
+		Rules:            results,
+		InputMemberships: memberships,
+		Aggregated:       aggregated,
 	}, nil
 }
 

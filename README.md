@@ -12,7 +12,7 @@ IoT-Trashcan memuat dokumentasi dan aset SIGAP Smart Bin, sistem pengelolaan sam
 
 ## Status project
 
-SIGAP MVP memiliki satu runtime Go dengan SQLite embedded, authenticated ingest, monitoring read APIs, history, CSV export, dan frontend Expo Web yang di-embed saat release build. Nilai research final untuk FIS, safety, OGI, offline duration, verified-empty, dan event transition tetap deferred.
+SIGAP MVP memiliki satu runtime Go dengan SQLite embedded, authenticated ingest, monitoring read APIs, history, CSV export, dan frontend Expo Web yang di-embed saat release build. Kontrak ingest mendukung bukti sensor fisik opsional, nilai turunan, trace keputusan FIS, dan kanal safety B3. Nilai dan threshold production final untuk FIS, safety, OGI, offline duration, verified-empty, dan event transition tetap deferred.
 
 ## Menjalankan development
 
@@ -57,7 +57,7 @@ cp .env.simulation.example .env.simulation
 
 Runner simulasi terlebih dahulu menjalankan release build agar Expo SPA benar-benar masuk ke binary Go, lalu menjalankan binary tersebut dengan environment simulasi. Ini diperlukan karena clean checkout hanya menyimpan placeholder untuk `go:embed`, bukan bundle frontend generated.
 
-Buka `http://localhost:8080`. Simulator membuat 3 lokasi, 4 device, dan 12 slot. ID database simulator memakai prefix `sim-`, sedangkan device code yang terlihat di UI memakai prefix `SIM-`. Simulator lalu mengirim telemetry melalui authenticated ingest. Siklus demo mencakup Normal, Waspada, Angkat, Safety Alert, Data Invalid, Offline, dan Recovery. Data sintetis, FIS, dan safety threshold pada mode ini hanya fixture demo, bukan kalibrasi production atau research.
+Buka `http://localhost:8080`. Simulator membuat 3 lokasi, 4 device, dan 12 slot. ID database simulator memakai prefix `sim-`, sedangkan device code yang terlihat di UI memakai prefix `SIM-`. Simulator lalu mengirim telemetry melalui authenticated ingest. Siklus demo mencakup Normal, Waspada, Angkat, Safety Alert, Data Invalid, Offline, dan Recovery. Simulation payload menyediakan Fill Sensor, HX711, MQ-135, MQ-4, MQ-7, MQ-8, dan DS18B20 sesuai stream, beserta empat input collection FIS: fill, weight utilization, OGI, dan accumulation time. MQ ditampilkan sebagai raw atau normalized index, bukan ppm, karena simulator tidak menyediakan calibration model. Data sintetis, profile FIS, dan safety threshold pada mode ini hanya fixture demo, bukan kalibrasi production atau research.
 
 `SIGAP_SIMULATION_INTERVAL_SECONDS` harus bilangan bulat positif. `SIGAP_SIMULATION_SEED` membuat variasi kecil dapat direproduksi dan merotasi credential simulator lokal saat database yang sama digunakan kembali. Untuk memulai ulang data demo, hapus database secara manual:
 

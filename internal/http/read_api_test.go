@@ -242,6 +242,59 @@ func TestReadAPIResearchExposesRawAndNormalizedAuditableValues(t *testing.T) {
 	}
 }
 
+func TestReadAPIResearchProjectsPhysicalSensorsTraceSafetyAndSummary(t *testing.T) {
+	api, db := readAPIFixture(t)
+	raw := `{"device_id":"SIGAP-A","slots":[{"stream":"organic","ogi":71,"accumulation_hours":13,"sensors":[{"sensor_id":"organic-mq135","sensor_type":"mq135","parameter":"broad_gas","raw_value":1210,"normalized_value":0.71,"unit":"index","sensor_state":"VALID","recorded_at":"2026-09-17T09:59:40Z"}]}]}`
+	trace := `{"inputs":{"fill":50,"weight_utilization":50,"ogi":71,"accumulation_hours":13},"memberships":{"ogi":{"high":0.73}},"rules":[{"ID":"ogi-high","Strength":0.73,"Output":"warning","Reason":"fixture"}],"triggered_rules":1,"score":62,"status":"Waspada","version":"organic-v1","dominant_reason":"gas high"}`
+	safetyEvidence := `{"state":"Clear","channels":[{"sensor_id":"b3-mq7","sensor_type":"mq7","parameter":"co","value":870,"normalized":0.16,"unit":"index","sensor_state":"VALID"}]}`
+	execFixture(t, db, `UPDATE readings SET raw_payload=?, ogi=71, accumulation=13 WHERE slot_id='device-a-organic'`, raw)
+	execFixture(t, db, `UPDATE decisions SET fis_score=62, fis_status='Waspada', fis_version='organic-v1', dominant_reason='gas high', trace_json=? WHERE reading_id=(SELECT id FROM readings WHERE slot_id='device-a-organic' ORDER BY id DESC LIMIT 1)`, trace)
+	execFixture(t, db, `UPDATE decisions SET safety_json=? WHERE reading_id=(SELECT id FROM readings WHERE slot_id='device-a-b3' ORDER BY id DESC LIMIT 1)`, safetyEvidence)
+
+	request := httptest.NewRequest(http.MethodGet, "/api/devices/device-a/research", nil)
+	request.SetPathValue("id", "device-a")
+	response := httptest.NewRecorder()
+	api.Research(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var body struct {
+		DecisionSummary struct {
+			PriorityScore  *float64 `json:"priority_score"`
+			CriticalStream *string  `json:"critical_stream"`
+			Mode           *string  `json:"mode"`
+		} `json:"decision_summary"`
+		Slots []struct {
+			Stream  string `json:"stream"`
+			Sensors []struct {
+				SensorType string `json:"sensor_type"`
+			} `json:"sensors"`
+			DerivedParameters struct {
+				OGI *float64 `json:"ogi"`
+			} `json:"derived_parameters"`
+			FISTrace *struct {
+				TriggeredRules int `json:"triggered_rules"`
+			} `json:"fis_trace"`
+			Safety *struct {
+				State    string `json:"state"`
+				Channels []struct {
+					SensorType string `json:"sensor_type"`
+				} `json:"channels"`
+			} `json:"safety"`
+		} `json:"slots"`
+	}
+	decodeBody(t, response, &body)
+	if body.DecisionSummary.PriorityScore == nil || *body.DecisionSummary.PriorityScore != 62 || body.DecisionSummary.CriticalStream == nil || *body.DecisionSummary.CriticalStream != "b3" || body.DecisionSummary.Mode == nil || *body.DecisionSummary.Mode != "Fuzzy multi-parameter" {
+		t.Fatalf("decision summary=%+v", body.DecisionSummary)
+	}
+	if len(body.Slots[0].Sensors) != 1 || body.Slots[0].Sensors[0].SensorType != "mq135" || body.Slots[0].DerivedParameters.OGI == nil || *body.Slots[0].DerivedParameters.OGI != 71 || body.Slots[0].FISTrace == nil || body.Slots[0].FISTrace.TriggeredRules != 1 {
+		t.Fatalf("organic research=%+v", body.Slots[0])
+	}
+	if body.Slots[2].Safety == nil || body.Slots[2].Safety.State != "Clear" || len(body.Slots[2].Safety.Channels) != 1 || body.Slots[2].Safety.Channels[0].SensorType != "mq7" {
+		t.Fatalf("B3 safety=%+v", body.Slots[2].Safety)
+	}
+}
+
 func TestReadAPINotFound(t *testing.T) {
 	api, _ := readAPIFixture(t)
 	request := httptest.NewRequest(http.MethodGet, "/api/devices/missing", nil)

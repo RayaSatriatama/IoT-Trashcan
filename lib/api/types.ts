@@ -71,6 +71,64 @@ export interface SlotDTO {
 
 export type DeviceDTO = DeviceDetail;
 
+export type SensorState = 'VALID' | 'WARMING_UP' | 'STALE' | 'INVALID' | 'DISABLED';
+
+export interface SensorReadingDTO {
+  sensor_id: string;
+  sensor_type: string;
+  parameter: string;
+  raw_value: number | null;
+  engineering_value: number | null;
+  normalized_value: number | null;
+  raw_unit?: string;
+  unit: string;
+  sensor_state: SensorState;
+  calibration_version?: string;
+  recorded_at?: string;
+}
+
+export interface FuzzyRuleTraceDTO {
+  id: string;
+  strength: number;
+  output: string;
+  reason: string;
+}
+
+export interface FuzzyTraceDTO {
+  inputs: Record<string, number>;
+  memberships: Record<string, Record<string, number>> | null;
+  rules: FuzzyRuleTraceDTO[] | null;
+  triggered_rules: number;
+  score: number | null;
+  status: string;
+  version: string;
+  dominant_reason: string;
+}
+
+export interface SafetyChannelDTO {
+  sensor_id: string;
+  sensor_type: string;
+  parameter: string;
+  value: number | null;
+  normalized: number | null;
+  unit: string;
+  sensor_state: SensorState;
+  recorded_at?: string;
+}
+
+export interface SafetyEvidenceDTO {
+  state: string;
+  reason?: string;
+  channels: SafetyChannelDTO[];
+}
+
+export interface DeviceDecisionSummaryDTO {
+  priority_score: number | null;
+  critical_stream: string | null;
+  critical_reason: string | null;
+  mode: string | null;
+}
+
 export interface ResearchSlotDTO {
   stream: string;
   recorded_at: string | null;
@@ -93,10 +151,18 @@ export interface ResearchSlotDTO {
   fis_version: string | null;
   dominant_reason: string | null;
   safety_state: string | null;
+  sensors: SensorReadingDTO[];
+  derived_parameters: {
+    ogi: number | null;
+    accumulation_hours: number | null;
+  };
+  fis_trace: FuzzyTraceDTO | null;
+  safety: SafetyEvidenceDTO | null;
 }
 
 export interface ResearchResponse {
   device_id: string;
+  decision_summary: DeviceDecisionSummaryDTO;
   slots: ResearchSlotDTO[];
 }
 
