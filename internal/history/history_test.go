@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RayaSatriatama/IoT-Trashcan/internal/database"
 )
@@ -181,6 +182,186 @@ func TestWriteCSVUsesStableHeaderEscapesValuesAndLeavesNullEmpty(t *testing.T) {
 	}
 }
 
+func TestQueryViewSummaryIgnoresPageAndUsesEffectiveStatus(t *testing.T) {
+	db := analyticsFixture(t)
+	defer db.Close()
+
+	fixedNow := time.Date(2026, time.September, 18, 12, 0, 0, 0, time.UTC)
+	want := Summary{Total: 5, Normal: 1, Waspada: 1, Pickup: 1, SafetyAlert: 1, DataInvalid: 1}
+	first, err := QueryView(context.Background(), db, Filters{}, PageOptions{Limit: 2}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := QueryView(context.Background(), db, Filters{}, PageOptions{Limit: 5}, fixedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Summary != want || second.Summary != want {
+		t.Fatalf("first=%+v second=%+v", first.Summary, second.Summary)
+	}
+	if first.Page.TotalCount != want.Total || second.Page.TotalCount != want.Total {
+		t.Fatal("page total and summary total differ")
+	}
+}
+
+func TestQueryViewTrendSelectsGranularityAtBoundaries(t *testing.T) {
+	db := historyFixture(t)
+	defer db.Close()
+
+	cases := []struct {
+		name, from, to, want string
+	}{
+		{"31 days", "2026-08-01T17:00:00Z", "2026-09-01T17:00:00Z", "day"},
+		{"32 days", "2026-07-31T17:00:00Z", "2026-09-01T17:00:00Z", "week"},
+		{"180 days", "2026-03-05T17:00:00Z", "2026-09-01T17:00:00Z", "week"},
+		{"181 days", "2026-03-04T17:00:00Z", "2026-09-01T17:00:00Z", "month"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := QueryView(context.Background(), db, filterRange(t, tc.from, tc.to), PageOptions{Limit: 2}, time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Trend.Granularity != tc.want {
+				t.Fatalf("granularity = %q, want %q", result.Trend.Granularity, tc.want)
+			}
+		})
+	}
+}
+
+func TestQueryViewTrendDefaultsToThirtyJakartaDays(t *testing.T) {
+	db := historyFixture(t)
+	defer db.Close()
+
+	now := mustParseTime(t, "2026-09-18T03:45:00Z")
+	result, err := QueryView(context.Background(), db, Filters{}, PageOptions{Limit: 2}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Trend.DefaultWindow || result.Trend.Granularity != "day" {
+		t.Fatalf("trend metadata = %+v", result.Trend)
+	}
+	if result.Trend.ScopeFrom != "2026-08-19T17:00:00Z" || result.Trend.ScopeTo != "2026-09-18T17:00:00Z" {
+		t.Fatalf("scope = %s through %s", result.Trend.ScopeFrom, result.Trend.ScopeTo)
+	}
+	if len(result.Trend.Buckets) != 30 || result.Trend.Buckets[0].Start != "2026-08-19T17:00:00Z" || result.Trend.Buckets[29].Start != "2026-09-17T17:00:00Z" {
+		t.Fatalf("buckets = %+v", result.Trend.Buckets)
+	}
+}
+
+func TestQueryViewTrendUsesMondayWeekStarts(t *testing.T) {
+	db := historyFixture(t)
+	defer db.Close()
+
+	result, err := QueryView(context.Background(), db, filterRange(t, "2026-07-31T17:00:00Z", "2026-09-01T17:00:00Z"), PageOptions{Limit: 2}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Trend.Granularity != "week" || len(result.Trend.Buckets) == 0 {
+		t.Fatalf("trend = %+v", result.Trend)
+	}
+	if result.Trend.Buckets[0].Start != "2026-07-26T17:00:00Z" {
+		t.Fatalf("first weekly bucket = %+v", result.Trend.Buckets[0])
+	}
+}
+
+func TestQueryViewTrendUsesJakartaMidnightAndFillsMissingDays(t *testing.T) {
+	db := historyFixture(t)
+	defer db.Close()
+	insertHistoryDecision(t, db, "slot-a", "2026-09-01T16:59:59Z", "Normal", "Clear")
+	insertHistoryDecision(t, db, "slot-b", "2026-09-01T17:00:00Z", "Waspada", "Clear")
+
+	result, err := QueryView(context.Background(), db, filterRange(t, "2026-08-31T17:00:00Z", "2026-09-03T17:00:00Z"), PageOptions{Limit: 2}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Trend.Buckets) != 3 {
+		t.Fatalf("bucket count = %d, want 3", len(result.Trend.Buckets))
+	}
+	want := []TrendBucket{
+		{Start: "2026-08-31T17:00:00Z", Total: 1, Normal: 1},
+		{Start: "2026-09-01T17:00:00Z", Total: 1, Waspada: 1},
+		{Start: "2026-09-02T17:00:00Z"},
+	}
+	for index, bucket := range result.Trend.Buckets {
+		if bucket.Start != want[index].Start || bucket.Total != want[index].Total || bucket.Normal != want[index].Normal || bucket.Waspada != want[index].Waspada {
+			t.Fatalf("bucket[%d] = %+v, want %+v", index, bucket, want[index])
+		}
+	}
+}
+
+func TestQueryViewTrendUsesSafetyAlertAsEffectiveStatus(t *testing.T) {
+	db := historyFixture(t)
+	defer db.Close()
+
+	result, err := QueryView(context.Background(), db, filterRange(t, "2026-09-16T17:00:00Z", "2026-09-18T17:00:00Z"), PageOptions{Limit: 2}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Trend.Buckets) != 2 {
+		t.Fatalf("bucket count = %d", len(result.Trend.Buckets))
+	}
+	bucket := result.Trend.Buckets[0]
+	if bucket.SafetyAlert != 1 || bucket.Pickup != 0 {
+		t.Fatalf("effective status counts = %+v", bucket)
+	}
+}
+
+func TestQueryViewTrendCapsResponseAtLatest120Buckets(t *testing.T) {
+	db := historyFixture(t)
+	defer db.Close()
+
+	result, err := QueryView(context.Background(), db, filterRange(t, "2016-08-31T17:00:00Z", "2026-10-01T17:00:00Z"), PageOptions{Limit: 2}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Trend.Truncated || len(result.Trend.Buckets) != MaxTrendBuckets {
+		t.Fatalf("trend truncation = %+v", result.Trend)
+	}
+	if result.Trend.Buckets[0].Start != "2016-10-31T17:00:00Z" || result.Trend.Buckets[len(result.Trend.Buckets)-1].Start != "2026-09-30T17:00:00Z" {
+		t.Fatalf("capped range = first %+v last %+v", result.Trend.Buckets[0], result.Trend.Buckets[len(result.Trend.Buckets)-1])
+	}
+}
+
+func filterRange(t *testing.T, from, to string) Filters {
+	t.Helper()
+	fromTime := mustParseTime(t, from)
+	toTime := mustParseTime(t, to)
+	return Filters{From: &fromTime, To: &toTime}
+}
+
+func mustParseTime(t *testing.T, value string) time.Time {
+	t.Helper()
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return parsed
+}
+
+func analyticsFixture(t *testing.T) *sql.DB {
+	t.Helper()
+	db := historyFixture(t)
+	insertHistoryDecision(t, db, "slot-a", "2026-09-17T10:00:03Z", "Waspada", "Clear")
+	insertHistoryDecision(t, db, "slot-b", "2026-09-17T10:00:04Z", "Angkat", "Clear")
+	return db
+}
+
+func insertHistoryDecision(t *testing.T, db *sql.DB, slot, recordedAt, status, safety string) {
+	t.Helper()
+	result, err := db.Exec(`INSERT INTO readings (slot_id, recorded_at, raw_payload, fill) VALUES (?, ?, '{"slots":[]}', 50)`, slot, recordedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readingID, err := result.LastInsertId()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO decisions (reading_id, fis_score, fis_status, fis_version, dominant_reason, safety_state) VALUES (?, 55, ?, 'fixture-v1', 'fixture reason', ?)`, readingID, status, safety); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func historyFixture(t *testing.T) *sql.DB {
 	t.Helper()
 	db, err := database.Open(filepath.Join(t.TempDir(), "history.db"))
@@ -204,7 +385,7 @@ func historyFixture(t *testing.T) *sql.DB {
 	}
 	for _, fixture := range []struct {
 		slot, recorded, raw, status, safety string
-		fill, weight, utilization             any
+		fill, weight, utilization           any
 	}{
 		{"slot-a", "2026-09-17T10:00:00Z", `{"slots":[{"stream":"organic","gas_raw":42}]}`, "Normal", "Clear", 50, 5, 50},
 		{"slot-b", "2026-09-17T10:00:01Z", `{"slots":[{"stream":"inorganic","gas_raw":null}]}`, "Data Invalid", "Clear", 0, nil, nil},
