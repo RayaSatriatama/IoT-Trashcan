@@ -22,8 +22,8 @@ export function FuzzyTrace({ trace }: { trace: FuzzyTraceDTO | null | undefined 
       <Separator borderColor="$borderColor" />
       <XStack gap="$4" flexWrap="wrap">
         <YStack gap="$1" minWidth={110}><Text {...textStyles.caption} color="$colorMuted">Rules aktif</Text><Text {...textStyles.bodySecondary} color="$color" fontWeight="700">{trace.triggered_rules || '—'}</Text></YStack>
-        <YStack gap="$1" minWidth={110}><Text {...textStyles.caption} color="$colorMuted">Score</Text><Text {...textStyles.bodySecondary} color="$color" fontWeight="700" fontVariant={['tabular-nums']}>{formatResearchNumber(trace.score, ' / 100')}</Text></YStack>
-        <YStack gap="$1" flex={1} minWidth={150}><Text {...textStyles.caption} color="$colorMuted">Status</Text><Text {...textStyles.bodySecondary} color="$color" fontWeight="700">{trace.status || 'Belum tersedia'}</Text></YStack>
+        <YStack gap="$1" minWidth={110}><Text {...textStyles.caption} color="$colorMuted">Skor prioritas</Text><Text {...textStyles.bodySecondary} color="$color" fontWeight="700" fontVariant={['tabular-nums']}>{formatResearchNumber(trace.score, ' / 100')}</Text></YStack>
+        <YStack gap="$1" flex={1} minWidth={150}><Text {...textStyles.caption} color="$colorMuted">Status keputusan</Text><Text {...textStyles.bodySecondary} color="$color" fontWeight="700">{trace.status || 'Belum tersedia'}</Text></YStack>
       </XStack>
       {trace.dominant_reason ? <Text {...textStyles.bodySecondary} color="$colorMuted">Alasan: {trace.dominant_reason}</Text> : null}
       {trace.version ? <Text {...textStyles.caption} color="$colorMuted">FIS version: {trace.version}</Text> : null}

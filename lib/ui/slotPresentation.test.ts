@@ -1,18 +1,21 @@
 import { describe, expect, it } from 'vitest';
 
-import type { SlotDTO } from '../api/types';
+import type { ResearchSlotDTO, SlotDTO } from '../api/types';
 import {
+  buildDecisionInputRows,
   buildDerivedResearchRows,
   buildResearchSensorRows,
   buildSlotMetrics,
   formatDecisionSummary,
   formatMembership,
+  formatMembershipCategory,
   formatResearchTimestamp,
   formatSensorState,
   formatNullableDisplay,
   formatSafetyState,
   getStreamTone,
   getRelatedSensorLabels,
+  shouldShowFinalStatus,
   shouldShowDecisionNote,
 } from './slotPresentation';
 
@@ -28,6 +31,37 @@ const baseSlot: SlotDTO = {
   ogi: null,
   accumulation_hours: null,
   temperature: null,
+};
+
+const baseResearchSlot: ResearchSlotDTO = {
+  stream: 'organic',
+  recorded_at: null,
+  raw: { fill: 53, weight: 10.6, gas_raw: 1094.5, temperature: null },
+  normalized: { fill_pct: 53, weight_utilization: 53, ogi: 59.45, accumulation_hours: 9, temperature: null },
+  sensor_health: null,
+  fis_score: 48.33,
+  fis_status: 'Waspada',
+  fis_version: 'organic-v2',
+  dominant_reason: 'fill needs attention',
+  safety_state: null,
+  sensors: [],
+  derived_parameters: { ogi: 59.45, accumulation_hours: 9 },
+  fis_trace: {
+    inputs: { fill: 53, weight_utilization: 53, ogi: 59.45, accumulation_hours: 9 },
+    memberships: {
+      fill: { medium: 1 },
+      weight_utilization: { medium: 1 },
+      ogi: { low: 0.34, medium: 0.66 },
+      accumulation_hours: { low: 1 },
+    },
+    rules: null,
+    triggered_rules: 4,
+    score: 48.33,
+    status: 'Waspada',
+    version: 'organic-v2',
+    dominant_reason: 'fill needs attention',
+  },
+  safety: null,
 };
 
 describe('slot presentation helpers', () => {
@@ -57,14 +91,32 @@ describe('slot presentation helpers', () => {
     expect(derivedRows.every((row) => row.normalizedLabel === 'Input FIS')).toBe(true);
   });
 
-  it('uses readable state and membership labels without inventing ppm', () => {
+  it('separates operator categories from research membership degrees', () => {
     expect(formatSensorState('WARMING_UP')).toBe('Warm-up');
-    expect(formatMembership({ low: 0.2, high: 0.8 })).toBe('Tinggi (80%)');
+    expect(formatMembershipCategory({ low: 0.34, medium: 0.66 })).toBe('Sedang');
+    expect(formatMembership({ low: 0.34, medium: 0.66, high: 0 })).toBe('Rendah 0,34 · Sedang 0,66');
+    expect(formatMembership({ low: 1 })).toBe('Rendah 1,00');
     expect(formatMembership(null)).toBe('—');
+  });
+
+  it('builds four clearly named factors for the collection decision', () => {
+    expect(buildDecisionInputRows({ ...baseSlot, fill: 53, weight_utilization: 53 }, baseResearchSlot)).toEqual([
+      { key: 'fill', label: 'Keterisian', value: '53%', category: 'Sedang' },
+      { key: 'weight_utilization', label: 'Utilisasi berat', value: '53%', category: 'Sedang' },
+      { key: 'ogi', label: 'Indeks gas', value: '59.45', category: 'Sedang' },
+      { key: 'accumulation_hours', label: 'Waktu akumulasi', value: '9 jam', category: 'Rendah' },
+    ]);
   });
 
   it('formats decision summary as unavailable when API evidence is absent', () => {
     expect(formatDecisionSummary(null)).toEqual({ score: '—', criticalStream: '—', reason: '—', mode: 'Belum tersedia' });
+    expect(formatDecisionSummary({ priority_score: 48, critical_stream: 'organic', critical_reason: null, mode: 'Fuzzy multi-parameter' }).mode).toBe('Penilaian multi-parameter');
+  });
+
+  it('shows a final status only when it differs from the collection decision', () => {
+    expect(shouldShowFinalStatus('Normal', 'Normal')).toBe(false);
+    expect(shouldShowFinalStatus('Normal', 'Safety Alert')).toBe(true);
+    expect(shouldShowFinalStatus(null, 'Data Invalid')).toBe(true);
   });
 
   it('keeps related physical-sensor metadata centralized per stream', () => {

@@ -17,6 +17,13 @@ export interface SlotMetricPresentation {
   unit?: string;
 }
 
+export interface DecisionInputPresentation {
+  key: 'fill' | 'weight_utilization' | 'ogi' | 'accumulation_hours';
+  label: string;
+  value: string;
+  category: string;
+}
+
 export type SensorRole = 'Fuzzy Fill' | 'Fuzzy Weight' | 'OGI source' | 'OGI supporting' | 'Safety' | 'Temperature safety' | 'Derived parameter';
 
 export interface ResearchSensorPresentation {
@@ -98,14 +105,47 @@ export function formatSensorState(state: SensorState | string | null | undefined
   }
 }
 
-export function formatMembership(memberships: Record<string, number> | null | undefined): string {
+const membershipLabels: Record<string, string> = {
+  low: 'Rendah',
+  medium: 'Sedang',
+  high: 'Tinggi',
+};
+
+const membershipOrder: Record<string, number> = {
+  low: 0,
+  medium: 1,
+  high: 2,
+};
+
+function activeMemberships(memberships: Record<string, number> | null | undefined) {
   if (!memberships) return '—';
-  const entries = Object.entries(memberships).filter(([, value]) => Number.isFinite(value));
-  if (!entries.length) return '—';
-  const [label, value] = entries.sort((a, b) => b[1] - a[1])[0];
-  const normalized = label.toLowerCase();
-  const display = normalized === 'medium' ? 'Sedang' : normalized === 'high' ? 'Tinggi' : normalized === 'low' ? 'Rendah' : label;
-  return `${display} (${Math.round(value * 100)}%)`;
+  return Object.entries(memberships)
+    .filter(([, value]) => Number.isFinite(value) && value > 0)
+    .map(([label, value]) => ({
+      label,
+      normalized: label.toLowerCase(),
+      value,
+    }));
+}
+
+function membershipLabel(label: string): string {
+  return membershipLabels[label.toLowerCase()] ?? label;
+}
+
+export function formatMembershipCategory(memberships: Record<string, number> | null | undefined): string {
+  const entries = activeMemberships(memberships);
+  if (entries === '—' || !entries.length) return '—';
+  const strongest = [...entries].sort((a, b) => b.value - a.value)[0];
+  return membershipLabel(strongest.label);
+}
+
+export function formatMembership(memberships: Record<string, number> | null | undefined): string {
+  const entries = activeMemberships(memberships);
+  if (entries === '—' || !entries.length) return '—';
+  return [...entries]
+    .sort((a, b) => (membershipOrder[a.normalized] ?? 99) - (membershipOrder[b.normalized] ?? 99))
+    .map(({ label, value }) => `${membershipLabel(label)} ${value.toFixed(2).replace('.', ',')}`)
+    .join(' · ');
 }
 
 export function formatResearchNumber(value: number | null | undefined, unit = ''): string {
@@ -168,12 +208,31 @@ export function buildDerivedResearchRows(slot: ResearchSlotDTO): ResearchSensorP
   ];
 }
 
+export function buildDecisionInputRows(slot: SlotDTO, research?: ResearchSlotDTO | null): DecisionInputPresentation[] {
+  const trace = research?.fis_trace;
+  const ogi = research?.derived_parameters.ogi ?? research?.normalized.ogi ?? slot.ogi;
+  const accumulation = research?.derived_parameters.accumulation_hours ?? research?.normalized.accumulation_hours ?? slot.accumulation_hours;
+  const definitions: Array<[DecisionInputPresentation['key'], string, number | null | undefined, string]> = [
+    ['fill', 'Keterisian', trace?.inputs?.fill ?? slot.fill, '%'],
+    ['weight_utilization', 'Utilisasi berat', trace?.inputs?.weight_utilization ?? slot.weight_utilization, '%'],
+    ['ogi', 'Indeks gas', trace?.inputs?.ogi ?? ogi, ''],
+    ['accumulation_hours', 'Waktu akumulasi', trace?.inputs?.accumulation_hours ?? accumulation, ' jam'],
+  ];
+  return definitions.map(([key, label, value, unit]) => ({
+    key,
+    label,
+    value: formatResearchNumber(value, unit),
+    category: formatMembershipCategory(trace?.memberships?.[key]),
+  }));
+}
+
 export function formatDecisionSummary(summary: DeviceDecisionSummaryDTO | null | undefined) {
+  const mode = summary?.mode === 'Fuzzy multi-parameter' ? 'Penilaian multi-parameter' : summary?.mode;
   return {
     score: formatResearchNumber(summary?.priority_score, ' / 100'),
     criticalStream: summary?.critical_stream ? getStreamLabel(summary.critical_stream) : '—',
     reason: summary?.critical_reason || '—',
-    mode: summary?.mode || 'Belum tersedia',
+    mode: mode || 'Belum tersedia',
   };
 }
 
@@ -282,4 +341,8 @@ export function buildSlotMetrics(slot: SlotDTO): SlotMetricPresentation[] {
 
 export function shouldShowDecisionNote(slot: Pick<SlotDTO, 'status' | 'dominant_reason'>): boolean {
   return Boolean(slot.dominant_reason && slot.status && slot.status !== 'Normal');
+}
+
+export function shouldShowFinalStatus(decisionStatus: string | null | undefined, operationalStatus: string | null | undefined): boolean {
+  return Boolean(operationalStatus && operationalStatus !== decisionStatus);
 }
