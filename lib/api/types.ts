@@ -219,6 +219,35 @@ export interface HistoryItem {
   sensor_health: unknown;
 }
 
+export interface HistorySummary {
+  total: number;
+  normal: number;
+  waspada: number;
+  pickup: number;
+  safety_alert: number;
+  data_invalid: number;
+}
+
+export interface HistoryTrendBucket {
+  start: string;
+  label: string;
+  total: number;
+  normal: number;
+  waspada: number;
+  pickup: number;
+  safety_alert: number;
+  data_invalid: number;
+}
+
+export interface HistoryTrend {
+  scope_from: string;
+  scope_to: string;
+  granularity: 'day' | 'week' | 'month';
+  default_window: boolean;
+  truncated: boolean;
+  buckets: HistoryTrendBucket[];
+}
+
 export interface HistoryResponse {
   items: HistoryItem[];
   filters: {
@@ -234,4 +263,6 @@ export interface HistoryResponse {
     next: HistoryCursor | null;
     total_count: number;
   };
+  summary: HistorySummary;
+  trend: HistoryTrend;
 }

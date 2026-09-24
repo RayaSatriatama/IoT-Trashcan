@@ -21,6 +21,7 @@ import {
   serializeHistoryFilters,
   totalHistoryPages,
   formatHistoryScore,
+  validateHistoryPeriod,
 } from '../../app/history';
 
 describe('history filter contracts', () => {
@@ -40,16 +41,24 @@ describe('history filter contracts', () => {
     expect(buildHistoryExportHref(filters)).toBe('/api/export.csv?location_id=loc-1&status=Waspada');
   });
 
-  it('converts date-only bounds to UTC inclusive/exclusive boundaries', () => {
+  it('converts complete date-only bounds from Asia/Jakarta to UTC inclusive/exclusive boundaries', () => {
     expect(dateInputToUtcRange('2026-09-10', '2026-09-12')).toEqual({
-      from: '2026-09-10T00:00:00.000Z',
-      to: '2026-09-13T00:00:00.000Z',
+      from: '2026-09-09T17:00:00.000Z',
+      to: '2026-09-12T17:00:00.000Z',
     });
   });
 
-  it('does not create a range when no date is selected', () => {
+  it('preserves partial API date serialization while the UI validates draft dates separately', () => {
     expect(dateInputToUtcRange('', '')).toEqual({ from: undefined, to: undefined });
-    expect(dateInputToUtcRange('2026-09-10', '')).toEqual({ from: '2026-09-10T00:00:00.000Z', to: undefined });
+    expect(dateInputToUtcRange('2026-09-10', '')).toEqual({ from: '2026-09-09T17:00:00.000Z', to: undefined });
+  });
+
+  it('validates the complete History date period required by the UI draft', () => {
+    expect(validateHistoryPeriod('', '')).toBeNull();
+    expect(validateHistoryPeriod('2026-09-10', '')).toBe('Lengkapi tanggal awal dan akhir.');
+    expect(validateHistoryPeriod('', '2026-09-12')).toBe('Lengkapi tanggal awal dan akhir.');
+    expect(validateHistoryPeriod('2026-09-12', '2026-09-10')).toBe('Tanggal awal tidak boleh melewati tanggal akhir.');
+    expect(validateHistoryPeriod('2026-09-10', '2026-09-12')).toBeNull();
   });
 
   it('shows Safety Alert as the effective status when safety overrides FIS', () => {

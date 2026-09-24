@@ -127,15 +127,22 @@ function historyStreamColor(stream: string): string {
   return '#5D7397';
 }
 
+function jakartaDateStartToUtc(value: string, dayOffset = 0): string {
+  const [year, month, day] = value.split('-').map(Number);
+  return new Date(Date.UTC(year, month - 1, day + dayOffset, -7)).toISOString();
+}
+
 export function dateInputToUtcRange(fromDate: string, toDate: string): Pick<HistoryFilterValues, 'from' | 'to'> {
-  const from = fromDate ? new Date(`${fromDate}T00:00:00.000Z`).toISOString() : undefined;
-  let to: string | undefined;
-  if (toDate) {
-    const end = new Date(`${toDate}T00:00:00.000Z`);
-    end.setUTCDate(end.getUTCDate() + 1);
-    to = end.toISOString();
-  }
-  return { from, to };
+  return {
+    from: fromDate ? jakartaDateStartToUtc(fromDate) : undefined,
+    to: toDate ? jakartaDateStartToUtc(toDate, 1) : undefined,
+  };
+}
+
+export function validateHistoryPeriod(fromDate: string, toDate: string): string | null {
+  if (Boolean(fromDate) !== Boolean(toDate)) return 'Lengkapi tanggal awal dan akhir.';
+  if (fromDate && toDate && fromDate > toDate) return 'Tanggal awal tidak boleh melewati tanggal akhir.';
+  return null;
 }
 
 export const HISTORY_EMPTY_COPY = {
