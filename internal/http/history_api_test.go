@@ -5,8 +5,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"reflect"
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/RayaSatriatama/IoT-Trashcan/internal/history"
 )
 
 func TestReadAPIHistorySupportsCombinedFiltersAndNulls(t *testing.T) {
@@ -42,6 +47,8 @@ func TestReadAPIHistorySupportsCombinedFiltersAndNulls(t *testing.T) {
 			HasMore    bool `json:"has_more"`
 			TotalCount int  `json:"total_count"`
 		} `json:"page"`
+		Summary history.Summary `json:"summary"`
+		Trend   history.Trend   `json:"trend"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
@@ -60,6 +67,12 @@ func TestReadAPIHistorySupportsCombinedFiltersAndNulls(t *testing.T) {
 	}
 	if body.Page.Limit != 50 || body.Page.HasMore || body.Page.TotalCount != 1 {
 		t.Fatalf("page=%+v", body.Page)
+	}
+	if body.Summary.Total != body.Page.TotalCount || body.Summary.SafetyAlert != 1 || body.Summary.Pickup != 0 {
+		t.Fatalf("summary=%+v page=%+v", body.Summary, body.Page)
+	}
+	if body.Trend.DefaultWindow || len(body.Trend.Buckets) != 1 || body.Trend.Buckets[0].SafetyAlert != 1 {
+		t.Fatalf("filtered trend=%+v", body.Trend)
 	}
 }
 
@@ -104,12 +117,17 @@ func TestReadAPIHistoryAcceptsDeviceCodeSearch(t *testing.T) {
 		Page struct {
 			TotalCount int `json:"total_count"`
 		} `json:"page"`
+		Summary history.Summary `json:"summary"`
+		Trend   history.Trend   `json:"trend"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
 	if len(body.Items) != 3 || body.Page.TotalCount != 3 || body.Items[0].DeviceCode != "SIGAP-A" {
 		t.Fatalf("device code filter=%+v", body)
+	}
+	if body.Summary.Total != body.Page.TotalCount || !body.Trend.DefaultWindow || len(body.Trend.Buckets) != 30 {
+		t.Fatalf("analytics=%+v page=%+v", body, body.Page)
 	}
 }
 
@@ -138,6 +156,8 @@ func TestReadAPIHistoryUsesStableCursorPagination(t *testing.T) {
 				ID       int64  `json:"reading_id"`
 			} `json:"next"`
 		} `json:"page"`
+		Summary history.Summary `json:"summary"`
+		Trend   history.Trend   `json:"trend"`
 	}
 	if err := json.Unmarshal(firstResponse.Body.Bytes(), &first); err != nil {
 		t.Fatal(err)
@@ -148,8 +168,12 @@ func TestReadAPIHistoryUsesStableCursorPagination(t *testing.T) {
 	if first.Page.Limit != 2 || !first.Page.HasMore || first.Page.TotalCount != 4 || first.Page.Next == nil || first.Page.Next.ID != 2 {
 		t.Fatalf("first page=%+v", first.Page)
 	}
+	if first.Summary.Total != first.Page.TotalCount || len(first.Trend.Buckets) != 30 || !first.Trend.DefaultWindow {
+		t.Fatalf("first analytics summary=%+v trend=%+v", first.Summary, first.Trend)
+	}
 
-	secondRequest := httptest.NewRequest(http.MethodGet, "/api/history?limit=2&before=2026-09-17T09%3A59%3A41Z&before_id=2", nil)
+	secondPath := "/api/history?limit=2&before=" + url.QueryEscape(first.Page.Next.Recorded) + "&before_id=" + strconv.FormatInt(first.Page.Next.ID, 10)
+	secondRequest := httptest.NewRequest(http.MethodGet, secondPath, nil)
 	secondResponse := httptest.NewRecorder()
 	api.History(secondResponse, secondRequest)
 	if secondResponse.Code != http.StatusOK {
@@ -163,12 +187,20 @@ func TestReadAPIHistoryUsesStableCursorPagination(t *testing.T) {
 			HasMore    bool `json:"has_more"`
 			TotalCount int  `json:"total_count"`
 		} `json:"page"`
+		Summary history.Summary `json:"summary"`
+		Trend   history.Trend   `json:"trend"`
 	}
 	if err := json.Unmarshal(secondResponse.Body.Bytes(), &second); err != nil {
 		t.Fatal(err)
 	}
 	if len(second.Items) != 2 || second.Items[0].ReadingID != 1 || second.Items[1].ReadingID != 4 || second.Page.HasMore || second.Page.TotalCount != 4 {
 		t.Fatalf("second page items=%+v page=%+v", second.Items, second.Page)
+	}
+	if second.Summary.Total != second.Page.TotalCount {
+		t.Fatalf("second summary=%+v page=%+v", second.Summary, second.Page)
+	}
+	if reflect.DeepEqual(first.Items, second.Items) || !reflect.DeepEqual(first.Summary, second.Summary) || !reflect.DeepEqual(first.Trend, second.Trend) {
+		t.Fatalf("cursor analytics changed first=%+v second=%+v", first, second)
 	}
 }
 

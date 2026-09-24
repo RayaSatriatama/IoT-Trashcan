@@ -86,6 +86,18 @@ func TestReleasePathIngestReadHistoryCSVAndRestart(t *testing.T) {
 		if !ok || len(items) != 1 || strings.Contains(stringValue(body), "credential_digest") {
 			t.Fatalf("history response=%v", body)
 		}
+		summary, ok := body["summary"].(map[string]any)
+		if !ok || summary["total"] != float64(1) || summary["safety_alert"] != float64(1) {
+			t.Fatalf("history summary=%v", body)
+		}
+		trend, ok := body["trend"].(map[string]any)
+		if !ok || trend["granularity"] != "day" || trend["default_window"] != true {
+			t.Fatalf("history trend=%v", body)
+		}
+		buckets, ok := trend["buckets"].([]any)
+		if !ok || len(buckets) == 0 || len(buckets) > 120 {
+			t.Fatalf("history trend buckets=%v", trend)
+		}
 	})
 	export := request(t, handler, http.MethodGet, "/api/export.csv?status=Safety%20Alert", nil, "")
 	if export.Code != http.StatusOK || !strings.Contains(export.Header().Get("Content-Type"), "text/csv") || !strings.Contains(export.Body.String(), "gas_raw") || !strings.Contains(export.Body.String(), "99") {
