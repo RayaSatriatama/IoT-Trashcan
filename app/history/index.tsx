@@ -1,17 +1,17 @@
 import { useRouter } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
-import type { ReactNode } from 'react';
-import { Image as RNImage, Modal, Pressable, ScrollView } from 'react-native';
-import { AnimatePresence, Card, Input, Label, Select, Text, XStack, YStack, useMedia } from 'tamagui';
+import { Image as RNImage } from 'react-native';
+import { AnimatePresence, Card, Select, Text, XStack, YStack, useMedia } from 'tamagui';
 
 import historyArtwork from '../../assets/history_report_analytics_illustration.png';
 import { AppShell } from '../../components/AppShell';
 import { EmptyState } from '../../components/EmptyState';
 import { ErrorState } from '../../components/ErrorState';
 import { AppButton } from '../../components/AppButton';
+import { appliedHistoryDraft, HistoryFilters, type HistoryFilterDraft } from '../../components/history/HistoryFilters';
 import { KpiCard } from '../../components/KpiCard';
 import { LoadingState } from '../../components/LoadingState';
-import { DescriptionHint, SectionHeader } from '../../components/SectionHeader';
+import { SectionHeader } from '../../components/SectionHeader';
 import { StatusBadge } from '../../components/StatusBadge';
 import { apiClient } from '../../lib/api/client';
 import { usePollingResource } from '../../lib/api/hooks';
@@ -20,9 +20,8 @@ import type {
   HistoryCursor,
   HistoryItem,
   HistoryResponse,
-  LocationListResponse,
 } from '../../lib/api/types';
-import { Activity, Box, ChevronDown, ChevronRight, ChevronUp, Filter as FilterIcon, ShieldAlert, Truck } from '../../lib/ui/icons';
+import { Activity, Box, ChevronDown, ChevronRight, ShieldAlert, Truck } from '../../lib/ui/icons';
 import { textStyles } from '../../lib/ui/typography';
 import { useReducedMotion } from '../../lib/ui/motionContext';
 import { useAnimatedNumber } from '../../lib/ui/useAnimatedNumber';
@@ -348,163 +347,6 @@ function HistoryTableHeader() {
   );
 }
 
-function LocationFilter({ value, onChange }: { value: string; onChange: (value: string) => void }) {
-  const loader = useCallback((signal: AbortSignal) => apiClient.fetchLocations({}, signal), []);
-  const { data } = usePollingResource<LocationListResponse>(loader, 60_000);
-  const locations = data?.locations ?? [];
-
-  return (
-    <YStack width="100%" $tablet={{ width: 'calc(50% - 8px)' }} $wide={{ width: 'calc(14% - 9px)' }} gap="$2">
-      <Text color="$color" {...textStyles.caption} fontWeight="700">Lokasi</Text>
-      <Select value={value || 'all'} onValueChange={(next) => onChange(next === 'all' ? '' : next)} name="history-location">
-        <Select.Trigger aria-label="Filter lokasi" minHeight={44} width="100%" borderColor="$borderColor" backgroundColor="$background">
-          <Select.Value placeholder="Semua lokasi" fontSize={14} />
-          <Select.Icon><ChevronDown size={16} color="#60789F" aria-hidden /></Select.Icon>
-        </Select.Trigger>
-        <Select.Content>
-          <Select.Viewport minWidth={280}>
-            <Select.Item value="all" index={0}><Select.ItemText>Semua lokasi</Select.ItemText><Select.ItemIndicator /></Select.Item>
-            {locations.map((location, index) => (
-              <Select.Item key={location.id} value={location.id} index={index + 1}>
-                <Select.ItemText>{location.name}</Select.ItemText>
-                <Select.ItemIndicator />
-              </Select.Item>
-            ))}
-          </Select.Viewport>
-        </Select.Content>
-      </Select>
-    </YStack>
-  );
-}
-
-type HistoryDraft = HistoryFilterValues & { fromDate: string; toDate: string };
-
-function FilterFields({ draft, onChange, actions }: { draft: HistoryDraft; onChange: (patch: Partial<HistoryDraft>) => void; actions?: ReactNode }) {
-  return (
-    <XStack gap="$3" flexWrap="wrap" alignItems="flex-end">
-      <YStack width="100%" $wide={{ width: 'calc(25% - 9px)' }} gap="$2">
-        <Text color="$color" {...textStyles.caption} fontWeight="700">Periode</Text>
-        <XStack gap="$2">
-          <YStack flex={1} gap="$1">
-            <Label htmlFor="history-from" color="$colorMuted" {...textStyles.caption}>Dari tanggal</Label>
-            <Input id="history-from" type="date" value={draft.fromDate} onChangeText={(value) => onChange({ fromDate: value })} minHeight={44} fontSize={14} borderColor="$borderColor" backgroundColor="$background" />
-          </YStack>
-          <YStack flex={1} gap="$1">
-            <Label htmlFor="history-to" color="$colorMuted" {...textStyles.caption}>Sampai tanggal</Label>
-            <Input id="history-to" type="date" value={draft.toDate} onChangeText={(value) => onChange({ toDate: value })} minHeight={44} fontSize={14} borderColor="$borderColor" backgroundColor="$background" />
-          </YStack>
-        </XStack>
-      </YStack>
-      <LocationFilter value={draft.location_id ?? ''} onChange={(location_id) => onChange({ location_id })} />
-      <YStack width="100%" $tablet={{ width: 'calc(50% - 8px)' }} $wide={{ width: 'calc(20% - 9px)' }} gap="$2">
-        <Label htmlFor="history-device" color="$color" {...textStyles.caption} fontWeight="700">Perangkat</Label>
-        <Input id="history-device" value={draft.device_id ?? ''} onChangeText={(value) => onChange({ device_id: value })} placeholder="Nama atau ID perangkat" minHeight={44} fontSize={14} borderColor="$borderColor" backgroundColor="$background" />
-      </YStack>
-      <YStack width="100%" $tablet={{ width: 'calc(50% - 8px)' }} $wide={{ width: 'calc(14% - 9px)' }} gap="$2">
-        <Text color="$color" {...textStyles.caption} fontWeight="700">Status</Text>
-        <Select value={draft.status || 'all'} onValueChange={(value) => onChange({ status: value === 'all' ? undefined : value as CanonicalStatus })} name="history-status">
-          <Select.Trigger aria-label="Filter status" minHeight={44} width="100%" borderColor="$borderColor" backgroundColor="$background"><Select.Value placeholder="Semua status" fontSize={14} /><Select.Icon><ChevronDown size={16} color="#60789F" aria-hidden /></Select.Icon></Select.Trigger>
-          <Select.Content><Select.Viewport minWidth={280}>{HISTORY_STATUS_FILTERS.map((filter, index) => <Select.Item key={filter.value || 'all'} value={filter.value || 'all'} index={index}><Select.ItemText>{filter.label}</Select.ItemText><Select.ItemIndicator /></Select.Item>)}</Select.Viewport></Select.Content>
-        </Select>
-      </YStack>
-      {actions ? <YStack width="100%" $wide={{ width: 'calc(18% - 9px)' }} alignItems="flex-end">{actions}</YStack> : null}
-    </XStack>
-  );
-}
-
-function Filters({ draft, onChange, onApply, onReset, onExport, compact }: { draft: HistoryDraft; onChange: (patch: Partial<HistoryDraft>) => void; onApply: () => void; onReset: () => void; onExport: () => void; compact: boolean }) {
-  const [open, setOpen] = useState(!compact);
-  const reduceMotion = useReducedMotion();
-  const handleApply = useCallback(() => {
-    onApply();
-    if (compact) setOpen(false);
-  }, [compact, onApply]);
-  const filterFields = <FilterFields draft={draft} onChange={onChange} />;
-  const filterActions = (
-    <XStack gap="$2" justifyContent="flex-end" flexWrap="wrap">
-      <AppButton size="sm" variant="secondary" onPress={onReset} ariaLabel="Reset filter">Reset</AppButton>
-      <AppButton size="sm" variant="primary" onPress={handleApply} ariaLabel="Terapkan filter">Terapkan filter</AppButton>
-    </XStack>
-  );
-  return (
-    <YStack gap="$2">
-      {compact ? (
-        <XStack gap="$3" justifyContent="space-between" alignItems="center">
-          <AppButton size="md" variant="secondary" onPress={() => setOpen(true)} ariaLabel="Buka filter riwayat" ariaExpanded={open}>
-            <FilterIcon size={16} color="#1D3566" aria-hidden /> Filter
-          </AppButton>
-          <AppButton size="md" variant="secondary" onPress={onExport} ariaLabel="Unduh CSV">Unduh CSV</AppButton>
-        </XStack>
-      ) : (
-        <XStack gap="$3" justifyContent="space-between" alignItems="center" flexWrap="wrap">
-          <XStack alignItems="center" gap="$2">
-            <Text color="$color" {...textStyles.sectionTitle}>Filter riwayat</Text>
-            <DescriptionHint description="Gunakan periode, lokasi, perangkat, dan status untuk mempersempit audit pembacaan." ariaLabel="Lihat informasi tentang filter riwayat" />
-          </XStack>
-          <XStack gap="$2" alignItems="center" flexWrap="wrap">
-            <AppButton size="sm" variant="ghost" onPress={() => setOpen((value) => !value)} ariaLabel={open ? 'Sembunyikan filter' : 'Tampilkan filter'} ariaExpanded={open}>
-              {open ? <ChevronUp size={16} color="#0A9B62" aria-hidden /> : <ChevronDown size={16} color="#0A9B62" aria-hidden />} {open ? 'Sembunyikan filter' : 'Tampilkan filter'}
-            </AppButton>
-            <AppButton size="sm" variant="secondary" onPress={onExport} ariaLabel="Unduh CSV">Unduh CSV</AppButton>
-          </XStack>
-        </XStack>
-      )}
-      {compact ? (
-        <Modal transparent visible={open} animationType={reduceMotion ? 'none' : 'slide'} onRequestClose={() => setOpen(false)}>
-          <YStack flex={1} justifyContent="flex-end" backgroundColor="rgba(10, 31, 70, 0.24)">
-            <Pressable
-              accessibilityLabel="Tutup filter"
-              onPress={() => setOpen(false)}
-              style={{ flex: 1 }}
-            />
-            <Card
-              padding="$4"
-              backgroundColor="$surface"
-              borderTopLeftRadius="$5"
-              borderTopRightRadius="$5"
-              maxHeight="88%"
-              elevation="$4"
-            >
-              <ScrollView contentContainerStyle={{ paddingBottom: 24 }}>
-                <YStack gap="$4">
-                  <XStack alignItems="center" justifyContent="space-between" gap="$3">
-                    <XStack alignItems="center" gap="$2">
-                      <Text color="$color" {...textStyles.sectionTitle}>Filter riwayat</Text>
-                      <DescriptionHint description="Gunakan periode, lokasi, perangkat, dan status untuk mempersempit audit pembacaan." ariaLabel="Lihat informasi tentang filter riwayat" />
-                    </XStack>
-                    <AppButton size="sm" variant="ghost" onPress={() => setOpen(false)} ariaLabel="Tutup filter">Tutup</AppButton>
-                  </XStack>
-                  {filterFields}
-                  {filterActions}
-                </YStack>
-              </ScrollView>
-            </Card>
-          </YStack>
-        </Modal>
-      ) : (
-        <AnimatePresence>
-          {open ? (
-            <Card
-              key="history-filter-panel"
-              borderWidth={1}
-              borderColor="$borderColor"
-              backgroundColor="$surface"
-              borderRadius="$4"
-              padding="$3"
-              gap="$3"
-              transition={reduceMotion ? undefined : 'standard'}
-              enterStyle={reduceMotion ? undefined : { opacity: 0, y: -4 }}
-              exitStyle={reduceMotion ? undefined : { opacity: 0, y: -4 }}
-            >
-              <FilterFields draft={draft} onChange={onChange} actions={filterActions} />
-            </Card>
-          ) : null}
-        </AnimatePresence>
-      )}
-    </YStack>
-  );
-}
-
 function HistoryPager({ pageNumber, totalPages, canGoNewer, canGoOlder, onNewer, onOlder }: { pageNumber: number; totalPages: number; canGoNewer: boolean; canGoOlder: boolean; onNewer: () => void; onOlder: () => void }) {
   return <XStack alignItems="center" gap="$2"><AppButton size="sm" variant="secondary" disabled={!canGoNewer} onPress={onNewer} ariaLabel="Halaman sebelumnya">‹</AppButton><Text color="$color" {...textStyles.metadata} fontWeight="700">{pageNumber} / {totalPages}</Text><AppButton size="sm" variant="secondary" disabled={!canGoOlder} onPress={onOlder} ariaLabel="Halaman berikutnya">›</AppButton></XStack>;
 }
@@ -512,19 +354,13 @@ function HistoryPager({ pageNumber, totalPages, canGoNewer, canGoOlder, onNewer,
 export default function HistoryRoute() {
   const router = useRouter();
   const media = useMedia();
-  const [draft, setDraft] = useState<HistoryDraft>({ fromDate: '', toDate: '' });
-  const [applied, setApplied] = useState<HistoryDraft>({ fromDate: '', toDate: '' });
+  const [draft, setDraft] = useState<HistoryFilterDraft>({ fromDate: '', toDate: '' });
+  const [applied, setApplied] = useState<HistoryFilterDraft>({ fromDate: '', toDate: '' });
+  const [periodError, setPeriodError] = useState<string | null>(null);
   const [pageSize, setPageSize] = useState<number>(HISTORY_PAGE_SIZE);
   const [cursorStack, setCursorStack] = useState<HistoryCursor[]>([]);
 
-  const dateRange = dateInputToUtcRange(applied.fromDate, applied.toDate);
-  const filters = useMemo<HistoryFilterValues>(() => ({
-    from: dateRange.from,
-    to: dateRange.to,
-    location_id: applied.location_id || undefined,
-    device_id: applied.device_id?.trim() || undefined,
-    status: applied.status,
-  }), [dateRange.from, dateRange.to, applied]);
+  const filters = useMemo<HistoryFilterValues>(() => appliedHistoryDraft(applied, dateInputToUtcRange(applied.fromDate, applied.toDate)), [applied]);
   const activeCursor = cursorStack.length ? cursorStack[cursorStack.length - 1] : undefined;
   const loader = useCallback(
     (signal: AbortSignal) => apiClient.fetchHistory(filters, { limit: pageSize, before: activeCursor }, signal),
@@ -546,12 +382,23 @@ export default function HistoryRoute() {
   }, [data]);
 
   const handleNavigate = useCallback((path: string) => router.push(path as never), [router]);
-  const handleFilterChange = useCallback((patch: Partial<HistoryDraft>) => setDraft((current) => ({ ...current, ...patch })), []);
-  const handleApply = useCallback(() => { setApplied(draft); setCursorStack([]); }, [draft]);
+  const handleFilterChange = useCallback((patch: Partial<HistoryFilterDraft>) => setDraft((current) => ({ ...current, ...patch })), []);
+  const handleApply = useCallback(() => {
+    const validationError = validateHistoryPeriod(draft.fromDate, draft.toDate);
+    if (validationError) {
+      setPeriodError(validationError);
+      return false;
+    }
+    setPeriodError(null);
+    setApplied(draft);
+    setCursorStack([]);
+    return true;
+  }, [draft]);
   const handleReset = useCallback(() => {
-    const empty: HistoryDraft = { fromDate: '', toDate: '' };
+    const empty: HistoryFilterDraft = { fromDate: '', toDate: '' };
     setDraft(empty);
     setApplied(empty);
+    setPeriodError(null);
     setCursorStack([]);
   }, []);
   const handleExport = useCallback(() => {
@@ -590,7 +437,7 @@ export default function HistoryRoute() {
           </XStack>
         </Card>
 
-        <Filters draft={draft} onChange={handleFilterChange} onApply={handleApply} onReset={handleReset} onExport={handleExport} compact={media.compact} />
+        <HistoryFilters draft={draft} compact={media.compact} periodError={periodError} onChange={handleFilterChange} onApply={handleApply} onReset={handleReset} onExport={handleExport} />
 
         {data && data.items.length ? <HistoryTrend items={data.items} /> : null}
 

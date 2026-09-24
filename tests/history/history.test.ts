@@ -23,6 +23,10 @@ import {
   formatHistoryScore,
   validateHistoryPeriod,
 } from '../../app/history';
+import {
+  appliedHistoryDraft,
+  type HistoryFilterDraft,
+} from '../../components/history/HistoryFilters';
 
 describe('history filter contracts', () => {
   it('serializes all filters with the API query names', () => {
@@ -105,5 +109,39 @@ describe('history filter contracts', () => {
       'WAKTU',
       'AKSI',
     ]);
+  });
+
+  it('commits a draft as trimmed API filters only after a valid period', () => {
+    const draft: HistoryFilterDraft = {
+      fromDate: '2026-09-10',
+      toDate: '2026-09-12',
+      location_id: 'loc-1',
+      device_id: '  SIM-CANTEEN-01  ',
+      status: 'Waspada',
+    };
+
+    expect(appliedHistoryDraft(draft, dateInputToUtcRange(draft.fromDate, draft.toDate))).toEqual({
+      from: '2026-09-09T17:00:00.000Z',
+      to: '2026-09-12T17:00:00.000Z',
+      location_id: 'loc-1',
+      device_id: 'SIM-CANTEEN-01',
+      status: 'Waspada',
+    });
+  });
+
+  it('omits whitespace-only device queries from committed filters', () => {
+    const draft: HistoryFilterDraft = {
+      fromDate: '',
+      toDate: '',
+      device_id: '   ',
+    };
+
+    expect(appliedHistoryDraft(draft, dateInputToUtcRange('', ''))).toEqual({
+      from: undefined,
+      to: undefined,
+      location_id: undefined,
+      device_id: undefined,
+      status: undefined,
+    });
   });
 });
