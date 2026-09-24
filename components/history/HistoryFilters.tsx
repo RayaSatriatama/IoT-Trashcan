@@ -1,5 +1,5 @@
 import { useCallback, useState, type ReactNode } from 'react';
-import { Card, Input, Label, Select, ScrollView, Sheet, Text, XStack, YStack } from 'tamagui';
+import { Adapt, Card, Input, Label, Select, ScrollView, Sheet, Text, XStack, YStack } from 'tamagui';
 
 import { AppButton } from '../AppButton';
 import { DescriptionHint } from '../SectionHeader';
@@ -46,6 +46,20 @@ const statusFilters: ReadonlyArray<{ label: string; value: CanonicalStatus | '' 
   { label: 'Data tidak valid', value: 'Data Invalid' },
 ];
 
+function SelectAdaptation() {
+  return (
+    <Select.Adapt when="compact">
+      <Sheet modal dismissOnSnapToBottom snapPoints={[60]}>
+        <Sheet.Frame padding="$4" backgroundColor="$surface" borderTopLeftRadius="$5" borderTopRightRadius="$5">
+          <Sheet.Handle />
+          <Sheet.ScrollView><Adapt.Contents /></Sheet.ScrollView>
+        </Sheet.Frame>
+        <Sheet.Overlay backgroundColor="rgba(10, 31, 70, 0.24)" />
+      </Sheet>
+    </Select.Adapt>
+  );
+}
+
 function LocationFilter({ value, onChange }: { value: string; onChange: (value: string) => void }) {
   const loader = useCallback((signal: AbortSignal) => apiClient.fetchLocations({}, signal), []);
   const { data } = usePollingResource<LocationListResponse>(loader, 60_000);
@@ -70,6 +84,7 @@ function LocationFilter({ value, onChange }: { value: string; onChange: (value: 
             ))}
           </Select.Viewport>
         </Select.Content>
+        <SelectAdaptation />
       </Select>
     </YStack>
   );
@@ -102,6 +117,7 @@ function FilterFields({ draft, onChange, periodError, actions }: { draft: Histor
         <Select value={draft.status || 'all'} onValueChange={(value) => onChange({ status: value === 'all' ? undefined : value as CanonicalStatus })} name="history-status">
           <Select.Trigger id="history-status" aria-label="Filter status" minHeight={44} $compact={{ minHeight: 48 }} width="100%" borderColor="$borderColor" backgroundColor="$background"><Select.Value placeholder="Semua status" fontSize={14} $compact={{ fontSize: 16 }} /><Select.Icon><ChevronDown size={16} color="#60789F" aria-hidden /></Select.Icon></Select.Trigger>
           <Select.Content><Select.Viewport minWidth={280}>{statusFilters.map((filter, index) => <Select.Item key={filter.value || 'all'} value={filter.value || 'all'} index={index}><Select.ItemText>{filter.label}</Select.ItemText><Select.ItemIndicator /></Select.Item>)}</Select.Viewport></Select.Content>
+          <SelectAdaptation />
         </Select>
       </YStack>
       {actions ? <YStack width="100%" $tablet={{ width: 'calc(50% - 8px)' }} $wide={{ width: 'calc(18% - 9px)' }} alignItems="flex-end">{actions}</YStack> : null}
