@@ -431,6 +431,9 @@ func trendGranularity(scopeFrom, scopeTo time.Time) string {
 }
 
 func trendBuckets(scopeFrom, scopeTo time.Time, granularity string) ([]TrendBucket, bool) {
+	if !scopeFrom.Before(scopeTo) {
+		return []TrendBucket{}, false
+	}
 	start := trendBucketStart(scopeFrom, granularity)
 	buckets := make([]TrendBucket, 0)
 	for start.Before(scopeTo) {

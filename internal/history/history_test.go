@@ -327,30 +327,30 @@ func TestQueryViewTrendSupportsOpenEndedDateFilters(t *testing.T) {
 	db := historyFixture(t)
 	defer db.Close()
 
-	pastTo := mustParseTime(t, "2026-09-01T17:00:00Z")
+	pastTo := mustParseTime(t, "2026-09-18T17:00:00Z")
 	toOnly, err := QueryView(context.Background(), db, Filters{To: &pastTo}, PageOptions{Limit: 2}, fixedAnalyticsNow)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if toOnly.Trend.ScopeFrom != "2026-08-02T17:00:00Z" || toOnly.Trend.ScopeTo != "2026-09-01T17:00:00Z" || len(toOnly.Trend.Buckets) != 30 {
+	if toOnly.Trend.ScopeFrom != "2026-08-19T17:00:00Z" || toOnly.Trend.ScopeTo != "2026-09-18T17:00:00Z" || len(toOnly.Trend.Buckets) != 30 || totalTrend(toOnly.Trend).Total != 3 {
 		t.Fatalf("to-only trend = %+v", toOnly.Trend)
 	}
 
-	pastFrom := mustParseTime(t, "2026-09-17T17:00:00Z")
+	pastFrom := mustParseTime(t, "2026-09-17T09:00:00Z")
 	fromOnly, err := QueryView(context.Background(), db, Filters{From: &pastFrom}, PageOptions{Limit: 2}, fixedAnalyticsNow)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fromOnly.Trend.ScopeFrom != "2026-09-17T17:00:00Z" || fromOnly.Trend.ScopeTo != "2026-09-18T03:45:00Z" || len(fromOnly.Trend.Buckets) != 1 {
+	if fromOnly.Trend.ScopeFrom != "2026-09-17T09:00:00Z" || fromOnly.Trend.ScopeTo != "2026-09-18T03:45:00Z" || len(fromOnly.Trend.Buckets) != 2 || totalTrend(fromOnly.Trend).Total != 3 {
 		t.Fatalf("from-only trend = %+v", fromOnly.Trend)
 	}
 
-	futureFrom := mustParseTime(t, "2026-09-19T17:00:00Z")
+	futureFrom := mustParseTime(t, "2026-09-18T05:00:00Z")
 	future, err := QueryView(context.Background(), db, Filters{From: &futureFrom}, PageOptions{Limit: 2}, fixedAnalyticsNow)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if future.Trend.ScopeFrom != "2026-09-19T17:00:00Z" || future.Trend.ScopeTo != "2026-09-19T17:00:00Z" || len(future.Trend.Buckets) != 0 {
+	if future.Trend.ScopeFrom != "2026-09-18T05:00:00Z" || future.Trend.ScopeTo != "2026-09-18T05:00:00Z" || len(future.Trend.Buckets) != 0 {
 		t.Fatalf("future from-only trend = %+v", future.Trend)
 	}
 }
