@@ -34,4 +34,9 @@ describe('monitoring motion helpers', () => {
     expect(shouldAnimateMotionValue(null, 20, false)).toBe(true);
     expect(shouldAnimateMotionValue(10, Number.NaN, false)).toBe(false);
   });
+
+  it('does not restart a data transition when the target is unchanged', () => {
+    expect(shouldAnimateMotionValue(0, 0, false)).toBe(false);
+    expect(shouldAnimateMotionValue(42.5, 42.5, false)).toBe(false);
+  });
 });

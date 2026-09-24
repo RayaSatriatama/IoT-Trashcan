@@ -14,7 +14,6 @@ import {
   effectiveHistoryStatus,
   formatHistoryCount,
   formatHistoryTimestamp,
-  groupHistoryByDay,
   HISTORY_STATUS_FILTERS,
   HISTORY_TABLE_COLUMNS,
   historyRangeLabel,
@@ -23,6 +22,7 @@ import {
   formatHistoryScore,
   validateHistoryPeriod,
 } from '../../app/history';
+import { trendBucketAccessibilityLabel, trendBucketTotal } from '../../components/history/HistoryAnalytics';
 import {
   appliedHistoryDraft,
   type HistoryFilterDraft,
@@ -75,16 +75,14 @@ describe('history filter contracts', () => {
     expect(HISTORY_STATUS_FILTERS.some((filter) => filter.value === 'Offline')).toBe(false);
   });
 
-  it('groups daily history into stacked trend status counts', () => {
-    const items = [
-      { recorded_at: '2026-09-02T10:00:00Z', fis_status: 'Normal', safety_state: 'Clear' },
-      { recorded_at: '2026-09-02T11:00:00Z', fis_status: 'Angkat', safety_state: 'Clear' },
-      { recorded_at: '2026-09-03T11:00:00Z', fis_status: 'Waspada', safety_state: 'Safety Alert' },
-    ] as never[];
-    expect(groupHistoryByDay(items)).toEqual([
-      { day: '2026-09-02', normal: 1, pickup: 1, safety: 0 },
-      { day: '2026-09-03', normal: 0, pickup: 0, safety: 1 },
-    ]);
+  it('projects server trend buckets into accessible totals', () => {
+    const bucket = {
+      start: '2026-09-23', label: '23 Sep', total: 10,
+      normal: 5, waspada: 2, pickup: 1, safety_alert: 1, data_invalid: 1,
+    };
+    expect(trendBucketTotal(bucket)).toBe(10);
+    expect(trendBucketAccessibilityLabel(bucket)).toContain('Normal 5');
+    expect(trendBucketAccessibilityLabel(bucket)).toContain('Data tidak valid 1');
   });
 
   it('computes bounded page counts and formats audit scores', () => {

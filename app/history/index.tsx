@@ -9,9 +9,8 @@ import { EmptyState } from '../../components/EmptyState';
 import { ErrorState } from '../../components/ErrorState';
 import { AppButton } from '../../components/AppButton';
 import { appliedHistoryDraft, HistoryFilters, type HistoryFilterDraft } from '../../components/history/HistoryFilters';
-import { KpiCard } from '../../components/KpiCard';
+import { HistoryAnalytics } from '../../components/history/HistoryAnalytics';
 import { LoadingState } from '../../components/LoadingState';
-import { SectionHeader } from '../../components/SectionHeader';
 import { StatusBadge } from '../../components/StatusBadge';
 import { apiClient } from '../../lib/api/client';
 import { usePollingResource } from '../../lib/api/hooks';
@@ -21,7 +20,7 @@ import type {
   HistoryItem,
   HistoryResponse,
 } from '../../lib/api/types';
-import { Activity, Box, ChevronDown, ChevronRight, ShieldAlert, Truck } from '../../lib/ui/icons';
+import { ChevronDown, ChevronRight } from '../../lib/ui/icons';
 import { textStyles } from '../../lib/ui/typography';
 import { useReducedMotion } from '../../lib/ui/motionContext';
 import { useAnimatedNumber } from '../../lib/ui/useAnimatedNumber';
@@ -149,27 +148,6 @@ export const HISTORY_EMPTY_COPY = {
   description: 'Coba ubah rentang tanggal atau filter untuk melihat data audit yang tersedia.',
 } as const;
 
-export interface DailyStatusCount {
-  day: string;
-  normal: number;
-  pickup: number;
-  safety: number;
-}
-
-export function groupHistoryByDay(items: HistoryItem[]): DailyStatusCount[] {
-  const grouped = new Map<string, DailyStatusCount>();
-  for (const item of items) {
-    const day = item.recorded_at.slice(0, 10);
-    const entry = grouped.get(day) ?? { day, normal: 0, pickup: 0, safety: 0 };
-    const statusValue = effectiveHistoryStatus(item);
-    if (statusValue === 'Safety Alert') entry.safety += 1;
-    else if (statusValue === 'Angkat') entry.pickup += 1;
-    else if (statusValue === 'Normal') entry.normal += 1;
-    grouped.set(day, entry);
-  }
-  return Array.from(grouped.values()).sort((a, b) => a.day.localeCompare(b.day));
-}
-
 export function effectiveHistoryStatus(
   item: Pick<HistoryItem, 'fis_status' | 'safety_state'>,
 ): CanonicalStatus | null {
@@ -288,50 +266,6 @@ function HistoryRow({ item, compact }: { item: HistoryItem; compact: boolean }) 
   );
 }
 
-function HistoryTrendBar({ day, maximum }: { day: DailyStatusCount; maximum: number }) {
-  const total = day.normal + day.pickup + day.safety;
-  const targetHeight = Math.max(10, (total / maximum) * 104);
-  const animatedHeight = useAnimatedNumber(targetHeight, { precision: 1 });
-  return (
-    <YStack flex={1} alignItems="center" justifyContent="flex-end" gap="$2">
-      <YStack
-        width="70%"
-        maxWidth={36}
-        height={animatedHeight ?? targetHeight}
-        borderRadius="$3"
-        overflow="hidden"
-        backgroundColor="$surfaceMuted"
-      >
-        <YStack flex={day.safety} backgroundColor="$statusSafetyAlert" />
-        <YStack flex={day.pickup} backgroundColor="$statusAngkat" />
-        <YStack flex={day.normal} backgroundColor="$statusNormal" />
-      </YStack>
-      <Text color="$colorMuted" {...textStyles.caption}>{day.day.slice(5)}</Text>
-    </YStack>
-  );
-}
-
-function HistoryTrend({ items }: { items: HistoryItem[] }) {
-  const days = groupHistoryByDay(items).slice(-7);
-  const maximum = Math.max(...days.map((day) => day.normal + day.pickup + day.safety), 1);
-
-  return (
-    <Card borderWidth={1} borderColor="$borderColor" backgroundColor="$surface" borderRadius="$4" padding="$4" gap="$4">
-      <XStack alignItems="center" justifyContent="space-between" gap="$3" flexWrap="wrap">
-        <SectionHeader title="Trend status" description="Distribusi status pada halaman yang sedang ditampilkan." />
-        <XStack gap="$3" flexWrap="wrap">
-          <XStack alignItems="center" gap="$1"><YStack width={8} height={8} borderRadius="$6" backgroundColor="$statusNormal" /><Text color="$colorMuted" {...textStyles.caption}>Normal</Text></XStack>
-          <XStack alignItems="center" gap="$1"><YStack width={8} height={8} borderRadius="$6" backgroundColor="$statusAngkat" /><Text color="$colorMuted" {...textStyles.caption}>Diangkat</Text></XStack>
-          <XStack alignItems="center" gap="$1"><YStack width={8} height={8} borderRadius="$6" backgroundColor="$statusSafetyAlert" /><Text color="$colorMuted" {...textStyles.caption}>Safety</Text></XStack>
-        </XStack>
-      </XStack>
-      <XStack alignItems="flex-end" justifyContent="space-between" gap="$3" height={142}>
-        {days.map((day) => <HistoryTrendBar key={day.day} day={day} maximum={maximum} />)}
-      </XStack>
-    </Card>
-  );
-}
-
 function HistoryTableHeader() {
   return (
     <XStack alignItems="center" gap="$3" paddingHorizontal="$4" paddingVertical="$3" backgroundColor="$surfaceMuted" role="row" style={{ position: 'sticky', top: 0, zIndex: 2 }}>
@@ -369,17 +303,6 @@ export default function HistoryRoute() {
   const { data, loading, error, stale, retry } = usePollingResource<HistoryResponse>(loader, HISTORY_POLL_INTERVAL_MS);
   const pageNumber = cursorStack.length + 1;
   const totalPages = totalHistoryPages(data?.page.total_count ?? 0, pageSize);
-
-  const summary = useMemo(() => {
-    if (!data) return null;
-    const items = data.items;
-    return {
-      total: items.length,
-      normal: items.filter((item) => effectiveHistoryStatus(item) === 'Normal').length,
-      pickup: items.filter((item) => effectiveHistoryStatus(item) === 'Angkat').length,
-      safety: items.filter((item) => effectiveHistoryStatus(item) === 'Safety Alert').length,
-    };
-  }, [data]);
 
   const handleNavigate = useCallback((path: string) => router.push(path as never), [router]);
   const handleFilterChange = useCallback((patch: Partial<HistoryFilterDraft>) => setDraft((current) => ({ ...current, ...patch })), []);
@@ -439,14 +362,7 @@ export default function HistoryRoute() {
 
         <HistoryFilters draft={draft} compact={media.compact} periodError={periodError} onChange={handleFilterChange} onApply={handleApply} onReset={handleReset} onExport={handleExport} />
 
-        {data && data.items.length ? <HistoryTrend items={data.items} /> : null}
-
-        <XStack gap="$3" flexWrap="wrap">
-          <YStack width="calc(50% - 6px)" $wide={{ width: 'calc(25% - 9px)' }}><KpiCard label="Ditampilkan" value={summary ? summary.total : '—'} icon={Activity} tone="blue" /></YStack>
-          <YStack width="calc(50% - 6px)" $wide={{ width: 'calc(25% - 9px)' }}><KpiCard label="Normal" value={summary ? summary.normal : '—'} icon={Box} tone="green" /></YStack>
-          <YStack width="calc(50% - 6px)" $wide={{ width: 'calc(25% - 9px)' }}><KpiCard label="Perlu diangkat" value={summary ? summary.pickup : '—'} icon={Truck} tone="orange" /></YStack>
-          <YStack width="calc(50% - 6px)" $wide={{ width: 'calc(25% - 9px)' }}><KpiCard label="Safety Alert" value={summary ? summary.safety : '—'} icon={ShieldAlert} tone="red" /></YStack>
-        </XStack>
+        {data ? <HistoryAnalytics summary={data.summary} trend={data.trend} compact={media.compact} /> : null}
 
         {stale && data ? <StaleNotice onRetry={retry} /> : null}
         {loading && !data ? <LoadingState label="Memuat riwayat" rows={4} /> : null}
