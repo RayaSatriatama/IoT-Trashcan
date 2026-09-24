@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/csv"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -514,3 +515,74 @@ func historyFixture(t *testing.T) *sql.DB {
 func floatPtr(value float64) *float64 { return &value }
 
 func stringPtr(value string) *string { return &value }
+
+func TestHistoryAnalyticsStress(t *testing.T) {
+	if os.Getenv("SIGAP_HISTORY_STRESS") != "1" {
+		t.Skip("set SIGAP_HISTORY_STRESS=1")
+	}
+	db := historyFixture(t)
+	t.Cleanup(func() { _ = db.Close() })
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	readingStmt, err := tx.Prepare(`INSERT INTO readings (slot_id, recorded_at, raw_payload, fill) VALUES (?, ?, '{"slots":[]}', ?)`)
+	if err != nil {
+		tx.Rollback()
+		t.Fatal(err)
+	}
+	decisionStmt, err := tx.Prepare(`INSERT INTO decisions (reading_id, fis_score, fis_status, fis_version, dominant_reason, safety_state) VALUES (?, 55, ?, 'stress-v1', 'stress fixture', ?)`)
+	if err != nil {
+		readingStmt.Close()
+		tx.Rollback()
+		t.Fatal(err)
+	}
+	statuses := []string{"Normal", "Waspada", "Angkat", "Data Invalid"}
+	for index := 0; index < 100_000; index++ {
+		slot := []string{"slot-a", "slot-b", "slot-c"}[index%3]
+		recordedAt := fixedAnalyticsNow.Add(-time.Duration(index%5760) * time.Hour).UTC().Format(time.RFC3339)
+		result, insertErr := readingStmt.Exec(slot, recordedAt, index%100)
+		if insertErr != nil {
+			decisionStmt.Close()
+			readingStmt.Close()
+			tx.Rollback()
+			t.Fatal(insertErr)
+		}
+		readingID, insertErr := result.LastInsertId()
+		if insertErr != nil {
+			decisionStmt.Close()
+			readingStmt.Close()
+			tx.Rollback()
+			t.Fatal(insertErr)
+		}
+		safety := "Clear"
+		if index%17 == 0 {
+			safety = "Safety Alert"
+		}
+		if _, insertErr = decisionStmt.Exec(readingID, statuses[index%len(statuses)], safety); insertErr != nil {
+			decisionStmt.Close()
+			readingStmt.Close()
+			tx.Rollback()
+			t.Fatal(insertErr)
+		}
+	}
+	if err := decisionStmt.Close(); err != nil {
+		tx.Rollback()
+		t.Fatal(err)
+	}
+	if err := readingStmt.Close(); err != nil {
+		tx.Rollback()
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := QueryView(context.Background(), db, Filters{}, PageOptions{Limit: 50}, fixedAnalyticsNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Page.Items) != 50 || result.Summary.Total != 100_003 || len(result.Trend.Buckets) > MaxTrendBuckets {
+		t.Fatalf("items=%d total=%d buckets=%d", len(result.Page.Items), result.Summary.Total, len(result.Trend.Buckets))
+	}
+}

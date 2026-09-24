@@ -39,4 +39,9 @@ describe('monitoring motion helpers', () => {
     expect(shouldAnimateMotionValue(0, 0, false)).toBe(false);
     expect(shouldAnimateMotionValue(42.5, 42.5, false)).toBe(false);
   });
+
+  it('settles data transitions immediately when reduced motion is enabled', () => {
+    expect(shouldAnimateMotionValue(0, 42, true)).toBe(false);
+    expect(shouldAnimateMotionValue(42, 0, true)).toBe(false);
+  });
 });

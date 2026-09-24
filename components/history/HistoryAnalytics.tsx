@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState, type ElementRef } from 'react';
 import { Card, ScrollView, Text, Tooltip, XStack, YStack } from 'tamagui';
 
 import { KpiCard } from '../KpiCard';
@@ -31,7 +31,7 @@ const segments = [
   { key: 'data_invalid', label: 'Data tidak valid', color: '#7A5AA6' },
 ] as const;
 
-function TrendBucketBar({ bucket, maximum }: { bucket: HistoryTrendBucket; maximum: number }) {
+function TrendBucketBar({ bucket, maximum, compact, showLabel }: { bucket: HistoryTrendBucket; maximum: number; compact: boolean; showLabel: boolean }) {
   const reduceMotion = useReducedMotion();
   const [detailsOpen, setDetailsOpen] = useState(false);
   const total = trendBucketTotal(bucket);
@@ -39,7 +39,7 @@ function TrendBucketBar({ bucket, maximum }: { bucket: HistoryTrendBucket; maxim
   const animatedProgress = useAnimatedNumber(progress, { precision: 3 });
   const label = trendBucketAccessibilityLabel(bucket);
   return (
-    <YStack flex={1} minWidth={52} alignItems="center" justifyContent="flex-end" gap="$2">
+    <YStack flex={1} minWidth={compact ? 52 : 12} alignItems="center" justifyContent="flex-end" gap="$2">
       <Tooltip delay={0} restMs={120} placement="top" allowFlip focus={{ enabled: true }}>
         <Tooltip.Trigger asChild>
           <YStack
@@ -71,7 +71,7 @@ function TrendBucketBar({ bucket, maximum }: { bucket: HistoryTrendBucket; maxim
           <Text color="$color" {...textStyles.caption}>{label}</Text>
         </Tooltip.Content>
       </Tooltip>
-      <Text color="$colorMuted" {...textStyles.caption} numberOfLines={1}>{bucket.label}</Text>
+      <Text color="$colorMuted" {...textStyles.caption} numberOfLines={1} opacity={showLabel ? 1 : 0}>{bucket.label}</Text>
       {detailsOpen ? (
         <YStack gap="$1" alignItems="center">
           <Text color="$colorMuted" {...textStyles.caption}>{total} data</Text>
@@ -98,14 +98,21 @@ function TrendLegend() {
 function formatTrendScope(trend: HistoryTrend): string {
   if (trend.default_window) return '30 hari terakhir · waktu Asia/Jakarta';
   if (!trend.scope_from || !trend.scope_to) return 'Sesuai periode filter';
-  return `${trend.scope_from.slice(0, 10)} – ${trend.scope_to.slice(0, 10)} · ${trend.granularity}`;
+  const formatDate = (value: string) => new Intl.DateTimeFormat('id-ID', { timeZone: 'Asia/Jakarta', day: '2-digit', month: 'short', year: 'numeric' }).format(new Date(value));
+  const granularity = trend.granularity === 'day' ? 'harian' : trend.granularity === 'week' ? 'mingguan' : 'bulanan';
+  return `${formatDate(trend.scope_from)} – ${formatDate(trend.scope_to)} · ${granularity}`;
 }
 
 export function HistoryAnalytics({ summary, trend, compact }: HistoryAnalyticsProps) {
   const maximum = Math.max(...trend.buckets.map(trendBucketTotal), 1);
+  const chartScrollRef = useRef<ElementRef<typeof ScrollView>>(null);
+  const tickStep = Math.max(1, Math.ceil(trend.buckets.length / (compact ? 8 : 12)));
+  useEffect(() => {
+    if (compact) chartScrollRef.current?.scrollToEnd({ animated: false });
+  }, [compact, trend.buckets.length]);
   const bucketContent = trend.buckets.length ? (
     <XStack alignItems="flex-end" gap={compact ? "$3" : "$2"} minHeight={202} minWidth={compact ? Math.max(320, trend.buckets.length * 58) : undefined} width="100%">
-      {trend.buckets.map((bucket) => <TrendBucketBar key={`${bucket.start}-${bucket.label}`} bucket={bucket} maximum={maximum} />)}
+      {trend.buckets.map((bucket, index) => <TrendBucketBar key={`${bucket.start}-${bucket.label}`} bucket={bucket} maximum={maximum} compact={compact} showLabel={index === trend.buckets.length - 1 || index % tickStep === 0} />)}
     </XStack>
   ) : (
     <YStack minHeight={150} alignItems="center" justifyContent="center" gap="$1">
@@ -122,7 +129,7 @@ export function HistoryAnalytics({ summary, trend, compact }: HistoryAnalyticsPr
           <TrendLegend />
         </XStack>
         <Text color="$colorMuted" {...textStyles.caption}>{formatTrendScope(trend)}{trend.truncated ? ' · menampilkan bucket terbaru' : ''}</Text>
-        {compact ? <ScrollView horizontal showsHorizontalScrollIndicator={false}>{bucketContent}</ScrollView> : (
+        {compact ? <ScrollView ref={chartScrollRef} horizontal showsHorizontalScrollIndicator={false}>{bucketContent}</ScrollView> : (
           <XStack alignItems="stretch" gap="$2" width="100%">
             <YStack height={202} width={30} justifyContent="space-between" alignItems="flex-end" paddingVertical="$2">
               <Text color="$colorMuted" {...textStyles.caption}>{maximum}</Text>
