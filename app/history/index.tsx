@@ -14,6 +14,7 @@ import { LoadingState } from '../../components/LoadingState';
 import { StatusBadge } from '../../components/StatusBadge';
 import { apiClient } from '../../lib/api/client';
 import { usePollingResource } from '../../lib/api/hooks';
+import { optionalText } from '../../lib/format';
 import type {
   CanonicalStatus,
   HistoryCursor,
@@ -224,6 +225,7 @@ function HistoryRow({ item, compact }: { item: HistoryItem; compact: boolean }) 
   const animatedWeight = useAnimatedNumber(item.weight, { precision: 1 });
   const fillLabel = compactMetric(animatedFill, '%');
   const weightLabel = compactMetric(animatedWeight, ' kg');
+  const placement = optionalText(item.placement_label);
   if (compact) {
     return (
       <Card borderWidth={1} borderColor="$borderColor" backgroundColor="$surface" borderRadius="$4" padding="$4" gap="$3" role="article" aria-label={`Riwayat ${item.device_code} ${historyStreamLabel(item.stream)}`} transition={reduceMotion ? undefined : 'standard'} enterStyle={reduceMotion ? undefined : { opacity: 0, y: 4 }}>
@@ -231,7 +233,7 @@ function HistoryRow({ item, compact }: { item: HistoryItem; compact: boolean }) 
           <YStack flex={1} minWidth={0} gap="$1">
             <Text color="$color" {...textStyles.cardTitle} numberOfLines={1}>{item.device_code || '—'}</Text>
             <Text color="$colorMuted" {...textStyles.bodySecondary} numberOfLines={1}>{item.location_name || '—'}</Text>
-            <Text color="$colorMuted" {...textStyles.caption} numberOfLines={1}>{item.placement_label || '—'}</Text>
+            {placement ? <Text color="$colorMuted" {...textStyles.caption} numberOfLines={1}>{placement}</Text> : null}
           </YStack>
           <StatusBadge status={status} compact />
         </XStack>
@@ -252,7 +254,7 @@ function HistoryRow({ item, compact }: { item: HistoryItem; compact: boolean }) 
   return (
     <YStack role="row" transition={reduceMotion ? undefined : 'standard'} enterStyle={reduceMotion ? undefined : { opacity: 0, y: 3 }}>
       <XStack alignItems="center" gap="$3" paddingHorizontal="$4" paddingVertical="$3" minHeight={64} borderBottomWidth={1} borderBottomColor="$borderColor" hoverStyle={{ backgroundColor: '$surfaceMuted' }}>
-        <YStack width={210} minWidth={180} gap="$1"><Text color="$color" {...textStyles.metadata} fontWeight="700" numberOfLines={1}>{item.device_code || '—'}</Text><Text color="$colorMuted" {...textStyles.caption} numberOfLines={1}>{item.placement_label || '—'}</Text></YStack>
+        <YStack width={210} minWidth={180} gap="$1"><Text color="$color" {...textStyles.metadata} fontWeight="700" numberOfLines={1}>{item.device_code || '—'}</Text>{placement ? <Text color="$colorMuted" {...textStyles.caption} numberOfLines={1}>{placement}</Text> : null}</YStack>
         <YStack flex={1} minWidth={145}><Text color="$color" {...textStyles.metadata} numberOfLines={1}>{item.location_name || '—'}</Text></YStack>
         <XStack width={105} minWidth={95} alignItems="center" gap="$2"><YStack width={8} height={8} borderRadius={99} backgroundColor={streamColor} /><Text color="$color" {...textStyles.bodySecondary}>{historyStreamLabel(item.stream)}</Text></XStack>
         <YStack width={180} minWidth={170} alignItems="flex-start"><StatusBadge status={status} compact /></YStack>

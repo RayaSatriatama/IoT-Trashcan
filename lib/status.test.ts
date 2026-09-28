@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { getStatusPresentation, isCanonicalStatus } from './status';
-import { formatNullableMetric } from './format';
+import { formatNullableMetric, optionalText } from './format';
 
 describe('status presentation', () => {
   it('maps every canonical API status to an Indonesian label and stable token', () => {
@@ -30,5 +30,11 @@ describe('status presentation', () => {
     expect(formatNullableMetric(3.0000000001)).toBe('3');
     expect(formatNullableMetric(3.25, '%')).toBe('3.25%');
     expect(formatNullableMetric(42.5, '%')).toBe('42.5%');
+  });
+
+  it('omits blank optional location metadata while preserving populated labels', () => {
+    expect(optionalText(null)).toBeNull();
+    expect(optionalText('   ')).toBeNull();
+    expect(optionalText('Gedung A / Biru')).toBe('Gedung A / Biru');
   });
 });

@@ -5,6 +5,7 @@ import { Button, Card, Text, XStack, YStack } from 'tamagui';
 import { ChevronRight } from '../lib/ui/icons';
 import { resolveLocationImage } from '../lib/ui/assets';
 import { textStyles } from '../lib/ui/typography';
+import { optionalText } from '../lib/format';
 import { StatusBadge } from './StatusBadge';
 import { useReducedMotion } from '../lib/ui/motionContext';
 
@@ -18,7 +19,7 @@ export interface LocationCardProps {
 
 export function LocationCard({ location, deviceCount, onPress, onDetail, selected = false }: LocationCardProps) {
   const reduceMotion = useReducedMotion();
-  const address = location.address_text ?? 'Belum tersedia';
+  const address = optionalText(location.address_text);
   const deviceLabel = deviceCount === null || deviceCount === undefined ? 'Belum tersedia' : `${deviceCount}`;
 
   const cardContent = (
@@ -27,7 +28,7 @@ export function LocationCard({ location, deviceCount, onPress, onDetail, selecte
         <RNImage source={resolveLocationImage(location.name)} accessibilityLabel={`Ilustrasi ${location.name}`} resizeMode="contain" style={{ width: 64, height: 56 }} />
         <YStack flex={1} minWidth={0} gap="$1">
           <Text color="$color" {...textStyles.cardTitle} $compact={textStyles.cardTitleCompact} alignSelf="stretch" textAlign="left" minHeight={48} numberOfLines={2}>{location.name}</Text>
-          <Text color="$colorMuted" {...textStyles.bodySecondary} alignSelf="stretch" textAlign="left" minHeight={44} numberOfLines={2}>{address}</Text>
+          {address ? <Text color="$colorMuted" {...textStyles.bodySecondary} alignSelf="stretch" textAlign="left" numberOfLines={2}>{address}</Text> : null}
         </YStack>
       </XStack>
       <XStack alignItems="center" gap="$2" marginTop="$1" flexWrap="wrap" rowGap="$1">

@@ -20,6 +20,7 @@ type Device struct {
 	Code       string
 	LocationID string
 	Placement  string
+	SlotKey    string
 	Token      string
 }
 
@@ -70,20 +71,33 @@ func Seed(ctx context.Context, db *sql.DB, seed int64) (Dataset, error) {
 
 func defaultDataset(seed int64) Dataset {
 	locations := []Location{
-		{ID: "sim-location-main", Name: "SIM - Gedung Utama", Address: "Area simulasi gedung utama"},
-		{ID: "sim-location-canteen", Name: "SIM - Kantin", Address: "Area simulasi kantin"},
-		{ID: "sim-location-lab", Name: "SIM - Laboratorium", Address: "Area simulasi laboratorium"},
+		{ID: "sim-location-main", Name: "Gedung A / Biru"},
+		{ID: "sim-location-canteen", Name: "Gedung B"},
+		{ID: "sim-location-lab", Name: "Gedung E"},
+		{ID: "sim-location-sports", Name: "Lapangan Olahraga"},
+		{ID: "sim-location-motor", Name: "Parkiran Motor"},
+		{ID: "sim-location-mobil", Name: "Parkiran Mobil"},
+		{ID: "sim-location-masjid", Name: "Masjid As-Sakinah"},
+		{ID: "sim-location-asrama", Name: "Asrama"},
 	}
 	devices := []Device{
-		{ID: "sim-device-lobby", Code: "SIM-LOBBY-01", LocationID: "sim-location-main", Placement: "Lobi gedung utama", Token: simulationToken(seed, "SIM-LOBBY-01")},
-		{ID: "sim-device-floor2", Code: "SIM-FLOOR2-01", LocationID: "sim-location-main", Placement: "Lantai 2 gedung utama", Token: simulationToken(seed, "SIM-FLOOR2-01")},
-		{ID: "sim-device-canteen", Code: "SIM-CANTEEN-01", LocationID: "sim-location-canteen", Placement: "Pintu masuk kantin", Token: simulationToken(seed, "SIM-CANTEEN-01")},
-		{ID: "sim-device-lab", Code: "SIM-LAB-01", LocationID: "sim-location-lab", Placement: "Koridor laboratorium", Token: simulationToken(seed, "SIM-LAB-01")},
+		{ID: "sim-device-lobby", Code: "SIGAP-GA-01", LocationID: "sim-location-main", SlotKey: "lobby-01", Token: simulationToken(seed, "SIGAP-GA-01")},
+		{ID: "sim-device-floor2", Code: "SIGAP-GB-01", LocationID: "sim-location-canteen", SlotKey: "floor2-01", Token: simulationToken(seed, "SIGAP-GB-01")},
+		{ID: "sim-device-canteen", Code: "SIGAP-GE-01", LocationID: "sim-location-lab", SlotKey: "canteen-01", Token: simulationToken(seed, "SIGAP-GE-01")},
+		{ID: "sim-device-lab", Code: "SIGAP-LO-01", LocationID: "sim-location-sports", SlotKey: "lab-01", Token: simulationToken(seed, "SIGAP-LO-01")},
+		{ID: "sim-device-motor", Code: "SIGAP-PM-01", LocationID: "sim-location-motor", Token: simulationToken(seed, "SIGAP-PM-01")},
+		{ID: "sim-device-mobil", Code: "SIGAP-PB-01", LocationID: "sim-location-mobil", Token: simulationToken(seed, "SIGAP-PB-01")},
+		{ID: "sim-device-masjid", Code: "SIGAP-MAS-01", LocationID: "sim-location-masjid", Token: simulationToken(seed, "SIGAP-MAS-01")},
+		{ID: "sim-device-asrama", Code: "SIGAP-ASR-01", LocationID: "sim-location-asrama", Token: simulationToken(seed, "SIGAP-ASR-01")},
 	}
 	slots := make([]Slot, 0, len(devices)*3)
 	for _, device := range devices {
+		slotKey := device.SlotKey
+		if slotKey == "" {
+			slotKey = strings.ToLower(strings.TrimPrefix(device.Code, "SIGAP-"))
+		}
 		for _, stream := range []string{"organic", "inorganic", "b3"} {
-			slots = append(slots, Slot{ID: "sim-slot-" + strings.ToLower(strings.TrimPrefix(device.Code, "SIM-")) + "-" + stream, DeviceID: device.ID, Stream: stream})
+			slots = append(slots, Slot{ID: "sim-slot-" + slotKey + "-" + stream, DeviceID: device.ID, Stream: stream})
 		}
 	}
 	return Dataset{Locations: locations, Devices: devices, Slots: slots}

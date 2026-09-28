@@ -1,5 +1,5 @@
 import type { DeviceDTO } from '../lib/api/types';
-import { formatTimestamp } from '../lib/format';
+import { formatTimestamp, optionalText } from '../lib/format';
 import { getStreamTone } from '../lib/ui/slotPresentation';
 import b3Artwork from '../assets/bin_b3_single_faithful.png';
 import inorganicArtwork from '../assets/bin_inorganic_single_faithful.png';
@@ -32,7 +32,7 @@ export function DeviceCard({ device, onPress, locationName }: DeviceCardProps) {
   const reduceMotion = useReducedMotion();
   const onlineLabel = device.online_state ?? 'Belum tersedia';
   const lastSeen = formatTimestamp(device.last_seen);
-  const placement = device.placement_label ?? 'Belum tersedia';
+  const deviceContext = [optionalText(locationName), optionalText(device.placement_label)].filter(Boolean).join(' · ');
 
   return (
     <Card
@@ -62,9 +62,7 @@ export function DeviceCard({ device, onPress, locationName }: DeviceCardProps) {
           <Text color="$color" {...textStyles.cardTitle} $compact={textStyles.cardTitleCompact} alignSelf="stretch" textAlign="left" minHeight={28} numberOfLines={1} ellipsizeMode="tail">
             {device.device_code}
           </Text>
-          <Text color="$colorMuted" {...textStyles.bodySecondary} alignSelf="stretch" textAlign="left" minHeight={44} numberOfLines={2}>
-            {locationName ? `${locationName} · ${placement}` : placement}
-          </Text>
+          {deviceContext ? <Text color="$colorMuted" {...textStyles.bodySecondary} alignSelf="stretch" textAlign="left" numberOfLines={2}>{deviceContext}</Text> : null}
         </YStack>
       </XStack>
       <XStack flexWrap="wrap" gap="$2" alignItems="center" justifyContent="space-between" paddingVertical="$1">
