@@ -16,8 +16,14 @@ type IngestService interface {
 }
 
 type routerConfig struct {
-	readAPI    *ReadAPI
-	simulation bool
+	readAPI             *ReadAPI
+	simulation          bool
+	simulationIndicator bool
+}
+
+type runtimeMetadata struct {
+	Simulation          bool `json:"simulation"`
+	SimulationIndicator bool `json:"simulationIndicator"`
 }
 
 // RouterOption composes optional API surfaces without changing the stable
@@ -41,9 +47,15 @@ func WithSimulationEnabled(enabled bool) RouterOption {
 	return func(config *routerConfig) { config.simulation = enabled }
 }
 
+// WithSimulationIndicatorEnabled controls whether the web client displays the
+// simulation indicator. The runtime simulation state remains available.
+func WithSimulationIndicatorEnabled(enabled bool) RouterOption {
+	return func(config *routerConfig) { config.simulationIndicator = enabled }
+}
+
 // NewRouter creates the HTTP router for the currently implemented API surface.
 func NewRouter(service IngestService, options ...RouterOption) http.Handler {
-	config := routerConfig{}
+	config := routerConfig{simulationIndicator: true}
 	for _, option := range options {
 		if option != nil {
 			option(&config)
@@ -62,7 +74,10 @@ func NewRouter(service IngestService, options ...RouterOption) http.Handler {
 		mux.Handle("GET /api/export.csv", http.HandlerFunc(config.readAPI.ExportCSV))
 	}
 	mux.Handle("GET /api/runtime", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]bool{"simulation": config.simulation})
+		writeJSON(w, http.StatusOK, runtimeMetadata{
+			Simulation:          config.simulation,
+			SimulationIndicator: config.simulationIndicator,
+		})
 	}))
 	return mux
 }

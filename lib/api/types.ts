@@ -17,6 +17,7 @@ export interface OverviewResponse {
 
 export interface RuntimeResponse {
   simulation: boolean;
+  simulationIndicator: boolean;
 }
 
 export interface LocationListItem {

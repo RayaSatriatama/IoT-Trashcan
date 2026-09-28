@@ -67,7 +67,7 @@ Buka `http://localhost:8080`. Simulator membuat 3 lokasi, 4 device, dan 12 slot.
 rm sigap-simulation.db
 ```
 
-Saat aktif, UI menampilkan banner `MODE SIMULASI`. Saat `SIGAP_SIMULATION_ENABLED` tidak ada atau `false`, seeding, simulator, dan demo decision configuration tidak dijalankan.
+Saat aktif, UI menampilkan indikator `SIMULASI`. Atur `SIGAP_SIMULATION_INDICATOR_ENABLED=false` untuk menyembunyikan indikator tanpa menonaktifkan simulator. Nilai default-nya adalah `true`. Saat `SIGAP_SIMULATION_ENABLED` tidak ada atau `false`, seeding, simulator, dan demo decision configuration tidak dijalankan.
 
 ## Kontribusi
 

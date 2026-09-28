@@ -2,23 +2,28 @@ import { useEffect, useState } from 'react';
 import { Button, Popover, PopoverContent, PopoverTrigger, Text, XStack, YStack } from 'tamagui';
 
 import { apiClient } from '../lib/api/client';
+import type { RuntimeResponse } from '../lib/api/types';
 import { FlaskConical } from '../lib/ui/icons';
 import { textStyles } from '../lib/ui/typography';
 import { useReducedMotion } from '../lib/ui/motionContext';
 
+export function simulationIndicatorVisible(runtime: RuntimeResponse): boolean {
+  return runtime.simulation && runtime.simulationIndicator;
+}
+
 export function SimulationIndicator() {
-  const [simulation, setSimulation] = useState(false);
+  const [runtime, setRuntime] = useState<RuntimeResponse | null>(null);
   const reduceMotion = useReducedMotion();
 
   useEffect(() => {
     const controller = new AbortController();
     apiClient.fetchRuntime(controller.signal)
-      .then((runtime) => setSimulation(runtime.simulation))
+      .then(setRuntime)
       .catch(() => undefined);
     return () => controller.abort();
   }, []);
 
-  if (!simulation) return null;
+  if (!runtime || !simulationIndicatorVisible(runtime)) return null;
 
   return (
     <Popover placement="bottom-end" allowFlip>

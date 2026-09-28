@@ -7,8 +7,8 @@ import (
 	"testing"
 )
 
-func TestRuntimeReportsOnlySimulationMetadata(t *testing.T) {
-	router := NewRouter(nil, WithSimulationEnabled(true))
+func TestRuntimeReportsSimulationAndIndicatorMetadata(t *testing.T) {
+	router := NewRouter(nil, WithSimulationEnabled(true), WithSimulationIndicatorEnabled(false))
 	request := httptest.NewRequest(http.MethodGet, "/api/runtime", nil)
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)
@@ -19,7 +19,7 @@ func TestRuntimeReportsOnlySimulationMetadata(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if !body["simulation"] || len(body) != 1 {
+	if !body["simulation"] || body["simulationIndicator"] || len(body) != 2 {
 		t.Fatalf("runtime metadata=%v", body)
 	}
 }
@@ -29,7 +29,7 @@ func TestRuntimeDefaultsToSimulationDisabled(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/api/runtime", nil)
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || response.Body.String() != "{\"simulation\":false}\n" {
+	if response.Code != http.StatusOK || response.Body.String() != "{\"simulation\":false,\"simulationIndicator\":true}\n" {
 		t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
 	}
 }

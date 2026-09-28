@@ -149,10 +149,10 @@ describe('monitoring API client', () => {
     let requestUrl = '';
     const client = createApiClient(async (input) => {
       requestUrl = String(input);
-      return jsonResponse({ simulation: true });
+      return jsonResponse({ simulation: true, simulationIndicator: false });
     });
 
-    await expect(client.fetchRuntime()).resolves.toEqual({ simulation: true });
+    await expect(client.fetchRuntime()).resolves.toEqual({ simulation: true, simulationIndicator: false });
     expect(requestUrl).toBe('/api/runtime');
   });
 });
