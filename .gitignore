@@ -59,6 +59,7 @@ Thumbs.db
 *.log
 tmp/
 temp/
+.worktrees/
 
 # Redundant archives; extracted canonical files are tracked in docs/
 docs/SIGAP_Asset_Pack_Complete_v0.6.zip
