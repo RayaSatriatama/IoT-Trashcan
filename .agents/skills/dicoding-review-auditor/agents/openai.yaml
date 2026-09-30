@@ -1,0 +1,7 @@
+interface:
+  display_name: "Dicoding Review Auditor"
+  short_description: "Audit review consistency across Dicoding courses"
+  default_prompt: "Use $dicoding-review-auditor to audit this submission review against its class-specific rubric and evidence."
+
+policy:
+  allow_implicit_invocation: true
