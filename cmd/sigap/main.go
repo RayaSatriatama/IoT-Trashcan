@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -32,6 +33,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("simulation configuration: %v", err)
 	}
+	simulationIndicatorEnabled, err := envBoolOrDefault("SIGAP_SIMULATION_INDICATOR_ENABLED", true)
+	if err != nil {
+		log.Fatalf("simulation indicator configuration: %v", err)
+	}
 	readOptions := readAPIOptions()
 	serviceOptions := make([]ingest.ServiceOption, 0, 2)
 	var service *ingest.Service
@@ -41,7 +46,7 @@ func main() {
 		if seedErr != nil {
 			log.Fatalf("seed simulation dataset: %v", seedErr)
 		}
-		serviceOptions = append(serviceOptions, ingest.WithDecisionEngine(simulator.DemoEngine()), ingest.WithSafetyConfig(simulator.DemoSafetyConfig()))
+		serviceOptions = append(serviceOptions, ingest.WithDecisionProfiles(simulator.DemoEngines()), ingest.WithSafetyConfig(simulator.DemoSafetyConfig()))
 		service = ingest.NewService(db, serviceOptions...)
 		simulation = simulator.New(service, dataset, simulationConfig)
 		log.Printf("================================")
@@ -53,7 +58,12 @@ func main() {
 		service = ingest.NewService(db)
 		log.Print("production FIS and safety configuration is unset; valid ingests persist raw readings without fabricated decisions")
 	}
-	apiHandler := httpapi.NewRouter(service, httpapi.WithReadDatabase(db, readOptions...), httpapi.WithSimulationEnabled(simulationConfig.Enabled))
+	apiHandler := httpapi.NewRouter(
+		service,
+		httpapi.WithReadDatabase(db, readOptions...),
+		httpapi.WithSimulationEnabled(simulationConfig.Enabled),
+		httpapi.WithSimulationIndicatorEnabled(simulationIndicatorEnabled),
+	)
 	handler := webapp.Handler(apiHandler)
 	server := &http.Server{Addr: addr, Handler: handler}
 	log.Printf("SIGAP listening on %s", addr)
@@ -100,4 +110,16 @@ func envOrDefault(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func envBoolOrDefault(name string, fallback bool) (bool, error) {
+	value := os.Getenv(name)
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return false, fmt.Errorf("%s must be true or false: %q", name, value)
+	}
+	return parsed, nil
 }

@@ -12,15 +12,18 @@ import (
 )
 
 type historyPageState struct {
-	Limit   int             `json:"limit"`
-	HasMore bool            `json:"has_more"`
-	Next    *history.Cursor `json:"next"`
+	Limit      int             `json:"limit"`
+	HasMore    bool            `json:"has_more"`
+	Next       *history.Cursor `json:"next"`
+	TotalCount int             `json:"total_count"`
 }
 
 type historyResponse struct {
 	Items   []history.Record    `json:"items"`
 	Filters history.FilterState `json:"filters"`
 	Page    historyPageState    `json:"page"`
+	Summary history.Summary     `json:"summary"`
+	Trend   history.Trend       `json:"trend"`
 }
 
 func parseHistoryFilters(r *http.Request) (history.Filters, error) {
@@ -93,19 +96,22 @@ func (api *ReadAPI) History(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid history pagination")
 		return
 	}
-	result, err := history.QueryPage(r.Context(), api.db, filters, page)
+	result, err := history.QueryView(r.Context(), api.db, filters, page, api.now())
 	if err != nil {
 		api.writeReadError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, historyResponse{
-		Items:   result.Items,
+		Items:   result.Page.Items,
 		Filters: filters.State(),
 		Page: historyPageState{
-			Limit:   page.Limit,
-			HasMore: result.HasMore,
-			Next:    result.Next,
+			Limit:      page.Limit,
+			HasMore:    result.Page.HasMore,
+			Next:       result.Page.Next,
+			TotalCount: result.Page.TotalCount,
 		},
+		Summary: result.Summary,
+		Trend:   result.Trend,
 	})
 }
 

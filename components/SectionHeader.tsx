@@ -1,6 +1,83 @@
-import { Text, YStack } from 'tamagui';
+import type { ReactNode } from 'react';
+import { Button, Text, Tooltip, XStack } from 'tamagui';
+import { Info } from '../lib/ui/icons';
 import { textStyles } from '../lib/ui/typography';
+import { useReducedMotion } from '../lib/ui/motionContext';
 
-export function SectionHeader({ title, description }: { title: string; description?: string }) {
-  return <YStack gap="$1"><Text color="$color" {...textStyles.sectionTitle}>{title}</Text>{description ? <Text color="$colorMuted" {...textStyles.bodySecondary}>{description}</Text> : null}</YStack>;
+export function DescriptionHint({
+  description,
+  ariaLabel = 'Lihat informasi',
+}: {
+  description: string;
+  ariaLabel?: string;
+}) {
+  const reduceMotion = useReducedMotion();
+  return (
+    <Tooltip delay={0} restMs={120} placement="bottom-end" allowFlip zIndex={1000} focus={{ enabled: true }}>
+      <Tooltip.Trigger asChild>
+        <Button
+          minWidth={34}
+          minHeight={34}
+          width={34}
+          height={34}
+          padding={0}
+          borderRadius="$6"
+          borderWidth={0}
+          backgroundColor="transparent"
+          alignItems="center"
+          justifyContent="center"
+          aria-label={ariaLabel}
+          hoverStyle={{ backgroundColor: '$surfaceMuted' }}
+          pressStyle={{ backgroundColor: '$primarySoft' }}
+          focusStyle={{ backgroundColor: '$primarySoft', outlineColor: '$primary', outlineWidth: 2, outlineStyle: 'solid' }}
+          type="button"
+          transition={reduceMotion ? undefined : 'quick'}
+        >
+          <Info size={17} strokeWidth={2} color="#60789F" aria-hidden />
+        </Button>
+      </Tooltip.Trigger>
+      <Tooltip.Content
+        transition={reduceMotion ? undefined : 'quick'}
+        enterStyle={{ opacity: 0, scale: 0.98 }}
+        exitStyle={{ opacity: 0, scale: 0.98 }}
+        elevate
+        bordered
+        borderColor="$borderColor"
+        backgroundColor="$surface"
+        padding="$3"
+        width={280}
+        maxWidth="calc(100vw - 24px)"
+        role="tooltip"
+      >
+        <Text color="$color" {...textStyles.bodySecondary}>{description}</Text>
+      </Tooltip.Content>
+    </Tooltip>
+  );
+}
+
+export function SectionHeader({
+  title,
+  description,
+  action,
+}: {
+  title: string;
+  description?: string;
+  action?: ReactNode;
+}) {
+  return (
+    <XStack alignItems="center" justifyContent="space-between" gap="$3" flexWrap="wrap">
+      <XStack alignItems="center" gap="$2" flex={1} minWidth={220}>
+        <Text color="$color" {...textStyles.sectionTitle} $compact={textStyles.sectionTitleCompact}>
+          {title}
+        </Text>
+        {description ? (
+          <DescriptionHint
+            description={description}
+            ariaLabel={`Lihat informasi tentang ${title}`}
+          />
+        ) : null}
+      </XStack>
+      {action ? <XStack alignItems="center" gap="$2">{action}</XStack> : null}
+    </XStack>
+  );
 }

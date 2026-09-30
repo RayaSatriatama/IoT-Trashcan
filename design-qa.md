@@ -87,3 +87,34 @@ ChromeDev evidence:
 At 390x844, all five routes reached the bottom of their scroll surface with no horizontal overflow. The same six-viewport audit covered 360x800, 390x844, 768x1024, 1024x768, 1366x768, and 1440x900. Locations correctly remains non-scrollable at wide viewports when all content fits within the viewport.
 
 Typography now uses named styles in `lib/ui/typography.ts`, larger body and caption tokens, `$body` font binding for numeric and metadata styles, and stronger readable secondary text. The final ChromeDev route check reported no console messages and API/assets returned 200.
+
+# Device Detail Design QA
+
+## Source of truth
+
+- Reference: screenshot Device Detail supplied in the implementation request.
+- Implementation route: `/devices/sim-device-canteen`.
+- Runtime: release binary built from the current `feat/final-ui-ux-refinement` working tree with simulation enabled.
+
+## Evidence
+
+- Desktop 1366 x 768: `/tmp/sigap-device-final-1366.png`
+- Mobile 390 x 844: `/tmp/sigap-device-final-390.png`
+- Mobile final-scroll state: `/tmp/sigap-device-final-390-bottom.png`
+
+## Comparison
+
+The implementation preserves the reference hierarchy: device identity and decision summary, three stream cards, then per-slot research evidence. The rendered values come from the research API rather than screenshot fixtures. Organic, inorganic, and B3 retain independent stream colors, while operational status remains encoded by status components. B3 collection inputs remain separate from its safety channels.
+
+Desktop uses three equal-height slot cards at 1366 and 1440. At 1024 the three cards remain aligned in one row. At 768 they reorganize to two plus one, and at 360 and 390 they stack into one column. The research area uses three columns where space permits and sensor cards without horizontal scrolling on mobile.
+
+## Findings and corrections
+
+- P0: none.
+- P1: none.
+- P2: none after correction. The first preview exposed unequal card heights, UTC-only update time, excessive numeric precision, and misleading `Norm.` labels for FIS inputs. These were corrected before final evidence.
+- P3: simulation FIS reasons remain English because they are runtime decision evidence and were not rewritten in presentation code.
+
+## Final result
+
+passed

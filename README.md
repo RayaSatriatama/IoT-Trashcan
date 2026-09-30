@@ -12,7 +12,7 @@ IoT-Trashcan memuat dokumentasi dan aset SIGAP Smart Bin, sistem pengelolaan sam
 
 ## Status project
 
-SIGAP MVP memiliki satu runtime Go dengan SQLite embedded, authenticated ingest, monitoring read APIs, history, CSV export, dan frontend Expo Web yang di-embed saat release build. Nilai research final untuk FIS, safety, OGI, offline duration, verified-empty, dan event transition tetap deferred.
+SIGAP MVP memiliki satu runtime Go dengan SQLite embedded, authenticated ingest, monitoring read APIs, history, CSV export, dan frontend Expo Web yang di-embed saat release build. Kontrak ingest mendukung bukti sensor fisik opsional, nilai turunan, trace keputusan FIS, dan kanal safety B3. Nilai dan threshold production final untuk FIS, safety, OGI, offline duration, verified-empty, dan event transition tetap deferred.
 
 ## Menjalankan development
 
@@ -32,6 +32,8 @@ SIGAP_DB_PATH=./sigap.db SIGAP_HTTP_ADDR=:8080 go run ./cmd/sigap
 ```
 
 Monitoring frontend menggunakan relative same-origin `/api/...` pada web. `EXPO_PUBLIC_API_BASE_URL` hanya digunakan untuk development native bila diperlukan.
+
+History API mengembalikan satu halaman cursor-bounded pada `items`, ringkasan lengkap untuk seluruh filter aktif pada `summary`, dan trend terbatas pada `trend`. Trend memakai kalender Asia/Jakarta, memilih bucket harian untuk rentang sampai 31 hari, mingguan sampai 180 hari, dan bulanan untuk rentang lebih panjang. Tanpa periode, trend memakai jendela 30 hari terbaru dan menandainya dengan `default_window`; `truncated` menandai saat bucket lama dipangkas agar tetap bounded. Ekspor CSV tetap memakai seluruh hasil yang cocok dengan filter aktif dan tidak dipengaruhi oleh `limit` atau cursor halaman.
 
 ## Release binary
 
@@ -57,7 +59,7 @@ cp .env.simulation.example .env.simulation
 
 Runner simulasi terlebih dahulu menjalankan release build agar Expo SPA benar-benar masuk ke binary Go, lalu menjalankan binary tersebut dengan environment simulasi. Ini diperlukan karena clean checkout hanya menyimpan placeholder untuk `go:embed`, bukan bundle frontend generated.
 
-Buka `http://localhost:8080`. Simulator membuat 3 lokasi, 4 device, dan 12 slot. ID database simulator memakai prefix `sim-`, sedangkan device code yang terlihat di UI memakai prefix `SIM-`. Simulator lalu mengirim telemetry melalui authenticated ingest. Siklus demo mencakup Normal, Waspada, Angkat, Safety Alert, Data Invalid, Offline, dan Recovery. Data sintetis, FIS, dan safety threshold pada mode ini hanya fixture demo, bukan kalibrasi production atau research.
+Buka `http://localhost:8080`. Simulator membuat 8 lokasi, 8 device, dan 24 slot. ID database simulator memakai prefix `sim-`, sedangkan device code yang terlihat di UI memakai prefix `SIGAP-`. Simulator lalu mengirim telemetry melalui authenticated ingest. Siklus demo mencakup Normal, Waspada, Angkat, Safety Alert, Data Invalid, Offline, dan Recovery. Simulation payload menyediakan Fill Sensor, HX711, MQ-135, MQ-4, MQ-7, MQ-8, dan DS18B20 sesuai stream, beserta empat input collection FIS: fill, weight utilization, OGI, dan accumulation time. MQ ditampilkan sebagai raw atau normalized index, bukan ppm, karena simulator tidak menyediakan calibration model. Data sintetis, profile FIS, dan safety threshold pada mode ini hanya fixture demo, bukan kalibrasi production atau research.
 
 `SIGAP_SIMULATION_INTERVAL_SECONDS` harus bilangan bulat positif. `SIGAP_SIMULATION_SEED` membuat variasi kecil dapat direproduksi dan merotasi credential simulator lokal saat database yang sama digunakan kembali. Untuk memulai ulang data demo, hapus database secara manual:
 
@@ -65,7 +67,20 @@ Buka `http://localhost:8080`. Simulator membuat 3 lokasi, 4 device, dan 12 slot.
 rm sigap-simulation.db
 ```
 
-Saat aktif, UI menampilkan banner `MODE SIMULASI`. Saat `SIGAP_SIMULATION_ENABLED` tidak ada atau `false`, seeding, simulator, dan demo decision configuration tidak dijalankan.
+Saat aktif, UI menampilkan indikator `SIMULASI`. Atur `SIGAP_SIMULATION_INDICATOR_ENABLED=false` untuk menyembunyikan indikator tanpa menonaktifkan simulator. Nilai default-nya adalah `true`. Saat `SIGAP_SIMULATION_ENABLED` tidak ada atau `false`, seeding, simulator, dan demo decision configuration tidak dijalankan.
+
+## Vercel simulation snapshot
+
+Vercel menjalankan frontend Expo Web dari `dist` dan Go Function pada `/api`. Masukkan nilai dari `.env.simulation` ke Production Environment Variables Vercel. `SIGAP_DB_PATH` tetap dipertahankan pada environment lokal, tetapi Function selalu memakai SQLite kecil di `/tmp` karena filesystem Vercel tidak persisten.
+
+Saat Function dimulai dengan `SIGAP_SIMULATION_ENABLED=true`, SIGAP membuat 8 lokasi, 8 perangkat, 24 slot, lalu menjalankan satu tick telemetry. Tidak ada loop simulator dan `POST /api/ingest` ditolak, sehingga data ini adalah snapshot demo read-only yang dapat berubah saat cold start berikutnya. Database lokal `sigap-simulation.db` tidak diunggah ke Vercel.
+
+Deployment produksi dilakukan setelah login Vercel dan pengisian environment variables:
+
+```bash
+npx vercel login
+npx vercel --prod
+```
 
 ## Kontribusi
 

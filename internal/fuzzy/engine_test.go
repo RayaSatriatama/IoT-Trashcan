@@ -97,6 +97,27 @@ func TestEngineEvaluatesRuleAndReturnsVersionAndReason(t *testing.T) {
 	if len(result.Rules) != 2 || result.Rules[1].Strength <= result.Rules[0].Strength {
 		t.Fatalf("Rules = %#v, want high rule dominant", result.Rules)
 	}
+	if got := result.InputMemberships["fill"]["high"]; math.Abs(got-0.8) > 1e-9 {
+		t.Fatalf("fill/high membership = %v, want 0.8", got)
+	}
+	if got := result.InputMemberships["fill"]["low"]; got != 0 {
+		t.Fatalf("fill/low membership = %v, want 0", got)
+	}
+}
+
+func TestEngineRequiresEveryConfiguredInput(t *testing.T) {
+	cfg := testConfig()
+	cfg.Inputs["weight_utilization"] = InputVariable{Sets: map[string]Membership{
+		"low": TriangleMembership(0, 0, 100),
+	}}
+	engine, err := NewEngine(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = engine.Evaluate(Input{"fill": 25})
+	if !errors.Is(err, ErrMissingInput) {
+		t.Fatalf("Evaluate() error = %v, want ErrMissingInput for configured input", err)
+	}
 }
 
 func TestEngineAggregatesOutputsUsingMaximumMembership(t *testing.T) {

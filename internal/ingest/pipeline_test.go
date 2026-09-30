@@ -6,6 +6,8 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"fmt"
+	"math"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -79,11 +81,11 @@ func TestIngestExactReplayDoesNotDuplicateReadingsOrDecisions(t *testing.T) {
 func TestIngestPersistsConfiguredDecisionAndSafetyOverride(t *testing.T) {
 	db, service := decisionTestService(t, &recordingEngine{})
 	defer db.Close()
-	gas := 90.0
+	co := 0.9
 	req := decisionRequest()
-	req.Slots[2].GasRaw = &gas
+	req.Slots[2].Sensors = []SensorReading{{SensorID: "mq7-b3", SensorType: "mq7", Parameter: "co", NormalizedValue: &co, Unit: "index", SensorState: SensorValid}}
 	service.safetyConfig = safety.Config{Thresholds: []safety.Threshold{{
-		Signal: safety.SignalGasRaw, AtOrAbove: 50, Reason: "test-only gas fixture",
+		Signal: safety.SignalMQ7CO, AtOrAbove: 0.8, Reason: "test-only CO fixture",
 	}}}
 
 	if _, err := service.Ingest(context.Background(), "fixture-token", req, []byte(`{"decision":true}`)); err != nil {
@@ -115,6 +117,67 @@ func TestIngestPersistsEngineVersionWhenResultOmitsIt(t *testing.T) {
 	}
 	if version != "engine-version" {
 		t.Fatalf("fis_version = %q, want engine version", version)
+	}
+}
+
+func TestIngestSelectsDecisionProfileByStream(t *testing.T) {
+	db, service := decisionTestService(t, nil)
+	defer db.Close()
+	service.engines = map[string]fuzzy.Engine{
+		"organic":   fixedEngine{version: "organic-profile"},
+		"inorganic": fixedEngine{version: "inorganic-profile"},
+		"b3":        fixedEngine{version: "b3-profile"},
+	}
+	if _, err := service.Ingest(context.Background(), "fixture-token", decisionRequest(), []byte(`{"profiles":true}`)); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := db.Query(`SELECT s.waste_stream, d.fis_version FROM decisions d JOIN readings r ON r.id=d.reading_id JOIN slots s ON s.id=r.slot_id ORDER BY d.reading_id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	want := map[string]string{"organic": "organic-profile", "inorganic": "inorganic-profile", "b3": "b3-profile"}
+	for rows.Next() {
+		var stream, version string
+		if err := rows.Scan(&stream, &version); err != nil {
+			t.Fatal(err)
+		}
+		if version != want[stream] {
+			t.Fatalf("%s version=%q want=%q", stream, version, want[stream])
+		}
+	}
+}
+
+func TestIngestPersistsDataInvalidForNonValidCollectionSensor(t *testing.T) {
+	db, service := decisionTestService(t, &recordingEngine{})
+	defer db.Close()
+	req := decisionRequest()
+	req.Slots[0].Sensors = []SensorReading{{SensorID: "organic-mq135", SensorType: "mq135", Parameter: "broad_gas", SensorState: SensorWarmingUp}}
+	if _, err := service.Ingest(context.Background(), "fixture-token", req, []byte(`{"warming":true}`)); err != nil {
+		t.Fatal(err)
+	}
+	var status, reason string
+	if err := db.QueryRow(`SELECT fis_status, dominant_reason FROM decisions ORDER BY reading_id LIMIT 1`).Scan(&status, &reason); err != nil {
+		t.Fatal(err)
+	}
+	if status != "Data Invalid" || !strings.Contains(reason, "WARMING_UP") {
+		t.Fatalf("status=%q reason=%q", status, reason)
+	}
+}
+
+func TestIngestPersistsDataInvalidWhenFuzzyInputIsMissing(t *testing.T) {
+	db, service := decisionTestService(t, missingInputEngine{})
+	defer db.Close()
+
+	if _, err := service.Ingest(context.Background(), "fixture-token", decisionRequest(), []byte(`{"missing-input":true}`)); err != nil {
+		t.Fatal(err)
+	}
+	var decisions, invalid int
+	if err := db.QueryRow(`SELECT COUNT(*), COUNT(CASE WHEN fis_status = 'Data Invalid' THEN 1 END) FROM decisions`).Scan(&decisions, &invalid); err != nil {
+		t.Fatal(err)
+	}
+	if decisions != 3 || invalid != 3 {
+		t.Fatalf("decisions=%d invalid=%d, want three auditable Data Invalid decisions", decisions, invalid)
 	}
 }
 
@@ -174,6 +237,65 @@ func TestIngestAcceptsMeasuredZeroAndKeepsMissingDistinct(t *testing.T) {
 	}
 }
 
+func TestValidateOperationalAcceptsDocumentedSensorStatesAndLegacySlots(t *testing.T) {
+	if result := ValidateOperational(Slot{}); !result.Valid {
+		t.Fatalf("legacy slot was rejected: %#v", result)
+	}
+	for _, state := range []SensorState{SensorValid, SensorWarmingUp, SensorStale, SensorInvalid, SensorDisabled} {
+		slot := Slot{Sensors: []SensorReading{{
+			SensorID: "sensor-1", SensorType: "mq135", Parameter: "broad_gas", SensorState: state,
+		}}}
+		if result := ValidateOperational(slot); !result.Valid {
+			t.Fatalf("state %q was rejected: %#v", state, result)
+		}
+	}
+}
+
+func TestValidateOperationalRejectsUnknownSensorState(t *testing.T) {
+	result := ValidateOperational(Slot{Sensors: []SensorReading{{
+		SensorID: "sensor-1", SensorType: "mq135", Parameter: "broad_gas", SensorState: SensorState("UNKNOWN"),
+	}}})
+	if result.Valid || !strings.Contains(strings.Join(result.Reasons, "; "), "sensor_state") {
+		t.Fatalf("ValidateOperational() = %#v, want sensor_state error", result)
+	}
+}
+
+func TestValidateOperationalRequiresCalibrationMetadataForPPM(t *testing.T) {
+	value := 2.5
+	normalized := 0.25
+	tests := []struct {
+		name   string
+		sensor SensorReading
+		valid  bool
+	}{
+		{name: "calibrated ppm", sensor: SensorReading{SensorID: "mq7", SensorType: "mq7", Parameter: "co", Unit: "ppm", EngineeringValue: &value, CalibrationVersion: "mq7-lab-v1", SensorState: SensorValid}, valid: true},
+		{name: "ppm missing engineering value", sensor: SensorReading{SensorID: "mq7", SensorType: "mq7", Parameter: "co", Unit: "ppm", CalibrationVersion: "mq7-lab-v1", SensorState: SensorValid}},
+		{name: "ppm missing calibration", sensor: SensorReading{SensorID: "mq7", SensorType: "mq7", Parameter: "co", Unit: "ppm", EngineeringValue: &value, SensorState: SensorValid}},
+		{name: "normalized index needs no calibration", sensor: SensorReading{SensorID: "mq7", SensorType: "mq7", Parameter: "co", Unit: "index", NormalizedValue: &normalized, SensorState: SensorValid}, valid: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := ValidateOperational(Slot{Sensors: []SensorReading{tt.sensor}})
+			if result.Valid != tt.valid {
+				t.Fatalf("ValidateOperational() = %#v, want valid=%v", result, tt.valid)
+			}
+		})
+	}
+}
+
+func TestValidateOperationalRejectsNonFiniteAndOutOfRangeSensorEvidence(t *testing.T) {
+	nan := math.NaN()
+	outOfRange := 1.1
+	result := ValidateOperational(Slot{Sensors: []SensorReading{
+		{SensorID: "mq7", SensorType: "mq7", Parameter: "co", RawValue: &nan, SensorState: SensorValid},
+		{SensorID: "mq8", SensorType: "mq8", Parameter: "h2", NormalizedValue: &outOfRange, SensorState: SensorValid},
+	}})
+	joined := strings.Join(result.Reasons, "; ")
+	if result.Valid || !strings.Contains(joined, "raw_value") || !strings.Contains(joined, "normalized_value") {
+		t.Fatalf("ValidateOperational() = %#v, want numeric sensor evidence errors", result)
+	}
+}
+
 func TestIngestRollsBackReadingsDecisionsAndHeartbeatWhenDecisionInsertFails(t *testing.T) {
 	db, service := decisionTestService(t, testDecisionEngine(t))
 	defer db.Close()
@@ -219,6 +341,22 @@ func (e *versionlessEngine) Evaluate(fuzzy.Input) (fuzzy.Result, error) {
 
 func (e *versionlessEngine) Version() string { return "engine-version" }
 
+type fixedEngine struct{ version string }
+
+func (e fixedEngine) Evaluate(input fuzzy.Input) (fuzzy.Result, error) {
+	return fuzzy.Result{Score: 25, Status: "Normal", DominantReason: "profile fixture", Version: e.version}, nil
+}
+
+func (e fixedEngine) Version() string { return e.version }
+
+type missingInputEngine struct{}
+
+func (missingInputEngine) Evaluate(fuzzy.Input) (fuzzy.Result, error) {
+	return fuzzy.Result{}, fmt.Errorf("%w: accumulation_hours", fuzzy.ErrMissingInput)
+}
+
+func (missingInputEngine) Version() string { return "four-input-v1" }
+
 func testDecisionEngine(t *testing.T) fuzzy.Engine {
 	t.Helper()
 	engine, err := fuzzy.NewEngine(fuzzy.Config{
@@ -256,7 +394,7 @@ func decisionTestService(t *testing.T, engine fuzzy.Engine) (*sql.DB, *Service) 
 		CREATE TABLE devices (id TEXT PRIMARY KEY, device_code TEXT NOT NULL UNIQUE, credential_digest TEXT NOT NULL, last_seen TEXT);
 		CREATE TABLE slots (id TEXT PRIMARY KEY, device_id TEXT NOT NULL, waste_stream TEXT NOT NULL, operational_capacity REAL, UNIQUE(device_id, waste_stream));
 		CREATE TABLE readings (id INTEGER PRIMARY KEY, slot_id TEXT NOT NULL, recorded_at TEXT NOT NULL, raw_payload TEXT NOT NULL, fill REAL, weight REAL, weight_utilization REAL, ogi REAL, accumulation REAL, temperature REAL, sensor_health TEXT);
-		CREATE TABLE decisions (reading_id INTEGER PRIMARY KEY, fis_score REAL, fis_status TEXT, fis_version TEXT, dominant_reason TEXT, safety_state TEXT);
+		CREATE TABLE decisions (reading_id INTEGER PRIMARY KEY, fis_score REAL, fis_status TEXT, fis_version TEXT, dominant_reason TEXT, safety_state TEXT, trace_json TEXT, safety_json TEXT);
 	`
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()

@@ -11,3 +11,8 @@ export function formatTimestamp(value: string | null | undefined): string {
   if (Number.isNaN(date.getTime())) return 'Belum tersedia';
   return new Intl.DateTimeFormat('id-ID', { dateStyle: 'medium', timeStyle: 'short' }).format(date);
 }
+
+export function optionalText(value: string | null | undefined): string | null {
+  const normalized = value?.trim();
+  return normalized || null;
+}

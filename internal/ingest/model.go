@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"time"
+
+	"github.com/RayaSatriatama/IoT-Trashcan/internal/fuzzy"
 )
 
 var (
@@ -35,11 +37,40 @@ type Request struct {
 
 // Slot contains unprocessed, device-reported sensor values for one waste stream.
 type Slot struct {
-	Stream      string   `json:"stream"`
-	Fill        *float64 `json:"fill"`
-	Weight      *float64 `json:"weight"`
-	GasRaw      *float64 `json:"gas_raw"`
-	Temperature *float64 `json:"temperature"`
+	Stream            string          `json:"stream"`
+	Fill              *float64        `json:"fill"`
+	Weight            *float64        `json:"weight"`
+	GasRaw            *float64        `json:"gas_raw"`
+	Temperature       *float64        `json:"temperature"`
+	OGI               *float64        `json:"ogi"`
+	AccumulationHours *float64        `json:"accumulation_hours"`
+	Sensors           []SensorReading `json:"sensors,omitempty"`
+}
+
+type SensorState string
+
+const (
+	SensorValid     SensorState = "VALID"
+	SensorWarmingUp SensorState = "WARMING_UP"
+	SensorStale     SensorState = "STALE"
+	SensorInvalid   SensorState = "INVALID"
+	SensorDisabled  SensorState = "DISABLED"
+)
+
+// SensorReading is an optional physical-sensor record. Numeric pointers keep
+// unavailable values distinct from a measured zero.
+type SensorReading struct {
+	SensorID           string      `json:"sensor_id"`
+	SensorType         string      `json:"sensor_type"`
+	Parameter          string      `json:"parameter"`
+	RawValue           *float64    `json:"raw_value"`
+	EngineeringValue   *float64    `json:"engineering_value"`
+	NormalizedValue    *float64    `json:"normalized_value"`
+	RawUnit            string      `json:"raw_unit,omitempty"`
+	Unit               string      `json:"unit"`
+	SensorState        SensorState `json:"sensor_state"`
+	CalibrationVersion string      `json:"calibration_version,omitempty"`
+	RecordedAt         string      `json:"recorded_at,omitempty"`
 }
 
 // Result is returned only after all readings and the heartbeat commit.
@@ -65,4 +96,34 @@ type NormalizedReading struct {
 	OGI               *float64
 	AccumulationHours *float64
 	Temperature       *float64
+}
+
+// DecisionTrace is persisted with a decision so research views never
+// reconstruct historical evidence using a newer FIS configuration.
+type DecisionTrace struct {
+	Inputs         map[string]float64            `json:"inputs"`
+	Memberships    map[string]map[string]float64 `json:"memberships"`
+	Rules          []fuzzy.RuleResult            `json:"rules"`
+	TriggeredRules int                           `json:"triggered_rules"`
+	Score          *float64                      `json:"score"`
+	Status         string                        `json:"status"`
+	Version        string                        `json:"version"`
+	DominantReason string                        `json:"dominant_reason"`
+}
+
+type SafetyChannelEvidence struct {
+	SensorID    string      `json:"sensor_id"`
+	SensorType  string      `json:"sensor_type"`
+	Parameter   string      `json:"parameter"`
+	Value       *float64    `json:"value"`
+	Normalized  *float64    `json:"normalized"`
+	Unit        string      `json:"unit"`
+	SensorState SensorState `json:"sensor_state"`
+	RecordedAt  string      `json:"recorded_at,omitempty"`
+}
+
+type SafetyEvidence struct {
+	State    string                  `json:"state"`
+	Reason   string                  `json:"reason,omitempty"`
+	Channels []SafetyChannelEvidence `json:"channels"`
 }

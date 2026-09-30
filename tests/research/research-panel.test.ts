@@ -29,17 +29,17 @@ describe('research panel value presentation', () => {
 
 describe('research panel states', () => {
   it('prioritizes loading and error before empty/data', () => {
-    const data = { device_id: 'device-1', slots: [{ stream: 'organic' }] } as never;
+    const data = { device_id: 'device-1', decision_summary: { priority_score: null, critical_stream: null, critical_reason: null, mode: null }, slots: [{ stream: 'organic' }] } as never;
     expect(getResearchPanelState({ data, loading: true, error: new Error('late') })).toBe('loading');
     expect(getResearchPanelState({ data: null, error: new Error('offline') })).toBe('error');
   });
 
   it('distinguishes empty research from loaded slot data', () => {
     expect(getResearchPanelState({ data: null })).toBe('empty');
-    expect(getResearchPanelState({ data: { device_id: 'device-1', slots: [] } })).toBe('empty');
+    expect(getResearchPanelState({ data: { device_id: 'device-1', decision_summary: { priority_score: null, critical_stream: null, critical_reason: null, mode: null }, slots: [] } })).toBe('empty');
     expect(
       getResearchPanelState({
-        data: { device_id: 'device-1', slots: [{ stream: 'organic' }] } as never,
+        data: { device_id: 'device-1', decision_summary: { priority_score: null, critical_stream: null, critical_reason: null, mode: null }, slots: [{ stream: 'organic' }] } as never,
       }),
     ).toBe('data');
   });

@@ -5,7 +5,6 @@ import { useMedia, XStack, YStack } from 'tamagui';
 import { DesktopSidebar, type NavigationItem } from './DesktopSidebar';
 import { Header } from './Header';
 import { MobileBottomNav } from './MobileBottomNav';
-import { SimulationBanner } from './SimulationBanner';
 
 export interface AppShellProps {
   title: string;
@@ -46,7 +45,6 @@ export function AppShell({
             paddingHorizontal={hasDesktopShell ? '$7' : '$4'}
           >
             <Header title={title} subtitle={subtitle} />
-            <SimulationBanner />
             {children}
           </YStack>
         </ScrollView>

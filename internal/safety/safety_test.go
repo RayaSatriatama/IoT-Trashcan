@@ -128,3 +128,18 @@ func TestSafetyAlertWinsWhenAnotherConfiguredSignalIsUnavailable(t *testing.T) {
 		t.Fatalf("reason = %q, want gas alert fixture", result.Reason)
 	}
 }
+
+func TestEvaluateSupportsExplicitB3SafetyChannels(t *testing.T) {
+	co, hydrogen, temperature := 0.91, 0.12, 31.0
+	result, err := Evaluate(Input{MQ7CO: &co, MQ8H2: &hydrogen, DS18B20Temperature: &temperature}, Config{Thresholds: []Threshold{
+		{Signal: SignalMQ7CO, AtOrAbove: 0.8, Reason: "test CO alert"},
+		{Signal: SignalMQ8H2, AtOrAbove: 0.8, Reason: "test H2 alert"},
+		{Signal: SignalDS18B20Temperature, AtOrAbove: 55, Reason: "test temperature alert"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Alert || result.State != StateSafetyAlert || result.Reason != "test CO alert" {
+		t.Fatalf("Evaluate() = %#v, want explicit MQ-7 alert", result)
+	}
+}

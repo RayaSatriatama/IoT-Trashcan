@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { ApiError, buildExportURL, createApiClient } from './client';
-import type { OverviewResponse } from './types';
+import type { HistoryResponse, OverviewResponse } from './types';
 
 function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
   return new Response(JSON.stringify(body), {
@@ -47,6 +47,17 @@ describe('monitoring API client', () => {
     expect(requestUrl).toBe('/api/locations?q=Alpha+Lab&status=Safety+Alert');
   });
 
+  it('fetches the flattened device summary endpoint without location fan-out', async () => {
+    let requestUrl = '';
+    const client = createApiClient(async (input) => {
+      requestUrl = String(input);
+      return jsonResponse({ devices: [] });
+    });
+
+    await expect(client.fetchDevices()).resolves.toEqual({ devices: [] });
+    expect(requestUrl).toBe('/api/devices');
+  });
+
   it('surfaces JSON error text for non-success responses as an ApiError', async () => {
     const client = createApiClient(async () =>
       jsonResponse({ error: 'not found' }, { status: 404 }),
@@ -74,22 +85,32 @@ describe('monitoring API client', () => {
 
   it('serializes history filters and fetches audit rows', async () => {
     let requestUrl = '';
+    const historyResponse: HistoryResponse = {
+      items: [],
+      filters: { from: null, to: null, location_id: null, device_id: null, status: null },
+      page: { limit: 50, has_more: false, next: null, total_count: 0 },
+      summary: { total: 0, normal: 0, waspada: 0, pickup: 0, safety_alert: 0, data_invalid: 0 },
+      trend: {
+        scope_from: '2026-08-19T17:00:00Z',
+        scope_to: '2026-09-18T17:00:00Z',
+        granularity: 'day',
+        default_window: true,
+        truncated: false,
+        buckets: [],
+      },
+    };
     const client = createApiClient(async (input) => {
       requestUrl = String(input);
-      return jsonResponse({
-        items: [],
-        filters: { from: null, to: null, location_id: null, device_id: null, status: null },
-        page: { limit: 50, has_more: false, next: null },
-      });
+      return jsonResponse(historyResponse);
     });
 
-    await client.fetchHistory({
+    await expect(client.fetchHistory({
       from: '2026-09-01T00:00:00Z',
       to: '2026-09-18T00:00:00Z',
       location_id: 'loc/1',
       device_id: 'SIGAP 01',
       status: 'Safety Alert',
-    });
+    })).resolves.toEqual(historyResponse);
 
     expect(requestUrl).toBe(
       '/api/history?from=2026-09-01T00%3A00%3A00Z&to=2026-09-18T00%3A00%3A00Z&location_id=loc%2F1&device_id=SIGAP+01&status=Safety+Alert',
@@ -103,7 +124,7 @@ describe('monitoring API client', () => {
       return jsonResponse({
         items: [],
         filters: { from: null, to: null, location_id: null, device_id: null, status: null },
-        page: { limit: 30, has_more: false, next: null },
+        page: { limit: 30, has_more: false, next: null, total_count: 0 },
       });
     });
 
@@ -128,10 +149,10 @@ describe('monitoring API client', () => {
     let requestUrl = '';
     const client = createApiClient(async (input) => {
       requestUrl = String(input);
-      return jsonResponse({ simulation: true });
+      return jsonResponse({ simulation: true, simulationIndicator: false });
     });
 
-    await expect(client.fetchRuntime()).resolves.toEqual({ simulation: true });
+    await expect(client.fetchRuntime()).resolves.toEqual({ simulation: true, simulationIndicator: false });
     expect(requestUrl).toBe('/api/runtime');
   });
 });

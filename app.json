@@ -12,7 +12,10 @@
       "output": "single",
       "favicon": "./assets/logo_mark_ui_generated.png"
     },
-    "plugins": ["expo-router"],
+    "plugins": [
+      "expo-router",
+      "expo-font"
+    ],
     "experiments": {
       "typedRoutes": true
     }

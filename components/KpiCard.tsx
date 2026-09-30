@@ -1,6 +1,8 @@
 import type { LucideIcon } from 'lucide-react-native';
 import { Card, Text, XStack, YStack } from 'tamagui';
 import { textStyles } from '../lib/ui/typography';
+import { useReducedMotion } from '../lib/ui/motionContext';
+import { useAnimatedNumber } from '../lib/ui/useAnimatedNumber';
 
 export type KpiTone = 'green' | 'blue' | 'orange' | 'red';
 
@@ -17,10 +19,16 @@ export interface KpiCardProps {
   description?: string;
   icon: LucideIcon;
   tone?: KpiTone;
+  selected?: boolean;
+  onPress?: () => void;
 }
 
-export function KpiCard({ label, value, description, icon: Icon, tone = 'green' }: KpiCardProps) {
+export function KpiCard({ label, value, description, icon: Icon, tone = 'green', selected = false, onPress }: KpiCardProps) {
   const palette = tones[tone];
+  const reduceMotion = useReducedMotion();
+  const numericValue = typeof value === 'number' && Number.isFinite(value) ? value : null;
+  const animatedValue = useAnimatedNumber(numericValue, { precision: 0 });
+  const displayValue = numericValue === null ? value : animatedValue ?? numericValue;
   return (
     <Card
       flex={1}
@@ -28,23 +36,32 @@ export function KpiCard({ label, value, description, icon: Icon, tone = 'green' 
       minHeight={132}
       padding="$4"
       gap="$3"
-      borderWidth={1}
-      borderColor="$borderColor"
+      borderColor={selected ? palette.color : '$borderColor'}
       backgroundColor={palette.background}
       borderRadius="$4"
-      role="group"
+      borderWidth={selected ? 2 : 1}
+      pressStyle={onPress ? { opacity: 0.84, scale: 0.99 } : undefined}
+      hoverStyle={onPress ? { borderColor: palette.color, shadowColor: palette.color, shadowOpacity: 0.12, shadowRadius: 8 } : undefined}
+      focusStyle={onPress ? { borderColor: palette.color, borderWidth: 2, outlineColor: palette.color, outlineWidth: 2, outlineStyle: 'solid' } : undefined}
+      onPress={onPress}
+      role={onPress ? 'button' : 'group'}
       aria-label={label}
+      aria-pressed={onPress ? selected : undefined}
+      tabIndex={onPress ? 0 : undefined}
+      cursor={onPress ? 'pointer' : undefined}
+      transition={reduceMotion ? undefined : 'quick'}
+      enterStyle={reduceMotion ? undefined : { opacity: 0, y: 4 }}
     >
       <XStack alignItems="center" justifyContent="space-between" gap="$3">
         <YStack gap="$1" flex={1}>
-          <Text color="$colorMuted" {...textStyles.caption} fontWeight="700">{label}</Text>
-          <Text color={palette.color} {...textStyles.numericKpi} letterSpacing={-1}>{value}</Text>
+          <Text color="$colorMuted" {...textStyles.kpiLabel} minHeight={20} numberOfLines={2}>{label}</Text>
+          <Text color={palette.color} {...textStyles.numericKpi} $compact={textStyles.numericKpiCompact} letterSpacing={-1} fontVariant={['tabular-nums']}>{displayValue}</Text>
         </YStack>
         <YStack width={44} height={44} borderRadius="$6" backgroundColor="$surface" alignItems="center" justifyContent="center">
           <Icon size={22} color={palette.color} strokeWidth={2.2} aria-hidden={true} />
         </YStack>
       </XStack>
-      {description ? <Text color="$colorMuted" {...textStyles.caption}>{description}</Text> : null}
+      {description ? <Text color="$colorMuted" {...textStyles.caption} $compact={{ display: 'none' }}>{description}</Text> : null}
     </Card>
   );
 }

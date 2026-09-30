@@ -58,10 +58,10 @@ type Config struct {
 }
 
 type RuleResult struct {
-	ID       string
-	Strength float64
-	Output   string
-	Reason   string
+	ID       string  `json:"id"`
+	Strength float64 `json:"strength"`
+	Output   string  `json:"output"`
+	Reason   string  `json:"reason"`
 }
 
 type Result struct {
@@ -70,6 +70,8 @@ type Result struct {
 	DominantReason string
 	Version        string
 	Rules          []RuleResult
+	// InputMemberships retains evaluated degrees for audit and presentation.
+	InputMemberships map[string]map[string]float64
 	// Aggregated exposes the output membership after max aggregation for
 	// callers that need an auditable calculation trace.
 	Aggregated map[string]Membership

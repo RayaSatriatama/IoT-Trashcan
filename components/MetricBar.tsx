@@ -1,6 +1,7 @@
 import { formatNullableMetric } from '../lib/format';
 import { textStyles } from '../lib/ui/typography';
 import { Text, XStack, YStack } from 'tamagui';
+import { useAnimatedNumber } from '../lib/ui/useAnimatedNumber';
 
 export type MetricBarTone = 'green' | 'blue' | 'red' | 'neutral';
 
@@ -11,6 +12,7 @@ export interface MetricBarProps {
   unit?: string;
   unavailableLabel?: string;
   tone?: MetricBarTone;
+  compact?: boolean;
 }
 
 const toneColor: Record<MetricBarTone, string> = {
@@ -31,13 +33,18 @@ export function MetricBar({
   unit = '%',
   unavailableLabel,
   tone = 'neutral',
+  compact = false,
 }: MetricBarProps) {
   const validValue = typeof value === 'number' && Number.isFinite(value);
-  const percentage = validValue && max > 0 ? Math.min(100, Math.max(0, (value / max) * 100)) : 0;
-  const valueLabel = validValue ? formatMetricValue(value, unit) : unavailableLabel ?? 'Belum tersedia';
+  const precision = validValue && !Number.isInteger(value) ? 1 : 0;
+  const animatedValue = useAnimatedNumber(validValue ? value : null, { precision });
+  const visualValue = animatedValue ?? (validValue ? value : null);
+  const percentage = visualValue !== null && max > 0 ? Math.min(100, Math.max(0, (visualValue / max) * 100)) : 0;
+  const targetValueLabel = validValue ? formatMetricValue(value, unit) : unavailableLabel ?? 'Belum tersedia';
+  const valueLabel = visualValue !== null ? formatMetricValue(visualValue, unit) : targetValueLabel;
 
   return (
-    <YStack gap="$2" aria-label={`${label}: ${valueLabel}`}>
+    <YStack gap="$2" aria-label={`${label}: ${targetValueLabel}`}>
       <XStack justifyContent="space-between" alignItems="center" gap="$2">
         <Text color="$colorMuted" {...textStyles.bodySecondary}>
           {label}
@@ -47,7 +54,7 @@ export function MetricBar({
         </Text>
       </XStack>
       <YStack
-        height={10}
+        height={compact ? 8 : 10}
         borderRadius="$6"
         backgroundColor="$surfaceMuted"
         overflow="hidden"
@@ -55,7 +62,7 @@ export function MetricBar({
         aria-valuemin={0}
         aria-valuemax={max}
         aria-valuenow={validValue ? value : undefined}
-        aria-valuetext={valueLabel}
+        aria-valuetext={targetValueLabel}
       >
         {validValue ? (
           <YStack

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/RayaSatriatama/IoT-Trashcan/internal/device"
+	"github.com/RayaSatriatama/IoT-Trashcan/internal/ingest"
 	"github.com/RayaSatriatama/IoT-Trashcan/internal/safety"
 )
 
@@ -147,6 +148,33 @@ func (api *ReadAPI) Location(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, location)
 }
 
+// Devices returns one flattened, read-only device summary per device. It is
+// intended for monitoring workspaces that need location context without
+// issuing one request per location from the browser.
+func (api *ReadAPI) Devices(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	locations, err := api.locations(r.Context(), "")
+	if err != nil {
+		api.writeReadError(w, err)
+		return
+	}
+	items := make([]deviceSummaryDTO, 0)
+	for _, location := range locations {
+		for _, item := range location.Devices {
+			items = append(items, deviceSummaryDTO{
+				deviceDTO:       item,
+				LocationName:    location.Name,
+				LocationAddress: location.Address,
+				LocationStatus:  location.Status,
+			})
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"devices": items})
+}
+
 // Device returns one device's current operational summary.
 func (api *ReadAPI) Device(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -187,7 +215,7 @@ func (api *ReadAPI) Research(w http.ResponseWriter, r *http.Request) {
 	for _, slot := range item.Slots {
 		research = append(research, slot.research())
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"device_id": item.ID, "slots": research})
+	writeJSON(w, http.StatusOK, map[string]any{"device_id": item.ID, "decision_summary": decisionSummary(item.Slots), "slots": research})
 }
 
 type overviewResponse struct {
@@ -225,6 +253,13 @@ type deviceDTO struct {
 	Slots          []slotDTO `json:"slots"`
 }
 
+type deviceSummaryDTO struct {
+	deviceDTO
+	LocationName    string  `json:"location_name"`
+	LocationAddress *string `json:"location_address_text"`
+	LocationStatus  *string `json:"location_status"`
+}
+
 type slotDTO struct {
 	Stream            string          `json:"stream"`
 	Fill              *float64        `json:"fill"`
@@ -242,19 +277,37 @@ type slotDTO struct {
 	FISScore          *float64        `json:"-"`
 	FISStatus         *string         `json:"-"`
 	FISVersion        *string         `json:"-"`
+	TraceJSON         string          `json:"-"`
+	SafetyJSON        string          `json:"-"`
 }
 
 type researchSlotDTO struct {
-	Stream         string          `json:"stream"`
-	RecordedAt     *string         `json:"recorded_at"`
-	Raw            rawReadingDTO   `json:"raw"`
-	Normalized     normalizedDTO   `json:"normalized"`
-	SensorHealth   json.RawMessage `json:"sensor_health"`
-	FISScore       *float64        `json:"fis_score"`
-	FISStatus      *string         `json:"fis_status"`
-	FISVersion     *string         `json:"fis_version"`
-	DominantReason *string         `json:"dominant_reason"`
-	SafetyState    *string         `json:"safety_state"`
+	Stream         string                 `json:"stream"`
+	RecordedAt     *string                `json:"recorded_at"`
+	Raw            rawReadingDTO          `json:"raw"`
+	Normalized     normalizedDTO          `json:"normalized"`
+	SensorHealth   json.RawMessage        `json:"sensor_health"`
+	FISScore       *float64               `json:"fis_score"`
+	FISStatus      *string                `json:"fis_status"`
+	FISVersion     *string                `json:"fis_version"`
+	DominantReason *string                `json:"dominant_reason"`
+	SafetyState    *string                `json:"safety_state"`
+	Sensors        []ingest.SensorReading `json:"sensors"`
+	Derived        derivedParametersDTO   `json:"derived_parameters"`
+	FISTrace       *ingest.DecisionTrace  `json:"fis_trace"`
+	Safety         *ingest.SafetyEvidence `json:"safety"`
+}
+
+type derivedParametersDTO struct {
+	OGI               *float64 `json:"ogi"`
+	AccumulationHours *float64 `json:"accumulation_hours"`
+}
+
+type decisionSummaryDTO struct {
+	PriorityScore  *float64 `json:"priority_score"`
+	CriticalStream *string  `json:"critical_stream"`
+	CriticalReason *string  `json:"critical_reason"`
+	Mode           *string  `json:"mode"`
 }
 
 type rawReadingDTO struct {
@@ -415,7 +468,8 @@ func (api *ReadAPI) slots(ctx context.Context, deviceID string) ([]slotDTO, erro
 		SELECT s.waste_stream,
 			r.recorded_at, r.raw_payload, r.fill, r.weight, r.weight_utilization,
 			r.ogi, r.accumulation, r.temperature, r.sensor_health,
-			d.fis_score, d.fis_status, d.fis_version, d.dominant_reason, d.safety_state
+			d.fis_score, d.fis_status, d.fis_version, d.dominant_reason, d.safety_state,
+			d.trace_json, d.safety_json
 		FROM slots s
 		LEFT JOIN readings r ON r.id = (
 			SELECT r2.id FROM readings r2 WHERE r2.slot_id = s.id
@@ -434,9 +488,9 @@ func (api *ReadAPI) slots(ctx context.Context, deviceID string) ([]slotDTO, erro
 		var item slotDTO
 		var recordedAt, rawPayload, health sql.NullString
 		var fill, weight, utilization, ogi, accumulation, temperature, fisScore sql.NullFloat64
-		var fisStatus, fisVersion, reason, safetyState sql.NullString
+		var fisStatus, fisVersion, reason, safetyState, traceJSON, safetyJSON sql.NullString
 		if err := rows.Scan(&item.Stream, &recordedAt, &rawPayload, &fill, &weight, &utilization, &ogi, &accumulation, &temperature, &health,
-			&fisScore, &fisStatus, &fisVersion, &reason, &safetyState); err != nil {
+			&fisScore, &fisStatus, &fisVersion, &reason, &safetyState, &traceJSON, &safetyJSON); err != nil {
 			return nil, err
 		}
 		item.RecordedAt = nullableString(recordedAt)
@@ -452,6 +506,8 @@ func (api *ReadAPI) slots(ctx context.Context, deviceID string) ([]slotDTO, erro
 		item.FISVersion = nullableString(fisVersion)
 		item.DominantReason = nullableString(reason)
 		item.SafetyState = nullableString(safetyState)
+		item.TraceJSON = traceJSON.String
+		item.SafetyJSON = safetyJSON.String
 		if health.Valid && json.Valid([]byte(health.String)) {
 			item.SensorHealth = json.RawMessage(health.String)
 		} else {
@@ -534,6 +590,21 @@ func (item deviceDTO) public() deviceDTO {
 }
 
 func (item slotDTO) research() researchSlotDTO {
+	payloadSlot := rawSlot(item.RawPayload, item.Stream)
+	var trace *ingest.DecisionTrace
+	if item.TraceJSON != "" {
+		var decoded ingest.DecisionTrace
+		if json.Unmarshal([]byte(item.TraceJSON), &decoded) == nil {
+			trace = &decoded
+		}
+	}
+	var safetyEvidence *ingest.SafetyEvidence
+	if item.SafetyJSON != "" {
+		var decoded ingest.SafetyEvidence
+		if json.Unmarshal([]byte(item.SafetyJSON), &decoded) == nil {
+			safetyEvidence = &decoded
+		}
+	}
 	return researchSlotDTO{
 		Stream:     item.Stream,
 		RecordedAt: item.RecordedAt,
@@ -546,25 +617,100 @@ func (item slotDTO) research() researchSlotDTO {
 		SensorHealth: item.SensorHealth,
 		FISScore:     item.FISScore, FISStatus: item.FISStatus, FISVersion: item.FISVersion,
 		DominantReason: item.DominantReason, SafetyState: item.SafetyState,
+		Sensors:  payloadSlot.Sensors,
+		Derived:  derivedParametersDTO{OGI: item.OGI, AccumulationHours: item.AccumulationHours},
+		FISTrace: trace,
+		Safety:   safetyEvidence,
 	}
 }
 
-func rawGas(payload, stream string) *float64 {
-	var envelope struct {
-		Slots []struct {
-			Stream string   `json:"stream"`
-			GasRaw *float64 `json:"gas_raw"`
-		} `json:"slots"`
+func rawSlot(payload, stream string) ingest.Slot {
+	var request ingest.Request
+	if json.Unmarshal([]byte(payload), &request) != nil {
+		return ingest.Slot{}
 	}
-	if json.Unmarshal([]byte(payload), &envelope) != nil {
-		return nil
-	}
-	for _, slot := range envelope.Slots {
+	for _, slot := range request.Slots {
 		if slot.Stream == stream {
-			return slot.GasRaw
+			return slot
 		}
 	}
-	return nil
+	return ingest.Slot{}
+}
+
+func rawGas(payload, stream string) *float64 {
+	return rawSlot(payload, stream).GasRaw
+}
+
+func decisionSummary(slots []slotDTO) decisionSummaryDTO {
+	var result decisionSummaryDTO
+	var critical *slotDTO
+	for index := range slots {
+		slot := &slots[index]
+		if slot.FISScore != nil && (result.PriorityScore == nil || *slot.FISScore > *result.PriorityScore) {
+			result.PriorityScore = slot.FISScore
+		}
+		if traceHasFourInputs(slot.TraceJSON) {
+			result.Mode = stringPointer("Fuzzy multi-parameter")
+		}
+		if critical == nil || compareSlotPriority(*slot, *critical) > 0 {
+			critical = slot
+		}
+	}
+	if critical != nil && critical.Status != nil {
+		result.CriticalStream = stringPointer(critical.Stream)
+		result.CriticalReason = critical.DominantReason
+		if critical.SafetyState != nil && *critical.SafetyState == safety.StateSafetyAlert && critical.SafetyJSON != "" {
+			var evidence ingest.SafetyEvidence
+			if json.Unmarshal([]byte(critical.SafetyJSON), &evidence) == nil && strings.TrimSpace(evidence.Reason) != "" {
+				result.CriticalReason = stringPointer(evidence.Reason)
+			}
+		}
+	}
+	return result
+}
+
+func compareSlotPriority(left, right slotDTO) int {
+	leftStatus, rightStatus := device.Status(""), device.Status("")
+	if left.Status != nil {
+		leftStatus = device.Status(*left.Status)
+	}
+	if right.Status != nil {
+		rightStatus = device.Status(*right.Status)
+	}
+	if compared := device.Compare(leftStatus, rightStatus); compared != 0 {
+		return compared
+	}
+	leftScore, rightScore := -1.0, -1.0
+	if left.FISScore != nil {
+		leftScore = *left.FISScore
+	}
+	if right.FISScore != nil {
+		rightScore = *right.FISScore
+	}
+	switch {
+	case leftScore > rightScore:
+		return 1
+	case leftScore < rightScore:
+		return -1
+	default:
+		return 0
+	}
+}
+
+func traceHasFourInputs(raw string) bool {
+	if raw == "" {
+		return false
+	}
+	var trace ingest.DecisionTrace
+	if json.Unmarshal([]byte(raw), &trace) != nil {
+		return false
+	}
+	for _, name := range []string{"fill", "weight_utilization", "ogi", "accumulation_hours"} {
+		if _, ok := trace.Inputs[name]; !ok {
+			return false
+		}
+	}
+	return len(trace.Inputs) == 4
 }
 
 func finalStatus(fisStatus, safetyState *string) *string {
