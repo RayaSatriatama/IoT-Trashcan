@@ -65,7 +65,7 @@ func TestTickUsesRealIngestPipeline(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM decisions`).Scan(&decisions); err != nil {
 		t.Fatal(err)
 	}
-	if readings != 12 || decisions != 12 {
+	if readings != 24 || decisions != 24 {
 		t.Fatalf("pipeline rows readings=%d decisions=%d", readings, decisions)
 	}
 	var status, version, trace string

@@ -69,6 +69,19 @@ rm sigap-simulation.db
 
 Saat aktif, UI menampilkan indikator `SIMULASI`. Atur `SIGAP_SIMULATION_INDICATOR_ENABLED=false` untuk menyembunyikan indikator tanpa menonaktifkan simulator. Nilai default-nya adalah `true`. Saat `SIGAP_SIMULATION_ENABLED` tidak ada atau `false`, seeding, simulator, dan demo decision configuration tidak dijalankan.
 
+## Vercel simulation snapshot
+
+Vercel menjalankan frontend Expo Web dari `dist` dan Go Function pada `/api`. Masukkan nilai dari `.env.simulation` ke Production Environment Variables Vercel. `SIGAP_DB_PATH` tetap dipertahankan pada environment lokal, tetapi Function selalu memakai SQLite kecil di `/tmp` karena filesystem Vercel tidak persisten.
+
+Saat Function dimulai dengan `SIGAP_SIMULATION_ENABLED=true`, SIGAP membuat 8 lokasi, 8 perangkat, 24 slot, lalu menjalankan satu tick telemetry. Tidak ada loop simulator dan `POST /api/ingest` ditolak, sehingga data ini adalah snapshot demo read-only yang dapat berubah saat cold start berikutnya. Database lokal `sigap-simulation.db` tidak diunggah ke Vercel.
+
+Deployment produksi dilakukan setelah login Vercel dan pengisian environment variables:
+
+```bash
+npx vercel login
+npx vercel --prod
+```
+
 ## Kontribusi
 
 Workflow GitHub project tersedia di [skill project](.agents/skills/github-project-practices/SKILL.md). Ringkasannya:
