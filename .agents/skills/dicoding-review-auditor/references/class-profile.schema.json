@@ -1,0 +1,774 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.dicoding.local/review-auditor/class-profile.schema.json",
+  "title": "Dicoding Review Auditor Class Profile",
+  "description": "Versioned, course-neutral authority, rubric, runtime, scoring, and feedback contract.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "profile_id",
+    "profile_version",
+    "course",
+    "authority_sources",
+    "artifact_types",
+    "criteria",
+    "runtime_obligations",
+    "scoring",
+    "delegation_roles",
+    "feedback_templates"
+  ],
+  "properties": {
+    "schema_version": {
+      "enum": [
+        "1.0.0",
+        "1.1.0"
+      ]
+    },
+    "profile_id": {
+      "$ref": "#/$defs/stableId"
+    },
+    "profile_version": {
+      "$ref": "#/$defs/version"
+    },
+    "course": {
+      "$ref": "#/$defs/course"
+    },
+    "authority_sources": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/authoritySource"
+      }
+    },
+    "artifact_types": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/artifactType"
+      }
+    },
+    "criteria": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/criterionDefinition"
+      }
+    },
+    "runtime_obligations": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/runtimeObligation"
+      }
+    },
+    "scoring": {
+      "$ref": "#/$defs/scoring"
+    },
+    "delegation_roles": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/delegationRole"
+      }
+    },
+    "feedback_templates": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/feedbackTemplate"
+      }
+    },
+    "skip_rules": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/skipRule"
+      }
+    }
+  },
+  "$defs": {
+    "stableId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[0-9]+(?:\\.[0-9]+){0,2}(?:[-+][A-Za-z0-9.-]+)?$"
+    },
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "shortString": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "order": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "authorityLocator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "authority_id",
+        "locator"
+      ],
+      "properties": {
+        "authority_id": {
+          "$ref": "#/$defs/stableId"
+        },
+        "locator": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "rule_role": {
+          "$ref": "#/$defs/ruleRole"
+        },
+        "authority_class": {
+          "$ref": "#/$defs/authorityClassification"
+        },
+        "outcome_effect": {
+          "type": "boolean"
+        }
+      }
+    },
+    "authorityKind": {
+      "enum": [
+        "official_rubric",
+        "official_exception",
+        "official_common_case",
+        "class_skill",
+        "feedback_standard",
+        "automation"
+      ]
+    },
+    "criterionCategory": {
+      "enum": [
+        "mandatory",
+        "optional"
+      ]
+    },
+    "evidenceKind": {
+      "enum": [
+        "archive",
+        "file",
+        "source",
+        "dataset",
+        "notebook",
+        "runtime",
+        "test",
+        "browser",
+        "http",
+        "repository",
+        "student_note",
+        "submission_history",
+        "screenshot",
+        "log"
+      ]
+    },
+    "course": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title",
+        "project_title",
+        "rubric_version"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/stableId"
+        },
+        "title": {
+          "$ref": "#/$defs/shortString"
+        },
+        "project_title": {
+          "$ref": "#/$defs/shortString"
+        },
+        "rubric_version": {
+          "$ref": "#/$defs/version"
+        }
+      }
+    },
+    "authoritySource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "order",
+        "kind",
+        "title",
+        "reference",
+        "applicability"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/stableId"
+        },
+        "order": {
+          "$ref": "#/$defs/order"
+        },
+        "kind": {
+          "$ref": "#/$defs/authorityKind"
+        },
+        "title": {
+          "$ref": "#/$defs/shortString"
+        },
+        "reference": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "applicability": {
+          "enum": [
+            "ACTIVE",
+            "NOT_APPLICABLE"
+          ]
+        },
+        "not_applicable_authority_ref": {
+          "$ref": "#/$defs/authorityLocator"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-fA-F0-9]{64}$"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "applicability": {
+                "const": "NOT_APPLICABLE"
+              }
+            },
+            "required": [
+              "applicability"
+            ]
+          },
+          "then": {
+            "required": [
+              "not_applicable_authority_ref"
+            ]
+          }
+        }
+      ]
+    },
+    "artifactType": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "order",
+        "title",
+        "required"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/stableId"
+        },
+        "order": {
+          "$ref": "#/$defs/order"
+        },
+        "title": {
+          "$ref": "#/$defs/shortString"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "accepted_extensions": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^\\.[A-Za-z0-9._-]+$"
+          }
+        }
+      }
+    },
+    "criterionDefinition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "order",
+        "official_id",
+        "title",
+        "category",
+        "authority_refs",
+        "required_evidence_kinds",
+        "manual_review_required",
+        "runtime_obligation_refs"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/stableId"
+        },
+        "order": {
+          "$ref": "#/$defs/order"
+        },
+        "official_id": {
+          "$ref": "#/$defs/shortString"
+        },
+        "title": {
+          "$ref": "#/$defs/shortString"
+        },
+        "category": {
+          "$ref": "#/$defs/criterionCategory"
+        },
+        "description": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "authority_refs": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/authorityLocator"
+          }
+        },
+        "required_evidence_kinds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/evidenceKind"
+          }
+        },
+        "manual_review_required": {
+          "type": "boolean"
+        },
+        "runtime_obligation_refs": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/stableId"
+          }
+        },
+        "points": {
+          "type": "number",
+          "minimum": 0
+        },
+        "audience_labels": {
+          "$ref": "#/$defs/audienceLabels"
+        }
+      }
+    },
+    "runtimeObligation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "order",
+        "title",
+        "kind",
+        "required",
+        "browser_trace_required",
+        "trigger"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/stableId"
+        },
+        "order": {
+          "$ref": "#/$defs/order"
+        },
+        "title": {
+          "$ref": "#/$defs/shortString"
+        },
+        "kind": {
+          "enum": [
+            "notebook_execution",
+            "source_execution",
+            "test_suite",
+            "browser_interaction",
+            "http_probe",
+            "repository_access",
+            "external_service"
+          ]
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "browser_trace_required": {
+          "type": "boolean"
+        },
+        "trigger": {
+          "$ref": "#/$defs/runtimeTrigger"
+        },
+        "description": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      }
+    },
+    "runtimeTrigger": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "type": {
+          "enum": [
+            "ALWAYS",
+            "ARTIFACT_PRESENT"
+          ]
+        },
+        "artifact_type_ref": {
+          "$ref": "#/$defs/stableId"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "ARTIFACT_PRESENT"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "artifact_type_ref"
+            ]
+          }
+        }
+      ]
+    },
+    "scoringTier": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "order",
+        "label",
+        "minimum",
+        "maximum"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/stableId"
+        },
+        "order": {
+          "$ref": "#/$defs/order"
+        },
+        "label": {
+          "$ref": "#/$defs/shortString"
+        },
+        "minimum": {
+          "type": "number"
+        },
+        "maximum": {
+          "type": "number"
+        },
+        "value": {
+          "type": "number"
+        }
+      }
+    },
+    "scoring": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "optional_scoring_requires_mandatory_pass",
+        "tiers"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "none",
+            "optional_count",
+            "average_points"
+          ]
+        },
+        "optional_scoring_requires_mandatory_pass": {
+          "type": "boolean"
+        },
+        "base_score": {
+          "type": "number"
+        },
+        "maximum_score": {
+          "type": "number"
+        },
+        "tiers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/scoringTier"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "none"
+              }
+            },
+            "required": [
+              "mode"
+            ]
+          },
+          "then": {
+            "properties": {
+              "tiers": {
+                "maxItems": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "enum": [
+                  "optional_count",
+                  "average_points"
+                ]
+              }
+            },
+            "required": [
+              "mode"
+            ]
+          },
+          "then": {
+            "required": [
+              "base_score",
+              "maximum_score"
+            ],
+            "properties": {
+              "tiers": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "delegationRole": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "order",
+        "title",
+        "capability",
+        "eligible_in_full_review"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/stableId"
+        },
+        "order": {
+          "$ref": "#/$defs/order"
+        },
+        "title": {
+          "$ref": "#/$defs/shortString"
+        },
+        "capability": {
+          "enum": [
+            "filesystem",
+            "source_analysis",
+            "runtime",
+            "browser",
+            "rubric_crosscheck"
+          ]
+        },
+        "eligible_in_full_review": {
+          "type": "boolean"
+        },
+        "exclusive_resource": {
+          "type": "string",
+          "maxLength": 256
+        }
+      }
+    },
+    "feedbackTemplate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "order",
+        "decision",
+        "reference"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/stableId"
+        },
+        "order": {
+          "$ref": "#/$defs/order"
+        },
+        "decision": {
+          "enum": [
+            "LULUS",
+            "REVISI",
+            "BLOCKED"
+          ]
+        },
+        "reference": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "audience": {
+          "enum": [
+            "student",
+            "internal"
+          ],
+          "default": "student"
+        }
+      }
+    },
+    "skipRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "order",
+        "applies_to",
+        "condition",
+        "reason",
+        "authority_ref"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/stableId"
+        },
+        "order": {
+          "$ref": "#/$defs/order"
+        },
+        "applies_to": {
+          "enum": [
+            "mandatory",
+            "optional",
+            "runtime",
+            "feedback"
+          ]
+        },
+        "condition": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "reason": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "authority_ref": {
+          "$ref": "#/$defs/authorityLocator"
+        }
+      }
+    },
+    "audienceLabel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/shortString"
+        },
+        "title": {
+          "$ref": "#/$defs/shortString"
+        }
+      }
+    },
+    "audienceLabels": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reviewer",
+        "student"
+      ],
+      "properties": {
+        "reviewer": {
+          "$ref": "#/$defs/audienceLabel"
+        },
+        "student": {
+          "$ref": "#/$defs/audienceLabel"
+        }
+      }
+    },
+    "ruleRole": {
+      "enum": [
+        "official_gate",
+        "common_case",
+        "diagnostic_case",
+        "development_note"
+      ]
+    },
+    "authorityClassification": {
+      "enum": [
+        "AUTHORITATIVE_REQUIREMENT",
+        "AUTHORITATIVE_EXCEPTION",
+        "GUIDANCE",
+        "AUTOMATION_SIGNAL",
+        "REVIEWER_INFERENCE"
+      ]
+    },
+    "ruleReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "authority_id",
+        "locator",
+        "rule_role",
+        "authority_class",
+        "outcome_effect"
+      ],
+      "properties": {
+        "authority_id": {
+          "$ref": "#/$defs/stableId"
+        },
+        "locator": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "rule_role": {
+          "$ref": "#/$defs/ruleRole"
+        },
+        "authority_class": {
+          "$ref": "#/$defs/authorityClassification"
+        },
+        "outcome_effect": {
+          "type": "boolean"
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "schema_version": {
+            "const": "1.1.0"
+          }
+        },
+        "required": [
+          "schema_version"
+        ]
+      },
+      "then": {
+        "properties": {
+          "criteria": {
+            "items": {
+              "required": [
+                "audience_labels"
+              ],
+              "properties": {
+                "authority_refs": {
+                  "items": {
+                    "$ref": "#/$defs/ruleReference"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}
