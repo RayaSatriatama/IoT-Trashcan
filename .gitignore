@@ -70,3 +70,5 @@ docs/SIGAP_MD_Documents_v1.0.zip
 
 expo-env.d.ts
 # @end expo-cli
+.vercel
+.env*
