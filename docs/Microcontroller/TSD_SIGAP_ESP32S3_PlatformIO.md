@@ -34,7 +34,15 @@ flowchart LR
 
 ## 2 Kesesuaian repo dan tata letak pekerjaan
 
-Landasan PRD adalah `RayaSatriatama/IoT-Trashcan` branch `main` commit `6fed00f02b6ef7dabc159d924f798d344a6072ba`. Pada baseline itu runtime menggunakan Go `net/http`, SQLite, dan Expo Web; tidak ada proyek PlatformIO. Nama file berikut adalah rancangan target, bukan pernyataan isi branch terkini. Sebelum mulai implementasi, bandingkan ulang baseline dengan HEAD, migrasi dan route aktual, lalu sesuaikan diff tanpa menimpa perubahan yang sudah ada.
+Landasan historis PRD adalah `RayaSatriatama/IoT-Trashcan` branch `main` commit `6fed00f02b6ef7dabc159d924f798d344a6072ba`. Pada snapshot itu runtime menggunakan Go `net/http`, SQLite, dan Expo Web; belum ada proyek PlatformIO. Reconciliation terhadap HEAD saat dokumen ini diperbarui dilakukan pada `ad65d5fe73c30b16c61da917eb517cdf2a783ba6`, tiga commit di atas baseline.
+
+| Commit | Dampak terhadap pekerjaan firmware | Keputusan reconciliation |
+| --- | --- | --- |
+| `98e4439` | Runtime dan schema berubah pada ingest, fuzzy, safety, history, read API, simulator, serta research trace. | Jadikan kontrak runtime saat ini; pertahankan endpoint dan evidence yang sudah ada. |
+| `292aa47` | PRD/TSD PlatformIO ditambahkan setelah perubahan runtime. | Dokumen ini diperbarui agar baseline historis dan target HEAD tidak tertukar. |
+| `ad65d5f` | Menambahkan skill dan tooling proyek; tidak mengubah runtime atau schema. | Catat sebagai konteks tooling tanpa dampak firmware/API. |
+
+Nama file di bawah adalah rancangan target, bukan pernyataan bahwa komponennya sudah ada. Sebelum implementasi, cek ulang `main`, migrasi, route, dan DTO pada commit yang akan menjadi HEAD implementasi. Jangan menimpa perubahan yang sudah ada.
 
 ```text
 firmware/
@@ -51,9 +59,20 @@ firmware/
   README.md
 internal/ingest/{model,validation,service}.go
 internal/http/{ingest_handler,telemetry_batch_handler,read_api,history_api}.go
-migrations/<next>_telemetry_archive.sql
+migrations/005_telemetry_archive.sql
 docs/firmware/{TSD,contract,calibration,hardware_evidence}
 ```
+
+Pada HEAD reconciliation, migrasi terakhir adalah `004_device_research_trace.sql`.
+Migrator mengurutkan seluruh SQL secara leksikografis, sehingga `005_telemetry_archive.sql`
+adalah nama berikutnya yang diharapkan saat ini. Nomor tersebut harus diverifikasi
+lagi pada PR implementasi; jika migrasi lain masuk lebih dahulu, gunakan nomor
+terurut berikutnya yang masih kosong.
+
+History dashboard saat ini memakai cursor `(recorded_at, reading_id)`. Arsip
+telemetry memakai identitas stabil `(device_id, boot_id, sequence)` dan menerima
+UTC-null. DTO, query, dan ekspor arsip harus bersifat additive tanpa mengubah
+urutan history dashboard atau kolom CSV yang sudah digunakan.
 
 `firmware/` adalah batas kompilasi MCU. `lib/` menerima data dan interface melalui dependency injection sederhana agar logika dapat diuji native tanpa board. Tidak ada driver yang memanggil SQLite atau HTTP. Backend memproyeksikan data masuk ke tabel indeks tanpa mengubah angka edge. Komponen web menggunakan API, bukan membaca file media MCU langsung.
 
@@ -157,7 +176,7 @@ Saat quota habis, **jangan overwrite pending tertua**. Operator melihat `LOGGING
 
 ### Ringkasan v2
 
-`POST /api/ingest` tetap menerima `device_id`, `recorded_at` UTC, `slots` tepat `organic`, `inorganic`, `b3`, dan `health` sesuai kontrak repo. Serialisasi sekali, simpan byte untuk replay exact karena baseline menganggap payload yang berubah pada waktu sama sebagai konflik. `health.sensors` menunjukkan pembacaan terbaru tiap kanal, `health.edge_results` menunjukkan hasil terbaru tiga slot termasuk reason/versi, dan counter logger. Body target 8 KiB adalah usulan yang wajib diverifikasi. ACK `readings_stored=3` hanya menyatakan ringkasan tersimpan, sehingga tidak menghapus arsip lengkap. `gas_raw` scalar boleh null; kanal MQ disimpan terpisah.
+`POST /api/ingest` tetap menjadi route summary-v2. Route ini tetap menerima `device_id`, `recorded_at` UTC, `slots` tepat `organic`, `inorganic`, `b3`, dan `health` sesuai kontrak repo. Serialisasi sekali, simpan byte untuk replay exact karena baseline menganggap payload yang berubah pada waktu sama sebagai konflik. `health.sensors` menunjukkan pembacaan terbaru tiap kanal, `health.edge_results` menunjukkan hasil terbaru tiga slot termasuk reason/versi, dan counter logger. Body target 8 KiB adalah usulan yang wajib diverifikasi. ACK `readings_stored=3` hanya menyatakan ringkasan tersimpan, sehingga tidak menghapus arsip lengkap. `gas_raw` scalar boleh null; kanal MQ disimpan terpisah.
 
 ### Arsip v3
 
@@ -231,7 +250,7 @@ Migrasi baru mempertahankan tabel dan endpoint lama. Tabel logis berikut dapat d
 
 Simpan checksum/hash record terhadap representasi kanonik yang distandarkan (misalnya serializer fixture v3 dengan urutan field tetap); backend tetap menyimpan byte permintaan asal atau per-record raw payload untuk audit. Canonical hash record diperlukan agar duplikat identik yang datang pada batch berbeda dianggap sama walaupun posisi array berbeda. Hash batch tetap berasal dari byte request persis. Definisikan secara eksplisit JSON number normalization, Unicode, urutan key, dan null vs absent dalam fixture lintas bahasa sebelum implementasi; jangan mengandalkan hasil serializer berbeda sebagai ukuran kesamaan diam-diam.
 
-`internal/ingest/service.go` untuk hardware v2/v3 hanya memvalidasi dan menyimpan hasil edge. Uji memastikan fungsi Normalize/evaluator legacy tidak dipanggil pada jalur tersebut. Simulator/legacy diberi source terpisah, tanpa menimpa hasil ESP32. API research dan ekspor menyediakan cursor atau pagination stabil `(device_id,boot_id,sequence)` dan filter sensor/stream/kind/quality/UTC-null; ekspor besar memakai streaming serta metadata time anchor/versi. Backend mengembalikan `recorded_at:null` sebagaimana asal dan `derived_at` secara terpisah bila tersedia. Metrik SQLite meliputi disk/day, WAL, latency commit, throughput ingest, index growth, query/export, backup dan retensi yang disetujui. Nomor migrasi dan nama fungsi final mengikuti HEAD repo saat eksekusi.
+`internal/ingest/service.go` untuk hardware v2/v3 hanya memvalidasi dan menyimpan hasil edge. Uji memastikan fungsi Normalize/evaluator legacy tidak dipanggil pada jalur tersebut. Simulator/legacy diberi source terpisah, tanpa menimpa hasil ESP32. API research dan ekspor menyediakan cursor atau pagination stabil `(device_id,boot_id,sequence)` dan filter sensor/stream/kind/quality/UTC-null; ekspor besar memakai streaming serta metadata time anchor/versi. Backend mengembalikan `recorded_at:null` sebagaimana asal dan `derived_at` secara terpisah bila tersedia. Metrik SQLite meliputi disk/day, WAL, latency commit, throughput ingest, index growth, query/export, backup dan retensi yang disetujui. Jalur batch baru harus additive, tidak mengubah `POST /api/ingest`, serta tidak menimpa `trace_json` atau `safety_json` yang ditambahkan migrasi `004`; nomor migrasi dan nama fungsi final diverifikasi ulang terhadap HEAD repo saat eksekusi.
 
 ## 11 Observabilitas, keamanan dan kegagalan
 

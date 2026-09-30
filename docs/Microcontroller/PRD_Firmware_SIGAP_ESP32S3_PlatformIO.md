@@ -12,7 +12,7 @@ Operator membutuhkan kondisi tiga slot yang dapat dipercaya, termasuk ketika sen
 
 ## 2 Landasan repo
 
-Baseline repo adalah RayaSatriatama/IoT-Trashcan, branch main, commit 6fed00f02b6ef7dabc159d924f798d344a6072ba. Temuan berikut berasal dari pembacaan kode dan dokumen pada commit tersebut.
+Baseline historis repo adalah RayaSatriatama/IoT-Trashcan, branch main, commit 6fed00f02b6ef7dabc159d924f798d344a6072ba. Temuan tabel berikut berasal dari pembacaan kode dan dokumen pada commit tersebut. Reconciliation implementasi saat ini ditujukan ke main pada commit ad65d5fe73c30b16c61da917eb517cdf2a783ba6.
 
 | Area | Kondisi saat ini | Implikasi firmware |
 | --- | --- | --- |
@@ -23,6 +23,28 @@ Baseline repo adalah RayaSatriatama/IoT-Trashcan, branch main, commit 6fed00f02b
 | Validasi | Cek operasional saat ini hanya range fill dan berat negatif. | Perlu validasi health dan sensor wajib sebelum pilot hardware. |
 | Research | FIS production, OGI, accumulation dan safety final masih deferred. | Firmware tidak menghasilkan status atau indeks penelitian palsu. |
 | Firmware | Tree repo belum memiliki platformio.ini atau direktori firmware. | Tambahkan project firmware terpisah dari Go dan Expo saat implementasi. |
+
+### Reconciliation terhadap HEAD
+
+Main sekarang tiga commit di atas baseline historis. `98e4439` mengubah
+permukaan runtime yang relevan: ingest, fuzzy, safety, history, read API,
+simulator, dan research trace melalui `migrations/004_device_research_trace.sql`.
+`292aa47` menambahkan dokumen firmware ini, sedangkan `ad65d5f` hanya
+menambahkan skill dan tooling proyek tanpa dampak runtime.
+
+Kontrak firmware harus mempertahankan `POST /api/ingest` sebagai summary-v2.
+Arsip telemetry v3 memakai route batch baru dan jalur validasi/penyimpanan
+terpisah; jalur hardware tidak boleh memanggil inference legacy. Data archive
+bersifat additive terhadap `trace_json` dan `safety_json` pada `decisions`,
+bukan pengganti atau reinterpretasi kolom tersebut.
+
+Migration HEAD saat ini berakhir pada `004_device_research_trace.sql`, sehingga
+nama archive yang diharapkan adalah `005_telemetry_archive.sql`. Nomor ini harus
+dicek ulang tepat sebelum PR implementasi; migration baru yang masuk lebih dulu
+mengambil nomor berikutnya. History dashboard mempertahankan cursor
+`(recorded_at, reading_id)`, sedangkan archive memakai `(device_id, boot_id,
+sequence)` dan dapat menyimpan UTC-null. Query, DTO, dan export archive tidak
+boleh mengubah urutan history atau kolom CSV yang sudah kompatibel.
 
 PRD ini melengkapi SIGAP_PRD_v1.0.md, SIGAP_SDD_v1.0.md, dan konsep hardware v0.8. Sensor MQ-7 dan MQ-8 mengikuti keputusan perangkat terbaru; kandidat MQ-137/MQ-138 dalam dokumen lama tidak menjadi baseline firmware ini.
 
@@ -396,7 +418,7 @@ Dengan satu paket tiap 15 s terdapat 5760 paket dan 17280 row reading per device
 
 Buat prosedur atau CLI lokal untuk mendaftarkan location, device_code, credential digest, tiga slots, serta kapasitas operasional. Tooling provisioning hardware belum terlihat pada entry point runtime; simulator tidak boleh dijadikan sumber credential production. Digest mengikuti internal/ingest/auth.go. Pembaruan firmware_version di devices perlu dipetakan dari health yang tervalidasi karena field database tersebut tidak diperbarui oleh ingest saat ini.
 
-Migrations baru hanya diperlukan bila hasil pengukuran kapasitas atau kebutuhan query menuntut schema kanal yang terpisah. Simulator tetap opt-in dan mempertahankan penandaan sintetis. Test integrasi harus mencakup payload legacy dan payload hardware v1.
+Migrations baru hanya diperlukan bila hasil pengukuran kapasitas atau kebutuhan query menuntut schema kanal yang terpisah. Pada HEAD reconciliation, migration berikutnya diperkirakan `005_telemetry_archive.sql`; cek ulang urutan file sebelum membuatnya. Simulator tetap opt-in dan mempertahankan penandaan sintetis. Test integrasi harus mencakup payload legacy dan payload hardware v1.
 
 ## 12 Tahapan implementasi
 
@@ -481,10 +503,11 @@ Jika BLE gateway dipilih setelah spike, uji radio putus pada setiap tahap fragme
 
 ## 15 Referensi untuk developer
 
-Repo dan kode dibaca pada commit 6fed00f02b6ef7dabc159d924f798d344a6072ba. Dokumentasi vendor diperiksa pada 30 September 2026. Nomor bagian berikut dapat digunakan untuk menelusuri keputusan; semua URL adalah sumber, bukan hasil uji hardware.
+Repo dan kode historis dibaca pada commit 6fed00f02b6ef7dabc159d924f798d344a6072ba; reconciliation dilakukan terhadap main commit ad65d5fe73c30b16c61da917eb517cdf2a783ba6 pada 30 September 2026. Dokumentasi vendor diperiksa pada tanggal yang sama. Nomor bagian berikut dapat digunakan untuk menelusuri keputusan; semua URL adalah sumber, bukan hasil uji hardware.
 
 - Repo: https://github.com/RayaSatriatama/IoT-Trashcan/tree/6fed00f02b6ef7dabc159d924f798d344a6072ba — README; docs/SIGAP_PRD_v1.0.md; docs/SIGAP_SDD_v1.0.md; docs/SIGAP_Smart_Bin_Konsep_dan_RAB_v0.8.md.
-- Kontrak aktual: internal/http/ingest_handler.go; internal/ingest/model.go; service.go; validation.go; normalize.go; internal/http/read_api.go; history_api.go; internal/device/offline.go; cmd/sigap/main.go; migrations/001_initial.sql.
+- Kontrak historis: internal/http/ingest_handler.go; internal/ingest/model.go; service.go; validation.go; normalize.go; internal/http/read_api.go; history_api.go; internal/device/offline.go; cmd/sigap/main.go; migrations/001_initial.sql.
+- Kontrak HEAD yang wajib direconcile: internal/ingest, internal/fuzzy, internal/safety, internal/history, internal/http/read_api.go, internal/simulator, dan migrations/004_device_research_trace.sql.
 - PlatformIO board: https://docs.platformio.org/en/latest/boards/espressif32/esp32-s3-devkitc-1.html — default N8, override board options.
 - Platform manifest: https://github.com/platformio/platform-espressif32/blob/v7.1.3/platform.json — platform pin dan package framework. Board manifest: boards/esp32-s3-devkitc-1.json pada tag yang sama.
 - Espressif DevKitC-1: https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32s3/esp32-s3-devkitc-1/user_guide_v1.1.html — GPIO, USB, memori dan perubahan pin RGB.
