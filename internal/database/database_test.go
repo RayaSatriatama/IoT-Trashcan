@@ -100,11 +100,38 @@ func TestOpenMigrationIsIdempotent(t *testing.T) {
 	defer second.Close()
 
 	var count int
-	if err := second.QueryRow("SELECT COUNT(*) FROM schema_migrations WHERE name IN ('001_initial.sql', '002_normalized_reading.sql', '003_history_reading_time_index.sql')").Scan(&count); err != nil {
+	if err := second.QueryRow("SELECT COUNT(*) FROM schema_migrations WHERE name IN ('001_initial.sql', '002_normalized_reading.sql', '003_history_reading_time_index.sql', '004_device_research_trace.sql')").Scan(&count); err != nil {
 		t.Fatalf("read migration metadata: %v", err)
 	}
-	if count != 3 {
-		t.Fatalf("migration count = %d, want 3", count)
+	if count != 4 {
+		t.Fatalf("migration count = %d, want 4", count)
+	}
+
+	rows, err := second.Query("PRAGMA table_info(decisions)")
+	if err != nil {
+		t.Fatalf("read decisions columns: %v", err)
+	}
+	defer rows.Close()
+	columnCounts := map[string]int{"trace_json": 0, "safety_json": 0}
+	for rows.Next() {
+		var cid int
+		var name, dataType string
+		var notNull, primaryKey int
+		var defaultValue sql.NullString
+		if err := rows.Scan(&cid, &name, &dataType, &notNull, &defaultValue, &primaryKey); err != nil {
+			t.Fatalf("scan decisions column: %v", err)
+		}
+		if _, wanted := columnCounts[name]; wanted {
+			columnCounts[name]++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate decisions columns: %v", err)
+	}
+	for _, name := range []string{"trace_json", "safety_json"} {
+		if columnCounts[name] != 1 {
+			t.Fatalf("decisions column %q count = %d, want 1", name, columnCounts[name])
+		}
 	}
 }
 
