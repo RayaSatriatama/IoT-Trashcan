@@ -4,30 +4,31 @@
 
 namespace sigap::config {
 
-bool MemoryConfigStore::read_active_pointer(ConfigSlot& slot) const noexcept {
-  if (has_pending_fault_ && pending_fault_ == Fault::ReadPointer) {
+StoreReadStatus MemoryConfigStore::read_activation_metadata(
+    ActivationMetadata& metadata) const noexcept {
+  if (has_pending_fault_ && pending_fault_ == Fault::ReadActivation) {
     has_pending_fault_ = false;
-    return false;
+    return StoreReadStatus::Error;
   }
-  if (!has_active_pointer_) {
-    return false;
+  if (!has_activation_metadata_) {
+    return StoreReadStatus::NotFound;
   }
-  slot = active_slot_;
-  return true;
+  metadata = activation_metadata_;
+  return StoreReadStatus::Found;
 }
 
-bool MemoryConfigStore::read_slot(ConfigSlot slot,
-                                  EncodedConfig& encoded) const noexcept {
+StoreReadStatus MemoryConfigStore::read_slot(
+    ConfigSlot slot, EncodedConfig& encoded) const noexcept {
   if (has_pending_fault_ && pending_fault_ == Fault::ReadSlot) {
     has_pending_fault_ = false;
-    return false;
+    return StoreReadStatus::Error;
   }
   const std::size_t slot_index = index(slot);
   if (!slot_present_[slot_index]) {
-    return false;
+    return StoreReadStatus::NotFound;
   }
   encoded = slots_[slot_index];
-  return true;
+  return StoreReadStatus::Found;
 }
 
 bool MemoryConfigStore::write_slot(ConfigSlot slot,
@@ -46,14 +47,25 @@ bool MemoryConfigStore::write_slot(ConfigSlot slot,
   return true;
 }
 
-bool MemoryConfigStore::write_active_pointer(ConfigSlot slot) noexcept {
-  if (has_pending_fault_ && pending_fault_ == Fault::WritePointer) {
+bool MemoryConfigStore::write_activation_metadata(
+    const ActivationMetadata& metadata) noexcept {
+  if (has_pending_fault_ && pending_fault_ == Fault::WriteActivation) {
     has_pending_fault_ = false;
     return false;
   }
-  active_slot_ = slot;
-  has_active_pointer_ = true;
+  activation_metadata_ = metadata;
+  has_activation_metadata_ = true;
   return true;
+}
+
+ProvisioningStatus MemoryConfigStore::provisioning_status() const noexcept {
+  if (has_pending_fault_ && pending_fault_ == Fault::ReadProvisioned) {
+    has_pending_fault_ = false;
+    return ProvisioningStatus::Error;
+  }
+  if (!has_provisioning_marker_) return ProvisioningStatus::Unprovisioned;
+  return provisioned_ ? ProvisioningStatus::Provisioned
+                      : ProvisioningStatus::Unprovisioned;
 }
 
 bool MemoryConfigStore::mark_provisioned() noexcept {
@@ -62,6 +74,7 @@ bool MemoryConfigStore::mark_provisioned() noexcept {
     return false;
   }
   provisioned_ = true;
+  has_provisioning_marker_ = true;
   return true;
 }
 

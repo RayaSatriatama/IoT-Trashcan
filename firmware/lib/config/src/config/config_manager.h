@@ -28,11 +28,19 @@ class ConfigManager final {
   ConfigValidation validate_draft() const noexcept;
   bool validate_draft_and_enter() noexcept;
   bool preview_draft() noexcept;
-  bool commit_draft() noexcept;
+ bool commit_draft() noexcept;
 
  private:
-  bool load_valid_slot(ConfigSlot slot, AppConfig& config,
-                       ConfigIdentity& identity) const noexcept;
+  enum class SlotLoadStatus : uint8_t {
+    Valid,
+    NotFound,
+    Invalid,
+    Error,
+  };
+
+  SlotLoadStatus load_valid_slot(ConfigSlot slot, AppConfig& config,
+                                 ConfigIdentity& identity) const noexcept;
+  ConfigBootResult enter_storage_error() noexcept;
 
   IConfigSlotStore& store_;
   ValidationContext context_{};
@@ -45,8 +53,11 @@ class ConfigManager final {
   bool fallback_used_{false};
   bool has_draft_{false};
   bool has_active_slot_{false};
+  bool has_activation_metadata_{false};
+  uint64_t last_committed_version_{0};
   EncodedConfig encoded_scratch_{};
   EncodedConfig readback_scratch_{};
+  ActivationMetadata activation_metadata_{};
 };
 
 }  // namespace sigap::config

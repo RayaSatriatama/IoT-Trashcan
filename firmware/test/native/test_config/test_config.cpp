@@ -20,6 +20,8 @@ using sigap::config::ConfigCodec;
 using sigap::config::ConfigState;
 using sigap::config::EncodedConfig;
 using sigap::config::MemoryConfigStore;
+using sigap::config::ProvisioningStatus;
+using sigap::config::StoreReadStatus;
 
 using sigap::board::BoardMemoryReading;
 using sigap::board::BoardMemoryStatus;
@@ -179,9 +181,11 @@ void test_sd_quota_is_checked_when_capacity_is_known() {
 }
 
 void test_configuration_memory_footprint_is_bounded() {
-  std::printf("memory sizeof(AppConfig)=%zu EncodedConfig=%zu ConfigManager=%zu\\n",
+  std::printf("memory sizeof(AppConfig)=%zu EncodedConfig=%zu ConfigManager=%zu "
+              "ActivationMetadata=%zu\\n",
               sizeof(AppConfig), sizeof(EncodedConfig),
-              sizeof(sigap::config::ConfigManager));
+              sizeof(sigap::config::ConfigManager),
+              sizeof(sigap::config::ActivationMetadata));
   TEST_ASSERT_TRUE(sizeof(AppConfig) <= 128U);
   TEST_ASSERT_TRUE(sizeof(EncodedConfig) <= 256U);
   TEST_ASSERT_TRUE(sizeof(sigap::config::ConfigManager) <= 1024U);
@@ -198,6 +202,19 @@ void test_deterministic_encoding_and_hash() {
                                 first.size);
   TEST_ASSERT_EQUAL_UINT8_ARRAY(first.hash().data(), second.hash().data(),
                                 first.hash().size());
+}
+
+void test_factory_default_sha256_known_answer() {
+  ConfigCodec codec;
+  EncodedConfig encoded{};
+  constexpr sigap::config::ConfigHash kExpected{
+      0xb1, 0x2f, 0xab, 0x00, 0x7a, 0x72, 0x62, 0xf8,
+      0xcb, 0xbf, 0x87, 0x1e, 0xcd, 0x0e, 0xed, 0x16,
+      0x45, 0xbb, 0xd8, 0x5d, 0x7f, 0xa1, 0xa3, 0x2d,
+      0x4b, 0x3a, 0xc7, 0xaf, 0x8a, 0x0f, 0x77, 0xeb};
+  TEST_ASSERT_TRUE(codec.encode(sigap::config::kFactoryDefaults, encoded));
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(kExpected.data(), encoded.hash().data(),
+                                kExpected.size());
 }
 
 void test_codec_round_trip() {
@@ -325,8 +342,10 @@ void test_failed_readback_leaves_previous_slot_authoritative() {
   TEST_ASSERT_FALSE(manager.commit_draft());
   TEST_ASSERT_EQUAL_INT(static_cast<int>(ConfigState::Draft),
                         static_cast<int>(manager.state()));
-  sigap::config::ConfigSlot pointer{};
-  TEST_ASSERT_FALSE(store.read_active_pointer(pointer));
+  sigap::config::ActivationMetadata metadata{};
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(StoreReadStatus::NotFound),
+      static_cast<int>(store.read_activation_metadata(metadata)));
 }
 
 void test_corrupt_new_slot_leaves_previous_pointer_active() {
@@ -384,6 +403,188 @@ void test_corrupt_active_slot_falls_back_to_previous_valid_slot() {
                         static_cast<int>(reboot.begin()));
   TEST_ASSERT_TRUE(reboot.fallback_used());
   TEST_ASSERT_EQUAL_UINT64(1, reboot.active().config_version);
+}
+
+void test_first_commit_mark_provisioned_failure_does_not_activate_staged_slot() {
+  MemoryConfigStore store;
+  sigap::config::ConfigManager manager(store, validation_context());
+  manager.begin();
+  valid_draft(manager);
+  store.fail_next(MemoryConfigStore::Fault::MarkProvisioned);
+  TEST_ASSERT_FALSE(manager.commit_draft());
+
+  sigap::config::ConfigManager reboot(store, validation_context());
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ConfigBootResult::BootstrapDefaults),
+                        static_cast<int>(reboot.begin()));
+  TEST_ASSERT_EQUAL_UINT64(0, reboot.active().config_version);
+}
+
+void test_first_commit_activation_failure_does_not_activate_staged_slot() {
+  MemoryConfigStore store;
+  sigap::config::ConfigManager manager(store, validation_context());
+  manager.begin();
+  valid_draft(manager);
+  store.fail_next(MemoryConfigStore::Fault::WriteActivation);
+  TEST_ASSERT_FALSE(manager.commit_draft());
+
+  sigap::config::ConfigManager reboot(store, validation_context());
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ConfigBootResult::ConfigRequired),
+                        static_cast<int>(reboot.begin()));
+  TEST_ASSERT_EQUAL_UINT64(0, reboot.active().config_version);
+}
+
+void test_pointer_absent_with_valid_staged_slot_does_not_activate_it() {
+  MemoryConfigStore store;
+  ConfigCodec codec;
+  AppConfig staged = sigap::config::kFactoryDefaults;
+  staged.config_version = 7;
+  EncodedConfig encoded{};
+  TEST_ASSERT_TRUE(codec.encode(staged, encoded));
+  TEST_ASSERT_TRUE(store.write_slot(sigap::config::ConfigSlot::A, encoded));
+
+  sigap::config::ConfigManager reboot(store, validation_context());
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ConfigBootResult::BootstrapDefaults),
+                        static_cast<int>(reboot.begin()));
+  TEST_ASSERT_EQUAL_UINT64(0, reboot.active().config_version);
+}
+
+void test_failed_update_keeps_previous_version_authoritative() {
+  MemoryConfigStore store;
+  sigap::config::ConfigManager first(store, validation_context());
+  first.begin();
+  valid_draft(first);
+  TEST_ASSERT_TRUE(first.commit_draft());
+
+  sigap::config::ConfigManager second(store, validation_context());
+  second.begin();
+  valid_draft(second);
+  store.fail_next(MemoryConfigStore::Fault::WriteActivation);
+  TEST_ASSERT_FALSE(second.commit_draft());
+
+  sigap::config::ConfigManager reboot(store, validation_context());
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ConfigBootResult::ActiveLoaded),
+                        static_cast<int>(reboot.begin()));
+  TEST_ASSERT_EQUAL_UINT64(1, reboot.active().config_version);
+}
+
+void test_active_slot_corruption_uses_only_metadata_previous_slot() {
+  MemoryConfigStore store;
+  sigap::config::ConfigManager first(store, validation_context());
+  first.begin();
+  valid_draft(first);
+  TEST_ASSERT_TRUE(first.commit_draft());
+  sigap::config::ConfigManager second(store, validation_context());
+  second.begin();
+  valid_draft(second);
+  TEST_ASSERT_TRUE(second.commit_draft());
+
+  store.corrupt_slot(sigap::config::ConfigSlot::B);
+  sigap::config::ConfigManager reboot(store, validation_context());
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ConfigBootResult::FallbackLoaded),
+                        static_cast<int>(reboot.begin()));
+  TEST_ASSERT_EQUAL_UINT64(1, reboot.active().config_version);
+}
+
+void test_corrupt_active_slot_does_not_promote_newer_staged_other_slot() {
+  MemoryConfigStore store;
+  sigap::config::ConfigManager first(store, validation_context());
+  first.begin();
+  valid_draft(first);
+  TEST_ASSERT_TRUE(first.commit_draft());
+  sigap::config::ConfigManager second(store, validation_context());
+  second.begin();
+  valid_draft(second);
+  TEST_ASSERT_TRUE(second.commit_draft());
+
+  sigap::config::ConfigManager staged(store, validation_context());
+  staged.begin();
+  valid_draft(staged);
+  store.fail_next(MemoryConfigStore::Fault::WriteActivation);
+  TEST_ASSERT_FALSE(staged.commit_draft());
+  store.corrupt_slot(sigap::config::ConfigSlot::B);
+
+  sigap::config::ConfigManager reboot(store, validation_context());
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ConfigBootResult::ConfigRequired),
+                        static_cast<int>(reboot.begin()));
+  TEST_ASSERT_EQUAL_UINT64(0, reboot.active().config_version);
+}
+
+void test_store_read_status_distinguishes_absent_and_backend_error() {
+  MemoryConfigStore store;
+  sigap::config::ActivationMetadata metadata{};
+  EncodedConfig encoded{};
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(StoreReadStatus::NotFound),
+      static_cast<int>(store.read_activation_metadata(metadata)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(StoreReadStatus::NotFound),
+                        static_cast<int>(store.read_slot(
+                            sigap::config::ConfigSlot::A, encoded)));
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(ProvisioningStatus::Unprovisioned),
+      static_cast<int>(store.provisioning_status()));
+
+  store.fail_next(MemoryConfigStore::Fault::ReadActivation);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(StoreReadStatus::Error),
+                        static_cast<int>(store.read_activation_metadata(metadata)));
+  store.fail_next(MemoryConfigStore::Fault::ReadSlot);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(StoreReadStatus::Error),
+                        static_cast<int>(store.read_slot(
+                            sigap::config::ConfigSlot::A, encoded)));
+  store.fail_next(MemoryConfigStore::Fault::ReadProvisioned);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ProvisioningStatus::Error),
+                        static_cast<int>(store.provisioning_status()));
+}
+
+void test_storage_errors_never_bootstrap_defaults() {
+  MemoryConfigStore store;
+  store.fail_next(MemoryConfigStore::Fault::ReadActivation);
+  sigap::config::ConfigManager manager(store, validation_context());
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ConfigBootResult::StorageError),
+                        static_cast<int>(manager.begin()));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ConfigState::StorageError),
+                        static_cast<int>(manager.state()));
+
+  MemoryConfigStore provisioning_store;
+  provisioning_store.fail_next(MemoryConfigStore::Fault::ReadProvisioned);
+  sigap::config::ConfigManager provisioning_manager(provisioning_store,
+                                                    validation_context());
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ConfigBootResult::StorageError),
+                        static_cast<int>(provisioning_manager.begin()));
+
+  MemoryConfigStore slot_store;
+  sigap::config::ConfigManager first(slot_store, validation_context());
+  first.begin();
+  valid_draft(first);
+  TEST_ASSERT_TRUE(first.commit_draft());
+  slot_store.fail_next(MemoryConfigStore::Fault::ReadSlot);
+  sigap::config::ConfigManager slot_manager(slot_store, validation_context());
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ConfigBootResult::StorageError),
+                        static_cast<int>(slot_manager.begin()));
+}
+
+void test_recovery_preserves_monotonic_config_version() {
+  MemoryConfigStore store;
+  sigap::config::ConfigManager first(store, validation_context());
+  first.begin();
+  valid_draft(first);
+  TEST_ASSERT_TRUE(first.commit_draft());
+  sigap::config::ConfigManager second(store, validation_context());
+  second.begin();
+  valid_draft(second);
+  TEST_ASSERT_TRUE(second.commit_draft());
+
+  store.corrupt_slot(sigap::config::ConfigSlot::A);
+  store.corrupt_slot(sigap::config::ConfigSlot::B);
+  sigap::config::ConfigManager recovery(store, validation_context());
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ConfigBootResult::ConfigRequired),
+                        static_cast<int>(recovery.begin()));
+  TEST_ASSERT_TRUE(recovery.start_draft());
+  TEST_ASSERT_TRUE(recovery.validate_draft_and_enter());
+  TEST_ASSERT_TRUE(recovery.commit_draft());
+  sigap::config::ConfigManager repaired(store, validation_context());
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ConfigBootResult::ActiveLoaded),
+                        static_cast<int>(repaired.begin()));
+  TEST_ASSERT_EQUAL_UINT64(3, repaired.active().config_version);
 }
 
 void test_provisioned_device_without_valid_snapshot_requires_config() {
@@ -467,6 +668,7 @@ void setup() {
   RUN_TEST(test_sd_quota_is_checked_when_capacity_is_known);
   RUN_TEST(test_configuration_memory_footprint_is_bounded);
   RUN_TEST(test_deterministic_encoding_and_hash);
+  RUN_TEST(test_factory_default_sha256_known_answer);
   RUN_TEST(test_codec_round_trip);
   RUN_TEST(test_malformed_truncated_or_unsupported_codec_is_rejected);
   RUN_TEST(test_codec_does_not_persist_secret_boundary);
@@ -479,6 +681,15 @@ void setup() {
   RUN_TEST(test_corrupt_new_slot_leaves_previous_pointer_active);
   RUN_TEST(test_pointer_write_failure_keeps_old_active_config);
   RUN_TEST(test_corrupt_active_slot_falls_back_to_previous_valid_slot);
+  RUN_TEST(test_first_commit_mark_provisioned_failure_does_not_activate_staged_slot);
+  RUN_TEST(test_first_commit_activation_failure_does_not_activate_staged_slot);
+  RUN_TEST(test_pointer_absent_with_valid_staged_slot_does_not_activate_it);
+  RUN_TEST(test_failed_update_keeps_previous_version_authoritative);
+  RUN_TEST(test_active_slot_corruption_uses_only_metadata_previous_slot);
+  RUN_TEST(test_corrupt_active_slot_does_not_promote_newer_staged_other_slot);
+  RUN_TEST(test_store_read_status_distinguishes_absent_and_backend_error);
+  RUN_TEST(test_storage_errors_never_bootstrap_defaults);
+  RUN_TEST(test_recovery_preserves_monotonic_config_version);
   RUN_TEST(test_provisioned_device_without_valid_snapshot_requires_config);
   RUN_TEST(test_provisioned_device_with_both_corrupt_slots_requires_config);
   RUN_TEST(test_draft_is_isolated_from_active_config);

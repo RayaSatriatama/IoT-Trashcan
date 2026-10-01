@@ -60,6 +60,7 @@ enum class ConfigState : uint8_t {
   Preview,
   RebootRequired,
   ConfigRequired,
+  StorageError,
 };
 
 enum class ConfigBootResult : uint8_t {

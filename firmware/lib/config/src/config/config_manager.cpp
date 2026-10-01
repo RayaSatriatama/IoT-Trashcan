@@ -1,5 +1,6 @@
 #include "config_manager.h"
 
+#include <algorithm>
 #include <limits>
 
 namespace sigap::config {
@@ -8,15 +9,26 @@ ConfigManager::ConfigManager(IConfigSlotStore& store,
                              ValidationContext context) noexcept
     : store_(store), context_(context) {}
 
-bool ConfigManager::load_valid_slot(ConfigSlot slot, AppConfig& config,
-                                    ConfigIdentity& identity) const noexcept {
+ConfigManager::SlotLoadStatus ConfigManager::load_valid_slot(
+    ConfigSlot slot, AppConfig& config, ConfigIdentity& identity) const noexcept {
   EncodedConfig encoded{};
-  if (!store_.read_slot(slot, encoded)) return false;
+  const StoreReadStatus read_status = store_.read_slot(slot, encoded);
+  if (read_status == StoreReadStatus::NotFound) {
+    return SlotLoadStatus::NotFound;
+  }
+  if (read_status == StoreReadStatus::Error) return SlotLoadStatus::Error;
+  if (read_status == StoreReadStatus::Invalid) {
+    return SlotLoadStatus::Invalid;
+  }
 
   ConfigHash hash{};
   AppConfig candidate{};
-  if (!codec_.decode(encoded, candidate, hash)) return false;
-  if (!validate_config(candidate, context_).ok) return false;
+  if (!codec_.decode(encoded, candidate, hash)) {
+    return SlotLoadStatus::Invalid;
+  }
+  if (!validate_config(candidate, context_).ok) {
+    return SlotLoadStatus::Invalid;
+  }
 
   config = candidate;
   identity.slot = slot;
@@ -24,53 +36,88 @@ bool ConfigManager::load_valid_slot(ConfigSlot slot, AppConfig& config,
   identity.config_version = candidate.config_version;
   identity.hash = hash;
   identity.has_slot = true;
-  return true;
+  return SlotLoadStatus::Valid;
+}
+
+ConfigBootResult ConfigManager::enter_storage_error() noexcept {
+  active_ = kFactoryDefaults;
+  draft_ = kFactoryDefaults;
+  identity_ = ConfigIdentity{};
+  has_draft_ = false;
+  has_active_slot_ = false;
+  state_ = ConfigState::StorageError;
+  boot_result_ = ConfigBootResult::StorageError;
+  return boot_result_;
 }
 
 ConfigBootResult ConfigManager::begin() noexcept {
   fallback_used_ = false;
   has_draft_ = false;
   has_active_slot_ = false;
+  has_activation_metadata_ = false;
+  last_committed_version_ = 0;
+  activation_metadata_ = ActivationMetadata{};
   state_ = ConfigState::Booting;
 
-  ConfigSlot preferred{};
-  AppConfig preferred_config{};
-  ConfigIdentity preferred_identity{};
-  const bool pointer_present = store_.read_active_pointer(preferred);
-  const bool preferred_valid =
-      pointer_present &&
-      load_valid_slot(preferred, preferred_config, preferred_identity);
+  const StoreReadStatus metadata_status =
+      store_.read_activation_metadata(activation_metadata_);
+  if (metadata_status == StoreReadStatus::Error ||
+      metadata_status == StoreReadStatus::Invalid) {
+    return enter_storage_error();
+  }
+  has_activation_metadata_ = metadata_status == StoreReadStatus::Found;
+  if (has_activation_metadata_) {
+    last_committed_version_ = activation_metadata_.active_version;
 
-  if (preferred_valid) {
-    active_ = preferred_config;
-    identity_ = preferred_identity;
-    has_active_slot_ = true;
-    state_ = ConfigState::Active;
-    boot_result_ = ConfigBootResult::ActiveLoaded;
-    return boot_result_;
+    AppConfig candidate{};
+    ConfigIdentity identity{};
+    const SlotLoadStatus active_status =
+        load_valid_slot(activation_metadata_.active_slot, candidate, identity);
+    const bool active_matches =
+        active_status == SlotLoadStatus::Valid &&
+        identity.config_version == activation_metadata_.active_version &&
+        identity.hash == activation_metadata_.active_hash;
+    if (active_matches) {
+      active_ = candidate;
+      identity_ = identity;
+      has_active_slot_ = true;
+      state_ = ConfigState::Active;
+      boot_result_ = ConfigBootResult::ActiveLoaded;
+      return boot_result_;
+    }
+    if (active_status == SlotLoadStatus::Error) return enter_storage_error();
+
+    if (activation_metadata_.has_previous) {
+      AppConfig previous{};
+      ConfigIdentity previous_identity{};
+      const SlotLoadStatus previous_status = load_valid_slot(
+          activation_metadata_.previous_slot, previous, previous_identity);
+      const bool previous_matches =
+          previous_status == SlotLoadStatus::Valid &&
+          previous_identity.config_version ==
+              activation_metadata_.previous_version &&
+          previous_identity.hash == activation_metadata_.previous_hash;
+      if (previous_matches) {
+        active_ = previous;
+        identity_ = previous_identity;
+        has_active_slot_ = true;
+        fallback_used_ = true;
+        state_ = ConfigState::Active;
+        boot_result_ = ConfigBootResult::FallbackLoaded;
+        return boot_result_;
+      }
+      if (previous_status == SlotLoadStatus::Error) {
+        return enter_storage_error();
+      }
+    }
   }
 
-  AppConfig candidate_a{};
-  AppConfig candidate_b{};
-  ConfigIdentity identity_a{};
-  ConfigIdentity identity_b{};
-  const bool valid_a = load_valid_slot(ConfigSlot::A, candidate_a, identity_a);
-  const bool valid_b = load_valid_slot(ConfigSlot::B, candidate_b, identity_b);
-
-  if (valid_a || valid_b) {
-    const bool choose_a = valid_a &&
-                          (!valid_b || candidate_a.config_version >=
-                                           candidate_b.config_version);
-    active_ = choose_a ? candidate_a : candidate_b;
-    identity_ = choose_a ? identity_a : identity_b;
-    has_active_slot_ = true;
-    fallback_used_ = true;
-    state_ = ConfigState::Active;
-    boot_result_ = ConfigBootResult::FallbackLoaded;
-    return boot_result_;
+  const ProvisioningStatus provisioning = store_.provisioning_status();
+  if (provisioning == ProvisioningStatus::Error) {
+    return enter_storage_error();
   }
-
-  if (!store_.is_provisioned()) {
+  if (provisioning == ProvisioningStatus::Unprovisioned &&
+      !has_activation_metadata_) {
     active_ = kFactoryDefaults;
     draft_ = kFactoryDefaults;
     has_draft_ = true;
@@ -86,6 +133,9 @@ ConfigBootResult ConfigManager::begin() noexcept {
 }
 
 bool ConfigManager::start_draft() noexcept {
+  if (state_ == ConfigState::ConfigRequired && !has_activation_metadata_) {
+    return false;
+  }
   if (state_ != ConfigState::Active && state_ != ConfigState::ConfigRequired &&
       state_ != ConfigState::Draft) {
     return false;
@@ -132,14 +182,15 @@ bool ConfigManager::commit_draft() noexcept {
   if (state_ != ConfigState::Validated && state_ != ConfigState::Preview) {
     return false;
   }
-  if (!validate_draft().ok ||
-      active_.config_version == std::numeric_limits<uint64_t>::max()) {
+  const uint64_t base_version =
+      std::max(active_.config_version, last_committed_version_);
+  if (!validate_draft().ok || base_version == std::numeric_limits<uint64_t>::max()) {
     state_ = ConfigState::Draft;
     return false;
   }
 
   AppConfig candidate = draft_;
-  candidate.config_version = active_.config_version + 1U;
+  candidate.config_version = base_version + 1U;
   if (!codec_.encode(candidate, encoded_scratch_)) {
     state_ = ConfigState::Draft;
     return false;
@@ -148,7 +199,7 @@ bool ConfigManager::commit_draft() noexcept {
   const ConfigSlot next_slot =
       has_active_slot_ ? other_slot(identity_.slot) : ConfigSlot::A;
   if (!store_.write_slot(next_slot, encoded_scratch_) ||
-      !store_.read_slot(next_slot, readback_scratch_)) {
+      store_.read_slot(next_slot, readback_scratch_) != StoreReadStatus::Found) {
     state_ = ConfigState::Draft;
     return false;
   }
@@ -163,7 +214,22 @@ bool ConfigManager::commit_draft() noexcept {
     return false;
   }
 
-  if (!store_.mark_provisioned() || !store_.write_active_pointer(next_slot)) {
+  if (!store_.mark_provisioned()) {
+    state_ = ConfigState::Draft;
+    return false;
+  }
+
+  ActivationMetadata next_metadata{};
+  next_metadata.active_slot = next_slot;
+  next_metadata.active_version = candidate.config_version;
+  next_metadata.active_hash = encoded_scratch_.hash();
+  if (has_activation_metadata_) {
+    next_metadata.has_previous = true;
+    next_metadata.previous_slot = activation_metadata_.active_slot;
+    next_metadata.previous_version = activation_metadata_.active_version;
+    next_metadata.previous_hash = activation_metadata_.active_hash;
+  }
+  if (!store_.write_activation_metadata(next_metadata)) {
     state_ = ConfigState::Draft;
     return false;
   }
