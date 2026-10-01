@@ -13,7 +13,7 @@ class AcquisitionFoundation final {
   AcquisitionFoundation(const config::ConfigManager& config,
                         RecordFactory& record_factory,
                         const board::BoardPins& pins,
-                        const TargetProfileSet& profiles) noexcept
+                        TargetProfileSet& profiles) noexcept
       : config_(config),
         config_ref_(active_config_ref(config)),
         sampling_(config.active().sampling),
@@ -38,6 +38,13 @@ class AcquisitionFoundation final {
 
   void poll(uint64_t monotonic_us) noexcept {
     if (enabled_) target_.poll(monotonic_us);
+  }
+
+  bool refresh_profiles(uint64_t first_due_us) noexcept {
+    if (!enabled_ || !config_.runtime_ready() || !config_ref_.present) return false;
+    target_.disable();
+    enabled_ = target_.begin(sampling_, first_due_us);
+    return enabled_;
   }
 
   bool enabled() const noexcept { return enabled_; }

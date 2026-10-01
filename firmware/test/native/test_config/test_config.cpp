@@ -60,6 +60,21 @@ void test_factory_defaults_are_valid() {
           .ok);
 }
 
+void test_maintenance_field_allowlist_is_draft_only() {
+  MemoryConfigStore store{};
+  sigap::config::ConfigManager manager(store, validation_context());
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ConfigBootResult::BootstrapDefaults),
+                        static_cast<int>(manager.begin()));
+  const AppConfig active_before = manager.active();
+  TEST_ASSERT_TRUE(manager.set_draft_field(
+      sigap::config::ConfigField::MqPeriodMs, 250U));
+  TEST_ASSERT_EQUAL_UINT32(active_before.sampling.mq_period_ms,
+                           manager.active().sampling.mq_period_ms);
+  TEST_ASSERT_EQUAL_UINT32(250U, manager.draft().sampling.mq_period_ms);
+  TEST_ASSERT_FALSE(manager.set_draft_field(
+      sigap::config::ConfigField::MaxRecordsPerBatch, 70000U));
+}
+
 void test_n16r8_board_memory_matches_expected_identity() {
   const BoardMemoryReading reading{
       sigap::board::kExpectedFlashBytes, true,
@@ -726,6 +741,7 @@ void tearDown() {}
 void setup() {
   UNITY_BEGIN();
   RUN_TEST(test_factory_defaults_are_valid);
+  RUN_TEST(test_maintenance_field_allowlist_is_draft_only);
   RUN_TEST(test_n16r8_board_memory_matches_expected_identity);
   RUN_TEST(test_eight_megabyte_flash_is_rejected);
   RUN_TEST(test_missing_psram_is_rejected);

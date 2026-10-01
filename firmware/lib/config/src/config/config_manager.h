@@ -7,6 +7,20 @@
 
 namespace sigap::config {
 
+enum class ConfigField : uint8_t {
+  Hx711PeriodMs,
+  MqPeriodMs,
+  UltrasonicPeriodMs,
+  Ds18b20PeriodMs,
+  Sht31PeriodMs,
+  SummaryPeriodMs,
+  RetryMinMs,
+  RetryMaxMs,
+  MaxRecordsPerBatch,
+  FlashPendingQuota,
+  SdPendingQuota,
+};
+
 class ConfigManager final {
  public:
   ConfigManager(IConfigSlotStore& store, ValidationContext context) noexcept;
@@ -24,7 +38,13 @@ class ConfigManager final {
   bool has_draft() const noexcept { return has_draft_; }
 
   bool start_draft() noexcept;
+  // Explicit operator-authorized bootstrap path for CONFIG_REQUIRED. This
+  // never runs implicitly during boot and only creates a factory draft.
+  bool start_factory_draft() noexcept;
+  bool reset_draft() noexcept;
+  bool cancel_draft() noexcept;
   bool set_draft(const AppConfig& draft) noexcept;
+  bool set_draft_field(ConfigField field, uint64_t value) noexcept;
   ConfigValidation validate_draft() const noexcept;
   bool validate_draft_and_enter() noexcept;
   bool preview_draft() noexcept;
