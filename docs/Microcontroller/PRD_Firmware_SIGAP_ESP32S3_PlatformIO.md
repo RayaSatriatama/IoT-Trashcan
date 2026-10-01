@@ -427,9 +427,10 @@ Scalar gas_raw awal dibiarkan null untuk menghindari pemilihan atau agregasi yan
     "telemetry_version":1,"firmware_version":"0.1.0",
     "device_mode":"RUN","calibration_targets":[],
     "board_profile":"n16r8","calibration_version":"cal-001",
-    "boot_id":"boot-example","sequence":120,
+    "config_version":"cfg-000004","config_hash":"sha256:<redacted-example>",
+    "boot_id":"boot-example","sequence":"120",
     "wifi_rssi":-61,"uptime_s":1800,"time_quality":"SYNCED",
-    "queue_depth":0,"dropped_snapshots":0,
+    "queue_depth":0,"unlogged_records":0,"gap_count":0,
     "sensors": {
       "mq4":{"stream":"organic","adc_raw":1234,
              "adc_mv":690,"quality":"READY","age_ms":90},
@@ -456,53 +457,45 @@ Schema health v1 perlu didokumentasikan dan dites karena backend sekarang menyim
 
 ### Waktu pengukuran
 
-recorded_at memakai UTC RFC3339 dengan fraksi milidetik, ditetapkan saat snapshot dibentuk. Waktu NTP menghasilkan timebase yang ditambatkan pada monotonic clock. Saat NTP koreksi mundur, timestamp snapshot tetap unik dan meningkat dalam boot yang sama; catat koreksi dan uncertainty. boot_id dan sequence membantu audit, tetapi tidak menggantikan timestamp sebagai kunci replay backend existing.
-
-Sesudah cold boot tanpa waktu terpercaya, akuisisi berjalan dengan timestamp monotonic dan time_quality UNSYNCED. Snapshot sementara disimpan sebagai untimed. NTP pertama pada boot yang sama dapat memberi anchor untuk merekonstruksi UTC dengan flag RECONSTRUCTED. Jika listrik mati sebelum anchor tersedia, data untimed disimpan untuk diagnostik dan tidak dikirim sebagai waktu yang dibuat-buat. RTC tidak termasuk hardware baseline. Setelah reboot, jangan menganggap UTC terakhir dalam NVS sebagai jam yang terus berjalan selama listrik mati.
+Archive record selalu mempunyai `boot_id`, uint64-string `sequence`, dan `monotonic_us`. `recorded_at` adalah UTC RFC3339 atau null. NTP menambahkan clock anchor append-only; koreksi jam berikutnya tidak menulis ulang record lama. Cold boot tanpa waktu tetap mengakuisisi, menyimpan, dan akhirnya mengunggah archive-v3 dengan UTC-null bila tidak pernah memperoleh anchor. Summary-v2 hanya dibentuk saat UTC yang memenuhi quality policy tersedia.
 
 ### HTTP dan pengakuan server
 
-Kirim HTTPS dengan validasi CA dan hostname ke endpoint yang dikonfigurasi. Sertifikat tidak boleh dilewati dengan setInsecure. HTTP lokal hanya untuk bench tanpa token production. Server Go saat ini melayani HTTP; deployment pilot membutuhkan terminasi TLS melalui proxy atau platform hosting dan filesystem SQLite yang persistent.
+Wi-Fi/HTTPS adalah transport P0. Summary-v2 mempertahankan exact replay semantics existing. Archive-v3 memakai batch immutable dengan body hash exact-wire dan ACK durable server.
 
-| Respons | Tindakan firmware |
+| Respons archive-v3 | Tindakan firmware |
 | --- | --- |
-| 200 dan ack valid | Hapus entry jika device_id dan waktu cocok serta readings_stored = 3; replay valid menerima deduplicated = true. |
-| Timeout / 5xx / 429 | Simpan byte paket dan retry dengan backoff; hormati Retry-After bila tersedia. |
-| 401 / 403 | Tandai AUTH_ERROR; hentikan retry cepat; operator memperbaiki credential lokal. |
-| 400 / 404 / 409 / 415 | Pindahkan paket ke quarantine terbatas dengan reason; jangan mengganti timestamp untuk memaksa diterima. |
-| 200 dengan ack rusak | Entry tetap ada; catat PROTOCOL_ERROR dan retry terbatas. |
-| TLS error | Pertahankan queue; catat sebab; tidak downgrade ke insecure. |
+| `200` + ACK valid | Tandai record batch `server_acked`; reclaim hanya setelah journal/checkpoint. |
+| Timeout / `429` / `5xx` | Pertahankan byte batch identik; retry dengan backoff + jitter; hormati `Retry-After`. |
+| `401` / `403` | `AUTH_ERROR`; pending dipertahankan; operator merotasi token via USB. |
+| `400` / `404` / `409` / `415` | Quarantine/fault manifest tanpa menghapus record. |
+| ACK malformed/hash/count mismatch | `PROTOCOL_ERROR`; journal lokal tidak maju. |
+
+Network worker tidak memblokir acquisition/logger. Token berada pada Authorization header dan tidak disimpan di batch sehingga token rotation tidak mengubah immutable pending body.
 
 ### Persistensi dan pemulihan
 
-Simpan byte UTF-8 JSON hasil satu kali serialisasi dengan panjang, record_id, dan checksum; storage manager memakai LittleFS staging serta microSD opsional sesuai bagian 10A. Retry memakai body identik, termasuk health dan queue_depth lama; jangan mengambil health baru ketika mengulang paket. Queue berbasis append/ring dan journal tahan power-loss, bukan file JSON besar yang ditulis ulang setiap snapshot. Recovery mengabaikan tail record rusak dengan counter yang tercatat. PSRAM boleh menjadi buffer kerja, tetapi tidak menggantikan persistensi.
-
-Target fallback internal tanpa SD adalah 512 snapshot × maksimal 4096 byte, sekitar 2 MiB sebelum overhead, di filesystem 4 MiB. Interval 15 s memberi cakupan sekitar 2 jam 8 menit. Target penerimaan minimal putus Wi-Fi 1 jam tanpa kehilangan snapshot bertimestamp. Saat quota pending penuh, buang entry pending tertua dengan dropped_snapshots yang tercatat agar akuisisi terbaru tetap tersedia; quarantine memiliki quota terpisah. Uji penggunaan ruang dan wear flash sebelum menganggap kapasitas ini terjamin.
-
-Setelah reconnect, kirim snapshot terbaru untuk memperbarui monitoring, lalu drain backlog bertahap. Backend harus membedakan last_seen pada waktu penerimaan dan recorded_at pengukuran, serta menahan keputusan operasional dari backlog yang terlalu lama. Exact replay sekarang tidak memperbarui heartbeat; heartbeat tetap lewat snapshot baru. OFFLINE_AFTER_SECONDS tetap konfigurasi deployment yang disepakati, bukan nilai penelitian otomatis.
+Pisahkan counter `acquired`, `durable`, dan `server_acked`. Record baru dianggap durable hanya setelah framing/checksum dan flush/checkpoint storage berhasil. Server ACK hanya mengubah delivery journal; tidak mengubah raw record. Power loss/reboot melakukan recovery tail dan ACK journal sebelum upload dilanjutkan. Pending yang pernah dikirim tidak boleh diserialisasi ulang menjadi body berbeda.
 
 ## 10A Penyimpanan offline dengan microSD opsional
 
-FR STORE 01 Firmware menyediakan backend penyimpanan LittleFS dan microSD melalui SPI. Kartu belum menjadi komponen yang dikonfirmasi pengguna; varian tanpa SD harus tetap bekerja. Wi-Fi hilang, sinyal lemah, server tidak dapat dicapai, atau gateway BLE tidak tersedia semuanya mempertahankan paket pending. Keberhasilan koneksi radio atau penyerahan ke HP tidak sama dengan diterima server.
+microSD menjadi archive backend utama bila sehat; LittleFS 8 MiB menjadi fallback. Hardware SD tetap opsional, tetapi firmware storage abstraction wajib mendukung kedua backend. Archive menyimpan **semua sample attempt, result, event, dan metadata**, bukan hanya snapshot 15 s.
 
-| Sinyal microSD | GPIO usulan | Konsekuensi |
-| --- | --- | --- |
-| SCK | 39 | SPI khusus; tidak berbagi driver sensor. |
-| MISO | 40 | Input 3,3 V. |
-| MOSI | 41 | Output 3,3 V. |
-| CS | 43 | Mengambil UART0 TX; pull-up CS ke 3,3 V; console lewat USB native. |
+FR STORE 01 Setiap record memiliki frame versioned, length bound, record ID/kind, checksum, payload, dan commit marker/checkpoint. Tail parsial dikarantina saat recovery; index dapat dibangun ulang dari record utuh.
 
-FR STORE 02 Gunakan socket/modul microSD dengan logika 3,3 V, suplai stabil dan decoupling. Empat pin tambahan memberi total 24 GPIO tanpa expander; card-detect tidak diwajibkan. GPIO43 juga terhubung jalur TX UART0 pada DevKitC. Aplikasi tidak mengaktifkan UART0 TX; ukur CS saat reset dan flashing. Jangan clock SPI sebelum CS HIGH dan SD siap; review schematic board aktual sebelum pin di-freeze.
+FR STORE 02 Pending immutable sampai ACK server. Batch boleh dibentuk ulang hanya sebelum percobaan pengiriman pertama. Setelah `batch_id/body_hash` ditetapkan, retry memakai exact bytes yang sama.
 
-### Format queue dan kegagalan storage
+FR STORE 03 LittleFS pending quota awal 6 MiB dengan reserve terpisah untuk journal/gap/profile/filesystem overhead. Gate tanpa SD adalah **≥60 detik seluruh archive record** pada sampling profile yang disetujui; kapasitas nyata diukur, bukan dihitung dari snapshot 15 s.
 
-FR STORE 03 LittleFS menjadi staging persisten setiap snapshot, termasuk online. Storage manager memindahkan record ke segmen append SD dengan record_id (boot_id + sequence), panjang, checksum, JSON immutable, serta journal ack. Copy staging baru boleh dihapus setelah write/flush SD dan checkpoint terverifikasi. Saat reboot, gabungkan record flash dan SD berdasarkan record_id; jangan membuat timestamp atau JSON baru. Ack valid server menandai delivered secara durable sebelum reclaim segmen. Quarantine dan diagnostik mempunyai quota terpisah.
+FR STORE 04 SDHC 32 GB opsional memakai pending quota awal 20 GiB. Gate varian SD adalah **≥72 jam seluruh archive record** pada workload worst-case yang disetujui. FAT32/card model harus diuji pada hardware.
 
-FR STORE 04 Kartu hilang, gagal mount, I/O error, atau penuh menghasilkan STORAGE_DEGRADED dan beralih ke flash fallback yang terbatas tanpa menghentikan sensor. Mount tidak memformat kartu otomatis. Lepas kartu melalui storage eject setelah write/flush selesai; hot removal diperlakukan sebagai fault. Backlog pada kartu yang dilepas ditandai unavailable dan dipulihkan saat kartu yang sama dipasang kembali. Jangan menganggap backlog tersebut telah dikirim.
+FR STORE 05 SD absent/mount fault/I/O/full → `STORAGE_DEGRADED` dan fallback flash bila tersedia. Pending pada SD tidak dihapus. Memasukkan kartu tidak memformat otomatis. Migrasi flash→SD memakai copy → verify → checkpoint → reclaim.
 
-FR STORE 05 Quota pending SD awal 128 MiB dengan ruang kerja di luar quota, target minimal 72 jam pada interval 15 s dan body ≤4096 byte. 72 jam berisi 17280 snapshot, maksimal 67,5 MiB JSON sebelum overhead. Format kartu baseline FAT32 pada kartu SDHC yang dipilih dan diuji. Kapasitas keseluruhan kartu tidak dianggap kapasitas antrean tanpa batas. Quota flash tetap 512 snapshot; saat media aktif penuh, buang pending tertua sesuai policy dan laporkan dropped_snapshots serta rentang sequence yang hilang.
+FR STORE 06 Jika seluruh quota tidak dapat menerima record baru, **jangan overwrite/drop pending tertua**. Runtime masuk `LOGGING_BLOCKED`; health mencatat `unlogged_records`, gap ranges, media/cause, pending age/bytes, dan counter durability. Produk tidak boleh mengklaim data tersebut tersimpan.
 
-FR STORE 06 Recovery memverifikasi checksum dan memulihkan record utuh; tail tidak lengkap dikarantina. Journal dan flush mengurangi risiko, tetapi FAT/SD konsumen tidak menjamin seluruh kartu selamat dari kehilangan daya arbitrer. Uji fault pada append, migration dan ack dengan kartu aktual; catat kehilangan maksimum yang terukur. Konfigurasi dan kalibrasi tetap di NVS, bukan hanya SD. health mencatat storage_backend, sd_state, pending_count, oldest_pending_age_s, used_bytes dan dropped_snapshots tanpa secret.
+FR STORE 07 Config/secret/calibration/model active-pointer berada pada NVS/profile store terpisah dari archive. Config commit memakai A/B snapshot; archive failure tidak boleh mengubah config aktif dan config reset tidak boleh menghapus backlog.
+
+Uji append/checkpoint/ACK/power-cut/hot-remove/quota-full serta p99 write latency, wear flash, high-water queue, tail loss, dan final ID/hash reconciliation.
 
 ## 10B Jalur WiFi dan opsi Bluetooth
 
@@ -525,90 +518,89 @@ Gate P1: BLE gateway diterapkan hanya jika hasil spike memenuhi throughput akuis
 
 ## 11 Perubahan integrasi backend yang diperlukan
 
-Menerima paket saja belum memenuhi produk hardware. Perubahan berikut harus masuk urutan implementasi agar sensor gagal, waktu replay, dan data penelitian ditangani dengan benar. Semua tetap berada dalam Go monolith existing.
+Semua perubahan tetap berada dalam Go monolith existing dan bersifat additive.
 
 ### Validasi dan keputusan
 
-internal/ingest/model.go menambahkan DTO health v1 yang tervalidasi sambil mempertahankan envelope dan data mentah. internal/ingest/validation.go memeriksa required measurements, quality, freshness, konfigurasi kalibrasi, serta device_mode dan calibration_targets. Sensor dalam kalibrasi tidak dipakai untuk keputusan operasional; reason CALIBRATING ditampilkan pada slot terkait dan raw tetap tersedia untuk riset. Fill atau weight null pada slot, atau DS18B20 B3 yang gagal, menghasilkan Data Invalid dengan reason. Firmware masih mengirim ketiga slot agar sensor rusak tidak menghilangkan heartbeat.
+`internal/ingest/model.go`/`service.go` tetap summary-v2/legacy. Untuk `HARDWARE_EDGE_V3`, buat DTO/validator/service terpisah (misalnya `internal/telemetry`) yang memeriksa schema, auth device binding, record ID, uint64-string sequence, time quality, `config_version/config_hash`, profile refs, source IDs, quality/reason, hash, body/record limits, dan enum.
 
-internal/ingest/service.go memetakan health per slot dan menyimpan keputusan invalid walaupun FIS production belum tersedia. Bila FIS belum dikonfigurasi, reading valid tetap tersimpan tanpa hasil Normal buatan. Optional gas warming tidak menghapus data fill/berat. B3 safety hanya mengevaluasi input valid dengan konfigurasi penelitian yang disetujui dan berlaku pada stream B3. Kondisi invalid tidak boleh membatalkan alert yang sudah didukung bukti valid.
+Jalur hardware-v3 **tidak boleh memanggil** `Normalize`, `persistDecision`, fuzzy engine, atau safety evaluator backend. Hasil MCU disimpan persis bersama provenance. Simulator/legacy mempertahankan inference backend sampai migrasi tersendiri.
 
-Tambahkan policy penerimaan umur timestamp dan clock skew sebagai konfigurasi teknis. Backlog tetap tersimpan sebagai research reading; efek terhadap current status, safety dan event harus berdasarkan waktu pengukuran serta freshness, sehingga paket lama yang baru datang tidak memicu tindakan seolah baru. Uji seluruh policy ini dengan engine fixture tanpa memakai threshold fixture sebagai production default.
+Backlog/current policy menggunakan waktu ukur/time quality sehingga data lama yang baru tiba tidak memundurkan current projection dan tidak memicu event seolah baru.
 
 ### Research dan ekspor
 
-Backend existing menyimpan raw_payload penuh pada setiap reading dan health pada sensor_health. Ini cukup untuk landing data multikanal tanpa migrasi schema pertama. Research API mengembalikan sensor_health, tetapi scalar raw gas hanya mengambil gas_raw. Tambahkan projection typed per sensor ke research DTO dan panel riset agar empat MQ, dua humidity, serta raw distance/HX711 dapat dibaca langsung.
-
-Perluas internal/history dan /api/export.csv dengan kolom sensor berunit, quality, age, firmware_version, calibration_version, dan time_quality. Setelah format ekspor disepakati, sediakan mode kompatibel atau export schema version agar konsumen lama tidak berubah diam-diam. Jangan mengubah route yang digunakan dashboard. Data health dan raw yang diekspos harus memakai allowlist; jangan menyalin config atau secret.
-
-Dengan satu paket tiap 15 s terdapat 5760 paket dan 17280 row reading per device per hari. Raw envelope dan health direplikasi ke tiga row oleh kode saat ini. Sebagai ilustrasi, envelope 4 KiB saja dapat menambah sekitar 67,5 MiB per hari per device sebelum health tambahan, index dan overhead SQLite. Ukur payload nyata dan rencanakan retention atau tabel envelope bersama sebelum pilot panjang; tidak mengklaim penyimpanan tanpa batas.
+Archive/read/export menyediakan raw, converted, quality/reason, time provenance, firmware version, `config_version/config_hash`, calibration/model refs, dan source IDs. Existing history cursor/CSV tidak berubah diam-diam; archive endpoint/export version baru memakai cursor `(device_id,boot_id,sequence)`. Secret/config payload penuh tidak diekspos; hanya allowlisted non-secret manifest/provenance.
 
 ### Provisioning dan versioning
 
-Buat prosedur atau CLI lokal untuk mendaftarkan location, device_code, credential digest, tiga slots, serta kapasitas operasional. Tooling provisioning hardware belum terlihat pada entry point runtime; simulator tidak boleh dijadikan sumber credential production. Digest mengikuti internal/ingest/auth.go. Pembaruan firmware_version di devices perlu dipetakan dari health yang tervalidasi karena field database tersebut tidak diperbarui oleh ingest saat ini.
+Backend provisioning mendaftarkan location, `device_code`, credential digest, tiga slots, dan operational capacity. Hardware provisioning melalui USB menyimpan runtime setting pada versioned `AppConfig` dan credential pada `SecretStore`.
 
-Migrations baru hanya diperlukan bila hasil pengukuran kapasitas atau kebutuhan query menuntut schema kanal yang terpisah. Pada HEAD reconciliation, migration berikutnya diperkirakan `005_telemetry_archive.sql`; cek ulang urutan file sebelum membuatnya. Simulator tetap opt-in dan mempertahankan penandaan sintetis. Test integrasi harus mencakup payload legacy dan payload hardware v1.
+Token rotation: provision token baru via USB, aktifkan digest baru server-side, uji batch, baru revoke token lama. Pending body tidak mengandung token.
+
+Expected migration pada HEAD ini adalah `005_telemetry_archive.sql`; implementation PR wajib recheck `migrations/`. Integration test mencakup legacy summary, hardware-v3 archive, config provenance, token binding/rotation, dan redaction.
 
 ## 12 Tahapan implementasi
 
-Kerjakan sebagai perubahan kecil dengan branch terfokus dan PR sesuai workflow repo. Estimasi berikut adalah hari kerja engineering, tidak termasuk pengadaan, aging sensor, atau kalibrasi ilmiah FIS. Rencana baseline 8-12 hari kerja bertambah sekitar 2-4 hari untuk mode kalibrasi terarah dan varian microSD, menjadi estimasi 10-16 hari setelah rig tersedia. BLE gateway memerlukan spike terpisah sekitar 1-2 hari; estimasi aplikasi gateway baru ditetapkan setelah spike.
+Kerjakan sebagai perubahan kecil yang dapat diverifikasi; estimasi kalender tidak dibekukan sebelum hardware/profile capacity terukur.
 
 | Tahap | Output yang dapat direview | Gate selesai |
 | --- | --- | --- |
-| T0<br>0,5-1 hari | Cocokkan modul N16R8, ultrasonic, MQ-7 dan driver heater; freeze pin dan schema health. Tentukan varian SD dan console USB native. | Schematic cocok; tanpa konflik GPIO; tegangan GPIO terukur. |
-| T1<br>1 hari | Project PlatformIO, profile N16R8, partition, native tests, boot diagnostics. | Build MCU dan native pass; flash dan PSRAM terbaca pada target. |
-| T2<br>2-3 hari | Driver sensor, heater state machine, filter, quality, mode kalibrasi wajib dengan draft/commit/rollback. | Seluruh sensor terbaca bersamaan; failure isolation terbukti. |
-| T3<br>1-2 hari | Serializer v1, HTTPS, device provisioning, NTP dan replay exact. | Paket real tersimpan tiga row; invalid token ditolak; duplicate tidak menambah row. |
-| T4<br>2-4 hari | Flash staging, SD opsional, quota, journal ack, power-loss recovery dan failover storage. | Offline 1 jam tanpa SD; 72 jam pada varian SD teruji; replay tidak menggandakan row. |
-| T5<br>1-2 hari | Health validation, research projection, CSV multikanal, firmware version. | Sensor wajib gagal tampil Data Invalid; semua kanal dapat diekspor. |
-| T6<br>1-2 hari | End-to-end, soak test, wiring dan SOP kalibrasi final. | Acceptance utama terpenuhi; hasil hardware dan risiko tersisa tercatat. |
-
-T3 memakai kontrak T0, T4 memakai serializer T3, dan T5 memakai definisi quality T2. Akuisisi firmware dan validasi backend dapat dikerjakan terpisah setelah kontrak v1 disepakati. Freeze payload example sebagai contract fixture, bukan membuat frontend menebak format sensor.
+| T0 | Freeze hardware identity/wiring, schema telemetry v3, config schema v1, secret boundary, profile identity. | Tidak ada konflik authority/GPIO; field config punya type/unit/range/apply policy. |
+| T1 | PlatformIO, partition, `SigapApp`, `AppConfig` types/defaults/validator, NVS A/B store, SecretStore skeleton, native tests. | Build MCU/native pass; config power-cut/rollback tests pass. |
+| T2 | Driver sensor/heater, scheduler, record envelope, calibration/profile manager, config provenance. | Seluruh sensor terakuisisi; failure isolation; no mutable global config. |
+| T3 | Processing/FIS/safety edge + maintenance USB config/calibration/provisioning. | DRAFT/VALIDATE/PREVIEW/COMMIT/reboot dan profile rollback terbukti. |
+| T4 | Logger LittleFS/SD, journal/gap accounting, exact immutable batch, summary-v2/archive-v3. | ≥60 s flash; SD gate bila dipilih; retry/ACK idempotent. |
+| T5 | Backend v3 migration/service/read/export/current projection. | Legacy compatible; hardware-v3 tidak menjalankan inference backend. |
+| T6 | Fault injection, config corruption/power cut, network/storage failure, throughput/endurance, 24 h soak, SOP. | Acceptance relevan mempunyai evidence terbaru. |
 
 ### Strategi verifikasi
 
-Native tests mencakup formula fill dengan anchor berbeda per slot, kalibrasi/tare, null dan freshness, state heater, retry ack, draft kalibrasi, commit/rollback, checksum queue, failover flash/SD, quota, koreksi jam mundur, serta rollover waktu bila memakai counter 32 bit. Gunakan input dan hasil yang diturunkan dari persyaratan, bukan salinan implementasi.
+Native tests mencakup config defaults, bounds/cross-field constraints, deterministic encoding/hash, A/B slot selection, corrupt-active fallback, interrupted commit, config schema migration/rejection, secret redaction, serta memastikan calibration/model tidak tercampur ke generic config. Tambahkan static/code review untuk mutable non-const globals dan heap allocation pada hot path.
 
-Tes Go mencakup tiga stream, token mismatch, exact replay, konflik timestamp, null sensor wajib, optional gas warming, stale backlog, dan projection/export v1. Jalankan focused ingest/read/history tests sebelum go test ./...; vet/race mengikuti pemeriksaan existing. npm test dan typecheck diperlukan ketika research UI diubah. Build PlatformIO dan tes native menjadi CI firmware; kalibrasi dan elektrik tetap membutuhkan hardware.
-
-Simpan laporan bench dengan identitas board, firmware commit, konfigurasi heater, calibration_version, instrumen referensi, kondisi uji, serta hasil. Compile pass tidak membuktikan akurasi sensor atau wiring. Soak test 24 jam dapat berjalan sambil dokumentasi diselesaikan, tetapi rilis pilot menunggu hasilnya.
+Target MCU menguji boot valid/corrupt/missing config, controlled reboot activation, NVS persistence, secret rotation, acquisition deadlines, stack high-water, heap/PSRAM trend, flash/SD throughput, watchdog dan power-cut. Go tests menguji provenance config, archive idempotency, auth binding, UTC-null, cursor/current projection dan no-secret output.
 
 ## 13 Kriteria penerimaan
 
 | ID | Kriteria | Bukti yang diperlukan |
 | --- | --- | --- |
-| AC01 | Build profile N16R8 dan native test berhasil dari checkout bersih. | Log pio run dan pio test dengan dependency exact. |
-| AC02 | 20 GPIO baseline atau 24 dengan SD, tanpa expander; pin memori dan USB terjaga. | Pin manifest; native USB teruji; CS43 tidak konflik dengan UART0. |
-| AC03 | 3 HX711, 3 jarak, 4 MQ, DS18B20 dan 2 SHT31 terakuisisi bersama. | Capture diagnostik dengan quality tiap sensor. |
-| AC04 | Fill memakai calibration tiap slot; target awal MAE ≤5 percentage points. | Uji beberapa level termasuk 70-85 persen; raw dan error disimpan. |
-| AC05 | Berat repeatable dan hysteresis/corner loading terukur. | Uji beban referensi; toleransi final ditetapkan dari rig dan dicatat. |
-| AC06 | MQ-7 mengikuti profile datasheet yang benar; output di fase invalid tidak dipakai. | Pengukuran rail dan timing heater, log state dan sampling. |
-| AC07 | Kegagalan sensor wajib memberi null dan Data Invalid dengan sebab. | Cabut atau fault injection tiap kelas sensor tanpa menghentikan tiga-slot heartbeat. |
-| AC08 | Setiap snapshot valid diterima dengan tiga row dan timestamp terpercaya. | Query SQLite serta dashboard/research API dari hardware. |
-| AC09 | Ack hilang dan retry tidak menambah row; payload berubah di waktu sama dikarantina. | Replay identik → deduplicated; konflik → 409. |
-| AC10 | Putus Wi-Fi 1 jam tanpa kehilangan snapshot bertimestamp dalam kapasitas queue. | Bandingkan sequence, raw packets dan row tersimpan setelah drain. |
-| AC11 | Power-loss tidak merusak seluruh queue atau config. | Matikan daya saat append dan ack; restart memulihkan record utuh. |
-| AC12 | NTP gagal dan koreksi mundur tidak membuat waktu palsu atau timestamp duplikat. | Test cold boot, same-boot reconstruction, dan clock adjustment. |
-| AC13 | Semua kanal MQ dan SHT31 tersedia di research/export dengan unit dan quality. | CSV dan research API cocok dengan capture fixture/hardware. |
-| AC14 | Tidak ada token/password pada Git, health, API research, CSV atau log biasa. | Review secret paths dan response allowlist; token salah dan CA salah ditolak. |
-| AC15 | Soak 24 jam tidak mengalami reset tak terencana atau pertumbuhan resource tak terbatas. | Reset reason, heap trend, queue usage dan dropout logs. |
-| AC16 | Nilai FIS/OGI/safety yang belum dikalibrasi tetap unavailable. | Uji mode production tanpa fixture thresholds; tidak membuat label Normal dari data hilang. |
+| AC01 | Build N16R8/native dari checkout bersih. | `pio run` dan `pio test`. |
+| AC02 | Board/pin profile aman untuk N16R8/USB/memory. | Hardware/pin evidence. |
+| AC03 | Semua sensor terakuisisi bersama. | Diagnostic capture + quality. |
+| AC04 | Fill calibration memenuhi target engineering awal. | Multi-level reference test. |
+| AC05 | Weight repeatability/hysteresis terukur. | Reference load test. |
+| AC06 | MQ-7 mengikuti datasheet/profile aktual. | Rail/timing/state evidence. |
+| AC07 | Sensor wajib fault → null/invalid + reason; kanal lain lanjut. | Fault injection. |
+| AC08 | Summary-v2 existing tetap kompatibel. | SQLite/API integration. |
+| AC09 | Summary exact replay dedupe dan conflicting replay ditolak. | Retry/409 tests. |
+| AC10 | LittleFS ≥60 s full archive tanpa overwrite pending. | ID/hash reconciliation. |
+| AC11 | Power-loss tidak merusak seluruh queue/config. | Cut-power append/ACK/config tests. |
+| AC12 | UTC/time anchor tidak memalsukan/menulis ulang historical time. | Cold boot/NTP/backward clock tests. |
+| AC13 | Research/export menyediakan semua kanal + unit/quality/provenance. | Export/API fixture. |
+| AC14 | Tidak ada secret pada Git/config export/health/API/CSV/log. | Secret scan/redaction tests. |
+| AC15 | 24 h soak tanpa reset/resource growth tak terbatas. | Heap/stack/queue/reset evidence. |
+| AC16 | Model ilmiah belum valid tetap unavailable. | Negative model tests. |
+| AC17 | Calibration offline draft/preview/commit/cancel. | USB workflow. |
+| AC18 | Calibration/profile interrupted commit mempertahankan old/new profile utuh. | Power-cut/hash tests. |
+| AC19 | Varian SD ≥72 h full archive. | Endurance/capacity + reconciliation. |
+| AC20 | SD fault/removal/full fallback tanpa menghapus pending atau duplikasi recovery. | Storage fault tests. |
+| AC21 | CALIBRATING tidak menjadi keputusan normal. | Contract/e2e. |
+| AC22 | Hardware-v3 tidak menjalankan backend legacy inference. | Service/package test. |
+| AC23 | Batch v3 atomik/idempotent; conflict → 409 tanpa partial commit. | Transaction fault tests. |
+| AC24 | Result menyimpan source IDs + model/safety provenance lengkap. | Cross-language fixture. |
+| AC25 | Completeness dibuktikan stable record ID + hash. | Generator→export reconciliation. |
+| AC26 | Quota full → `LOGGING_BLOCKED`, no overwrite pending, gap accounting. | Quota/reboot tests. |
+| AC27 | UTC-null diterima end-to-end; derived time additive. | Clock tests. |
+| AC28 | Archive cursor stable dan backlog tidak memundurkan current. | Paging/backlog tests. |
+| AC29 | Backlog drain sambil sampling tetap; durability counters reconcile. | 24 h + throughput. |
+| AC30 | Tidak ada mutable non-const global configuration/implicit sync. | Static search + architecture review. |
+| AC31 | `AppConfig` A/B snapshot survive reboot/power-cut tanpa partial active state. | Native/target NVS tests. |
+| AC32 | Invalid/corrupt config tidak dapat aktif; previous-valid/maintenance path jelas. | Range/schema/corruption tests. |
+| AC33 | Config P0 aktif setelah controlled reboot; satu boot memakai satu `config_version/config_hash`. | Boot/telemetry assertions. |
+| AC34 | Credential/token terpisah dari AppConfig dan write-only/redacted. | Rotation/redaction tests. |
+| AC35 | Calibration/FIS/safety profile dan RuntimeState bukan generic AppConfig; refs/version/hash benar. | Schema/profile/reboot tests. |
 
-AC04 adalah target engineering dari konsep hardware v0.8. Target kuantitatif berat, gas repeatability, thermal response, dan safety perlu ditetapkan bersama eksperimen; nilai yang belum disepakati tidak diberi angka seolah telah tervalidasi.
-
-MVP selesai ketika AC01-AC18 dan AC21 memiliki bukti uji terbaru. AC19-AC20 wajib untuk varian SD; threshold ilmiah tetap ditunda sampai eksperimen selesai. Klaim keamanan B3 atau deteksi gas dalam ppm tidak menjadi acceptance firmware MVP. Pilot hanya menampilkan keputusan dengan konfigurasi dan kualitas input yang dapat diaudit.
-
-## 13A Penerimaan revisi kalibrasi dan storage
-
-| ID | Kriteria | Bukti yang diperlukan |
-| --- | --- | --- |
-| AC17 | Mode kalibrasi bisa dipakai offline per slot; draft tidak mengubah profil aktif. | USB session: start, capture, preview, commit, cancel; anchor salah/unstable ditolak. |
-| AC18 | Kalibrasi tersimpan setelah reboot; interrupted commit memakai profil utuh; rollback bisa dilakukan. | Fault injection saat commit NVS; version/checksum; paket lama tetap memakai profil asal. |
-| AC19 | Varian SD menyimpan minimal 72 jam pada interval 15 s dan limit body; semua pending dapat dikirim tanpa row ganda. | Tes endurance nyata dan recovery, serta accelerated test kapasitas; hitung sequence dan ack server. |
-| AC20 | SD hilang/rusak/penuh beralih ke flash; pemasangan ulang tidak menggandakan queue. | Lepas kartu, mount fault, quota penuh, reboot saat migration/ack; ukur tail loss dan STORAGE_DEGRADED. |
-| AC21 | Data CALIBRATING tidak memicu keputusan operasional normal; status dan raw tetap tersedia. | Contract test mode/targets/versi; heartbeat tiga slot; backend reason dan dashboard. |
-
-AC19 dan AC20 menjadi gate wajib bila hardware microSD dipilih. Baseline tanpa SD memakai AC10 dan AC11. Menambah kartu tidak menghapus batas quota, aturan timestamp, quality, serta kebutuhan ack server.
+MVP wajib membuktikan **AC01–AC18 dan AC21–AC35**. AC19–AC20 menjadi gate tambahan bila varian microSD dipilih. Klaim keamanan B3/ppm tetap membutuhkan validasi ilmiah terpisah.
 
 ### Penerimaan bersyarat untuk BLE P1
 
@@ -618,17 +610,20 @@ Jika BLE gateway dipilih setelah spike, uji radio putus pada setiap tahap fragme
 
 | Keputusan | Status | Cara menyelesaikan |
 | --- | --- | --- |
-| Controller dan MQ | Dikonfirmasi | N16R8; MQ-4/135/7/8; satu MCU per tiga slot. |
-| Modul dan revisi PCB | Perlu inspeksi | Baca label WROOM dan schematic; verifikasi topology flash/PSRAM serta RGB. |
-| Model ultrasonic | Asumsi TRIG ECHO | Kunci model, blind zone, mounting, timeout dan divider. VL53L1X memerlukan profil driver/address yang berbeda. |
-| MQ-7 pabrikan dan driver | Perlu datasheet | Kunci VH rendah/tinggi, timing, akses heater, rail selection dan safe boot state. |
-| Penempatan sensor gas | Usulan eksperimen | Organik MQ-4/135; B3 MQ-7/8; pindah melalui profil tanpa mengubah channel identity. |
-| SHT31 kedua | Usulan B3 | Sesuai definisi parameter v0.8; tabel RAB lama menyebut Anorganik. Kunci mounting sebelum kalibrasi. |
-| Endpoint dan TLS | Perlu deployment | Host backend dengan TLS dan SQLite persistent; provision credential hardware. |
-| Waktu dan queue | Target awal | 15 s; flash fallback 512 snapshot; SD pending quota awal 128 MiB dan target 72 jam; ukur kapasitas, time policy dan wear. |
-| microSD | Opsional hardware | Dukungan firmware wajib tersedia; pilih modul logika 3,3 V dan kartu sebelum freeze wiring. |
-| Bluetooth sebagai transport | P1 bersyarat | Gateway HP/komputer + BLE GATT; lanjutkan hanya jika prototype dan UX lapangan layak. |
-| FIS dan safety final | Deferred research | Membership, OGI, verified-empty, thresholds, dan offline duration mengikuti eksperimen/config yang memiliki sumber. |
+| Controller/MQ | Dikonfirmasi | N16R8; MQ-4/135/7/8; satu MCU untuk tiga slot. |
+| Modul/revisi PCB | Perlu inspeksi | Verifikasi WROOM topology, flash/PSRAM, RGB, schematic. |
+| Ultrasonic | Perlu freeze model | Model/blind-zone/timeout/divider/mounting. |
+| MQ-7 | Perlu datasheet aktual | Heater rail/timing/safe boot. |
+| SHT31 placement | Perlu freeze mounting | Lokasi/alamat sebelum calibration. |
+| Edge FIS/safety | Dikonfirmasi | Hardware-v3 di MCU; legacy tetap backend. |
+| Storage | Dikonfirmasi awal | LittleFS 8 MiB/pending 6 MiB; SD optional 20 GiB; no-overwrite; capacity diuji. |
+| Configuration ownership | Dikonfirmasi | Immutable per-boot `AppConfig`; no mutable global config. |
+| Config activation | Dikonfirmasi P0 | Draft/validate/commit A/B NVS + controlled reboot; no hot reload P0. |
+| Secret boundary | Dikonfirmasi | Store/namespace terpisah, write-only/redacted, token rotation. |
+| Config schema evolution | Perlu implementasi | Explicit migrate/reject policy; no silent reinterpretation. |
+| Factory reset | Perlu SOP | Bedakan AppConfig reset, secret reset, profile reset, full erase. |
+| Endpoint/TLS | Perlu deployment | TLS + persistent SQLite + credential provisioning. |
+| Scientific model final | Deferred | Versioned profile berdasarkan evidence. |
 
 ## 15 Referensi untuk developer
 
@@ -636,6 +631,7 @@ Repo dan kode historis dibaca pada commit 6fed00f02b6ef7dabc159d924f798d344a6072
 
 - Repo: https://github.com/RayaSatriatama/IoT-Trashcan/tree/6fed00f02b6ef7dabc159d924f798d344a6072ba — README; docs/SIGAP_PRD_v1.0.md; docs/SIGAP_SDD_v1.0.md; docs/SIGAP_Smart_Bin_Konsep_dan_RAB_v0.8.md.
 - Kontrak historis: internal/http/ingest_handler.go; internal/ingest/model.go; service.go; validation.go; normalize.go; internal/http/read_api.go; history_api.go; internal/device/offline.go; cmd/sigap/main.go; migrations/001_initial.sql.
+- Skill engineering revisi 1.3: `.agents/skills/esp32-development`, `.agents/skills/embedded-development`, `.agents/skills/cpp-coding-standards`, `.agents/skills/config-nvs`, dan `.agents/skills/memory-audit`. Guidance project-specific upstream tidak otomatis menjadi kontrak SIGAP.
 - Kontrak HEAD yang wajib direconcile: internal/ingest, internal/fuzzy, internal/safety, internal/history, internal/http/read_api.go, internal/simulator, dan migrations/004_device_research_trace.sql.
 - PlatformIO board: https://docs.platformio.org/en/latest/boards/espressif32/esp32-s3-devkitc-1.html — default N8, override board options.
 - Platform manifest: https://github.com/platformio/platform-espressif32/blob/v7.1.3/platform.json — platform pin dan package framework. Board manifest: boards/esp32-s3-devkitc-1.json pada tag yang sama.
