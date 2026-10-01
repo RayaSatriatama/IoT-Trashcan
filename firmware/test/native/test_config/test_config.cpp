@@ -5,6 +5,7 @@
 
 #include <unity.h>
 
+#include "sigap/board/board_memory.h"
 #include "config/config_codec.h"
 #include "sigap/config/config_defaults.h"
 #include "config/config_manager.h"
@@ -19,6 +20,9 @@ using sigap::config::ConfigCodec;
 using sigap::config::ConfigState;
 using sigap::config::EncodedConfig;
 using sigap::config::MemoryConfigStore;
+
+using sigap::board::BoardMemoryReading;
+using sigap::board::BoardMemoryStatus;
 
 constexpr uint64_t kUsableLittlefsBytes{8ULL * 1024ULL * 1024ULL};
 
@@ -52,6 +56,38 @@ void test_factory_defaults_are_valid() {
       sigap::config::validate_config(sigap::config::kFactoryDefaults,
                                      validation_context())
           .ok);
+}
+
+void test_n16r8_board_memory_matches_expected_identity() {
+  const BoardMemoryReading reading{
+      sigap::board::kExpectedFlashBytes, true,
+      sigap::board::kExpectedPsramBytes};
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(BoardMemoryStatus::Match),
+      static_cast<int>(sigap::board::evaluate_board_memory(reading)));
+}
+
+void test_eight_megabyte_flash_is_rejected() {
+  const BoardMemoryReading reading{8ULL * 1024ULL * 1024ULL, true,
+                                   sigap::board::kExpectedPsramBytes};
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(BoardMemoryStatus::FlashSizeMismatch),
+      static_cast<int>(sigap::board::evaluate_board_memory(reading)));
+}
+
+void test_missing_psram_is_rejected() {
+  const BoardMemoryReading reading{sigap::board::kExpectedFlashBytes, false, 0};
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(BoardMemoryStatus::PsramMissing),
+      static_cast<int>(sigap::board::evaluate_board_memory(reading)));
+}
+
+void test_wrong_psram_size_is_rejected() {
+  const BoardMemoryReading reading{sigap::board::kExpectedFlashBytes, true,
+                                   2ULL * 1024ULL * 1024ULL};
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(BoardMemoryStatus::PsramSizeMismatch),
+      static_cast<int>(sigap::board::evaluate_board_memory(reading)));
 }
 
 void test_unsupported_schema_is_rejected() {
@@ -113,6 +149,22 @@ void test_flash_quota_reserve_is_enforced() {
   TEST_ASSERT_EQUAL_INT(
       static_cast<int>(sigap::config::ConfigValidationError::FlashQuota),
       static_cast<int>(sigap::config::validate_config(config, validation_context())
+                           .error));
+}
+
+void test_flash_quota_uses_external_usable_capacity() {
+  AppConfig config = sigap::config::kFactoryDefaults;
+  const sigap::config::ValidationContext large_context{
+      9ULL * 1024ULL * 1024ULL, 0};
+  config.storage.flash_pending_quota_bytes = 7ULL * 1024ULL * 1024ULL;
+  TEST_ASSERT_TRUE(
+      sigap::config::validate_config(config, large_context).ok);
+
+  const sigap::config::ValidationContext smaller_context{
+      8ULL * 1024ULL * 1024ULL, 0};
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(sigap::config::ConfigValidationError::FlashQuota),
+      static_cast<int>(sigap::config::validate_config(config, smaller_context)
                            .error));
 }
 
@@ -401,12 +453,17 @@ void tearDown() {}
 void setup() {
   UNITY_BEGIN();
   RUN_TEST(test_factory_defaults_are_valid);
+  RUN_TEST(test_n16r8_board_memory_matches_expected_identity);
+  RUN_TEST(test_eight_megabyte_flash_is_rejected);
+  RUN_TEST(test_missing_psram_is_rejected);
+  RUN_TEST(test_wrong_psram_size_is_rejected);
   RUN_TEST(test_unsupported_schema_is_rejected);
   RUN_TEST(test_zero_or_invalid_period_is_rejected);
   RUN_TEST(test_summary_period_range_is_rejected);
   RUN_TEST(test_retry_minimum_above_maximum_is_rejected);
   RUN_TEST(test_batch_count_bounds_are_rejected);
   RUN_TEST(test_flash_quota_reserve_is_enforced);
+  RUN_TEST(test_flash_quota_uses_external_usable_capacity);
   RUN_TEST(test_sd_quota_is_checked_when_capacity_is_known);
   RUN_TEST(test_configuration_memory_footprint_is_bounded);
   RUN_TEST(test_deterministic_encoding_and_hash);

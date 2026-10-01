@@ -44,7 +44,9 @@ typed AppConfig persistence, deterministic codec/hash, and native-testable NVS
 A/B behavior. Sensor, calibration, FIS, telemetry transport, and provisioning
 implementations remain deferred to later slices. The board profile retains the
 N16R8/OPI assumptions from the firmware specification; physical hardware
-validation is still required.
+validation is still required. Target startup logs detected flash and PSRAM
+identity and reports `BOARD_MEMORY_MISMATCH` when the physical board does not
+match the N16R8 expectation.
 
 Monitoring frontend menggunakan relative same-origin `/api/...` pada web. `EXPO_PUBLIC_API_BASE_URL` hanya digunakan untuk development native bila diperlukan.
 

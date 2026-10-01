@@ -21,6 +21,10 @@ inline constexpr uint32_t kFactorySize{0x400000};
 inline constexpr uint32_t kLittlefsOffset{0x410000};
 inline constexpr uint32_t kLittlefsPartitionBytes{0x800000};
 inline constexpr uint64_t kLittlefsReserveBytes{2ULL * 1024ULL * 1024ULL};
+// Conservative pre-mount value supplied by the composition root. Runtime
+// storage measurement belongs to the future filesystem/storage layer.
+inline constexpr uint64_t kPreMountLittlefsValidationBytes{
+    kLittlefsPartitionBytes};
 
 constexpr bool partitions_fit_16mb() {
   return kNvsOffset + kNvsSize <= kPhyInitOffset &&
