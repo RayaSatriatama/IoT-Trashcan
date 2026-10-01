@@ -21,11 +21,12 @@ RecordContext context() {
 }
 
 UltrasonicProfile ultrasonic_profile(uint32_t timeout_us,
-                                     uint32_t gap_us) {
+                                     uint32_t gap_us,
+                                     ProfileTarget target =
+                                         ProfileTarget::UltrasonicOrganic) {
   UltrasonicProfile profile{};
   profile.manifest.validity = ProfileValidity::Valid;
-  profile.manifest.target_id =
-      static_cast<uint32_t>(ProfileTarget::UltrasonicOrganic);
+  profile.manifest.target_id = static_cast<uint32_t>(target);
   profile.d_empty_mm = 100.0F;
   profile.d_full_mm = 20.0F;
   profile.echo_mm_per_us = 0.1F;
@@ -92,6 +93,32 @@ void test_ultrasonic_effective_gap_uses_conservative_profile_maximum() {
   const std::array<const UltrasonicProfile*, 3> profiles{
       &organic, &inorganic, &b3};
   TEST_ASSERT_EQUAL_UINT32(80000U, effective_ultrasonic_gap(profiles));
+}
+
+void test_all_valid_ultrasonic_profiles_can_reduce_gap_below_default() {
+  UltrasonicProfile organic = ultrasonic_profile(
+      30000U, 40000U, ProfileTarget::UltrasonicOrganic);
+  UltrasonicProfile inorganic = ultrasonic_profile(
+      30000U, 45000U, ProfileTarget::UltrasonicInorganic);
+  UltrasonicProfile b3 = ultrasonic_profile(
+      30000U, 50000U, ProfileTarget::UltrasonicB3);
+
+  const std::array<const UltrasonicProfile*, 3> profiles{
+      &organic, &inorganic, &b3};
+  TEST_ASSERT_EQUAL_UINT32(50000U, effective_ultrasonic_gap(profiles));
+}
+
+void test_missing_ultrasonic_profile_contributes_engineering_fallback() {
+  UltrasonicProfile organic = ultrasonic_profile(
+      30000U, 40000U, ProfileTarget::UltrasonicOrganic);
+  UltrasonicProfile b3 = ultrasonic_profile(
+      30000U, 50000U, ProfileTarget::UltrasonicB3);
+
+  const std::array<const UltrasonicProfile*, 3> profiles{
+      &organic, nullptr, &b3};
+  TEST_ASSERT_EQUAL_UINT32(
+      UltrasonicEngineeringDefaults::kInterSensorGapUs,
+      effective_ultrasonic_gap(profiles));
 }
 
 void test_ultrasonic_engineering_fallback_has_no_profile_provenance() {
@@ -196,6 +223,26 @@ void test_ds18b20_incomplete_conversion_is_not_ready() {
                            record.converted.primary_value);
 }
 
+void test_ds18b20_resolution_mismatch_is_not_operationally_ready() {
+  SequenceAllocator sequence{};
+  RecordFactory factory(sequence, context());
+  DsReader source{};
+  source.result.resolution_matches = false;
+  Ds18b20Profile profile = ds_profile(9U);
+  Ds18b20Acquirer acquirer(source, factory, &profile,
+                           ds18b20_conversion_time_us(profile.resolution_bits));
+  SampleRecord record{};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(DriverPollStatus::NoAttempt),
+                        static_cast<int>(acquirer.poll(0U, record)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(DriverPollStatus::Produced),
+                        static_cast<int>(acquirer.poll(94000U, record)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(SampleQuality::Uncalibrated),
+                        static_cast<int>(record.quality));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(SampleReason::InvalidProfile),
+                        static_cast<int>(record.reason));
+  TEST_ASSERT_FALSE(record.converted.primary_available);
+}
+
 void setUp() {}
 void tearDown() {}
 
@@ -205,9 +252,12 @@ void setup() {
   UNITY_BEGIN();
   RUN_TEST(test_ultrasonic_timeout_is_profile_driven);
   RUN_TEST(test_ultrasonic_effective_gap_uses_conservative_profile_maximum);
+  RUN_TEST(test_all_valid_ultrasonic_profiles_can_reduce_gap_below_default);
+  RUN_TEST(test_missing_ultrasonic_profile_contributes_engineering_fallback);
   RUN_TEST(test_ultrasonic_engineering_fallback_has_no_profile_provenance);
   RUN_TEST(test_ds18b20_resolution_controls_conversion_deadline);
   RUN_TEST(test_ds18b20_incomplete_conversion_is_not_ready);
+  RUN_TEST(test_ds18b20_resolution_mismatch_is_not_operationally_ready);
   UNITY_END();
 }
 

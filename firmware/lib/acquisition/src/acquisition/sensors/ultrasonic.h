@@ -48,18 +48,16 @@ class UltrasonicTriggerGate final {
 
 inline uint32_t effective_ultrasonic_gap(
     const std::array<const UltrasonicProfile*, 3>& profiles) noexcept {
-  uint32_t gap = UltrasonicEngineeringDefaults::kInterSensorGapUs;
   constexpr std::array<SensorId, 3> kSensors{
       SensorId::UltrasonicOrganic,
       SensorId::UltrasonicInorganic,
       SensorId::UltrasonicB3,
   };
+
+  uint32_t gap = 0U;
   for (std::size_t index = 0; index < profiles.size(); ++index) {
-    const auto* profile = profiles[index];
-    if (profile != nullptr && profile->valid_for_acquisition() &&
-        profile_matches(profile->manifest, kSensors[index])) {
-      gap = std::max(gap, profile->inter_sensor_gap_us);
-    }
+    const auto params = resolve_ultrasonic_params(profiles[index], kSensors[index]);
+    gap = std::max(gap, params.inter_sensor_gap_us);
   }
   return gap;
 }

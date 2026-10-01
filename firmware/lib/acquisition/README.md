@@ -24,8 +24,12 @@ profile-owned. Engineering defaults are not hardware validation.
 | SHT31 address and offsets | `Sht31Profile` |
 | GPIO | `BoardConfig` |
 
-DS18B20 conversion wait is derived from the profile resolution (9--12 bit),
-while CRC and one-wire slot timings remain protocol invariants. MQ drivers expose
+DS18B20 conversion wait is derived from the profile resolution (9--12 bit). The
+target adapter reads the scratchpad configuration, applies a mismatched profile
+resolution while preserving alarm bytes, and verifies the readback before
+sampling. It does not issue `COPY SCRATCHPAD`, so profile application does not
+add EEPROM writes on every boot. CRC and one-wire slot timings remain protocol
+invariants. MQ drivers expose
 ADC data and optional engineering millivolts only; ppm, R0, OGI, and alarm
 thresholds are deliberately absent. MQ-7 phase timings are supplied by
 `Mq7HeaterProfile` and are not universal production constants.

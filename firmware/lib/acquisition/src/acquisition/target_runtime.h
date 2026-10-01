@@ -116,6 +116,9 @@ class TargetAcquisitionGraph final {
         ds_period == 0U || sht_period == 0U) {
       return false;
     }
+    if (!readers_.ds18b20->begin()) {
+      return false;
+    }
 
     scheduler_ = CooperativeScheduler{};
     registered_jobs_ = 0U;
@@ -374,19 +377,46 @@ class TargetDs18b20Reader final : public IDs18b20Reader {
  public:
   TargetDs18b20Reader(uint8_t data_pin,
                       const Ds18b20Profile* profile = nullptr) noexcept
-      : data_pin_(data_pin) {
+      : data_pin_(data_pin), profile_(profile) {
     pinMode(data_pin_, INPUT_PULLUP);
-    if (profile != nullptr && profile->has_rom &&
-        profile_matches(profile->manifest, SensorId::Ds18b20B3) &&
-        profile->rom[0] == 0x28U &&
-        ds18b20_crc8(profile->rom.data(), 7U) == profile->rom[7]) {
-      expected_rom_ = profile->rom;
+    if (profile_ != nullptr && profile_->valid_for_acquisition() &&
+        profile_matches(profile_->manifest, SensorId::Ds18b20B3) &&
+        profile_->rom[0] == 0x28U &&
+        ds18b20_crc8(profile_->rom.data(), 7U) == profile_->rom[7]) {
+      expected_rom_ = profile_->rom;
       expected_rom_valid_ = true;
     }
   }
 
+  bool begin() noexcept override {
+    if (!expected_rom_valid_ || profile_ == nullptr ||
+        !profile_->valid_for_acquisition()) {
+      return false;
+    }
+
+    Ds18b20Scratchpad scratchpad{};
+    if (!read_scratchpad(scratchpad) || !scratchpad.crc_valid) {
+      return false;
+    }
+    if (!ds18b20_resolution_matches(scratchpad, profile_->resolution_bits)) {
+      if (!write_scratchpad(scratchpad.th, scratchpad.tl,
+                            ds18b20_resolution_config(
+                                profile_->resolution_bits))) {
+        return false;
+      }
+      Ds18b20Scratchpad verify{};
+      if (!read_scratchpad(verify) ||
+          !ds18b20_resolution_matches(verify, profile_->resolution_bits)) {
+        return false;
+      }
+    }
+    configured_ = true;
+    return true;
+  }
+
   bool request_conversion() noexcept override {
-    if (!expected_rom_valid_ || conversion_requested_ || !reset_presence()) {
+    if (!configured_ || !expected_rom_valid_ || conversion_requested_ ||
+        !reset_presence()) {
       return false;
     }
     write_byte(0x55U);  // MATCH ROM
@@ -414,22 +444,43 @@ class TargetDs18b20Reader final : public IDs18b20Reader {
     if (!conversion_requested_ || !completion_observed_) return result;
     conversion_requested_ = false;
     completion_observed_ = false;
-    if (!expected_rom_valid_ || !reset_presence()) return result;
+    Ds18b20Scratchpad scratchpad{};
+    result.present = read_scratchpad(scratchpad);
+    if (!result.present) return result;
+    result.crc_valid = scratchpad.crc_valid;
+    result.resolution_matches = ds18b20_resolution_matches(
+        scratchpad, profile_ != nullptr ? profile_->resolution_bits : 0U);
+    result.temperature_centi_c = static_cast<int32_t>(scratchpad.raw_temperature) *
+                                 625 / 100;
+    result.conversion_complete = true;
+    return result;
+  }
+
+ private:
+  bool read_scratchpad(Ds18b20Scratchpad& decoded) noexcept {
+    if (!expected_rom_valid_ || !reset_presence()) return false;
 
     write_byte(0x55U);  // MATCH ROM
     for (const uint8_t byte : expected_rom_) write_byte(byte);
     write_byte(0xbeU);  // READ SCRATCHPAD
     std::array<uint8_t, 9> scratchpad{};
     for (uint8_t& byte : scratchpad) byte = read_byte();
-
-    result.present = true;
-    result.crc_valid = decode_ds18b20_scratchpad(
-        scratchpad, result.temperature_centi_c);
-    result.conversion_complete = true;
-    return result;
+    (void)parse_ds18b20_scratchpad(scratchpad, decoded);
+    return true;
   }
 
- private:
+  bool write_scratchpad(uint8_t th, uint8_t tl, uint8_t config) noexcept {
+    if (!expected_rom_valid_ || !reset_presence()) return false;
+
+    write_byte(0x55U);  // MATCH ROM
+    for (const uint8_t byte : expected_rom_) write_byte(byte);
+    write_byte(0x4eU);  // WRITE SCRATCHPAD; do not COPY to EEPROM.
+    write_byte(th);
+    write_byte(tl);
+    write_byte(config);
+    return true;
+  }
+
   bool reset_presence() noexcept {
     pinMode(data_pin_, OUTPUT);
     digitalWrite(data_pin_, LOW);
@@ -481,8 +532,10 @@ class TargetDs18b20Reader final : public IDs18b20Reader {
   }
 
   uint8_t data_pin_;
+  const Ds18b20Profile* profile_{nullptr};
   std::array<uint8_t, 8> expected_rom_{};
   bool expected_rom_valid_{false};
+  bool configured_{false};
   bool conversion_requested_{false};
   bool completion_observed_{false};
 };

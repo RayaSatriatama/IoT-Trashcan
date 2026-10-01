@@ -478,6 +478,10 @@ void test_acquisition_memory_footprint_is_bounded() {
   UnityPrintNumber(static_cast<int>(sizeof(MqAdcProfile)));
   UnityPrint(" Mq7HeaterProfile=");
   UnityPrintNumber(static_cast<int>(sizeof(Mq7HeaterProfile)));
+  UnityPrint(" Ds18b20Profile=");
+  UnityPrintNumber(static_cast<int>(sizeof(Ds18b20Profile)));
+  UnityPrint(" TargetDs18b20Reader=");
+  UnityPrintNumber(static_cast<int>(sizeof(TargetDs18b20Reader)));
   UnityPrint("\\n");
   TEST_ASSERT_LESS_OR_EQUAL_UINT(512U, sizeof(SampleRecord));
   TEST_ASSERT_LESS_OR_EQUAL_UINT(16U * sizeof(SampleRecord) + 64U,

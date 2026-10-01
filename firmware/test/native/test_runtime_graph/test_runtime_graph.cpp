@@ -40,6 +40,8 @@ struct MqFake final : IMqAdcReader {
 };
 
 struct DsFake final : IDs18b20Reader {
+  bool begin_ok{true};
+  bool begin() noexcept override { return begin_ok; }
   bool request_conversion() noexcept override { return true; }
   Ds18b20ReadResult read_conversion() noexcept override {
     return Ds18b20ReadResult{true, true, true, 2500};
@@ -121,6 +123,39 @@ void test_target_graph_rejects_missing_reader_dependencies_safely() {
   RecordFactory factory(sequence, context);
   TargetReaderSet readers{};
   TargetProfileSet profiles{};
+  SampleRing<TargetAcquisitionGraph::kHandoffCapacity> handoff{};
+  TargetAcquisitionGraph graph(factory, readers, profiles, handoff);
+  sigap::config::SamplingConfig sampling{};
+
+  TEST_ASSERT_FALSE(graph.begin(sampling, 0U));
+  TEST_ASSERT_FALSE(graph.enabled());
+  TEST_ASSERT_EQUAL_UINT32(0U, graph.registered_jobs());
+}
+
+void test_target_graph_rejects_ds18b20_profile_setup_failure() {
+  HxFake hx[3]{};
+  UltrasonicFake ultrasonic[3]{};
+  MqFake mq[4]{};
+  DsFake ds{};
+  ds.begin_ok = false;
+  ShtFake sht{};
+  HeaterFake heater{};
+  TargetReaderSet readers{{&hx[0], &hx[1], &hx[2]},
+                          {&ultrasonic[0], &ultrasonic[1], &ultrasonic[2]},
+                          {&mq[0], &mq[1], &mq[2], &mq[3]},
+                          &ds,
+                          {&sht, &sht},
+                          &heater};
+  TargetProfileSet profiles{};
+  ConfigRef config_ref{};
+  config_ref.present = true;
+  config_ref.schema_version = 1U;
+  config_ref.config_version = 1U;
+  BootId boot{};
+  boot.present = true;
+  RecordContext context{boot, DeviceId{}, config_ref, nullptr};
+  SequenceAllocator sequence{};
+  RecordFactory factory(sequence, context);
   SampleRing<TargetAcquisitionGraph::kHandoffCapacity> handoff{};
   TargetAcquisitionGraph graph(factory, readers, profiles, handoff);
   sigap::config::SamplingConfig sampling{};
@@ -270,6 +305,7 @@ void setup() {
   UNITY_BEGIN();
   RUN_TEST(test_target_graph_registers_all_jobs_and_shares_handoff);
   RUN_TEST(test_target_graph_rejects_missing_reader_dependencies_safely);
+  RUN_TEST(test_target_graph_rejects_ds18b20_profile_setup_failure);
   RUN_TEST(test_target_graph_services_ultrasonic_before_one_second_trigger_deadline);
   RUN_TEST(test_acquisition_requires_active_config_provenance);
   UNITY_END();

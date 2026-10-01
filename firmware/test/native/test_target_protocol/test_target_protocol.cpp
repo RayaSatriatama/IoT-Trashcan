@@ -26,6 +26,31 @@ void test_ds18b20_bad_scratchpad_crc_is_rejected() {
   TEST_ASSERT_FALSE(decode_ds18b20_scratchpad(scratchpad, temperature_centi_c));
 }
 
+void test_ds18b20_resolution_config_mapping_is_protocol_stable() {
+  TEST_ASSERT_EQUAL_HEX8(0x1fU, ds18b20_resolution_config(9U));
+  TEST_ASSERT_EQUAL_HEX8(0x3fU, ds18b20_resolution_config(10U));
+  TEST_ASSERT_EQUAL_HEX8(0x5fU, ds18b20_resolution_config(11U));
+  TEST_ASSERT_EQUAL_HEX8(0x7fU, ds18b20_resolution_config(12U));
+  TEST_ASSERT_EQUAL_HEX8(0U, ds18b20_resolution_config(8U));
+}
+
+void test_ds18b20_resolution_is_decoded_from_scratchpad_config() {
+  TEST_ASSERT_EQUAL_UINT8(9U, ds18b20_resolution_from_config(0x1fU));
+  TEST_ASSERT_EQUAL_UINT8(10U, ds18b20_resolution_from_config(0x3fU));
+  TEST_ASSERT_EQUAL_UINT8(11U, ds18b20_resolution_from_config(0x5fU));
+  TEST_ASSERT_EQUAL_UINT8(12U, ds18b20_resolution_from_config(0x7fU));
+  TEST_ASSERT_EQUAL_UINT8(9U, ds18b20_resolution_from_config(0x1fU | 0x80U));
+}
+
+void test_ds18b20_actual_resolution_mismatch_is_detected() {
+  const std::array<uint8_t, 9> scratchpad{
+      0x50U, 0x05U, 0x4bU, 0x46U, 0x7fU, 0xffU, 0x0cU, 0x10U, 0x1cU};
+  Ds18b20Scratchpad decoded{};
+  TEST_ASSERT_TRUE(parse_ds18b20_scratchpad(scratchpad, decoded));
+  TEST_ASSERT_FALSE(ds18b20_resolution_matches(decoded, 9U));
+  TEST_ASSERT_TRUE(ds18b20_resolution_matches(decoded, 12U));
+}
+
 void test_sht31_known_frame_checks_both_crc_bytes() {
   // 0x6666 = 25.00 C and 0x8000 = 50.00 percent RH.
   const std::array<uint8_t, 6> frame{
@@ -56,6 +81,9 @@ void setup() {
   UNITY_BEGIN();
   RUN_TEST(test_ds18b20_known_scratchpad_decodes_verified_85c);
   RUN_TEST(test_ds18b20_bad_scratchpad_crc_is_rejected);
+  RUN_TEST(test_ds18b20_resolution_config_mapping_is_protocol_stable);
+  RUN_TEST(test_ds18b20_resolution_is_decoded_from_scratchpad_config);
+  RUN_TEST(test_ds18b20_actual_resolution_mismatch_is_detected);
   RUN_TEST(test_sht31_known_frame_checks_both_crc_bytes);
   RUN_TEST(test_sht31_bad_crc_is_tracked_per_field);
   UNITY_END();

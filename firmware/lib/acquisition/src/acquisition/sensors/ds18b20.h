@@ -10,11 +10,16 @@ struct Ds18b20ReadResult {
   bool crc_valid{false};
   bool conversion_complete{false};
   int32_t temperature_centi_c{0};
+  bool resolution_matches{true};
 };
 
 class IDs18b20Reader {
  public:
   virtual ~IDs18b20Reader() = default;
+  // Target adapters use begin() to apply and verify the profile's physical
+  // resolution. Native fakes retain the default because their seam already
+  // represents a configured device.
+  virtual bool begin() noexcept { return true; }
   virtual bool request_conversion() noexcept = 0;
   // The default keeps native seams source-compatible while target adapters
   // can report the actual one-wire conversion-complete state.
@@ -72,6 +77,9 @@ class Ds18b20Acquirer final {
     } else if (!result.conversion_complete) {
       quality = SampleQuality::Timeout;
       reason = SampleReason::ConversionPending;
+    } else if (!result.resolution_matches) {
+      quality = SampleQuality::Uncalibrated;
+      reason = SampleReason::InvalidProfile;
     } else if (profile_ != nullptr &&
                !profile_matches(profile_->manifest, SensorId::Ds18b20B3)) {
       quality = SampleQuality::Uncalibrated;
