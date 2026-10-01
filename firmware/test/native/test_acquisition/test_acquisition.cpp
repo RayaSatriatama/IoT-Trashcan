@@ -345,6 +345,25 @@ void test_ultrasonic_trigger_gate_enforces_shared_gap() {
   TEST_ASSERT_TRUE(gate.can_trigger(60000U));
 }
 
+void test_hx711_not_ready_produces_typed_attempt_without_raw_evidence() {
+  SequenceAllocator allocator;
+  RecordFactory factory(allocator, record_context());
+  HxFake source{};
+  source.ready_value = false;
+  Hx711Acquirer acquirer(SensorId::Hx711Organic, StreamId::Organic, source,
+                         factory, nullptr);
+  SampleRecord record{};
+
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(DriverPollStatus::Produced),
+                        static_cast<int>(acquirer.poll(3U, record)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(SampleQuality::Timeout),
+                        static_cast<int>(record.quality));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(SampleReason::NotReady),
+                        static_cast<int>(record.reason));
+  TEST_ASSERT_FALSE(record.raw.present);
+  TEST_ASSERT_FALSE(record.converted.primary_available);
+}
+
 void test_sensor_failures_are_typed_and_raw_evidence_is_not_fabricated() {
   SequenceAllocator allocator;
   RecordFactory factory(allocator, record_context());
@@ -358,7 +377,19 @@ void test_sensor_failures_are_typed_and_raw_evidence_is_not_fabricated() {
   TEST_ASSERT_EQUAL_INT(static_cast<int>(SampleQuality::Disconnected),
                         static_cast<int>(record.quality));
   TEST_ASSERT_EQUAL_INT64(-55, record.raw.signed_counts);
+  TEST_ASSERT_FALSE(record.raw.present);
   TEST_ASSERT_FALSE(record.converted.primary_available);
+
+  MqFake mq_source{};
+  mq_source.result = {false, true, 321U, SampleReason::Disconnected};
+  MqAdcAcquirer mq_acquirer(SensorId::Mq4, StreamId::Organic, mq_source,
+                            factory, nullptr);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(DriverPollStatus::Produced),
+                        static_cast<int>(mq_acquirer.poll(3U, record)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(SampleQuality::Disconnected),
+                        static_cast<int>(record.quality));
+  TEST_ASSERT_FALSE(record.raw.present);
+  TEST_ASSERT_EQUAL_UINT16(321U, record.raw.adc_counts);
 }
 
 void test_ds18b20_crc_failure_is_not_a_temperature() {
@@ -382,6 +413,24 @@ void test_ds18b20_crc_failure_is_not_a_temperature() {
   TEST_ASSERT_FALSE(record.converted.primary_available);
 }
 
+void test_ds18b20_missing_device_produces_disconnected_attempt() {
+  SequenceAllocator allocator;
+  RecordFactory factory(allocator, record_context());
+  DsFake source{};
+  source.request_ok = false;
+  Ds18b20Acquirer acquirer(source, factory, nullptr, 750U);
+  SampleRecord record{};
+
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(DriverPollStatus::Produced),
+                        static_cast<int>(acquirer.poll(0U, record)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(SampleQuality::Disconnected),
+                        static_cast<int>(record.quality));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(SampleReason::Disconnected),
+                        static_cast<int>(record.reason));
+  TEST_ASSERT_FALSE(record.raw.present);
+  TEST_ASSERT_FALSE(record.converted.primary_available);
+}
+
 void test_sht31_crc_failure_preserves_failure_reason() {
   SequenceAllocator allocator;
   RecordFactory factory(allocator, record_context());
@@ -397,6 +446,8 @@ void test_sht31_crc_failure_preserves_failure_reason() {
                         static_cast<int>(acquirer.poll(0U, record)));
   TEST_ASSERT_EQUAL_INT(static_cast<int>(SampleQuality::CrcError),
                         static_cast<int>(record.quality));
+  TEST_ASSERT_TRUE(record.raw.present);
+  TEST_ASSERT_EQUAL_INT32(6000, record.raw.humidity_centi_pct);
   TEST_ASSERT_FALSE(record.converted.secondary_available);
 }
 
@@ -473,8 +524,10 @@ void setup() {
   RUN_TEST(test_ds18b20_conversion_is_split_and_verified_85c_is_valid);
   RUN_TEST(test_sht31_keeps_temperature_and_humidity_independent);
   RUN_TEST(test_ultrasonic_trigger_gate_enforces_shared_gap);
+  RUN_TEST(test_hx711_not_ready_produces_typed_attempt_without_raw_evidence);
   RUN_TEST(test_sensor_failures_are_typed_and_raw_evidence_is_not_fabricated);
   RUN_TEST(test_ds18b20_crc_failure_is_not_a_temperature);
+  RUN_TEST(test_ds18b20_missing_device_produces_disconnected_attempt);
   RUN_TEST(test_sht31_crc_failure_preserves_failure_reason);
   RUN_TEST(test_acquisition_memory_footprint_is_bounded);
   UNITY_END();

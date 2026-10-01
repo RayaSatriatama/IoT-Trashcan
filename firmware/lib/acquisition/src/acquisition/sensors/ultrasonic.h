@@ -13,6 +13,8 @@ struct UltrasonicEchoResult {
   uint32_t echo_us{0};
 };
 
+inline constexpr uint64_t kUltrasonicInterSensorGapUs{60000};
+
 class IUltrasonicReader {
  public:
   virtual ~IUltrasonicReader() = default;
@@ -23,7 +25,9 @@ class IUltrasonicReader {
 class UltrasonicTriggerGate final {
  public:
   bool can_trigger(uint64_t now_us) const noexcept {
-    return !has_trigger_ || now_us - last_trigger_us_ >= 60000U;
+    return !has_trigger_ ||
+           (now_us >= last_trigger_us_ &&
+            now_us - last_trigger_us_ >= kUltrasonicInterSensorGapUs);
   }
   void note_trigger(uint64_t now_us) noexcept {
     last_trigger_us_ = now_us;
@@ -37,7 +41,8 @@ class UltrasonicTriggerGate final {
 
 class UltrasonicAcquirer final {
  public:
-  static constexpr uint64_t kEngineeringInterSensorGapUs{60000};
+  static constexpr uint64_t kEngineeringInterSensorGapUs{kUltrasonicInterSensorGapUs};
+  enum class Phase : uint8_t { Idle, WaitingEcho, TriggerFailed };
   UltrasonicAcquirer(StreamId stream, IUltrasonicReader& source, RecordFactory& factory,
                      const UltrasonicProfile* profile, uint64_t timeout_us) noexcept
       : stream_(stream), source_(source), factory_(factory), profile_(profile), timeout_us_(timeout_us) {}
@@ -48,27 +53,60 @@ class UltrasonicAcquirer final {
       : stream_(stream), source_(source), factory_(factory), profile_(profile),
         timeout_us_(timeout_us), gate_(&gate) {}
 
-  DriverPollStatus poll(uint64_t now_us, SampleRecord& out) noexcept {
-    if (!active_) {
-      if (gate_ != nullptr && !gate_->can_trigger(now_us)) return DriverPollStatus::NoAttempt;
-      if (gate_ == nullptr && has_trigger_ && now_us - last_trigger_us_ < kEngineeringInterSensorGapUs) return DriverPollStatus::NoAttempt;
-      if (!source_.trigger(now_us)) return DriverPollStatus::Fault;
-      active_ = true;
-      has_trigger_ = true;
-      last_trigger_us_ = now_us;
-      if (gate_ != nullptr) gate_->note_trigger(now_us);
+  // Starts one physical measurement. The trigger cadence is owned by the
+  // scheduler, while service() must be called frequently until the echo is
+  // complete or the bounded timeout expires.
+  DriverPollStatus request_sample(uint64_t now_us) noexcept {
+    if (phase_ != Phase::Idle) return DriverPollStatus::NoAttempt;
+    if (gate_ != nullptr && !gate_->can_trigger(now_us)) {
+      waiting_for_gate_ = true;
       return DriverPollStatus::NoAttempt;
     }
+    if (gate_ == nullptr && has_trigger_ &&
+        (now_us < last_trigger_us_ ||
+         now_us - last_trigger_us_ < kEngineeringInterSensorGapUs)) {
+      waiting_for_gate_ = true;
+      return DriverPollStatus::NoAttempt;
+    }
+    if (!source_.trigger(now_us)) {
+      trigger_us_ = now_us;
+      phase_ = Phase::TriggerFailed;
+      return DriverPollStatus::NoAttempt;
+    }
+    trigger_us_ = now_us;
+    last_trigger_us_ = now_us;
+    has_trigger_ = true;
+    waiting_for_gate_ = false;
+    phase_ = Phase::WaitingEcho;
+    if (gate_ != nullptr) gate_->note_trigger(now_us);
+    return DriverPollStatus::NoAttempt;
+  }
+
+  DriverPollStatus service(uint64_t now_us, SampleRecord& out) noexcept {
+    if (phase_ == Phase::Idle) {
+      if (!waiting_for_gate_) return DriverPollStatus::NoAttempt;
+      return request_sample(now_us);
+    }
+
+    if (phase_ == Phase::TriggerFailed) {
+      phase_ = Phase::Idle;
+      RawObservation raw{};
+      ConvertedObservation converted{};
+      return factory_.make(now_us, sensor_id(), stream_, SampleKind::UltrasonicEcho,
+                           SampleQuality::Disconnected, SampleReason::Disconnected,
+                           raw, converted, profile_ref(), out);
+    }
+
     UltrasonicEchoResult result = source_.poll(now_us);
-    if (result.status == UltrasonicEchoStatus::Pending && now_us - last_trigger_us_ < timeout_us_) return DriverPollStatus::NoAttempt;
+    const uint64_t elapsed_us = now_us >= trigger_us_ ? now_us - trigger_us_ : 0U;
+    if (result.status == UltrasonicEchoStatus::Pending && elapsed_us < timeout_us_) {
+      return DriverPollStatus::NoAttempt;
+    }
     RawObservation raw{};
     ConvertedObservation converted{};
     SampleQuality quality{SampleQuality::Timeout};
     SampleReason reason{SampleReason::Timeout};
-    const SensorId sensor = stream_ == StreamId::Inorganic
-                                ? SensorId::UltrasonicInorganic
-                                : (stream_ == StreamId::B3 ? SensorId::UltrasonicB3
-                                                           : SensorId::UltrasonicOrganic);
+    const SensorId sensor = sensor_id();
     if (result.status == UltrasonicEchoStatus::Ready) {
       raw.present = true;
       raw.distance_us = result.echo_us;
@@ -102,21 +140,45 @@ class UltrasonicAcquirer final {
       quality = SampleQuality::Disconnected;
       reason = SampleReason::Disconnected;
     }
-    active_ = false;
+    phase_ = Phase::Idle;
     return factory_.make(now_us, sensor, stream_,
                          SampleKind::UltrasonicEcho, quality, reason, raw, converted,
-                         profile_ == nullptr ? ProfileRef{} : profile_->ref(), out);
+                         profile_ref(), out);
   }
 
+  // Compatibility entry point for existing scheduler seams. New composition
+  // roots should call request_sample() at sample cadence and service() from
+  // every cooperative loop iteration.
+  DriverPollStatus poll(uint64_t now_us, SampleRecord& out) noexcept {
+    if (phase_ == Phase::Idle) return request_sample(now_us);
+    return service(now_us, out);
+  }
+
+  Phase phase() const noexcept { return phase_; }
+  bool waiting_for_echo() const noexcept { return phase_ == Phase::WaitingEcho; }
+
  private:
+  SensorId sensor_id() const noexcept {
+    return stream_ == StreamId::Inorganic
+               ? SensorId::UltrasonicInorganic
+               : (stream_ == StreamId::B3 ? SensorId::UltrasonicB3
+                                           : SensorId::UltrasonicOrganic);
+  }
+
+  ProfileRef profile_ref() const noexcept {
+    return profile_ == nullptr ? ProfileRef{} : profile_->ref();
+  }
+
   StreamId stream_;
   IUltrasonicReader& source_;
   RecordFactory& factory_;
   const UltrasonicProfile* profile_;
   uint64_t timeout_us_;
+  uint64_t trigger_us_{0};
   uint64_t last_trigger_us_{0};
   bool has_trigger_{false};
-  bool active_{false};
+  bool waiting_for_gate_{false};
+  Phase phase_{Phase::Idle};
   UltrasonicTriggerGate* gate_{nullptr};
 };
 

@@ -34,7 +34,9 @@ class MqAdcAcquirer final {
   DriverPollStatus poll(uint64_t now_us, SampleRecord& out) noexcept {
     const MqAdcReadResult result = source_.read();
     RawObservation raw{};
-    raw.present = result.ok || result.disconnected;
+    // Preserve ADC counts only as raw evidence when a conversion actually
+    // succeeded. A disconnected result must not masquerade as a measurement.
+    raw.present = result.ok;
     raw.adc_counts = result.counts;
     ConvertedObservation converted{};
     SampleQuality quality = SampleQuality::Timeout;

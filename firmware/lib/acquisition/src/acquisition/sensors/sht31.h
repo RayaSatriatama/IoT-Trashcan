@@ -10,6 +10,12 @@ struct Sht31ReadResult {
   bool crc_valid{false};
   int32_t temperature_centi_c{0};
   int32_t humidity_centi_pct{0};
+  // A shared bus adapter may issue a measurement and complete it on a later
+  // poll. Pending is not a failed sensor attempt and must not create a
+  // timeout record.
+  bool pending{false};
+  bool temperature_crc_valid{false};
+  bool humidity_crc_valid{false};
 };
 
 class ISht31Reader {
@@ -26,6 +32,9 @@ class Sht31Acquirer final {
 
   DriverPollStatus poll(uint64_t now_us, SampleRecord& out) noexcept {
     const Sht31ReadResult result = source_.read(address_);
+    if (result.pending) {
+      return DriverPollStatus::NoAttempt;
+    }
     RawObservation raw{};
     raw.present = result.ok;
     raw.temperature_centi_c = result.temperature_centi_c;

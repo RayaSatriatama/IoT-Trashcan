@@ -27,7 +27,15 @@ class Ds18b20Acquirer final {
 
   DriverPollStatus poll(uint64_t now_us, SampleRecord& out) noexcept {
     if (!pending_) {
-      if (!source_.request_conversion()) return DriverPollStatus::Fault;
+      if (!source_.request_conversion()) {
+        RawObservation raw{};
+        ConvertedObservation converted{};
+        return factory_.make(
+            now_us, SensorId::Ds18b20B3, StreamId::B3, SampleKind::Ds18b20,
+            SampleQuality::Disconnected, SampleReason::Disconnected,
+            raw, converted,
+            profile_ == nullptr ? ProfileRef{} : profile_->ref(), out);
+      }
       pending_ = true;
       requested_at_ = now_us;
       return DriverPollStatus::NoAttempt;

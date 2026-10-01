@@ -21,7 +21,13 @@ struct HxFake final : IHx711Reader {
 };
 
 struct UltrasonicFake final : IUltrasonicReader {
-  bool trigger(uint64_t) noexcept override { return true; }
+  uint32_t trigger_count{0};
+  uint64_t last_trigger_us{0};
+  bool trigger(uint64_t now_us) noexcept override {
+    ++trigger_count;
+    last_trigger_us = now_us;
+    return true;
+  }
   UltrasonicEchoResult poll(uint64_t) noexcept override {
     return UltrasonicEchoResult{UltrasonicEchoStatus::Ready, 100};
   }
@@ -101,6 +107,86 @@ void test_target_graph_registers_all_jobs_and_shares_handoff() {
     TEST_ASSERT_TRUE(record.header.config_ref.present);
     TEST_ASSERT_EQUAL_UINT64(2, record.header.config_ref.config_version);
   }
+}
+
+void test_target_graph_rejects_missing_reader_dependencies_safely() {
+  ConfigRef config_ref{};
+  config_ref.present = true;
+  config_ref.schema_version = 1U;
+  config_ref.config_version = 1U;
+  BootId boot{};
+  boot.present = true;
+  RecordContext context{boot, DeviceId{}, config_ref, nullptr};
+  SequenceAllocator sequence{};
+  RecordFactory factory(sequence, context);
+  TargetReaderSet readers{};
+  TargetProfileSet profiles{};
+  SampleRing<TargetAcquisitionGraph::kHandoffCapacity> handoff{};
+  TargetAcquisitionGraph graph(factory, readers, profiles, handoff);
+  sigap::config::SamplingConfig sampling{};
+
+  TEST_ASSERT_FALSE(graph.begin(sampling, 0U));
+  TEST_ASSERT_FALSE(graph.enabled());
+  TEST_ASSERT_EQUAL_UINT32(0U, graph.registered_jobs());
+}
+
+void test_target_graph_services_ultrasonic_before_one_second_trigger_deadline() {
+  HxFake hx[3]{};
+  UltrasonicFake ultrasonic[3]{};
+  MqFake mq[4]{};
+  DsFake ds{};
+  ShtFake sht{};
+  HeaterFake heater{};
+  TargetReaderSet readers{{&hx[0], &hx[1], &hx[2]},
+                          {&ultrasonic[0], &ultrasonic[1], &ultrasonic[2]},
+                          {&mq[0], &mq[1], &mq[2], &mq[3]},
+                          &ds,
+                          {&sht, &sht},
+                          &heater};
+  TargetProfileSet profiles{};
+  ConfigRef config_ref{};
+  config_ref.present = true;
+  config_ref.schema_version = 1U;
+  config_ref.config_version = 4U;
+  BootId boot{};
+  boot.present = true;
+  RecordContext context{boot, DeviceId{}, config_ref, nullptr};
+  SequenceAllocator sequence{};
+  RecordFactory factory(sequence, context);
+  SampleRing<TargetAcquisitionGraph::kHandoffCapacity> handoff{};
+  TargetAcquisitionGraph graph(factory, readers, profiles, handoff);
+  sigap::config::SamplingConfig sampling{};
+  sampling.ultrasonic_period_ms = 1000U;
+  sampling.hx711_period_ms = 1000U;
+  sampling.mq_period_ms = 1000U;
+  sampling.ds18b20_period_ms = 1000U;
+  sampling.sht31_period_ms = 1000U;
+
+  TEST_ASSERT_TRUE(graph.begin(sampling, 0U));
+  graph.poll(0U);
+  TEST_ASSERT_EQUAL_UINT32(1U, ultrasonic[0].trigger_count);
+  TEST_ASSERT_EQUAL_UINT32(0U, ultrasonic[1].trigger_count);
+
+  graph.poll(4000U);
+  TEST_ASSERT_EQUAL_UINT32(1U, ultrasonic[0].trigger_count);
+  TEST_ASSERT_TRUE(graph.handoff().size() > 0U);
+
+  graph.poll(500000U);
+  TEST_ASSERT_EQUAL_UINT32(1U, ultrasonic[0].trigger_count);
+  graph.poll(999999U);
+  TEST_ASSERT_EQUAL_UINT32(1U, ultrasonic[0].trigger_count);
+
+  graph.poll(1000000U);
+  TEST_ASSERT_EQUAL_UINT32(1U, ultrasonic[0].trigger_count);
+  TEST_ASSERT_TRUE(ultrasonic[1].trigger_count >= 1U);
+
+  // The organic channel retries its due request after the shared gate has
+  // served the other pending channels, without changing its one-second
+  // sample cadence.
+  graph.poll(1060000U);
+  TEST_ASSERT_EQUAL_UINT32(2U, ultrasonic[0].trigger_count);
+  TEST_ASSERT_TRUE(ultrasonic[0].last_trigger_us - ultrasonic[1].last_trigger_us >=
+                  UltrasonicAcquirer::kEngineeringInterSensorGapUs);
 }
 
 void test_acquisition_requires_active_config_provenance() {
@@ -183,6 +269,8 @@ void test_acquisition_requires_active_config_provenance() {
 void setup() {
   UNITY_BEGIN();
   RUN_TEST(test_target_graph_registers_all_jobs_and_shares_handoff);
+  RUN_TEST(test_target_graph_rejects_missing_reader_dependencies_safely);
+  RUN_TEST(test_target_graph_services_ultrasonic_before_one_second_trigger_deadline);
   RUN_TEST(test_acquisition_requires_active_config_provenance);
   UNITY_END();
 }

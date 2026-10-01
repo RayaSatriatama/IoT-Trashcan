@@ -30,12 +30,24 @@ class Hx711Acquirer final {
       : sensor_(sensor), stream_(stream), source_(source), factory_(factory), profile_(profile) {}
 
   DriverPollStatus poll(uint64_t now_us, SampleRecord& out) noexcept {
-    if (!source_.ready()) return DriverPollStatus::NoAttempt;
-    const Hx711ReadResult result = source_.read();
     RawObservation raw{};
-    raw.present = result.ok || result.disconnected;
-    raw.signed_counts = result.counts;
     ConvertedObservation converted{};
+
+    // DOUT not being ready at the scheduled deadline is an ordinary sensor
+    // outcome. Emit a typed attempt instead of silently retrying forever.
+    if (!source_.ready()) {
+      return factory_.make(now_us, sensor_, stream_, SampleKind::Hx711Counts,
+                           SampleQuality::Timeout, SampleReason::NotReady,
+                           raw, converted,
+                           profile_ == nullptr ? ProfileRef{} : profile_->ref(),
+                           out);
+    }
+
+    const Hx711ReadResult result = source_.read();
+    // A disconnected/read-failed result is diagnostic evidence only. It does
+    // not contain a trustworthy raw measurement.
+    raw.present = result.ok;
+    raw.signed_counts = result.counts;
     SampleQuality quality = SampleQuality::Timeout;
     SampleReason reason = result.reason;
     if (result.disconnected) {
