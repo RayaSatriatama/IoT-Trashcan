@@ -186,7 +186,7 @@ void test_target_graph_services_ultrasonic_before_one_second_trigger_deadline() 
   graph.poll(1060000U);
   TEST_ASSERT_EQUAL_UINT32(2U, ultrasonic[0].trigger_count);
   TEST_ASSERT_TRUE(ultrasonic[0].last_trigger_us - ultrasonic[1].last_trigger_us >=
-                  UltrasonicAcquirer::kEngineeringInterSensorGapUs);
+                  UltrasonicEngineeringDefaults::kInterSensorGapUs);
 }
 
 void test_acquisition_requires_active_config_provenance() {

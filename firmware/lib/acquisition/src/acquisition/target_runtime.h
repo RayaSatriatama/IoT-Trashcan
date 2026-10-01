@@ -96,8 +96,6 @@ class TargetAcquisitionGraph final {
  public:
   static constexpr std::size_t kHandoffCapacity{16};
   static constexpr std::size_t kJobCount{14};
-  static constexpr uint64_t kUltrasonicTimeoutUs{30000};
-  static constexpr uint64_t kDs18b20ConversionUs{750000};
 
   TargetAcquisitionGraph(RecordFactory& factory,
                          const TargetReaderSet& readers,
@@ -122,19 +120,34 @@ class TargetAcquisitionGraph final {
     scheduler_ = CooperativeScheduler{};
     registered_jobs_ = 0U;
     health_ = {};
+    us_gate_ = UltrasonicTriggerGate(
+        effective_ultrasonic_gap(profiles_.ultrasonic));
     heater_profile_ = profiles_.heater != nullptr ? *profiles_.heater : Mq7HeaterProfile{};
     heater_.emplace(*readers_.heater_rail, heater_profile_);
     hx_org_.emplace(SensorId::Hx711Organic, StreamId::Organic, *readers_.hx711[0], factory_, profiles_.hx711[0]);
     hx_inorganic_.emplace(SensorId::Hx711Inorganic, StreamId::Inorganic, *readers_.hx711[1], factory_, profiles_.hx711[1]);
     hx_b3_.emplace(SensorId::Hx711B3, StreamId::B3, *readers_.hx711[2], factory_, profiles_.hx711[2]);
-    us_org_.emplace(StreamId::Organic, *readers_.ultrasonic[0], factory_, profiles_.ultrasonic[0], kUltrasonicTimeoutUs, us_gate_);
-    us_inorganic_.emplace(StreamId::Inorganic, *readers_.ultrasonic[1], factory_, profiles_.ultrasonic[1], kUltrasonicTimeoutUs, us_gate_);
-    us_b3_.emplace(StreamId::B3, *readers_.ultrasonic[2], factory_, profiles_.ultrasonic[2], kUltrasonicTimeoutUs, us_gate_);
+    us_org_.emplace(StreamId::Organic, *readers_.ultrasonic[0], factory_,
+                    profiles_.ultrasonic[0],
+                    resolve_ultrasonic_params(profiles_.ultrasonic[0],
+                                              SensorId::UltrasonicOrganic),
+                    us_gate_);
+    us_inorganic_.emplace(StreamId::Inorganic, *readers_.ultrasonic[1], factory_,
+                          profiles_.ultrasonic[1],
+                          resolve_ultrasonic_params(profiles_.ultrasonic[1],
+                                                    SensorId::UltrasonicInorganic),
+                          us_gate_);
+    us_b3_.emplace(StreamId::B3, *readers_.ultrasonic[2], factory_,
+                   profiles_.ultrasonic[2],
+                   resolve_ultrasonic_params(profiles_.ultrasonic[2],
+                                             SensorId::UltrasonicB3),
+                   us_gate_);
     mq4_.emplace(SensorId::Mq4, StreamId::Organic, *readers_.mq_adc[0], factory_, profiles_.mq_adc[0]);
     mq135_.emplace(SensorId::Mq135, StreamId::Organic, *readers_.mq_adc[1], factory_, profiles_.mq_adc[1]);
     mq7_.emplace(SensorId::Mq7, StreamId::B3, *readers_.mq_adc[2], factory_, profiles_.mq_adc[2], &*heater_);
     mq8_.emplace(SensorId::Mq8, StreamId::B3, *readers_.mq_adc[3], factory_, profiles_.mq_adc[3]);
-    ds18b20_.emplace(*readers_.ds18b20, factory_, profiles_.ds18b20, kDs18b20ConversionUs);
+    ds18b20_.emplace(*readers_.ds18b20, factory_, profiles_.ds18b20,
+                     resolve_ds18b20_conversion_time(profiles_.ds18b20));
     sht31_44_.emplace(0x44U, StreamId::Ambient, *readers_.sht31[0], factory_, profiles_.sht31[0]);
     sht31_45_.emplace(0x45U, StreamId::Ambient, *readers_.sht31[1], factory_, profiles_.sht31[1]);
     hx_jobs_[0] = {&*hx_org_, &handoff_, &health_[0]};
@@ -316,21 +329,16 @@ class TargetUltrasonicReader final : public IUltrasonicReader {
     digitalWrite(trigger_, LOW);
   }
   bool trigger(uint64_t now_us) noexcept override {
+    (void)now_us;
     if (active_) return false;
     digitalWrite(trigger_, HIGH);
     delayMicroseconds(10U);
     digitalWrite(trigger_, LOW);
     active_ = true;
-    started_us_ = now_us;
     return true;
   }
   UltrasonicEchoResult poll(uint64_t now_us) noexcept override {
     if (!active_) return UltrasonicEchoResult{UltrasonicEchoStatus::Pending, 0U};
-    if (now_us - started_us_ >= 30000U) {
-      active_ = false;
-      echo_high_ = false;
-      return UltrasonicEchoResult{UltrasonicEchoStatus::Timeout, 0U};
-    }
     if (digitalRead(echo_) == HIGH) {
       if (!echo_high_) {
         echo_high_ = true;
@@ -349,12 +357,16 @@ class TargetUltrasonicReader final : public IUltrasonicReader {
     return UltrasonicEchoResult{UltrasonicEchoStatus::Pending, 0U};
   }
 
+  void cancel() noexcept override {
+    active_ = false;
+    echo_high_ = false;
+  }
+
  private:
   uint8_t trigger_;
   uint8_t echo_;
   bool active_{false};
   bool echo_high_{false};
-  uint64_t started_us_{0};
   uint64_t echo_started_us_{0};
 };
 
@@ -384,10 +396,24 @@ class TargetDs18b20Reader final : public IDs18b20Reader {
     return true;
   }
 
+  bool conversion_ready() noexcept override {
+    if (!conversion_requested_) return false;
+    const bool ready = read_bit();
+    if (ready) {
+      completion_observed_ = true;
+    } else {
+      // The acquirer has reached its profile-derived deadline. Drop this
+      // request so the next scheduled attempt starts a fresh conversion.
+      conversion_requested_ = false;
+    }
+    return ready;
+  }
+
   Ds18b20ReadResult read_conversion() noexcept override {
     Ds18b20ReadResult result{};
-    if (!conversion_requested_) return result;
+    if (!conversion_requested_ || !completion_observed_) return result;
     conversion_requested_ = false;
+    completion_observed_ = false;
     if (!expected_rom_valid_ || !reset_presence()) return result;
 
     write_byte(0x55U);  // MATCH ROM
@@ -399,7 +425,7 @@ class TargetDs18b20Reader final : public IDs18b20Reader {
     result.present = true;
     result.crc_valid = decode_ds18b20_scratchpad(
         scratchpad, result.temperature_centi_c);
-    result.conversion_complete = result.crc_valid;
+    result.conversion_complete = true;
     return result;
   }
 
@@ -458,6 +484,7 @@ class TargetDs18b20Reader final : public IDs18b20Reader {
   std::array<uint8_t, 8> expected_rom_{};
   bool expected_rom_valid_{false};
   bool conversion_requested_{false};
+  bool completion_observed_{false};
 };
 
 class TargetSht31Reader final : public ISht31Reader {

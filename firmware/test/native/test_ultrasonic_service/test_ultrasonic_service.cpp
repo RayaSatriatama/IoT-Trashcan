@@ -40,6 +40,8 @@ UltrasonicProfile valid_profile() {
   profile.d_empty_mm = 100.0F;
   profile.d_full_mm = 20.0F;
   profile.echo_mm_per_us = 0.1F;
+  profile.echo_timeout_us = 30000U;
+  profile.inter_sensor_gap_us = 60000U;
   return profile;
 }
 

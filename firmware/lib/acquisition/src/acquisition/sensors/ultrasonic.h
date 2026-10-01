@@ -1,6 +1,8 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
+#include <cstddef>
 
 #include "acquisition/record.h"
 #include "acquisition/profiles.h"
@@ -13,21 +15,25 @@ struct UltrasonicEchoResult {
   uint32_t echo_us{0};
 };
 
-inline constexpr uint64_t kUltrasonicInterSensorGapUs{60000};
-
 class IUltrasonicReader {
  public:
   virtual ~IUltrasonicReader() = default;
   virtual bool trigger(uint64_t now_us) noexcept = 0;
   virtual UltrasonicEchoResult poll(uint64_t now_us) noexcept = 0;
+  virtual void cancel() noexcept {}
 };
 
 class UltrasonicTriggerGate final {
  public:
+  explicit UltrasonicTriggerGate(
+      uint32_t minimum_gap_us =
+          UltrasonicEngineeringDefaults::kInterSensorGapUs) noexcept
+      : minimum_gap_us_(minimum_gap_us) {}
+
   bool can_trigger(uint64_t now_us) const noexcept {
     return !has_trigger_ ||
            (now_us >= last_trigger_us_ &&
-            now_us - last_trigger_us_ >= kUltrasonicInterSensorGapUs);
+            now_us - last_trigger_us_ >= minimum_gap_us_);
   }
   void note_trigger(uint64_t now_us) noexcept {
     last_trigger_us_ = now_us;
@@ -35,23 +41,60 @@ class UltrasonicTriggerGate final {
   }
 
  private:
+  uint32_t minimum_gap_us_;
   uint64_t last_trigger_us_{0};
   bool has_trigger_{false};
 };
 
+inline uint32_t effective_ultrasonic_gap(
+    const std::array<const UltrasonicProfile*, 3>& profiles) noexcept {
+  uint32_t gap = UltrasonicEngineeringDefaults::kInterSensorGapUs;
+  constexpr std::array<SensorId, 3> kSensors{
+      SensorId::UltrasonicOrganic,
+      SensorId::UltrasonicInorganic,
+      SensorId::UltrasonicB3,
+  };
+  for (std::size_t index = 0; index < profiles.size(); ++index) {
+    const auto* profile = profiles[index];
+    if (profile != nullptr && profile->valid_for_acquisition() &&
+        profile_matches(profile->manifest, kSensors[index])) {
+      gap = std::max(gap, profile->inter_sensor_gap_us);
+    }
+  }
+  return gap;
+}
+
 class UltrasonicAcquirer final {
  public:
-  static constexpr uint64_t kEngineeringInterSensorGapUs{kUltrasonicInterSensorGapUs};
   enum class Phase : uint8_t { Idle, WaitingEcho, TriggerFailed };
   UltrasonicAcquirer(StreamId stream, IUltrasonicReader& source, RecordFactory& factory,
                      const UltrasonicProfile* profile, uint64_t timeout_us) noexcept
-      : stream_(stream), source_(source), factory_(factory), profile_(profile), timeout_us_(timeout_us) {}
+      : stream_(stream), source_(source), factory_(factory), profile_(profile),
+        params_{timeout_us > UINT32_MAX ? UINT32_MAX
+                                        : static_cast<uint32_t>(timeout_us),
+                UltrasonicEngineeringDefaults::kInterSensorGapUs, false} {}
+
+  UltrasonicAcquirer(StreamId stream, IUltrasonicReader& source, RecordFactory& factory,
+                     const UltrasonicProfile* profile,
+                     UltrasonicAcquisitionParams params) noexcept
+      : stream_(stream), source_(source), factory_(factory), profile_(profile),
+        params_(params) {}
 
   UltrasonicAcquirer(StreamId stream, IUltrasonicReader& source, RecordFactory& factory,
                      const UltrasonicProfile* profile, uint64_t timeout_us,
                      UltrasonicTriggerGate& gate) noexcept
       : stream_(stream), source_(source), factory_(factory), profile_(profile),
-        timeout_us_(timeout_us), gate_(&gate) {}
+        params_{timeout_us > UINT32_MAX ? UINT32_MAX
+                                        : static_cast<uint32_t>(timeout_us),
+                UltrasonicEngineeringDefaults::kInterSensorGapUs, false},
+        gate_(&gate) {}
+
+  UltrasonicAcquirer(StreamId stream, IUltrasonicReader& source, RecordFactory& factory,
+                     const UltrasonicProfile* profile,
+                     UltrasonicAcquisitionParams params,
+                     UltrasonicTriggerGate& gate) noexcept
+      : stream_(stream), source_(source), factory_(factory), profile_(profile),
+        params_(params), gate_(&gate) {}
 
   // Starts one physical measurement. The trigger cadence is owned by the
   // scheduler, while service() must be called frequently until the echo is
@@ -64,7 +107,7 @@ class UltrasonicAcquirer final {
     }
     if (gate_ == nullptr && has_trigger_ &&
         (now_us < last_trigger_us_ ||
-         now_us - last_trigger_us_ < kEngineeringInterSensorGapUs)) {
+         now_us - last_trigger_us_ < params_.inter_sensor_gap_us)) {
       waiting_for_gate_ = true;
       return DriverPollStatus::NoAttempt;
     }
@@ -97,9 +140,20 @@ class UltrasonicAcquirer final {
                            raw, converted, profile_ref(), out);
     }
 
-    UltrasonicEchoResult result = source_.poll(now_us);
     const uint64_t elapsed_us = now_us >= trigger_us_ ? now_us - trigger_us_ : 0U;
-    if (result.status == UltrasonicEchoStatus::Pending && elapsed_us < timeout_us_) {
+    if (elapsed_us >= params_.echo_timeout_us) {
+      source_.cancel();
+      phase_ = Phase::Idle;
+      RawObservation raw{};
+      ConvertedObservation converted{};
+      return factory_.make(now_us, sensor_id(), stream_,
+                           SampleKind::UltrasonicEcho,
+                           SampleQuality::Timeout, SampleReason::Timeout,
+                           raw, converted, profile_ref(), out);
+    }
+
+    UltrasonicEchoResult result = source_.poll(now_us);
+    if (result.status == UltrasonicEchoStatus::Pending) {
       return DriverPollStatus::NoAttempt;
     }
     RawObservation raw{};
@@ -166,14 +220,17 @@ class UltrasonicAcquirer final {
   }
 
   ProfileRef profile_ref() const noexcept {
-    return profile_ == nullptr ? ProfileRef{} : profile_->ref();
+    return profile_ != nullptr && profile_->valid_for_acquisition() &&
+                   profile_matches(profile_->manifest, sensor_id())
+               ? profile_->ref()
+               : ProfileRef{};
   }
 
   StreamId stream_;
   IUltrasonicReader& source_;
   RecordFactory& factory_;
   const UltrasonicProfile* profile_;
-  uint64_t timeout_us_;
+  UltrasonicAcquisitionParams params_{};
   uint64_t trigger_us_{0};
   uint64_t last_trigger_us_{0};
   bool has_trigger_{false};

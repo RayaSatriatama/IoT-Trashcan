@@ -190,6 +190,8 @@ void test_ultrasonic_tolerance_clamps_only_small_envelope_overshoot() {
   profile.d_full_mm = 20.0F;
   profile.echo_mm_per_us = 0.1F;
   profile.overshoot_tolerance_mm = 2.0F;
+  profile.echo_timeout_us = 30000U;
+  profile.inter_sensor_gap_us = 60000U;
   UltrasonicAcquirer acquirer(StreamId::Organic, reader, factory, &profile, 30000U);
   SampleRecord record{};
 

@@ -79,14 +79,32 @@ struct Hx711Profile {
   ProfileRef ref() const noexcept { return to_ref(manifest); }
 };
 
+struct UltrasonicEngineeringDefaults final {
+  static constexpr uint32_t kEchoTimeoutUs{30000U};
+  static constexpr uint32_t kInterSensorGapUs{60000U};
+};
+
+struct UltrasonicAcquisitionParams final {
+  uint32_t echo_timeout_us{UltrasonicEngineeringDefaults::kEchoTimeoutUs};
+  uint32_t inter_sensor_gap_us{
+      UltrasonicEngineeringDefaults::kInterSensorGapUs};
+  bool profile_validated{false};
+};
+
 struct UltrasonicProfile {
   ProfileManifest manifest{};
   float d_empty_mm{0.0F};
   float d_full_mm{0.0F};
   float echo_mm_per_us{0.0F};
   float overshoot_tolerance_mm{0.0F};
-  bool valid_for_conversion() const noexcept {
+  uint32_t echo_timeout_us{0U};
+  uint32_t inter_sensor_gap_us{0U};
+  bool valid_for_acquisition() const noexcept {
     return profile_validity_allows_conversion(manifest.validity) &&
+           echo_timeout_us > 0U && inter_sensor_gap_us > 0U;
+  }
+  bool valid_for_conversion() const noexcept {
+    return valid_for_acquisition() &&
            std::isfinite(d_empty_mm) && std::isfinite(d_full_mm) &&
            std::isfinite(echo_mm_per_us) && std::isfinite(overshoot_tolerance_mm) &&
            d_empty_mm > 0.0F && d_full_mm > 0.0F && d_empty_mm > d_full_mm &&
@@ -113,12 +131,52 @@ struct Ds18b20Profile {
   ProfileManifest manifest{};
   bool has_rom{false};
   std::array<uint8_t, 8> rom{};
+  uint8_t resolution_bits{12U};
   int32_t offset_centi_c{0};
+  bool valid_for_acquisition() const noexcept {
+    return profile_validity_allows_conversion(manifest.validity) &&
+           has_rom && rom[0] == 0x28U &&
+           resolution_bits >= 9U && resolution_bits <= 12U;
+  }
   bool valid_for_conversion() const noexcept {
-    return profile_validity_allows_conversion(manifest.validity) && has_rom && rom[0] == 0x28U;
+    return valid_for_acquisition();
   }
   ProfileRef ref() const noexcept { return to_ref(manifest); }
 };
+
+constexpr uint32_t ds18b20_conversion_time_us(
+    uint8_t resolution_bits) noexcept {
+  switch (resolution_bits) {
+    case 9U: return 94000U;
+    case 10U: return 188000U;
+    case 11U: return 375000U;
+    case 12U: return 750000U;
+    default: return 0U;
+  }
+}
+
+inline uint32_t resolve_ds18b20_conversion_time(
+    const Ds18b20Profile* profile) noexcept {
+  if (profile != nullptr && profile->valid_for_acquisition() &&
+      profile_matches(profile->manifest, SensorId::Ds18b20B3)) {
+    return ds18b20_conversion_time_us(profile->resolution_bits);
+  }
+  return ds18b20_conversion_time_us(12U);
+}
+
+inline UltrasonicAcquisitionParams resolve_ultrasonic_params(
+    const UltrasonicProfile* profile,
+    SensorId sensor = SensorId::UltrasonicOrganic) noexcept {
+  if (profile != nullptr && profile->valid_for_acquisition() &&
+      profile_matches(profile->manifest, sensor)) {
+    return UltrasonicAcquisitionParams{
+        profile->echo_timeout_us,
+        profile->inter_sensor_gap_us,
+        true,
+    };
+  }
+  return UltrasonicAcquisitionParams{};
+}
 
 struct Sht31Profile {
   ProfileManifest manifest{};

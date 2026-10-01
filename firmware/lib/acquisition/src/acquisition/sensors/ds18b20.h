@@ -16,6 +16,9 @@ class IDs18b20Reader {
  public:
   virtual ~IDs18b20Reader() = default;
   virtual bool request_conversion() noexcept = 0;
+  // The default keeps native seams source-compatible while target adapters
+  // can report the actual one-wire conversion-complete state.
+  virtual bool conversion_ready() noexcept { return true; }
   virtual Ds18b20ReadResult read_conversion() noexcept = 0;
 };
 
@@ -33,14 +36,25 @@ class Ds18b20Acquirer final {
         return factory_.make(
             now_us, SensorId::Ds18b20B3, StreamId::B3, SampleKind::Ds18b20,
             SampleQuality::Disconnected, SampleReason::Disconnected,
-            raw, converted,
-            profile_ == nullptr ? ProfileRef{} : profile_->ref(), out);
+            raw, converted, profile_ref(), out);
       }
       pending_ = true;
       requested_at_ = now_us;
       return DriverPollStatus::NoAttempt;
     }
-    if (now_us - requested_at_ < conversion_time_us_) return DriverPollStatus::NoAttempt;
+    if (now_us < requested_at_ ||
+        now_us - requested_at_ < conversion_time_us_) {
+      return DriverPollStatus::NoAttempt;
+    }
+    if (!source_.conversion_ready()) {
+      pending_ = false;
+      RawObservation raw{};
+      ConvertedObservation converted{};
+      return factory_.make(
+          now_us, SensorId::Ds18b20B3, StreamId::B3, SampleKind::Ds18b20,
+          SampleQuality::Timeout, SampleReason::ConversionPending,
+          raw, converted, profile_ref(), out);
+    }
     const Ds18b20ReadResult result = source_.read_conversion();
     pending_ = false;
     RawObservation raw{};
@@ -74,10 +88,17 @@ class Ds18b20Acquirer final {
     }
     return factory_.make(now_us, SensorId::Ds18b20B3, StreamId::B3, SampleKind::Ds18b20,
                          quality, reason, raw, converted,
-                         profile_ == nullptr ? ProfileRef{} : profile_->ref(), out);
+                         profile_ref(), out);
   }
 
  private:
+  ProfileRef profile_ref() const noexcept {
+    return profile_ != nullptr && profile_->valid_for_acquisition() &&
+                   profile_matches(profile_->manifest, SensorId::Ds18b20B3)
+               ? profile_->ref()
+               : ProfileRef{};
+  }
+
   IDs18b20Reader& source_;
   RecordFactory& factory_;
   const Ds18b20Profile* profile_;

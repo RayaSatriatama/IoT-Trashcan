@@ -149,6 +149,8 @@ void test_profile_validity_gates_conversion() {
   distance.d_empty_mm = 1000.0F;
   distance.d_full_mm = 200.0F;
   distance.echo_mm_per_us = 0.1F;
+  distance.echo_timeout_us = 30000U;
+  distance.inter_sensor_gap_us = 60000U;
   TEST_ASSERT_TRUE(distance.valid_for_conversion());
   distance.d_full_mm = 1000.0F;
   TEST_ASSERT_FALSE(distance.valid_for_conversion());
