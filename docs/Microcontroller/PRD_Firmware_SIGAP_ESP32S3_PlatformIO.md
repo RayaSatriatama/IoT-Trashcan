@@ -530,7 +530,7 @@ Backlog/current policy menggunakan waktu ukur/time quality sehingga data lama ya
 
 ### Research dan ekspor
 
-Archive/read/export menyediakan raw, converted, quality/reason, time provenance, firmware version, `config_version/config_hash`, calibration/model refs, dan source IDs. Existing history cursor/CSV tidak berubah diam-diam; archive endpoint/export version baru memakai cursor `(device_id,boot_id,sequence)`. Secret/config payload penuh tidak diekspos; hanya allowlisted non-secret manifest/provenance.
+Archive/read/export menyediakan raw, converted, quality/reason, time provenance, firmware version, `config_version/config_hash`, calibration/model refs, dan source IDs. SQLite `INTEGER` bertanda tidak dapat mewakili seluruh uint64; archive menyimpan `sequence_decimal` asli dan `sequence_sort` 20-digit zero-padded untuk cursor/order numerik yang stabil. Existing history cursor/CSV tidak berubah diam-diam; archive endpoint/export version baru memakai cursor `(device_id,boot_id,sequence)`. Secret/config payload penuh tidak diekspos; hanya allowlisted non-secret manifest/provenance.
 
 ### Provisioning dan versioning
 
@@ -627,7 +627,7 @@ Jika BLE gateway dipilih setelah spike, uji radio putus pada setiap tahap fragme
 
 ## 15 Referensi untuk developer
 
-Repo dan kode historis dibaca pada commit 6fed00f02b6ef7dabc159d924f798d344a6072ba; reconciliation dilakukan terhadap main commit ad65d5fe73c30b16c61da917eb517cdf2a783ba6 pada 30 September 2026. Dokumentasi vendor diperiksa pada tanggal yang sama. Nomor bagian berikut dapat digunakan untuk menelusuri keputusan; semua URL adalah sumber, bukan hasil uji hardware.
+Repo historis dibaca pada `6fed00f02b6ef7dabc159d924f798d344a6072ba`; reconciliation revisi 1.3 dilakukan terhadap `main` `7dd35f6d05cde09fe31a8a2f56933d04e4dc456a` pada 1 Oktober 2026. Referensi vendor dari revisi sebelumnya tetap menjadi sumber hardware; keputusan configuration architecture tambahan berasal dari skill repo yang tercantum di bawah dan diverifikasi terhadap constraint SIGAP.
 
 - Repo: https://github.com/RayaSatriatama/IoT-Trashcan/tree/6fed00f02b6ef7dabc159d924f798d344a6072ba — README; docs/SIGAP_PRD_v1.0.md; docs/SIGAP_SDD_v1.0.md; docs/SIGAP_Smart_Bin_Konsep_dan_RAB_v0.8.md.
 - Kontrak historis: internal/http/ingest_handler.go; internal/ingest/model.go; service.go; validation.go; normalize.go; internal/http/read_api.go; history_api.go; internal/device/offline.go; cmd/sigap/main.go; migrations/001_initial.sql.
