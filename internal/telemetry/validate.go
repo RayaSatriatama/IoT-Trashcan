@@ -1019,12 +1019,18 @@ func validateSafetyResult(raw json.RawMessage, path string) error {
 	if err != nil || !safetyReasons[reason] {
 		return contractError(InvalidEnum, path+".reason", "unknown safety reason")
 	}
-	if state == "CLEAR" && reason == "HAZARD_INPUT_INVALID" {
-		return contractError(InvalidIdentity, path+".state", "invalid hazard input cannot become CLEAR")
+	if state == "CLEAR" && reason != "ALL_VALIDATED_CHANNELS_CLEAR" {
+		return contractError(InvalidIdentity, path+".state", "CLEAR requires validated clear evidence")
 	}
 	mode, err := decodeString(object, "model_state")
 	if err != nil || !modelModes[mode] {
 		return contractError(InvalidEnum, path+".model_state", "unknown safety model provenance")
+	}
+	if (state == "CLEAR" || state == "ALERT") && mode == "UNCONFIGURED" {
+		return contractError(InvalidIdentity, path+".model_state", "operational safety states require a configured model")
+	}
+	if state == "UNCONFIGURED" && mode != "UNCONFIGURED" {
+		return contractError(InvalidIdentity, path+".model_state", "UNCONFIGURED safety state requires unconfigured model provenance")
 	}
 	return validateTrace(object["trace"], path+".trace")
 }
