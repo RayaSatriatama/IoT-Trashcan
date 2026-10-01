@@ -1,10 +1,10 @@
 # PRD Firmware SIGAP ESP32 S3 dengan PlatformIO
 
-Versi 1.1  |  30 September 2026  |  Rancangan implementasi firmware dan integrasi backend
+Versi 1.3  |  1 Oktober 2026  |  Kontrak implementasi firmware, configuration architecture, telemetry archive, dan integrasi backend
 
-Satu ESP32-S3 DevKitC-1 N16R8 menangani tiga slot Organik, Anorganik, dan B3. Firmware membaca sensor, melakukan kalibrasi dan filtering, mencatat kondisi sensor, serta mengirim snapshot ke backend SIGAP. Backend Go tetap menjadi tempat penyimpanan, normalisasi operasional, evaluasi FIS, safety, dan penyajian dashboard. Dokumen ini menetapkan perilaku produk, kontrak telemetry, rencana PlatformIO, serta kriteria penerimaan untuk memulai implementasi.
+Satu ESP32-S3 DevKitC-1 N16R8 menangani tiga slot Organik, Anorganik, dan B3. Firmware membaca seluruh sensor, melakukan kalibrasi, filtering, normalisasi, evaluasi FIS, dan safety lokal, mencatat setiap sampel serta hasil per siklus, lalu mengirim ringkasan dan arsip telemetry ke backend SIGAP. Untuk sumber `HARDWARE_EDGE_V3`, hasil yang diproduksi MCU adalah source of truth: backend Go mengautentikasi, memvalidasi kontrak, menyimpan, memproyeksikan current state, dan mengekspor data tanpa menghitung ulang FIS/safety. Konfigurasi runtime perangkat tidak berupa kumpulan mutable global variable: firmware menggunakan snapshot `AppConfig` tervalidasi dan berversi, secret terpisah, calibration/model profile terpisah, serta runtime state yang tidak diperlakukan sebagai konfigurasi. Jalur simulator/legacy mempertahankan pipeline backend yang ada sampai dimigrasikan secara terpisah. Dokumen ini menetapkan perilaku produk, kontrak configuration/provisioning, telemetry, rencana PlatformIO, serta kriteria penerimaan untuk memulai implementasi.
 
-Revisi 1.1 menetapkan mode kalibrasi sebagai fitur wajib P0 dan dukungan microSD sebagai opsi perangkat untuk antrean offline yang lebih panjang. Wi-Fi tetap jalur pengiriman utama. BLE dapat menjadi jalur alternatif melalui HP atau gateway pada tahap P1 setelah kelayakan diuji; pengiriman langsung BLE ke API HTTP tidak diasumsikan.
+Revisi 1.3 menyatukan PRD dengan TSD v1.2 dan keputusan dari skill embedded yang telah di-merge: source of truth keputusan hardware berada di edge; arsip setiap sampel menjadi kontrak P0; policy storage-full dikunci ke **no overwrite of pending**; LittleFS menjadi 8 MiB dengan quota pending awal 6 MiB; schema telemetry v3 dibekukan; dan configuration architecture dibagi menjadi compile-time board/build constants, versioned `AppConfig`, write-only `SecretStore`, versioned calibration/model profiles, serta ephemeral `RuntimeState`. Mutable non-const global configuration dilarang. Revisi 1.2 menjadi asal freeze telemetry/archive; revisi 1.1 menjadi asal mode kalibrasi wajib P0 dan microSD opsional. Wi-Fi tetap jalur pengiriman utama; BLE tetap P1 bersyarat.
 
 ## 1 Tujuan dan pengguna
 
@@ -12,41 +12,51 @@ Operator membutuhkan kondisi tiga slot yang dapat dipercaya, termasuk ketika sen
 
 ## 2 Landasan repo
 
-Baseline historis repo adalah RayaSatriatama/IoT-Trashcan, branch main, commit 6fed00f02b6ef7dabc159d924f798d344a6072ba. Temuan tabel berikut berasal dari pembacaan kode dan dokumen pada commit tersebut. Reconciliation implementasi saat ini ditujukan ke main pada commit ad65d5fe73c30b16c61da917eb517cdf2a783ba6.
-
-| Area | Kondisi saat ini | Implikasi firmware |
-| --- | --- | --- |
-| Runtime | Go net/http dan SQLite; Expo Web di-embed saat release. | Gunakan API existing; tidak perlu MQTT atau server tambahan. |
-| Ingest | POST /api/ingest; Bearer token; tepat tiga stream. | Setiap snapshot selalu berisi organic, inorganic, b3. |
-| Replay | Timestamp sama hanya diterima sebagai replay jika raw payload identik. | Simpan dan kirim ulang byte JSON yang sama. |
-| Sensor | Satu gas_raw dan temperature per slot; health berupa JSON bebas. | Kanal lengkap masuk health.sensors dengan schema terdokumentasi. |
-| Validasi | Cek operasional saat ini hanya range fill dan berat negatif. | Perlu validasi health dan sensor wajib sebelum pilot hardware. |
-| Research | FIS production, OGI, accumulation dan safety final masih deferred. | Firmware tidak menghasilkan status atau indeks penelitian palsu. |
-| Firmware | Tree repo belum memiliki platformio.ini atau direktori firmware. | Tambahkan project firmware terpisah dari Go dan Expo saat implementasi. |
+Baseline historis repo adalah RayaSatriatama/IoT-Trashcan, branch main, commit `6fed00f02b6ef7dabc159d924f798d344a6072ba`. Reconciliation terbaru untuk revisi 1.3 dilakukan terhadap `main` commit `7dd35f6d05cde09fe31a8a2f56933d04e4dc456a` pada 1 Oktober 2026.
 
 ### Reconciliation terhadap HEAD
 
-Main sekarang tiga commit di atas baseline historis. `98e4439` mengubah
-permukaan runtime yang relevan: ingest, fuzzy, safety, history, read API,
-simulator, dan research trace melalui `migrations/004_device_research_trace.sql`.
-`292aa47` menambahkan dokumen firmware ini, sedangkan `ad65d5f` hanya
-menambahkan skill dan tooling proyek tanpa dampak runtime.
+| Commit | Klasifikasi | Dampak normatif |
+| --- | --- | --- |
+| `98e4439` | Runtime/schema | Memperbarui ingest, fuzzy, safety, history/read API, simulator, serta menambah `004_device_research_trace.sql`. Permukaan ini dipertahankan sebagai compatibility legacy. |
+| `292aa47` | Dokumen firmware | Menambahkan PRD/TSD firmware awal. |
+| `ad65d5f` | Tooling/skills | Menambahkan skill proyek tanpa perubahan runtime. |
+| `a0a9dc9` | Reconciliation docs/test | Menyelaraskan baseline/HEAD dan test migration 004. |
+| `7dd35f6` | Embedded skills | Mengimpor skill upstream `esp32-development`, `embedded-development`, `cpp-coding-standards`, `config-nvs`, dan `memory-audit`. Skill menjadi panduan engineering; PRD/TSD tetap authority proyek. |
 
-Kontrak firmware harus mempertahankan `POST /api/ingest` sebagai summary-v2.
-Arsip telemetry v3 memakai route batch baru dan jalur validasi/penyimpanan
-terpisah; jalur hardware tidak boleh memanggil inference legacy. Data archive
-bersifat additive terhadap `trace_json` dan `safety_json` pada `decisions`,
-bukan pengganti atau reinterpretasi kolom tersebut.
+`POST /api/ingest` tetap menjadi **summary-v2 compatibility route**. Arsip lengkap memakai route baru `POST /api/telemetry/batches`; route baru bersifat additive dan tidak mengubah request/response existing. Migration terakhir pada HEAD ini adalah `004_device_research_trace.sql`, sehingga nama yang **diharapkan saat ini** untuk arsip adalah `005_telemetry_archive.sql`; nomor wajib dicek ulang tepat sebelum implementation PR.
 
-Migration HEAD saat ini berakhir pada `004_device_research_trace.sql`, sehingga
-nama archive yang diharapkan adalah `005_telemetry_archive.sql`. Nomor ini harus
-dicek ulang tepat sebelum PR implementasi; migration baru yang masuk lebih dulu
-mengambil nomor berikutnya. History dashboard mempertahankan cursor
-`(recorded_at, reading_id)`, sedangkan archive memakai `(device_id, boot_id,
-sequence)` dan dapat menyimpan UTC-null. Query, DTO, dan export archive tidak
-boleh mengubah urutan history atau kolom CSV yang sudah kompatibel.
+Untuk data `HARDWARE_EDGE_V3`, backend tidak memanggil `Normalize`, evaluator fuzzy, atau evaluator safety legacy. `trace_json` dan `safety_json` milik jalur legacy tetap dipertahankan dan tidak dipakai ulang sebagai storage arsip v3. History dashboard tetap menggunakan cursor `(recorded_at, reading_id)`; archive API memakai `(device_id, boot_id, sequence)` dan dapat menyimpan `recorded_at:null`.
+
+| Area | Kondisi HEAD | Implikasi firmware |
+| --- | --- | --- |
+| Runtime | Go `net/http`, SQLite, dan Expo Web; belum ada proyek firmware PlatformIO. | Firmware ditambahkan sebagai boundary kompilasi baru tanpa mengganti backend/web existing. |
+| Ingest | `POST /api/ingest`, Bearer token, tepat tiga stream. | Summary-v2 tetap kompatibel; archive-v3 memakai handler terpisah. |
+| Replay | Timestamp sama hanya identik bila raw payload sama. | Retry summary menyimpan exact bytes; v3 memakai batch ID/body hash + record hash. |
+| Research | `004_device_research_trace.sql` menambah `trace_json` dan `safety_json`. | Arsip v3 additive dan tidak mereinterpretasi evidence legacy. |
+| Skills | Lima skill embedded/config/C++ upstream telah di-merge. | Hindari mutable global state; configuration/persistence harus bounded, explicit ownership, recoverable, dan resource-aware. |
 
 PRD ini melengkapi SIGAP_PRD_v1.0.md, SIGAP_SDD_v1.0.md, dan konsep hardware v0.8. Sensor MQ-7 dan MQ-8 mengikuti keputusan perangkat terbaru; kandidat MQ-137/MQ-138 dalam dokumen lama tidak menjadi baseline firmware ini.
+
+## 2A Keputusan normative revisi 1.3
+
+Urutan authority untuk pekerjaan firmware adalah: **PRD v1.3 → TSD v1.2 → contract/schema fixture v3 → implementation/tests**. Skill repo adalah panduan engineering dan tidak dapat mengalahkan kontrak produk ini.
+
+| Area | Keputusan dibekukan |
+| --- | --- |
+| Source of truth hardware | MCU menghitung calibration/filter/normalization/FIS/safety untuk `HARDWARE_EDGE_V3`; backend tidak menghitung ulang. |
+| Legacy | Existing `POST /api/ingest` dan simulator/legacy tetap memakai perilaku sekarang agar backward compatible. |
+| Archive | Semua sample attempt, result, event, metadata dicatat; invalid bukan alasan membuang raw. |
+| Storage-full | Pending durable immutable sampai ACK; tidak ada overwrite/drop-oldest. Quota penuh → `LOGGING_BLOCKED` + gap accounting. |
+| Flash | 16 MiB: app 4 MiB, LittleFS 8 MiB, quota pending awal 6 MiB; tanpa OTA pada MVP. |
+| SD | Optional; pending quota awal 20 GiB pada SDHC 32 GB teruji; target 72 jam wajib dibuktikan. |
+| Contract v3 | uint64 sebagai decimal string; per-record hash deterministic/canonical; batch hash = SHA-256 exact request bytes; schema/error/ACK fixture dibekukan sebelum coding. |
+| Runtime configuration | Tidak ada mutable non-const global configuration. Runtime memakai immutable snapshot `AppConfig` yang di-load sekali saat boot dan diinjeksi ke modul. |
+| Persistent config | `AppConfig` disimpan versioned di NVS dengan slot A/B, checksum/hash, readback verification, dan active pointer; commit baru aktif setelah reboot terkontrol. |
+| Secrets | Wi-Fi credential dan device token berada di `SecretStore`/namespace NVS terpisah, write-only dari maintenance, dan tidak masuk config export/telemetry/log. |
+| Scientific profiles | Calibration, FIS, safety, dan profile penelitian bukan `AppConfig`; masing-masing versioned, memiliki provenance/hash, dan pointer aktif atomik. |
+| Runtime state | Koneksi, queue depth, health, counters, heater phase, dan state task bersifat ephemeral; tidak dipersist sebagai configuration. |
+| Migration | Additive; expected next `005_telemetry_archive.sql`, recheck HEAD sebelum membuat file. |
 
 ## 3 Ruang lingkup dan konfigurasi perangkat
 
@@ -75,7 +85,7 @@ Penempatan empat MQ adalah usulan untuk pengujian integrasi, belum keputusan ilm
 
 ### Batas MVP
 
-P0 mencakup akuisisi semua sensor, quality flag, mode kalibrasi wajib, waktu NTP, authenticated HTTPS, antrean persisten, pemulihan koneksi, dukungan microSD opsional, dan integrasi health di backend. BLE gateway adalah opsi P1, bukan syarat MVP. OTA, portal konfigurasi publik, actuator tutup, buzzer, kamera, AI klasifikasi, MQTT, GPS, RTC tambahan, serta finalisasi angka FIS dan safety berada di luar MVP ini. Sistem memakai suplai listrik langsung tanpa charging.
+P0 mencakup akuisisi semua sensor, quality flag, mode kalibrasi wajib, configuration/provisioning lokal melalui USB, versioned `AppConfig` di NVS, secret store terpisah, waktu NTP, authenticated HTTPS, antrean persisten, pemulihan koneksi, dukungan microSD opsional, dan integrasi health di backend. Portal konfigurasi publik dan remote-maintenance endpoint tidak termasuk P0. Perubahan config P0 memakai flow `DRAFT → VALIDATE → PREVIEW → COMMIT → REBOOT/ACTIVATE`; tidak ada hot reload scheduler/storage/network sampai dibuktikan aman. BLE gateway adalah opsi P1. OTA, actuator tutup, buzzer, kamera, AI klasifikasi, MQTT, GPS, RTC tambahan, serta finalisasi angka FIS dan safety berada di luar MVP ini. Sistem memakai suplai listrik langsung tanpa charging.
 
 ## 4 Mapping GPIO untuk N16R8
 
@@ -189,21 +199,24 @@ FR CAL 02 Profil menyimpan schema_version, calibration_version, target, sensor i
 
 FR CAL 03 health memuat device_mode RUN/MAINTENANCE/CALIBRATING, calibration_targets dan versi profil per target. Nilai operasional target menjadi null selama kalibrasi; raw trial tetap dicatat. Data trial diberi provenance kalibrasi dan tidak memicu FIS/safety sebagai reading normal. Saat draft selesai, snapshot berikutnya mencantumkan versi baru; paket lama dalam antrean tetap memakai byte dan versi asalnya.
 
-## 7 Project PlatformIO dan struktur kode
+## 7 Project PlatformIO, struktur kode, dan configuration architecture
 
-Gunakan C++ dengan framework Arduino pada PlatformIO untuk MVP. Backend dan frontend tetap memakai toolchain existing. Platform Espressif32 dipin ke 7.1.3 yang manifest-nya telah dibaca; versi tersebut masih memilih package Arduino berbasis 2.0.17, sehingga implementasi tidak mengasumsikan API Arduino 3.x. Library dipin exact setelah spike compile; kandidat HX711, OneWire, DallasTemperature, Adafruit SHT31, dan ArduinoJson harus diuji pada profile ini.
+Gunakan C++ dengan framework Arduino pada PlatformIO untuk MVP. Backend dan frontend tetap memakai toolchain existing. Platform Espressif32 dipin ke 7.1.3; implementasi tidak mengasumsikan API Arduino 3.x. Gunakan subset C++ yang didukung toolchain target dan native-test environment; jangan mengadopsi C++20/23 hanya karena skill C++ generik menyarankannya. Prinsip yang diambil adalah typed interfaces, RAII bila sesuai, `const`/`constexpr` default, explicit ownership, bounded memory, dan larangan mutable non-const global configuration.
 
-### Rancangan platformio ini
+### Rancangan platformio awal
 
 ```ini
 [platformio]
 default_envs = sigap_n16r8
+
+[env]
+framework = arduino
+monitor_speed = 115200
+test_framework = unity
+
 [env:sigap_n16r8]
 platform = espressif32@7.1.3
 board = esp32-s3-devkitc-1
-framework = arduino
-monitor_speed = 115200
-upload_speed = 460800
 board_upload.flash_size = 16MB
 board_build.flash_mode = qio
 board_build.arduino.memory_type = qio_opi
@@ -215,14 +228,19 @@ build_flags =
   -DSIGAP_BOARD_N16R8
   -DARDUINO_USB_MODE=1
   -DARDUINO_USB_CDC_ON_BOOT=1
+
 [env:sigap_n16r8_sd]
 extends = env:sigap_n16r8
 build_flags =
   ${env:sigap_n16r8.build_flags}
   -DSIGAP_USE_SD=1
+
+[env:native]
+platform = native
+test_framework = unity
 ```
 
-Board ID bawaan PlatformIO adalah profil N8 tanpa PSRAM. Override flash dan memory_type diperlukan untuk asumsi N16R8 di atas. Verifikasi flash 16 MB, PSRAM sekitar 8 MB, dan startup stabil pada hardware sebelum menganggap profile lolos. Jika modul aktual memakai topology lain, buat custom board manifest yang sesuai; jangan mengganti pin memori menjadi pin sensor.
+Board ID bawaan adalah profil N8 tanpa PSRAM; override N16R8 harus dibuktikan pada hardware. Dependency sensor dipin exact setelah spike build.
 
 ### Partition awal tanpa OTA
 
@@ -231,50 +249,161 @@ Board ID bawaan PlatformIO adalah profil N8 tanpa PSRAM. Override flash dan memo
 nvs, data, nvs, 0x9000, 0x5000
 phy_init, data, phy, 0xe000, 0x1000
 factory, app, factory, 0x10000, 0x400000
-spiffs, data, spiffs, 0x410000, 0x400000
+spiffs, data, spiffs, 0x410000, 0x800000
 ```
 
-Label spiffs dipakai partition Arduino untuk LittleFS yang dipilih melalui board_build.filesystem. App 4 MiB dan filesystem 4 MiB tidak saling tumpang tindih; sisa flash dicadangkan. OTA memerlukan rencana partition baru dan tidak termasuk profil MVP.
+Label `spiffs` dipakai partition Arduino untuk LittleFS. App 4 MiB dan filesystem 8 MiB tidak overlap pada flash 16 MiB. Quota pending awal LittleFS adalah 6 MiB; sekitar 2 MiB dicadangkan untuk journal, model/profile, metadata gap, filesystem overhead, dan ruang kerja. NVS menyimpan config/secret/active-pointer kecil, bukan archive telemetry.
 
-| Lingkungan | Tujuan | Perintah dari firmware |
-| --- | --- | --- |
-| sigap_n16r8 | Build perangkat fisik | pio run -e sigap_n16r8 |
-| sigap_n16r8_sd | Build dengan microSD opsional | pio run -e sigap_n16r8_sd |
-| sigap_bench | Driver dan diagnostic lokal | pio run -e sigap_bench -t upload |
-| native | Test logika tanpa sensor | pio test -e native |
+### Struktur file target
 
-Environment bench/native dibuat saat implementasi; .pio diabaikan Git. SPI dan SD bawaan core memakai pin eksplisit. Konfigurasi ini belum diuji build karena firmware belum dibuat.
+```text
+firmware/
+├── platformio.ini
+├── partitions_n16r8.csv
+├── include/
+│   └── sigap/
+│       ├── board/board_pins.h
+│       ├── build/build_config.h
+│       ├── build/firmware_version.h
+│       └── config/config_defaults.h
+├── src/
+│   ├── main.cpp
+│   └── app/
+│       ├── sigap_app.h
+│       └── sigap_app.cpp
+├── lib/
+│   ├── config/
+│   │   ├── config_types.h
+│   │   ├── config_manager.h
+│   │   ├── config_manager.cpp
+│   │   ├── config_validator.h
+│   │   ├── config_validator.cpp
+│   │   ├── config_codec.h
+│   │   └── nvs_config_store.cpp
+│   ├── provisioning/
+│   │   ├── secret_store.h
+│   │   ├── secret_store.cpp
+│   │   └── usb_provisioning.cpp
+│   ├── profiles/
+│   ├── calibration/
+│   ├── sensors/
+│   ├── heater/
+│   ├── processing/
+│   ├── fuzzy/
+│   ├── safety/
+│   ├── storage/
+│   ├── telemetry/
+│   └── runtime/
+├── data/
+│   ├── models/
+│   └── factory_defaults/
+└── test/
+    ├── native/
+    │   ├── config/
+    │   ├── processing/
+    │   ├── fuzzy/
+    │   └── telemetry/
+    ├── contract/
+    └── target/
+```
+
+`main.cpp` hanya entry point; composition root berada di `SigapApp`. Driver tidak membaca global config secara implicit. Modul menerima typed config yang dibutuhkan melalui constructor/`begin()` sebagai value atau `const&`, dan tidak menyimpan pointer ke draft config.
+
+### 7A Klasifikasi variable yang dapat dikustomisasi
+
+| Kategori | Contoh | Persistensi | Mutability P0 |
+| --- | --- | --- | --- |
+| `BuildConfig` | schema protocol, feature flag, hard buffer limit | firmware image | compile-time only |
+| `BoardConfig` | GPIO, bus, flash/PSRAM/partition | firmware image | compile-time only |
+| `AppConfig` | sampling period, summary period, retry/backoff, batch bounds, storage quota dalam batas fisik | NVS versioned snapshot | draft/validate/commit; aktif setelah reboot |
+| `SecretStore` | Wi-Fi SSID/password, Bearer device token | namespace NVS terpisah | write/rotate via USB; secret tidak dapat di-echo |
+| `CalibrationProfile` | HX711 tare/scale, D_empty/D_full, ADC/R0 evidence | versioned profile + active pointer | calibration workflow |
+| `ModelProfile` | FIS membership/rules, safety threshold/hysteresis yang telah disetujui | versioned profile + active pointer | profile workflow, bukan config set |
+| `RuntimeState` | Wi-Fi state, queue depth, heater phase, counters, task health | RAM; checkpoint diagnostic khusus bila perlu | bukan configuration |
+
+GPIO, schema/hash semantics, record ID format, dan hard protocol contract **tidak boleh** menjadi runtime-configurable variable. Calibration coefficient dan model ilmiah juga tidak boleh disamarkan sebagai generic config.
+
+### 7B AppConfig lifecycle dan atomic activation
+
+`AppConfig` memiliki `schema_version`, monotonic `config_version`, dan `config_hash`. Factory defaults berasal dari `constexpr`/typed defaults dan dipakai hanya jika perangkat belum pernah dikonfigurasi; config corrupt pada perangkat yang sudah provisioned tidak boleh diam-diam kembali ke default produksi.
+
+Persistence memakai dua slot NVS, misalnya `cfg_a` dan `cfg_b`. Commit menulis **seluruh serialized snapshot** ke slot inactive, read-back + decode + validate + checksum/hash, lalu menulis pointer `cfg_active`. Power loss sebelum pointer berpindah mempertahankan snapshot lama; setelah pointer berpindah firmware harus menemukan snapshot baru lengkap atau fallback previous-valid. Multi-key `Preferences::put*` tidak dianggap sebagai transaksi atomik lintas seluruh config.
+
+```text
+ACTIVE
+  └─ config edit/start
+       ↓
+     DRAFT
+       ↓ set ...
+    VALIDATE ── invalid → tetap DRAFT + reason
+       ↓
+     PREVIEW
+       ↓
+     COMMIT → inactive slot → readback verify → switch active pointer
+       ↓
+  REBOOT_REQUIRED
+       ↓ controlled reboot
+     ACTIVE(new config_version)
+```
+
+P0 tidak melakukan hot reload sampling/network/storage. Parameter baru aktif pada boot berikutnya sehingga seluruh task melihat snapshot konsisten. P1 boleh menambah hot reload per-field hanya setelah ownership/synchronization dan recovery path diuji.
+
+### 7C Validation dan provenance
+
+Setiap field runtime config harus mempunyai type, unit, default, min/max atau enum, dan apply policy.
+
+| Field | Default awal | Guard |
+| --- | ---: | --- |
+| `sampling.hx711_period_ms` | 100 ms | >0; capability driver/CPU/logger harus lolos |
+| `sampling.mq_period_ms` | 100 ms | tidak membuat ADC/logger overload |
+| `sampling.ultrasonic_period_ms` | 1000 ms | acoustic gap antar-slot tetap dijaga |
+| `telemetry.summary_period_ms` | 15000 ms | 5000–300000 ms sebelum pilot |
+| `telemetry.max_records_per_batch` | 128 | 1–128 dan body hard limit tetap berlaku |
+| `network.retry_min_ms` | 1000 ms | >0 dan ≤ retry_max |
+| `network.retry_max_ms` | 60000 ms | ≥ retry_min |
+| `storage.flash_pending_quota_bytes` | 6 MiB | ≤ usable LittleFS setelah reserve |
+| `storage.sd_pending_quota_bytes` | 20 GiB | ≤ capacity/retention budget kartu tervalidasi |
+
+Angka di atas adalah engineering defaults/gates, bukan angka ilmiah sensor. Setiap sample/result/event mencantumkan `config_version` dan `config_hash` aktif sehingga perubahan sampling/retry/storage dapat diaudit bersama calibration/model refs.
+
+### 7D SecretStore dan provisioning
+
+Secret berada pada boundary terpisah dari `AppConfig`. API maintenance boleh `set/rotate`, tetapi `show/export` hanya menampilkan presence atau redacted metadata. Secret tidak masuk JSON config export, calibration/model profile, telemetry, health, crash log, atau debug dump.
+
+USB maintenance MVP memakai physical-access trust boundary. Factory reset dibedakan: reset `AppConfig` tidak otomatis menghapus calibration/model; reset secret memerlukan command/operator intent terpisah; full factory erase adalah tindakan maintenance eksplisit dengan warning.
 
 ## 8 Modul dan alur runtime
 
 | Path rencana | Tanggung jawab |
 | --- | --- |
-| firmware/platformio.ini | Build profile, dependency exact, dan test environments. |
-| firmware/include/board_pins.h | Mapping compile-time dan pengecekan duplicate/reserved GPIO. |
-| firmware/include/device_config.h | Schema konfigurasi dan default engineering tanpa secret. |
-| firmware/src/main.cpp | Composition root, startup checks dan scheduler. |
-| firmware/lib/sensors/ | Driver HX711, ultrasonic, MQ ADC, SHT31, DS18B20. |
-| firmware/lib/heater/ | State machine MQ-7 dan pengendalian selector. |
-| firmware/lib/processing/ | Filter, kalibrasi, quality serta snapshot immutable. |
-| firmware/lib/calibration/ | Mode kalibrasi, draft profile, validasi, commit dan rollback. |
-| firmware/lib/telemetry/ | Serializer immutable, HTTPS client, transport interface dan response validation. |
-| firmware/lib/storage/ | NVS config, flash staging LittleFS, queue SD opsional dan journal ack dengan checksum. |
-| firmware/lib/runtime/ | Monotonic scheduler, NTP timebase, Wi-Fi recovery, health. |
-| firmware/test/ | Unit native, contract fixtures, dan tes target yang perlu MCU. |
-| firmware/README.md | Wiring, provisioning, kalibrasi, build, upload, dan troubleshooting. |
-| docs/firmware/ | PRD, telemetry contract, calibration procedure dan evidence hardware. |
+| `firmware/include/sigap/board/board_pins.h` | GPIO/bus compile-time dan duplicate/reserved pin checks. |
+| `firmware/include/sigap/build/` | Build constants dan firmware version. |
+| `firmware/include/sigap/config/config_defaults.h` | Typed factory/engineering defaults tanpa secret. |
+| `firmware/lib/config/` | `AppConfig`, validator, codec, NVS A/B snapshot, migration schema config. |
+| `firmware/lib/provisioning/` | `SecretStore`, redaction, USB provisioning dan token rotation flow. |
+| `firmware/lib/profiles/` | Manifest/hash/pointer untuk calibration/FIS/safety profiles. |
+| `firmware/src/app/SigapApp` | Composition root dan ownership lifecycle; tidak ada service-locator mutable global. |
+| `firmware/lib/sensors/` | Driver sensor. |
+| `firmware/lib/heater/` | State machine MQ-7. |
+| `firmware/lib/processing/` | Filter, conversion, quality, result snapshot. |
+| `firmware/lib/calibration/` | Draft calibration, validate, commit, rollback. |
+| `firmware/lib/storage/` | Archive LittleFS/SD, record codec, journal ACK, recovery. |
+| `firmware/lib/telemetry/` | Batch builder, exact serializer, HTTPS, ACK validation, retry policy. |
+| `firmware/lib/runtime/` | Scheduler, timebase, health, watchdog, USB maintenance state. |
 
 ### Urutan startup
 
-- Baca reset reason, board profile, flash, PSRAM, serta konfigurasi NVS dengan schema version dan checksum. Config rusak menghasilkan CONFIG_REQUIRED tanpa loop reboot. Profil kalibrasi sebelumnya tetap aktif jika draft belum di-commit.
-- Set GPIO output aman, mulai driver dan heater state machine, lalu periksa identitas DS18B20 serta alamat dua SHT31. Sensor hilang tidak menghalangi sensor lainnya.
-- Mulai scheduler akuisisi. Wi-Fi dan NTP berjalan dengan retry terbatas tanpa menghentikan akuisisi.
-- Ketika waktu terpercaya tersedia, bentuk snapshot tiga slot beserta health, serialisasi satu kali, tulis queue secara durable melalui storage manager, lalu kirim lewat worker jaringan.
-- Ack valid menghapus entry queue; kegagalan menyimpan entry dan memicu backoff. Watchdog hanya diberi tanda sehat ketika pekerjaan penting benar-benar berjalan.
+1. Capture reset reason, board/build identity, flash/PSRAM, dan `boot_id`.
+2. Load active `AppConfig` slot dari NVS, decode/hash/validate. Active corrupt → previous-valid. Unit provisioned tanpa snapshot valid → `CONFIG_REQUIRED`, bukan silent factory fallback.
+3. Load secret presence tanpa mencetak nilai; load pointer calibration/model dan validate profile hash.
+4. Set GPIO safe, konstruksi/start modul dengan snapshot config yang sama. Tidak ada task memegang mutable draft config.
+5. Mulai acquisition/logger sebelum Wi-Fi; UTC boleh null.
+6. Mulai summary-v2/archive-v3 workers; ACK server memajukan journal.
+7. Health menampilkan firmware/profile/config version/hash dan runtime counters, tetapi tidak secret.
 
-Awali dengan satu task akuisisi dan satu worker jaringan ber-queue terbatas. Driver tidak dipanggil bersamaan oleh beberapa task. I2C dimiliki task sensor; snapshot disalin atau dipertukarkan secara atomik. Timestamp microsecond monotonic mengendalikan ultrasonic dan heater; HTTP/TLS blocking tidak berada dalam jalur timing tersebut. Pilihan ISR atau RMT untuk ECHO diputuskan lewat spike kompatibilitas target.
+Driver/resource shared memiliki owner dan synchronization boundary eksplisit. I2C/SPI/filesystem/NVS tidak diakses lintas task secara implicit. Jangan memakai global variable sebagai implicit synchronization. HTTP/TLS blocking tidak berada pada jalur timing acquisition. Draft config dan active config tidak berbagi object mutable.
 
-NVS menyimpan calibration profile dan konfigurasi lokal; secret masuk melalui maintenance serial dan tidak dicetak kembali. Jangan menyimpan Wi-Fi password atau device token dalam JSON telemetry, health, log biasa, atau repository. Maintenance USB menyediakan status, diagnostics, mode kalibrasi terarah, serta provisioning tanpa echo secret. Kalibrasi tidak bergantung pada ketersediaan jaringan, SD, atau aplikasi HP.
+Maintenance USB menyediakan diagnostics, provisioning, config edit/validate/preview/commit, calibration/profile workflow, dan controlled reboot.
 
 ## 9 Kontrak telemetry yang kompatibel
 
