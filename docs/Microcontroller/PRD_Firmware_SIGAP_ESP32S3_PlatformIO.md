@@ -6,6 +6,8 @@ Satu ESP32-S3 DevKitC-1 N16R8 menangani tiga slot Organik, Anorganik, dan B3. Fi
 
 Revisi 1.3 menyatukan PRD dengan TSD v1.2 dan keputusan dari skill embedded yang telah di-merge: source of truth keputusan hardware berada di edge; arsip setiap sampel menjadi kontrak P0; policy storage-full dikunci ke **no overwrite of pending**; LittleFS menjadi 8 MiB dengan quota pending awal 6 MiB; schema telemetry v3 dibekukan; dan configuration architecture dibagi menjadi compile-time board/build constants, versioned `AppConfig`, write-only `SecretStore`, versioned calibration/model profiles, serta ephemeral `RuntimeState`. Mutable non-const global configuration dilarang. Revisi 1.2 menjadi asal freeze telemetry/archive; revisi 1.1 menjadi asal mode kalibrasi wajib P0 dan microSD opsional. Wi-Fi tetap jalur pengiriman utama; BLE tetap P1 bersyarat.
 
+**Authority artefak:** file Markdown ini adalah source normative revisi 1.3. `PRD_Firmware_SIGAP_ESP32S3_PlatformIO.docx` adalah derived artifact dan tidak boleh dianggap setara sampai diregenerasi dari revisi ini serta diverifikasi layout.
+
 ## 1 Tujuan dan pengguna
 
 Operator membutuhkan kondisi tiga slot yang dapat dipercaya, termasuk ketika sensor gagal atau koneksi terputus. Peneliti membutuhkan semua kanal mentah beserta waktu, kualitas pembacaan, dan versi kalibrasi agar eksperimen dapat direproduksi. Teknisi membutuhkan konfigurasi pin dan proses kalibrasi yang terpisah dari kredensial.
