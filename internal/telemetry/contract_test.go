@@ -172,8 +172,8 @@ func TestValidFixtureCorpus(t *testing.T) {
 	validDir := "../../contracts/telemetry/v3/fixtures/valid"
 	validNames := fixtureNames(t, validDir)
 	assertManifestNames(t, manifest.Valid, validDir, validNames)
-	if len(manifest.Valid) < 16 {
-		t.Fatalf("valid fixture corpus = %d, want at least 16", len(manifest.Valid))
+	if len(manifest.Valid) < 24 {
+		t.Fatalf("valid fixture corpus = %d, want at least 24", len(manifest.Valid))
 	}
 	for _, name := range manifest.Valid {
 		name := name
@@ -357,8 +357,8 @@ func TestResultRequiresSourcesAndUnavailableModels(t *testing.T) {
 	record := map[string]any{
 		"record_id": "SIGAP-01/boot-A/9", "kind": "result", "device_id": "SIGAP-01", "boot_id": "boot-A", "sequence": "9", "monotonic_us": "900", "recorded_at": nil, "time_quality": "UNSYNCED",
 		"config_ref": map[string]any{"schema_version": 1, "config_version": "4", "config_hash": "sha256:" + strings.Repeat("0", 64)}, "profile_refs": []any{}, "stream": "organic", "computed_monotonic_us": "900", "source_sample_ids": []string{}, "processed": map[string]any{"accumulation_hours": nil, "fill_pct": nil, "ogi": nil, "temperature_c": nil, "weight_kg": nil, "weight_utilization_pct": nil},
-		"fuzzy":  map[string]any{"state": "UNAVAILABLE", "score": nil, "reason": "INPUT_MISSING", "model_state": "UNCONFIGURED", "trace": nil},
-		"safety": map[string]any{"state": "UNAVAILABLE", "score": nil, "reason": "INPUT_MISSING", "model_state": "UNCONFIGURED", "trace": nil},
+		"fuzzy":  map[string]any{"state": "UNAVAILABLE", "score": nil, "label": nil, "reason": "INPUT_MISSING", "model_state": "UNCONFIGURED", "trace": nil},
+		"safety": map[string]any{"state": "UNAVAILABLE", "reason": "INPUT_MISSING", "model_state": "UNCONFIGURED", "trace": nil},
 	}
 	recordBytes := hashRecordForTest(t, record)
 	batch := `{"schema_version":3,"device_id":"SIGAP-01","batch_id":"SIGAP-01/boot-A/batch-result","record_count":1,"samples":[],"results":[` + string(recordBytes) + `],"events":[],"metadata":[]}`

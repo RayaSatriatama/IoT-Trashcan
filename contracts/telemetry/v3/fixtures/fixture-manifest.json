@@ -2,8 +2,11 @@
   "valid": [
     "sample-utc-null", "sample-hx711-calibrated", "sample-ultrasonic-profile",
     "sample-mq-raw", "sample-mq7-heater-phase", "sample-ds18b20",
-    "sample-sht31-both", "result-multi-source", "result-fuzzy-unavailable",
-    "result-safety-unavailable", "event-clock-anchor", "metadata-profile-activation",
+    "sample-hx711-timeout", "sample-ultrasonic-timeout", "sample-mq-disconnected",
+    "sample-ds18b20-crc-error", "sample-sht31-crc-error", "sample-sht31-both",
+    "result-multi-source", "result-fuzzy-unavailable", "result-fuzzy-unconfigured",
+    "result-safety-unavailable", "result-safety-unconfigured", "result-safety-fault",
+    "event-clock-anchor", "metadata-profile-activation",
     "mixed-batch", "max-uint64", "unicode-metadata", "near-limit-result"
   ],
   "invalid": {
@@ -31,11 +34,17 @@
     ,"wrong-raw-shape": "UNKNOWN_FIELD"
     ,"wrong-converted-shape": "UNKNOWN_FIELD"
     ,"malformed-result-processed": "UNKNOWN_FIELD"
-    ,"malformed-fuzzy-trace": "UNKNOWN_FIELD"
-    ,"malformed-safety-trace": "UNKNOWN_FIELD"
+    ,"malformed-fuzzy-trace": "MALFORMED_JSON"
+    ,"malformed-safety-trace": "MALFORMED_JSON"
     ,"malformed-clock-anchor": "UNKNOWN_FIELD"
     ,"malformed-profile-activation": "UNKNOWN_FIELD"
     ,"nested-duplicate-key": "DUPLICATE_KEY"
-    ,"source-sample-ids-overflow": "COUNT_MISMATCH"
+    ,"ready-null-raw": "MALFORMED_JSON"
+    ,"ready-disconnected": "INVALID_IDENTITY"
+    ,"timeout-converted": "MALFORMED_JSON"
+    ,"crc-converted": "MALFORMED_JSON"
+    ,"ds18b20-short-scratchpad": "MALFORMED_JSON"
+    ,"ambient-result": "INVALID_ENUM"
+    ,"safety-clear-hazard": "INVALID_IDENTITY"
   }
 }

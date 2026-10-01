@@ -36,16 +36,26 @@ Sample payloads are sensor-family specific and reject unknown nested fields:
 - DS18B20: ROM, scratchpad, CRC/completion evidence, resolution, and nullable `temperature_c`.
 - SHT31: temperature/humidity ticks with independent CRC evidence and nullable temperature/humidity values.
 
+Failed attempts keep the sample envelope and use `raw:null` when no trustworthy bytes were
+received. Complete CRC-failed DS18B20 and SHT31 frames retain their typed raw evidence;
+no speculative partial-byte field is added because the current acquisition adapters emit
+either a complete bounded frame or no raw frame.
+
 No ppm, R0, OGI, or generic gas threshold is part of the sample contract.
 
-Results use fixed `processed`, `fuzzy`, and `safety` objects. Model traces, when present,
-contain only the typed model reference, memberships, rules, and aggregate fields. Events
+Results use fixed `processed`, `fuzzy`, and `safety` objects with independent vocabularies.
+FIS uses `UNCONFIGURED`, `UNAVAILABLE`, and `READY` plus nullable `score`/`label` and
+auditable trace output evidence. Safety uses `UNCONFIGURED`, `UNAVAILABLE`, `FAULT`,
+`CLEAR`, and `ALERT` and has no fuzzy score; invalid hazard input is never `CLEAR`.
+Model traces, when present, contain the typed model reference, memberships, rules, and
+aggregate output evidence. Events
 and metadata use typed payload variants for each declared event/metadata type; arbitrary
 payload objects are rejected.
 
 The body and record limits bound total nested memory. There is no hidden 128-item cap on
-source IDs, traces, or nested arrays; semantic limits apply where the contract requires a
-record count or source-ID count bound.
+source IDs, traces, or nested arrays. `source_sample_ids` has no independent count cap;
+every ID must be retained and the 16 KiB record limit is authoritative. Provenance fan-out
+is bounded independently at 16 `profile_refs` per record.
 
 ## Profile and configuration provenance
 

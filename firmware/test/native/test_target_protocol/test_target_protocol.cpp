@@ -26,6 +26,19 @@ void test_ds18b20_bad_scratchpad_crc_is_rejected() {
   TEST_ASSERT_FALSE(decode_ds18b20_scratchpad(scratchpad, temperature_centi_c));
 }
 
+void test_ds18b20_rom_crc_fixture_is_valid() {
+  // Family code 0x28 with a deterministic synthetic serial. The final byte
+  // is the Dallas/Maxim CRC over the first seven ROM bytes.
+  const std::array<uint8_t, 8> rom{
+      0x28U, 0x01U, 0x02U, 0x03U, 0x04U, 0x05U, 0x06U, 0x9eU};
+  TEST_ASSERT_EQUAL_HEX8(0x9eU, ds18b20_crc8(rom.data(), 7U));
+  TEST_ASSERT_EQUAL_HEX8(rom[7], ds18b20_crc8(rom.data(), 7U));
+
+  auto invalid = rom;
+  invalid[7] ^= 0x01U;
+  TEST_ASSERT_NOT_EQUAL(invalid[7], ds18b20_crc8(invalid.data(), 7U));
+}
+
 void test_ds18b20_resolution_config_mapping_is_protocol_stable() {
   TEST_ASSERT_EQUAL_HEX8(0x1fU, ds18b20_resolution_config(9U));
   TEST_ASSERT_EQUAL_HEX8(0x3fU, ds18b20_resolution_config(10U));
@@ -81,6 +94,7 @@ void setup() {
   UNITY_BEGIN();
   RUN_TEST(test_ds18b20_known_scratchpad_decodes_verified_85c);
   RUN_TEST(test_ds18b20_bad_scratchpad_crc_is_rejected);
+  RUN_TEST(test_ds18b20_rom_crc_fixture_is_valid);
   RUN_TEST(test_ds18b20_resolution_config_mapping_is_protocol_stable);
   RUN_TEST(test_ds18b20_resolution_is_decoded_from_scratchpad_config);
   RUN_TEST(test_ds18b20_actual_resolution_mismatch_is_detected);

@@ -15,7 +15,7 @@
     "recorded_at": {"type": ["string", "null"], "maxLength": 64},
     "time_quality": {"enum": ["UNSYNCED", "SYNCED", "RECONSTRUCTED"]},
     "config_ref": {"$ref": "config-ref.schema.json"},
-    "profile_refs": {"type": "array", "items": {"$ref": "profile-ref.schema.json"}},
+    "profile_refs": {"type": "array", "maxItems": 16, "items": {"$ref": "profile-ref.schema.json"}},
     "metadata_type": {"enum": ["CONFIG_ACTIVATION", "PROFILE_ACTIVATION", "BOOT", "HEALTH_SNAPSHOT"]},
     "payload": {"type": "object"}
   },

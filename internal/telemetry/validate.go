@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -74,6 +75,7 @@ var sensorStreams = map[string]string{
 }
 
 var knownStreams = map[string]bool{"organic": true, "inorganic": true, "b3": true, "ambient": true}
+var knownResultStreams = map[string]bool{"organic": true, "inorganic": true, "b3": true}
 var knownQualities = map[string]bool{
 	"READY": true, "WARMING_UP": true, "HEATER_PHASE": true, "UNCALIBRATED": true,
 	"CALIBRATING": true, "TIMEOUT": true, "DISCONNECTED": true, "CRC_ERROR": true,
@@ -254,6 +256,23 @@ func requireNullOrPayloadObject(raw json.RawMessage, path string) (map[string]js
 	return object, false, err
 }
 
+func isJSONNull(raw json.RawMessage) bool {
+	return bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
+}
+
+// A failed acquisition still has a sample envelope, but must not claim a
+// converted value when no trustworthy raw evidence reached the device. The
+// sensor-specific validators call this before decoding typed payloads.
+func validateAbsentRaw(raw, converted json.RawMessage) error {
+	if !isJSONNull(raw) {
+		return contractError(MalformedJSON, "raw", "raw evidence must be null when no evidence was received")
+	}
+	if !isJSONNull(converted) {
+		return contractError(MalformedJSON, "converted", "converted value requires raw evidence")
+	}
+	return nil
+}
+
 func validateSensorStream(sensorID, stream string) error {
 	expected, ok := sensorStreams[sensorID]
 	if !ok {
@@ -266,6 +285,9 @@ func validateSensorStream(sensorID, stream string) error {
 }
 
 func validateHX711Payload(raw, converted json.RawMessage) error {
+	if isJSONNull(raw) {
+		return validateAbsentRaw(raw, converted)
+	}
 	rawObject, err := decodePayloadObject(raw, "raw")
 	if err != nil {
 		return err
@@ -288,6 +310,9 @@ func validateHX711Payload(raw, converted json.RawMessage) error {
 }
 
 func validateUltrasonicPayload(raw, converted json.RawMessage) error {
+	if isJSONNull(raw) {
+		return validateAbsentRaw(raw, converted)
+	}
 	rawObject, err := decodePayloadObject(raw, "raw")
 	if err != nil {
 		return err
@@ -321,6 +346,9 @@ var mqHeaterPhases = map[string]bool{
 }
 
 func validateMQPayload(sensorID string, raw, converted json.RawMessage) error {
+	if isJSONNull(raw) {
+		return validateAbsentRaw(raw, converted)
+	}
 	rawObject, err := decodePayloadObject(raw, "raw")
 	if err != nil {
 		return err
@@ -361,6 +389,9 @@ func validateMQPayload(sensorID string, raw, converted json.RawMessage) error {
 }
 
 func validateDS18B20Payload(raw, converted json.RawMessage) error {
+	if isJSONNull(raw) {
+		return validateAbsentRaw(raw, converted)
+	}
 	rawObject, err := decodePayloadObject(raw, "raw")
 	if err != nil {
 		return err
@@ -375,19 +406,33 @@ func validateDS18B20Payload(raw, converted json.RawMessage) error {
 		}
 	}
 	scratchpad, err := decodeString(rawObject, "scratchpad_hex")
-	if err != nil || !regexp.MustCompile(`^[0-9a-fA-F]{16}$`).MatchString(scratchpad) {
-		return contractError(MalformedJSON, "raw.scratchpad_hex", "expected 8-byte scratchpad hex")
+	if err != nil || !regexp.MustCompile(`^[0-9a-fA-F]{18}$`).MatchString(scratchpad) {
+		return contractError(MalformedJSON, "raw.scratchpad_hex", "expected complete 9-byte scratchpad hex")
 	}
 	rom, err := decodeString(map[string]json.RawMessage{"rom": rawObject["rom"]}, "rom")
 	if err != nil || !regexp.MustCompile(`^[0-9a-fA-F]{16}$`).MatchString(rom) {
 		return contractError(MalformedJSON, "raw.rom", "expected 8-byte ROM hex")
 	}
-	for _, key := range []string{"crc_valid", "conversion_complete"} {
-		var flag bool
-		if err := json.Unmarshal(rawObject[key], &flag); err != nil {
-			return contractError(MalformedJSON, "raw."+key, "expected boolean")
-		}
+	romBytes, err := hex.DecodeString(rom)
+	if err != nil || len(romBytes) != 8 || romBytes[0] != 0x28 || ds18b20CRC8(romBytes[:7]) != romBytes[7] {
+		return contractError(MalformedJSON, "raw.rom", "ROM identity has an invalid DS18B20 CRC")
 	}
+	scratchpadBytes, err := hex.DecodeString(scratchpad)
+	if err != nil || len(scratchpadBytes) != 9 {
+		return contractError(MalformedJSON, "raw.scratchpad_hex", "expected complete 9-byte scratchpad hex")
+	}
+	var crcValid bool
+	if err := json.Unmarshal(rawObject["crc_valid"], &crcValid); err != nil {
+		return contractError(MalformedJSON, "raw.crc_valid", "expected boolean")
+	}
+	if crcValid && ds18b20CRC8(scratchpadBytes[:8]) != scratchpadBytes[8] {
+		return contractError(MalformedJSON, "raw.scratchpad_hex", "crc_valid evidence does not match scratchpad CRC")
+	}
+	var conversionComplete bool
+	if err := json.Unmarshal(rawObject["conversion_complete"], &conversionComplete); err != nil {
+		return contractError(MalformedJSON, "raw.conversion_complete", "expected boolean")
+	}
+	_ = conversionComplete
 	resolution, err := decodeUint32Value(rawObject["resolution_bits"], "raw.resolution_bits")
 	if err != nil || resolution < 9 || resolution > 12 {
 		return contractError(InvalidEnum, "raw.resolution_bits", "resolution must be 9 through 12")
@@ -406,7 +451,25 @@ func validateDS18B20Payload(raw, converted json.RawMessage) error {
 	return err
 }
 
+func ds18b20CRC8(data []byte) byte {
+	crc := byte(0)
+	for _, value := range data {
+		for bit := byte(0); bit < 8; bit++ {
+			mix := (crc ^ value) & 1
+			crc >>= 1
+			if mix != 0 {
+				crc ^= 0x8c
+			}
+			value >>= 1
+		}
+	}
+	return crc
+}
+
 func validateSHT31Payload(raw, converted json.RawMessage) error {
+	if isJSONNull(raw) {
+		return validateAbsentRaw(raw, converted)
+	}
 	rawObject, err := decodePayloadObject(raw, "raw")
 	if err != nil {
 		return err
@@ -445,9 +508,27 @@ func validateSHT31Payload(raw, converted json.RawMessage) error {
 	return nil
 }
 
-func validateSamplePayload(sensorID, stream string, raw, converted json.RawMessage) error {
+func validateSamplePayload(sensorID, stream, quality, reason string, raw, converted json.RawMessage) error {
 	if err := validateSensorStream(sensorID, stream); err != nil {
 		return err
+	}
+	if quality == "READY" && isJSONNull(raw) {
+		return contractError(MalformedJSON, "raw", "READY samples require raw evidence")
+	}
+	if quality == "READY" && (reason == "TIMEOUT" || reason == "DISCONNECTED" || reason == "CRC_ERROR") {
+		return contractError(InvalidIdentity, "reason", "READY samples cannot carry acquisition-failure reasons")
+	}
+	if quality == "TIMEOUT" && reason == "DATA_READY" {
+		return contractError(InvalidIdentity, "reason", "TIMEOUT samples cannot claim DATA_READY")
+	}
+	if quality == "DISCONNECTED" && reason != "DISCONNECTED" {
+		return contractError(InvalidIdentity, "reason", "DISCONNECTED samples require DISCONNECTED reason")
+	}
+	if quality == "CRC_ERROR" && reason != "CRC_ERROR" {
+		return contractError(InvalidIdentity, "reason", "CRC_ERROR samples require CRC_ERROR reason")
+	}
+	if (quality == "TIMEOUT" || quality == "DISCONNECTED" || quality == "CRC_ERROR") && !isJSONNull(converted) {
+		return contractError(MalformedJSON, "converted", "acquisition failures cannot carry an operational value")
 	}
 	switch sensorID {
 	case "hx711_organic", "hx711_inorganic", "hx711_b3":
@@ -526,6 +607,9 @@ func validateProfileRefs(raw json.RawMessage) ([]ProfileRef, error) {
 	var objects []map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &objects); err != nil || objects == nil {
 		return nil, contractError(ProfileMalformed, "profile_refs", "expected an array")
+	}
+	if len(objects) > MaxProfileRefsPerRecord {
+		return nil, contractError(ProfileMalformed, "profile_refs", "profile reference count exceeds the per-record limit")
 	}
 	refs := make([]ProfileRef, 0, len(objects))
 	for index, object := range objects {
@@ -698,7 +782,7 @@ func validateSample(raw []byte, expectedDevice string) (SampleRecord, error) {
 	if err != nil {
 		return SampleRecord{}, err
 	}
-	if err := validateSamplePayload(sensor, stream, rawValue, converted); err != nil {
+	if err := validateSamplePayload(sensor, stream, quality, reason, rawValue, converted); err != nil {
 		return SampleRecord{}, err
 	}
 	if err := validateRecordHash(raw, object, common); err != nil {
@@ -726,7 +810,7 @@ func validateResult(raw []byte, expectedDevice string) (ResultRecord, error) {
 		return ResultRecord{}, contractError(InvalidIdentity, "device_id", "record device differs from batch device")
 	}
 	stream, err := decodeString(object, "stream")
-	if err != nil || !knownStreams[stream] {
+	if err != nil || !knownResultStreams[stream] {
 		return ResultRecord{}, contractError(InvalidEnum, "stream", "unknown stream")
 	}
 	computed, err := decodeUint64String(object, "computed_monotonic_us")
@@ -736,9 +820,6 @@ func validateResult(raw []byte, expectedDevice string) (ResultRecord, error) {
 	var sourceIDs []string
 	if err := json.Unmarshal(object["source_sample_ids"], &sourceIDs); err != nil || len(sourceIDs) == 0 {
 		return ResultRecord{}, contractError(SourceIDsMissing, "source_sample_ids", "result must identify every source sample")
-	}
-	if len(sourceIDs) > MaxRecords {
-		return ResultRecord{}, contractError(CountMismatch, "source_sample_ids", "source sample count exceeds the frozen limit")
 	}
 	for index, sourceID := range sourceIDs {
 		if err := validateRecordID(sourceID, expectedDevice, fmt.Sprintf("source_sample_ids[%d]", index)); err != nil {
@@ -760,10 +841,10 @@ func validateResult(raw []byte, expectedDevice string) (ResultRecord, error) {
 	if err := validateProcessed(processed, "processed"); err != nil {
 		return ResultRecord{}, err
 	}
-	if err := validateModelResult(fuzzy, "fuzzy"); err != nil {
+	if err := validateFuzzyResult(fuzzy, "fuzzy"); err != nil {
 		return ResultRecord{}, err
 	}
-	if err := validateModelResult(safety, "safety"); err != nil {
+	if err := validateSafetyResult(safety, "safety"); err != nil {
 		return ResultRecord{}, err
 	}
 	if err := validateRecordHash(raw, object, common); err != nil {
@@ -772,20 +853,30 @@ func validateResult(raw []byte, expectedDevice string) (ResultRecord, error) {
 	return ResultRecord{CommonRecord: common, Stream: stream, ComputedMonotonicUS: computed, SourceSampleIDs: sourceIDs, Processed: processed, Fuzzy: fuzzy, Safety: safety}, nil
 }
 
-var modelStates = map[string]bool{
+var fuzzyStates = map[string]bool{
 	"UNAVAILABLE": true, "UNCONFIGURED": true, "READY": true,
-	"DEGRADED": true, "SAFE": true, "ALERT": true,
 }
 
 var modelModes = map[string]bool{
 	"UNCONFIGURED": true, "TEST_ONLY": true, "PRODUCTION": true,
 }
 
-var modelReasons = map[string]bool{
+var fuzzyReasons = map[string]bool{
 	"INPUT_MISSING": true, "MODEL_UNCONFIGURED": true, "MODEL_INVALID": true,
-	"MODEL_NOT_CONFIGURED": true, "FIS_NOT_CONFIGURED": true, "SAFETY_NOT_CONFIGURED": true,
+	"MODEL_NOT_CONFIGURED": true, "FIS_NOT_CONFIGURED": true,
 	"ZERO_AREA": true, "READY": true, "STALE_INPUT": true,
-	"CALIBRATING": true, "HAZARD_INPUT_INVALID": true, "ALERT_LATCHED": true,
+	"CALIBRATING": true,
+}
+
+var safetyStates = map[string]bool{
+	"UNCONFIGURED": true, "UNAVAILABLE": true, "FAULT": true,
+	"CLEAR": true, "ALERT": true,
+}
+
+var safetyReasons = map[string]bool{
+	"INPUT_MISSING": true, "SAFETY_NOT_CONFIGURED": true,
+	"HAZARD_INPUT_INVALID": true, "ALERT_LATCHED": true,
+	"ALL_VALIDATED_CHANNELS_CLEAR": true, "TEST_ONLY": true,
 }
 
 func decodeObject(raw json.RawMessage, path string) (map[string]json.RawMessage, error) {
@@ -838,34 +929,102 @@ func validateProcessed(raw json.RawMessage, path string) error {
 	return nil
 }
 
-func validateModelResult(raw json.RawMessage, path string) error {
+func validateFuzzyResult(raw json.RawMessage, path string) error {
 	object, err := decodeObject(raw, path)
 	if err != nil {
 		return err
 	}
-	if err := requireFields(object, map[string]bool{"state": true, "score": true, "reason": true, "model_state": true, "trace": true}); err != nil {
+	if err := requireFields(object, map[string]bool{"state": true, "score": true, "label": true, "reason": true, "model_state": true, "trace": true}); err != nil {
 		return err
 	}
 	state, err := decodeString(object, "state")
-	if err != nil || !modelStates[state] {
+	if err != nil || !fuzzyStates[state] {
 		return contractError(InvalidEnum, path+".state", "unknown model state")
 	}
 	if err := validateNullableNumber(object["score"], path+".score"); err != nil {
 		return err
 	}
+	if bytes.Equal(bytes.TrimSpace(object["label"]), []byte("null")) {
+		if state == "READY" {
+			return contractError(MalformedJSON, path+".label", "ready fuzzy result requires a label")
+		}
+	} else {
+		label, err := decodeString(object, "label")
+		if err != nil || len(label) == 0 || len(label) > 128 {
+			return contractError(MalformedJSON, path+".label", "label must be a bounded string or null")
+		}
+	}
 	if (state == "UNAVAILABLE" || state == "UNCONFIGURED") && !bytes.Equal(bytes.TrimSpace(object["score"]), []byte("null")) {
 		return contractError(MalformedJSON, path+".score", "unavailable model score must be null")
 	}
-	if (state == "READY" || state == "DEGRADED" || state == "SAFE" || state == "ALERT") && bytes.Equal(bytes.TrimSpace(object["score"]), []byte("null")) {
+	if state == "READY" && bytes.Equal(bytes.TrimSpace(object["score"]), []byte("null")) {
 		return contractError(MalformedJSON, path+".score", "operational model score is required")
 	}
+	if state == "READY" && bytes.Equal(bytes.TrimSpace(object["trace"]), []byte("null")) {
+		return contractError(MalformedJSON, path+".trace", "ready fuzzy result requires a trace")
+	}
 	reason, err := decodeString(object, "reason")
-	if err != nil || !modelReasons[reason] {
+	if err != nil || !fuzzyReasons[reason] {
 		return contractError(InvalidEnum, path+".reason", "unknown model reason")
 	}
 	mode, err := decodeString(object, "model_state")
 	if err != nil || !modelModes[mode] {
 		return contractError(InvalidEnum, path+".model_state", "unknown model state provenance")
+	}
+	if err := validateTrace(object["trace"], path+".trace"); err != nil {
+		return err
+	}
+	return validateFuzzyTraceOutput(object["trace"], path+".trace")
+}
+
+func validateFuzzyTraceOutput(raw json.RawMessage, path string) error {
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return nil
+	}
+	object, err := decodeObject(raw, path)
+	if err != nil {
+		return err
+	}
+	aggregate, ok := object["aggregate"]
+	if !ok || bytes.Equal(bytes.TrimSpace(aggregate), []byte("null")) {
+		return contractError(MalformedJSON, path+".aggregate", "fuzzy trace requires aggregate output evidence")
+	}
+	aggregateObject, err := decodeObject(aggregate, path+".aggregate")
+	if err != nil {
+		return err
+	}
+	if _, ok := aggregateObject["output_id"]; !ok {
+		return contractError(MalformedJSON, path+".aggregate.output_id", "fuzzy aggregate output identity is required")
+	}
+	outputID, err := decodeString(aggregateObject, "output_id")
+	if err != nil || len(outputID) == 0 || len(outputID) > 128 {
+		return contractError(MalformedJSON, path+".aggregate.output_id", "fuzzy aggregate output identity must be a bounded string")
+	}
+	return nil
+}
+
+func validateSafetyResult(raw json.RawMessage, path string) error {
+	object, err := decodeObject(raw, path)
+	if err != nil {
+		return err
+	}
+	if err := requireFields(object, map[string]bool{"state": true, "reason": true, "model_state": true, "trace": true}); err != nil {
+		return err
+	}
+	state, err := decodeString(object, "state")
+	if err != nil || !safetyStates[state] {
+		return contractError(InvalidEnum, path+".state", "unknown safety state")
+	}
+	reason, err := decodeString(object, "reason")
+	if err != nil || !safetyReasons[reason] {
+		return contractError(InvalidEnum, path+".reason", "unknown safety reason")
+	}
+	if state == "CLEAR" && reason == "HAZARD_INPUT_INVALID" {
+		return contractError(InvalidIdentity, path+".state", "invalid hazard input cannot become CLEAR")
+	}
+	mode, err := decodeString(object, "model_state")
+	if err != nil || !modelModes[mode] {
+		return contractError(InvalidEnum, path+".model_state", "unknown safety model provenance")
 	}
 	return validateTrace(object["trace"], path+".trace")
 }
@@ -925,11 +1084,20 @@ func validateTrace(raw json.RawMessage, path string) error {
 					return contractError(MalformedJSON, fmt.Sprintf("%s.memberships[%d].value", path, index), "membership value must be a number")
 				}
 			} else {
-				if err := requireFields(entry, map[string]bool{"id": true, "strength": true}); err != nil {
+				if err := requireFields(entry, map[string]bool{"id": true, "strength": true, "output_id": true}); err != nil {
 					return err
+				}
+				for _, required := range []string{"id", "strength", "output_id"} {
+					if _, ok := entry[required]; !ok {
+						return contractError(MalformedJSON, fmt.Sprintf("%s.rules[%d].%s", path, index, required), "rule evidence field is required")
+					}
 				}
 				if _, err := decodeString(entry, "id"); err != nil {
 					return err
+				}
+				outputID, err := decodeString(entry, "output_id")
+				if err != nil || len(outputID) == 0 || len(outputID) > 128 {
+					return contractError(MalformedJSON, fmt.Sprintf("%s.rules[%d].output_id", path, index), "rule output identity must be a bounded string")
 				}
 				if err := validateNullableNumber(entry["strength"], fmt.Sprintf("%s.rules[%d].strength", path, index)); err != nil || bytes.Equal(bytes.TrimSpace(entry["strength"]), []byte("null")) {
 					if err != nil {
@@ -948,8 +1116,12 @@ func validateTrace(raw json.RawMessage, path string) error {
 	if err != nil {
 		return err
 	}
-	if err := requireFields(aggregateObject, map[string]bool{"area": true, "centroid": true}); err != nil {
+	if err := requireFields(aggregateObject, map[string]bool{"output_id": true, "area": true, "centroid": true}); err != nil {
 		return err
+	}
+	outputID, err := decodeString(aggregateObject, "output_id")
+	if err != nil || len(outputID) == 0 || len(outputID) > 128 {
+		return contractError(MalformedJSON, path+".aggregate.output_id", "aggregate output identity must be a bounded string")
 	}
 	if err := validateNullableNumber(aggregateObject["area"], path+".aggregate.area"); err != nil {
 		return err
