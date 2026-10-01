@@ -455,6 +455,8 @@ Paket lengkap juga memuat hx711_organic/inorganic/b3 dengan counts dan age_ms; d
 
 Schema health v1 perlu didokumentasikan dan dites karena backend sekarang menyimpannya tanpa validasi semantik. Perubahan format berikutnya menaikkan telemetry_version; payload lama tetap dapat dibaca dengan aturan legacy yang eksplisit.
 
+Archive-v3 adalah kontrak additive yang terpisah dari contoh summary-v2 di atas. Setiap record archive-v3 mempunyai `record_id`, `record_hash`, decimal-string uint64, `config_ref`, dan `profile_refs`; `recorded_at:null` tetap sah ketika UTC belum tersedia. `manifest_ids` tidak menjadi field wire archive-v3 karena server memperoleh record ID dari array dan provenance profile dibawa oleh `profile_refs`.
+
 ## 10 Waktu jaringan dan antrean
 
 ### Waktu pengukuran

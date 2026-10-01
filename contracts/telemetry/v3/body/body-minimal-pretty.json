@@ -1,0 +1,30 @@
+{
+  "schema_version": 3,
+  "device_id": "SIGAP-01",
+  "batch_id": "SIGAP-01/boot-A/batch-1",
+  "record_count": 1,
+  "samples": [
+    {
+      "record_id": "SIGAP-01/boot-A/1",
+      "record_hash": "sha256:a3a2593618943cc7a1d5f8bc0c90216dc22eb4c3297fb874887c11b7b6ef6883",
+      "kind": "sample",
+      "device_id": "SIGAP-01",
+      "boot_id": "boot-A",
+      "sequence": "1",
+      "monotonic_us": "123",
+      "recorded_at": null,
+      "time_quality": "UNSYNCED",
+      "config_ref": {"schema_version": 1, "config_version": "4", "config_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000"},
+      "profile_refs": [],
+      "sensor_id": "mq4",
+      "stream": "organic",
+      "quality": "UNCALIBRATED",
+      "reason": "PROFILE_MISSING",
+      "raw": {"adc_counts": 1234},
+      "converted": null
+    }
+  ],
+  "results": [],
+  "events": [],
+  "metadata": []
+}

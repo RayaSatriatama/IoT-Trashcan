@@ -329,7 +329,7 @@ Setiap record wajib mempunyai `record_id`, `boot_id`, `sequence`, `monotonic_us`
 Per-record equality menggunakan SHA-256 atas canonical JSON representation yang dibekukan oleh fixture lintas bahasa. Batch equality menggunakan SHA-256 atas **exact request bytes**. `batch_id` yang sama dengan body hash berbeda dan `record_id` yang sama dengan record hash berbeda menghasilkan `409` dan rollback seluruh transaksi.
 
 
-Rencanakan `POST /api/telemetry/batches` dengan Bearer device token, `Content-Type: application/json`, body awal maksimum 32 KiB, satu record awal maksimum 16 KiB. JSON request dibatasi nested depth, jumlah array, panjang string, enum, ukuran, finite numeric dan identitas device. Payload memuat `schema_version:3`, `device_id`, `batch_id`, `samples[]`, `results[]`, `events[]`, `metadata[]`, `record_count` dan manifest daftar ID. `body_hash` dihitung dari byte body persis yang dikirim dan dipersist sebagai metadata di luar body agar tidak membuat hash diri sendiri. Semua record mempunyai ID unik; urutan di array tidak menjadi urutan sampling global, sehingga query memakai `(boot_id, sequence)`.
+Rencanakan `POST /api/telemetry/batches` dengan Bearer device token, `Content-Type: application/json`, body awal maksimum 32 KiB, satu record awal maksimum 16 KiB. JSON request dibatasi nested depth, jumlah array, panjang string, enum, ukuran, finite numeric dan identitas device. Payload memuat `schema_version:3`, `device_id`, `batch_id`, `samples[]`, `results[]`, `events[]`, `metadata[]`, dan `record_count`. `manifest_ids` dari proposal awal dihapus karena server memperoleh ID dari array dan `profile_refs` adalah provenance terpisah. `body_hash` dihitung dari byte body persis yang dikirim dan dipersist sebagai metadata di luar body agar tidak membuat hash diri sendiri. Semua record mempunyai ID unik; urutan di array tidak menjadi urutan sampling global, sehingga query memakai `(boot_id, sequence)`.
 
 Contoh ringkas **proposal kontrak**, bukan paket siap dikirim; fixture resmi wajib menambahkan provenance versi/hash dan data sensor spesifik lengkap:
 
@@ -339,28 +339,36 @@ Contoh ringkas **proposal kontrak**, bukan paket siap dikirim; fixture resmi waj
   "device_id": "SIGAP-01",
   "batch_id": "SIGAP-01/boot-X/batch-12",
   "record_count": 2,
-  "manifest_ids": ["SIGAP-01/boot-X/880", "SIGAP-01/boot-X/901"],
   "samples": [{
     "record_id": "SIGAP-01/boot-X/880",
-    "kind": "sample", "boot_id": "boot-X", "sequence": "880",
+    "record_hash": "sha256:<64-lowercase-hex>",
+    "kind": "sample", "device_id": "SIGAP-01", "boot_id": "boot-X", "sequence": "880",
     "sensor_id": "mq4", "stream": "organic", "monotonic_us": "1800000000",
     "recorded_at": null, "time_quality": "UNSYNCED",
-    "raw": {"adc_counts": 1234}, "quality": "WARMING_UP"
+    "raw": {"adc_counts": 1234}, "converted": null,
+    "quality": "WARMING_UP", "reason": "HEATER_PHASE",
+    "config_ref": {"schema_version": 1, "config_version": "4", "config_hash": "sha256:<64-lowercase-hex>"},
+    "profile_refs": []
   }],
   "results": [{
     "record_id": "SIGAP-01/boot-X/901",
-    "kind": "result", "boot_id": "boot-X", "sequence": "901",
+    "record_hash": "sha256:<64-lowercase-hex>",
+    "kind": "result", "device_id": "SIGAP-01", "boot_id": "boot-X", "sequence": "901",
     "stream": "organic", "computed_monotonic_us": "1800000100",
     "source_sample_ids": ["SIGAP-01/boot-X/880"],
     "processed": {"fill_pct": null, "weight_kg": null, "ogi": null},
     "fuzzy": {"state": "UNAVAILABLE", "score": null,
-              "reason": "INPUT_MISSING", "model_state": "TEST_ONLY"}
+              "reason": "INPUT_MISSING", "model_state": "UNCONFIGURED"},
+    "safety": {"state": "UNAVAILABLE", "score": null,
+               "reason": "INPUT_MISSING", "model_state": "UNCONFIGURED"},
+    "config_ref": {"schema_version": 1, "config_version": "4", "config_hash": "sha256:<64-lowercase-hex>"},
+    "profile_refs": []
   }],
   "events": [], "metadata": []
 }
 ```
 
-Kedua record ilustratif menunjukkan sampel gas organik yang tetap dicatat saat `WARMING_UP` dan hasil organik unavailable karena input wajib lain belum ada. Fixture integrasi harus berisi `source_sample_ids` sesungguhnya untuk seluruh jendela, semua input, trace fuzzy, quality, unit dan versi. Contoh di PRD mempunyai sequence berbentuk JSON number, sementara kontrak ini mengusulkan string desimal untuk presisi lintas JavaScript. Saat freeze schema, contoh PRD dan TSD harus diseragamkan.
+Kedua record ilustratif menunjukkan sampel gas organik yang tetap dicatat saat `WARMING_UP` dan hasil organik unavailable karena input wajib lain belum ada. Fixture integrasi harus berisi `source_sample_ids` sesungguhnya untuk seluruh jendela, semua input, trace fuzzy, quality, unit dan versi. Contoh summary-v2 di PRD boleh memakai bentuk historisnya; archive-v3 memakai string desimal untuk setiap uint64, `record_hash` wajib, dan `manifest_ids` tidak digunakan.
 
 Respons sukses yang direncanakan:
 

@@ -2,7 +2,10 @@ module github.com/RayaSatriatama/IoT-Trashcan
 
 go 1.27.1
 
-require modernc.org/sqlite v1.59.0
+require (
+	github.com/lattice-substrate/json-canon v0.3.4
+	modernc.org/sqlite v1.59.0
+)
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect

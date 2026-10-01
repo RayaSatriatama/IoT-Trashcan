@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sigap.local/contracts/telemetry/v3/config-ref.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "config_version", "config_hash"],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "config_version": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$", "maxLength": 20},
+    "config_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}
