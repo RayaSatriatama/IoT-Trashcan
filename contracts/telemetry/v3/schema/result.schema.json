@@ -15,12 +15,88 @@
     "recorded_at": {"type": ["string", "null"], "maxLength": 64},
     "time_quality": {"enum": ["UNSYNCED", "SYNCED", "RECONSTRUCTED"]},
     "config_ref": {"$ref": "config-ref.schema.json"},
-    "profile_refs": {"type": "array", "maxItems": 16, "items": {"$ref": "profile-ref.schema.json"}},
+    "profile_refs": {"type": "array", "items": {"$ref": "profile-ref.schema.json"}},
     "stream": {"enum": ["organic", "inorganic", "b3", "ambient"]},
     "computed_monotonic_us": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$", "maxLength": 20},
-    "source_sample_ids": {"type": "array", "minItems": 1, "maxItems": 128, "items": {"type": "string", "minLength": 1, "maxLength": 512}},
-    "processed": {"type": "object"},
-    "fuzzy": {"type": "object"},
-    "safety": {"type": "object"}
+    "source_sample_ids": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1, "maxLength": 512}},
+    "processed": {"$ref": "#/$defs/processed"},
+    "fuzzy": {"$ref": "#/$defs/model_result"},
+    "safety": {"$ref": "#/$defs/model_result"}
+  },
+  "$defs": {
+    "nullableNumber": {"type": ["number", "null"]},
+    "processed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fill_pct", "weight_kg", "weight_utilization_pct", "ogi", "accumulation_hours", "temperature_c"],
+      "properties": {
+        "fill_pct": {"$ref": "#/$defs/nullableNumber"},
+        "weight_kg": {"$ref": "#/$defs/nullableNumber"},
+        "weight_utilization_pct": {"$ref": "#/$defs/nullableNumber"},
+        "ogi": {"$ref": "#/$defs/nullableNumber"},
+        "accumulation_hours": {"$ref": "#/$defs/nullableNumber"},
+        "temperature_c": {"$ref": "#/$defs/nullableNumber"}
+      }
+    },
+    "model_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "score", "reason", "model_state", "trace"],
+      "properties": {
+        "state": {"enum": ["UNAVAILABLE", "UNCONFIGURED", "READY", "DEGRADED", "SAFE", "ALERT"]},
+        "score": {"$ref": "#/$defs/nullableNumber"},
+        "reason": {"type": "string", "minLength": 1, "maxLength": 128},
+        "model_state": {"enum": ["UNCONFIGURED", "TEST_ONLY", "PRODUCTION"]},
+        "trace": {"anyOf": [{"$ref": "#/$defs/trace"}, {"type": "null"}]}
+      }
+    },
+    "trace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model_ref", "memberships", "rules", "aggregate"],
+      "properties": {
+        "model_ref": {"$ref": "#/$defs/model_ref"},
+        "memberships": {"type": "array", "items": {"$ref": "#/$defs/membership"}},
+        "rules": {"type": "array", "items": {"$ref": "#/$defs/rule"}},
+        "aggregate": {"anyOf": [{"$ref": "#/$defs/aggregate"}, {"type": "null"}]}
+      }
+    },
+    "model_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "hash"],
+      "properties": {
+        "version": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$", "maxLength": 20},
+        "hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+      }
+    },
+    "membership": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["input", "set", "value"],
+      "properties": {
+        "input": {"type": "string", "minLength": 1, "maxLength": 128},
+        "set": {"type": "string", "minLength": 1, "maxLength": 128},
+        "value": {"type": "number"}
+      }
+    },
+    "rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "strength"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "strength": {"type": "number"}
+      }
+    },
+    "aggregate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["area", "centroid"],
+      "properties": {
+        "area": {"type": ["number", "null"]},
+        "centroid": {"type": ["number", "null"]}
+      }
+    }
   }
 }

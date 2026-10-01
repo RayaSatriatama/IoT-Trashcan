@@ -18,11 +18,14 @@ func BodyHash(body []byte) string { return prefixedSHA256(body) }
 
 func strictOptions() *jcstoken.Options {
 	return &jcstoken.Options{
-		MaxDepth:         MaxJSONDepth,
-		MaxInputSize:     MaxBodyBytes,
-		MaxValues:        MaxRecords * 64,
-		MaxObjectMembers: 128,
-		MaxArrayElements: MaxRecords,
+		MaxDepth:     MaxJSONDepth,
+		MaxInputSize: MaxBodyBytes,
+		// Batch record count is enforced semantically after decoding the four
+		// top-level record arrays. Nested arrays and objects have no arbitrary
+		// 128-item alias; their memory remains bounded by the body/record caps.
+		MaxValues:        0,
+		MaxObjectMembers: 0,
+		MaxArrayElements: 0,
 		MaxStringBytes:   MaxFreeStringBytes,
 		MaxNumberChars:   128,
 	}
@@ -41,7 +44,7 @@ func canonicalizeObjectWithoutHash(raw []byte) ([]byte, error) {
 	if err != nil {
 		return nil, contractError(MalformedJSON, "", err.Error())
 	}
-	canonical, err := jcs.Canonicalize(withoutHash)
+	canonical, err := jcs.CanonicalizeWithOptions(withoutHash, strictOptions())
 	if err != nil {
 		return nil, contractError(MalformedJSON, "", err.Error())
 	}
@@ -50,6 +53,9 @@ func canonicalizeObjectWithoutHash(raw []byte) ([]byte, error) {
 
 // RecordHash canonicalizes the complete object after removing only record_hash.
 func RecordHash(raw []byte) (string, []byte, error) {
+	if _, err := strictJSON(raw, MaxRecordBytes); err != nil {
+		return "", nil, err
+	}
 	canonical, err := canonicalizeObjectWithoutHash(raw)
 	if err != nil {
 		return "", nil, err

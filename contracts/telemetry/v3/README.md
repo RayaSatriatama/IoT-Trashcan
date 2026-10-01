@@ -18,6 +18,35 @@ inference.
 - `body_hash` is SHA-256 over exact HTTP request bytes and is stored outside the request body.
 - `manifest_ids` is intentionally absent. Profile manifests are separate provenance objects and may be persisted later.
 
+## Frozen typed payloads
+
+Sample identity is bound to the logical stream. The frozen map is:
+
+| Sensor ID | Stream |
+| --- | --- |
+| `hx711_organic`, `ultrasonic_organic`, `mq4`, `mq135`, `sht31_44` | `organic` |
+| `hx711_inorganic`, `ultrasonic_inorganic` | `inorganic` |
+| `hx711_b3`, `ultrasonic_b3`, `mq7`, `mq8`, `ds18b20_b3`, `sht31_45` | `b3` |
+
+Sample payloads are sensor-family specific and reject unknown nested fields:
+
+- HX711: `raw.counts`; `converted.kg` or `null`.
+- Ultrasonic: `raw.echo_us`; `converted.distance_mm` and `fill_percent`, each nullable when unavailable.
+- MQ-4/MQ-135/MQ-8: `raw.adc_counts`; MQ-7 additionally carries `raw.heater_phase`; conversion is `adc_mv` or `null`.
+- DS18B20: ROM, scratchpad, CRC/completion evidence, resolution, and nullable `temperature_c`.
+- SHT31: temperature/humidity ticks with independent CRC evidence and nullable temperature/humidity values.
+
+No ppm, R0, OGI, or generic gas threshold is part of the sample contract.
+
+Results use fixed `processed`, `fuzzy`, and `safety` objects. Model traces, when present,
+contain only the typed model reference, memberships, rules, and aggregate fields. Events
+and metadata use typed payload variants for each declared event/metadata type; arbitrary
+payload objects are rejected.
+
+The body and record limits bound total nested memory. There is no hidden 128-item cap on
+source IDs, traces, or nested arrays; semantic limits apply where the contract requires a
+record count or source-ID count bound.
+
 ## Profile and configuration provenance
 
 `config_ref` identifies the immutable active AppConfig snapshot. `profile_refs` identify

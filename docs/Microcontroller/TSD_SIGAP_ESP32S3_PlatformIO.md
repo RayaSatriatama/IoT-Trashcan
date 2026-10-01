@@ -346,7 +346,7 @@ Contoh ringkas **proposal kontrak**, bukan paket siap dikirim; fixture resmi waj
     "sensor_id": "mq4", "stream": "organic", "monotonic_us": "1800000000",
     "recorded_at": null, "time_quality": "UNSYNCED",
     "raw": {"adc_counts": 1234}, "converted": null,
-    "quality": "WARMING_UP", "reason": "HEATER_PHASE",
+    "quality": "UNCALIBRATED", "reason": "PROFILE_MISSING",
     "config_ref": {"schema_version": 1, "config_version": "4", "config_hash": "sha256:<64-lowercase-hex>"},
     "profile_refs": []
   }],
@@ -356,11 +356,12 @@ Contoh ringkas **proposal kontrak**, bukan paket siap dikirim; fixture resmi waj
     "kind": "result", "device_id": "SIGAP-01", "boot_id": "boot-X", "sequence": "901",
     "stream": "organic", "computed_monotonic_us": "1800000100",
     "source_sample_ids": ["SIGAP-01/boot-X/880"],
-    "processed": {"fill_pct": null, "weight_kg": null, "ogi": null},
+    "processed": {"fill_pct": null, "weight_kg": null, "weight_utilization_pct": null,
+                   "ogi": null, "accumulation_hours": null, "temperature_c": null},
     "fuzzy": {"state": "UNAVAILABLE", "score": null,
-              "reason": "INPUT_MISSING", "model_state": "UNCONFIGURED"},
+              "reason": "INPUT_MISSING", "model_state": "UNCONFIGURED", "trace": null},
     "safety": {"state": "UNAVAILABLE", "score": null,
-               "reason": "INPUT_MISSING", "model_state": "UNCONFIGURED"},
+               "reason": "INPUT_MISSING", "model_state": "UNCONFIGURED", "trace": null},
     "config_ref": {"schema_version": 1, "config_version": "4", "config_hash": "sha256:<64-lowercase-hex>"},
     "profile_refs": []
   }],
@@ -368,7 +369,7 @@ Contoh ringkas **proposal kontrak**, bukan paket siap dikirim; fixture resmi waj
 }
 ```
 
-Kedua record ilustratif menunjukkan sampel gas organik yang tetap dicatat saat `WARMING_UP` dan hasil organik unavailable karena input wajib lain belum ada. Fixture integrasi harus berisi `source_sample_ids` sesungguhnya untuk seluruh jendela, semua input, trace fuzzy, quality, unit dan versi. Contoh summary-v2 di PRD boleh memakai bentuk historisnya; archive-v3 memakai string desimal untuk setiap uint64, `record_hash` wajib, dan `manifest_ids` tidak digunakan.
+Kedua record ilustratif menunjukkan sampel gas organik yang tetap dicatat saat profile belum tersedia dan hasil organik unavailable karena input wajib lain belum ada. Fixture integrasi harus berisi `source_sample_ids` sesungguhnya untuk seluruh jendela, semua input, trace fuzzy, quality, unit dan versi. Contoh summary-v2 di PRD boleh memakai bentuk historisnya; archive-v3 memakai string desimal untuk setiap uint64, `record_hash` wajib, dan `manifest_ids` tidak digunakan. Bentuk payload archive-v3 yang mengikat sensor, stream, processed, trace, event, dan metadata ditetapkan oleh `contracts/telemetry/v3/schema` dan fixture corpus; contoh proposal ini tidak memperluas payload arbitrer.
 
 Respons sukses yang direncanakan:
 

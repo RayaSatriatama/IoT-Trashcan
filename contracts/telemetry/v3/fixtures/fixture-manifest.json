@@ -12,6 +12,7 @@
     "leading-zero-uint64": "INVALID_UINT64",
     "overflow-uint64": "INVALID_UINT64",
     "negative-uint64": "INVALID_UINT64",
+    "129-records": "COUNT_MISMATCH",
     "count-mismatch": "COUNT_MISMATCH",
     "duplicate-record-id": "DUPLICATE_RECORD_ID",
     "wrong-record-hash": "HASH_MISMATCH",
@@ -27,5 +28,14 @@
     "inconsistent-record-id": "INVALID_IDENTITY",
     "missing-source-sample-ids": "SOURCE_SAMPLE_IDS_MISSING",
     "unexpected-field": "UNKNOWN_FIELD"
+    ,"wrong-raw-shape": "UNKNOWN_FIELD"
+    ,"wrong-converted-shape": "UNKNOWN_FIELD"
+    ,"malformed-result-processed": "UNKNOWN_FIELD"
+    ,"malformed-fuzzy-trace": "UNKNOWN_FIELD"
+    ,"malformed-safety-trace": "UNKNOWN_FIELD"
+    ,"malformed-clock-anchor": "UNKNOWN_FIELD"
+    ,"malformed-profile-activation": "UNKNOWN_FIELD"
+    ,"nested-duplicate-key": "DUPLICATE_KEY"
+    ,"source-sample-ids-overflow": "COUNT_MISMATCH"
   }
 }

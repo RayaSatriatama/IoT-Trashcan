@@ -1,0 +1,6 @@
+- [ ] Freeze sensor payloads and stream identity
+- [ ] Freeze typed result, event, and metadata payloads
+- [ ] Make fixtures and schema checks executable
+- [ ] Harden ACK, parser limits, and RecordHash entrypoint
+- [ ] Add independent C++ canonical writer proof
+- [ ] Reconcile documentation and run full verification

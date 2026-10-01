@@ -160,8 +160,8 @@ class TargetAcquisitionGraph final {
     ds18b20_.emplace(*readers_.ds18b20, factory_, profiles_.ds18b20,
                      resolve_ds18b20_conversion_time(profiles_.ds18b20),
                      ds_channel_state_);
-    sht31_44_.emplace(0x44U, StreamId::Ambient, *readers_.sht31[0], factory_, profiles_.sht31[0]);
-    sht31_45_.emplace(0x45U, StreamId::Ambient, *readers_.sht31[1], factory_, profiles_.sht31[1]);
+    sht31_44_.emplace(0x44U, StreamId::Organic, *readers_.sht31[0], factory_, profiles_.sht31[0]);
+    sht31_45_.emplace(0x45U, StreamId::B3, *readers_.sht31[1], factory_, profiles_.sht31[1]);
     hx_jobs_[0] = {&*hx_org_, &handoff_, &health_[0]};
     hx_jobs_[1] = {&*hx_inorganic_, &handoff_, &health_[1]};
     hx_jobs_[2] = {&*hx_b3_, &handoff_, &health_[2]};

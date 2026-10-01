@@ -78,9 +78,9 @@ type Ack struct {
 	DeviceID          string `json:"device_id"`
 	BatchID           string `json:"batch_id"`
 	BodyHash          string `json:"body_hash"`
-	RecordCount       uint16 `json:"record_count"`
-	StoredCount       uint16 `json:"stored_count"`
-	DeduplicatedCount uint16 `json:"deduplicated_count"`
+	RecordCount       uint32 `json:"record_count"`
+	StoredCount       uint32 `json:"stored_count"`
+	DeduplicatedCount uint32 `json:"deduplicated_count"`
 	Status            string `json:"status"`
 }
 
@@ -88,5 +88,5 @@ type AckExpectation struct {
 	DeviceID    string
 	BatchID     string
 	BodyHash    string
-	RecordCount uint16
+	RecordCount uint32
 }

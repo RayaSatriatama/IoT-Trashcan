@@ -5,6 +5,74 @@
   "additionalProperties": false,
   "required": ["record_id", "record_hash", "kind", "device_id", "boot_id", "sequence", "monotonic_us", "recorded_at", "time_quality", "config_ref", "profile_refs", "event_type", "payload"],
   "properties": {
-    "record_id": {"type": "string", "maxLength": 512}, "record_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}, "kind": {"const": "event"}, "device_id": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,128}$"}, "boot_id": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,128}$"}, "sequence": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$", "maxLength": 20}, "monotonic_us": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$", "maxLength": 20}, "recorded_at": {"type": ["string", "null"], "maxLength": 64}, "time_quality": {"enum": ["UNSYNCED", "SYNCED", "RECONSTRUCTED"]}, "config_ref": {"$ref": "config-ref.schema.json"}, "profile_refs": {"type": "array", "maxItems": 16, "items": {"$ref": "profile-ref.schema.json"}}, "event_type": {"enum": ["CLOCK_ANCHOR", "GAP", "RESET", "HEALTH_TRANSITION", "FAULT"]}, "payload": {"type": "object"}
+    "record_id": {"type": "string", "minLength": 1, "maxLength": 512},
+    "record_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "kind": {"const": "event"},
+    "device_id": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,128}$"},
+    "boot_id": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,128}$"},
+    "sequence": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$", "maxLength": 20},
+    "monotonic_us": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$", "maxLength": 20},
+    "recorded_at": {"type": ["string", "null"], "maxLength": 64},
+    "time_quality": {"enum": ["UNSYNCED", "SYNCED", "RECONSTRUCTED"]},
+    "config_ref": {"$ref": "config-ref.schema.json"},
+    "profile_refs": {"type": "array", "items": {"$ref": "profile-ref.schema.json"}},
+    "event_type": {"enum": ["CLOCK_ANCHOR", "GAP", "RESET", "HEALTH_TRANSITION", "FAULT"]},
+    "payload": {"type": "object"}
+  },
+  "allOf": [
+    {"if": {"properties": {"event_type": {"const": "CLOCK_ANCHOR"}}}, "then": {"properties": {"payload": {"$ref": "#/$defs/clock_anchor"}}}},
+    {"if": {"properties": {"event_type": {"const": "GAP"}}}, "then": {"properties": {"payload": {"$ref": "#/$defs/gap"}}}},
+    {"if": {"properties": {"event_type": {"const": "RESET"}}}, "then": {"properties": {"payload": {"$ref": "#/$defs/reset"}}}},
+    {"if": {"properties": {"event_type": {"const": "HEALTH_TRANSITION"}}}, "then": {"properties": {"payload": {"$ref": "#/$defs/health_transition"}}}},
+    {"if": {"properties": {"event_type": {"const": "FAULT"}}}, "then": {"properties": {"payload": {"$ref": "#/$defs/fault"}}}}
+  ],
+  "$defs": {
+    "clock_anchor": {
+      "type": "object", "additionalProperties": false,
+      "required": ["anchor_monotonic_us", "utc", "uncertainty_us", "source"],
+      "properties": {
+        "anchor_monotonic_us": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$", "maxLength": 20},
+        "utc": {"type": ["string", "null"], "format": "date-time", "maxLength": 64},
+        "uncertainty_us": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$", "maxLength": 20},
+        "source": {"enum": ["NTP", "SNTP", "RTC", "MANUAL", "GATEWAY"]}
+      }
+    },
+    "gap": {
+      "type": "object", "additionalProperties": false,
+      "required": ["sequence_start", "sequence_end", "sensor_id", "stream", "reason", "cause"],
+      "properties": {
+        "sequence_start": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$", "maxLength": 20},
+        "sequence_end": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$", "maxLength": 20},
+        "sensor_id": {"type": ["string", "null"], "maxLength": 128},
+        "stream": {"type": ["string", "null"], "enum": ["organic", "inorganic", "b3", "ambient", null]},
+        "reason": {"type": "string", "minLength": 1, "maxLength": 128},
+        "cause": {"enum": ["QUEUE_FULL", "STORAGE_ERROR", "POWER_LOSS", "SENSOR_ERROR", "UNKNOWN"]}
+      }
+    },
+    "reset": {
+      "type": "object", "additionalProperties": false,
+      "required": ["reset_reason"],
+      "properties": {"reset_reason": {"enum": ["POWER_ON", "BROWNOUT", "WATCHDOG", "SOFTWARE", "UNKNOWN"]}}
+    },
+    "health_transition": {
+      "type": "object", "additionalProperties": false,
+      "required": ["component", "from", "to", "reason"],
+      "properties": {
+        "component": {"type": "string", "minLength": 1, "maxLength": 128},
+        "from": {"enum": ["ONLINE", "DEGRADED", "FAILED", "UNKNOWN"]},
+        "to": {"enum": ["ONLINE", "DEGRADED", "FAILED"]},
+        "reason": {"type": "string", "minLength": 1, "maxLength": 128}
+      }
+    },
+    "fault": {
+      "type": "object", "additionalProperties": false,
+      "required": ["component", "code", "severity", "detail"],
+      "properties": {
+        "component": {"type": "string", "minLength": 1, "maxLength": 128},
+        "code": {"type": "string", "minLength": 1, "maxLength": 128},
+        "severity": {"enum": ["INFO", "WARNING", "ERROR", "FATAL"]},
+        "detail": {"type": ["string", "null"], "maxLength": 512}
+      }
+    }
   }
 }

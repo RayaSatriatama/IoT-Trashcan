@@ -17,10 +17,32 @@
     "config_ref": {"$ref": "config-ref.schema.json"},
     "profile_refs": {"type": "array", "maxItems": 16, "items": {"$ref": "profile-ref.schema.json"}},
     "sensor_id": {"enum": ["mq4", "mq135", "mq7", "mq8", "hx711_organic", "hx711_inorganic", "hx711_b3", "ultrasonic_organic", "ultrasonic_inorganic", "ultrasonic_b3", "ds18b20_b3", "sht31_44", "sht31_45"]},
-    "stream": {"enum": ["organic", "inorganic", "b3", "ambient"]},
+    "stream": {"enum": ["organic", "inorganic", "b3"]},
     "quality": {"enum": ["READY", "WARMING_UP", "HEATER_PHASE", "UNCALIBRATED", "CALIBRATING", "TIMEOUT", "DISCONNECTED", "CRC_ERROR", "STALE", "OUT_OF_RANGE"]},
     "reason": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,63}$"},
     "raw": {},
     "converted": {}
-  }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"sensor_id": {"enum": ["hx711_organic", "hx711_inorganic", "hx711_b3"]}}},
+      "then": {"properties": {"raw": {"$ref": "sample/hx711.schema.json#/$defs/raw"}, "converted": {"$ref": "sample/hx711.schema.json#/$defs/converted"}}}
+    },
+    {
+      "if": {"properties": {"sensor_id": {"enum": ["ultrasonic_organic", "ultrasonic_inorganic", "ultrasonic_b3"]}}},
+      "then": {"properties": {"raw": {"$ref": "sample/ultrasonic.schema.json#/$defs/raw"}, "converted": {"$ref": "sample/ultrasonic.schema.json#/$defs/converted"}}}
+    },
+    {
+      "if": {"properties": {"sensor_id": {"enum": ["mq4", "mq135", "mq7", "mq8"]}}},
+      "then": {"properties": {"raw": {"$ref": "sample/mq.schema.json#/$defs/raw"}, "converted": {"$ref": "sample/mq.schema.json#/$defs/converted"}}}
+    },
+    {
+      "if": {"properties": {"sensor_id": {"const": "ds18b20_b3"}}},
+      "then": {"properties": {"raw": {"$ref": "sample/ds18b20.schema.json#/$defs/raw"}, "converted": {"$ref": "sample/ds18b20.schema.json#/$defs/converted"}}}
+    },
+    {
+      "if": {"properties": {"sensor_id": {"enum": ["sht31_44", "sht31_45"]}}},
+      "then": {"properties": {"raw": {"$ref": "sample/sht31.schema.json#/$defs/raw"}, "converted": {"$ref": "sample/sht31.schema.json#/$defs/converted"}}}
+    }
+  ]
 }

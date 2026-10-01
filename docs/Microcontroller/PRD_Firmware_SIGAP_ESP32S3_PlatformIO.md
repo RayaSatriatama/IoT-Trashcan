@@ -457,6 +457,8 @@ Schema health v1 perlu didokumentasikan dan dites karena backend sekarang menyim
 
 Archive-v3 adalah kontrak additive yang terpisah dari contoh summary-v2 di atas. Setiap record archive-v3 mempunyai `record_id`, `record_hash`, decimal-string uint64, `config_ref`, dan `profile_refs`; `recorded_at:null` tetap sah ketika UTC belum tersedia. `manifest_ids` tidak menjadi field wire archive-v3 karena server memperoleh record ID dari array dan provenance profile dibawa oleh `profile_refs`.
 
+Freeze archive-v3 juga mengikat `sensor_id` ke stream (`sht31_44` ke organic dan `sht31_45` ke B3), serta memakai payload typed untuk setiap keluarga sensor, result, event, dan metadata. Payload arbitrary, ppm/R0/OGI gas yang belum memiliki profile ilmiah, dan trace tanpa schema ditolak oleh validator serta fixture corpus pada `contracts/telemetry/v3`.
+
 ## 10 Waktu jaringan dan antrean
 
 ### Waktu pengukuran

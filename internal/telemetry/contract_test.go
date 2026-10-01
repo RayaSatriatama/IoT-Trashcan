@@ -4,10 +4,18 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
+
+type fixtureManifest struct {
+	Valid   []string             `json:"valid"`
+	Invalid map[string]ErrorCode `json:"invalid"`
+}
 
 func fixture(t *testing.T, name string) []byte {
 	t.Helper()
@@ -35,6 +43,55 @@ func batchErrorCode(t *testing.T, body []byte) ErrorCode {
 	t.Helper()
 	_, err := ValidateBatch(body)
 	return errorCode(t, err)
+}
+
+func loadFixtureManifest(t *testing.T) fixtureManifest {
+	t.Helper()
+	contents := fixture(t, "fixtures/fixture-manifest.json")
+	var manifest fixtureManifest
+	if err := json.Unmarshal(contents, &manifest); err != nil {
+		t.Fatalf("decode fixture manifest: %v", err)
+	}
+	return manifest
+}
+
+func fixtureNames(t *testing.T, directory string) map[string]bool {
+	t.Helper()
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := make(map[string]bool)
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		name := strings.TrimSuffix(entry.Name(), ".json")
+		if names[name] {
+			t.Fatalf("duplicate fixture file name %q", name)
+		}
+		names[name] = true
+	}
+	return names
+}
+
+func assertManifestNames(t *testing.T, manifestNames []string, directory string, actual map[string]bool) {
+	t.Helper()
+	seen := make(map[string]bool, len(manifestNames))
+	for _, name := range manifestNames {
+		if seen[name] {
+			t.Fatalf("duplicate manifest fixture %q", name)
+		}
+		seen[name] = true
+		if !actual[name] {
+			t.Fatalf("manifest fixture %q is missing from %s", name, directory)
+		}
+	}
+	for name := range actual {
+		if !seen[name] {
+			t.Fatalf("fixture %q in %s is missing from manifest", name, directory)
+		}
+	}
 }
 
 func TestUint64DecimalAndSortKey(t *testing.T) {
@@ -77,6 +134,24 @@ func TestCanonicalRecordHashFixture(t *testing.T) {
 	}
 }
 
+func TestRecordHashRejectsDuplicateKeysBeforeCanonicalization(t *testing.T) {
+	raw := []byte(`{"record_hash":"sha256:0000000000000000000000000000000000000000000000000000000000000000","record_hash":"sha256:1111111111111111111111111111111111111111111111111111111111111111"}`)
+	if code := errorCode(t, func() error { _, _, err := RecordHash(raw); return err }()); code != DuplicateKey {
+		t.Fatalf("duplicate record hash key code = %s", code)
+	}
+}
+
+func TestStrictJSONDoesNotAliasBatchCapToNestedArrays(t *testing.T) {
+	values := make([]string, MaxRecords+1)
+	for index := range values {
+		values[index] = "0"
+	}
+	raw := []byte(`{"nested":[` + strings.Join(values, ",") + `]}`)
+	if _, err := strictJSON(raw, MaxBodyBytes); err != nil {
+		t.Fatalf("nested arrays must not inherit MaxRecords cap: %v", err)
+	}
+}
+
 func TestBodyHashUsesExactBytes(t *testing.T) {
 	body := fixture(t, "body/body-minimal.json")
 	pretty := fixture(t, "body/body-minimal-pretty.json")
@@ -93,19 +168,17 @@ func TestBodyHashUsesExactBytes(t *testing.T) {
 }
 
 func TestValidFixtureCorpus(t *testing.T) {
-	entries, err := os.ReadDir("../../contracts/telemetry/v3/fixtures/valid")
-	if err != nil {
-		t.Fatal(err)
+	manifest := loadFixtureManifest(t)
+	validDir := "../../contracts/telemetry/v3/fixtures/valid"
+	validNames := fixtureNames(t, validDir)
+	assertManifestNames(t, manifest.Valid, validDir, validNames)
+	if len(manifest.Valid) < 16 {
+		t.Fatalf("valid fixture corpus = %d, want at least 16", len(manifest.Valid))
 	}
-	if len(entries) < 16 {
-		t.Fatalf("valid fixture corpus = %d, want at least 16", len(entries))
-	}
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-			continue
-		}
-		t.Run(entry.Name(), func(t *testing.T) {
-			body, err := os.ReadFile("../../contracts/telemetry/v3/fixtures/valid/" + entry.Name())
+	for _, name := range manifest.Valid {
+		name := name
+		t.Run(name, func(t *testing.T) {
+			body, err := os.ReadFile(filepath.Join(validDir, name+".json"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -113,6 +186,104 @@ func TestValidFixtureCorpus(t *testing.T) {
 				t.Fatalf("valid fixture rejected: %v", err)
 			}
 		})
+	}
+}
+
+func TestInvalidFixtureCorpus(t *testing.T) {
+	manifest := loadFixtureManifest(t)
+	invalidDir := "../../contracts/telemetry/v3/fixtures/invalid"
+	invalidNames := fixtureNames(t, invalidDir)
+	manifestNames := make([]string, 0, len(manifest.Invalid))
+	for name := range manifest.Invalid {
+		manifestNames = append(manifestNames, name)
+	}
+	sort.Strings(manifestNames)
+	assertManifestNames(t, manifestNames, invalidDir, invalidNames)
+	for _, name := range manifestNames {
+		name := name
+		expected := manifest.Invalid[name]
+		t.Run(name, func(t *testing.T) {
+			body, err := os.ReadFile(filepath.Join(invalidDir, name+".json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := batchErrorCode(t, body); got != expected {
+				t.Fatalf("invalid fixture %s: got %s want %s", name, got, expected)
+			}
+		})
+	}
+}
+
+func TestSchemaCorpusParsesAndReferencesResolve(t *testing.T) {
+	root := "../../contracts/telemetry/v3/schema"
+	schemas := make(map[string]map[string]any)
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() || filepath.Ext(path) != ".json" {
+			return nil
+		}
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		var document map[string]any
+		if err := json.Unmarshal(contents, &document); err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+		schemas[path] = document
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(schemas) < 10 {
+		t.Fatalf("schema corpus contains %d documents, want at least 10", len(schemas))
+	}
+	var walk func(string, any) error
+	walk = func(path string, value any) error {
+		switch typed := value.(type) {
+		case map[string]any:
+			if ref, ok := typed["$ref"].(string); ok && !strings.HasPrefix(ref, "#/") {
+				refPath := strings.SplitN(ref, "#", 2)[0]
+				target := filepath.Clean(filepath.Join(filepath.Dir(path), refPath))
+				if _, ok := schemas[target]; !ok {
+					return fmt.Errorf("%s: unresolved $ref %q", path, ref)
+				}
+			}
+			for _, child := range typed {
+				if err := walk(path, child); err != nil {
+					return err
+				}
+			}
+		case []any:
+			for _, child := range typed {
+				if err := walk(path, child); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	for path, document := range schemas {
+		if err := walk(path, document); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestSensorStreamBindingIsFrozen(t *testing.T) {
+	for sensor, stream := range sensorStreams {
+		if err := validateSensorStream(sensor, stream); err != nil {
+			t.Fatalf("sensor %s stream %s: %v", sensor, stream, err)
+		}
+	}
+	if code := errorCode(t, validateSensorStream("sht31_44", "b3")); code != InvalidIdentity {
+		t.Fatalf("sht31_44 wrong stream code = %s", code)
+	}
+	if code := errorCode(t, validateSensorStream("sht31_45", "organic")); code != InvalidIdentity {
+		t.Fatalf("sht31_45 wrong stream code = %s", code)
 	}
 }
 
@@ -185,9 +356,9 @@ func hashRecordForTest(t *testing.T, record map[string]any) []byte {
 func TestResultRequiresSourcesAndUnavailableModels(t *testing.T) {
 	record := map[string]any{
 		"record_id": "SIGAP-01/boot-A/9", "kind": "result", "device_id": "SIGAP-01", "boot_id": "boot-A", "sequence": "9", "monotonic_us": "900", "recorded_at": nil, "time_quality": "UNSYNCED",
-		"config_ref": map[string]any{"schema_version": 1, "config_version": "4", "config_hash": "sha256:" + strings.Repeat("0", 64)}, "profile_refs": []any{}, "stream": "organic", "computed_monotonic_us": "900", "source_sample_ids": []string{}, "processed": map[string]any{},
-		"fuzzy":  map[string]any{"state": "UNAVAILABLE", "score": nil, "reason": "INPUT_MISSING", "model_state": "UNCONFIGURED", "trace": map[string]any{}},
-		"safety": map[string]any{"state": "UNAVAILABLE", "score": nil, "reason": "INPUT_MISSING", "model_state": "UNCONFIGURED", "trace": map[string]any{}},
+		"config_ref": map[string]any{"schema_version": 1, "config_version": "4", "config_hash": "sha256:" + strings.Repeat("0", 64)}, "profile_refs": []any{}, "stream": "organic", "computed_monotonic_us": "900", "source_sample_ids": []string{}, "processed": map[string]any{"accumulation_hours": nil, "fill_pct": nil, "ogi": nil, "temperature_c": nil, "weight_kg": nil, "weight_utilization_pct": nil},
+		"fuzzy":  map[string]any{"state": "UNAVAILABLE", "score": nil, "reason": "INPUT_MISSING", "model_state": "UNCONFIGURED", "trace": nil},
+		"safety": map[string]any{"state": "UNAVAILABLE", "score": nil, "reason": "INPUT_MISSING", "model_state": "UNCONFIGURED", "trace": nil},
 	}
 	recordBytes := hashRecordForTest(t, record)
 	batch := `{"schema_version":3,"device_id":"SIGAP-01","batch_id":"SIGAP-01/boot-A/batch-result","record_count":1,"samples":[],"results":[` + string(recordBytes) + `],"events":[],"metadata":[]}`
@@ -269,5 +440,16 @@ func TestValidateAckIdentityAndCounts(t *testing.T) {
 	_, badErr := ValidateAck([]byte(bad), want)
 	if code := errorCode(t, badErr); code != AckMismatch {
 		t.Fatalf("ACK code = %s", code)
+	}
+	overflow := strings.Replace(string(ack), `"record_count":2,"stored_count":1,"deduplicated_count":1`, `"record_count":1,"stored_count":65535,"deduplicated_count":2`, 1)
+	if code := errorCode(t, func() error {
+		_, err := ValidateAck([]byte(overflow), AckExpectation{DeviceID: want.DeviceID, BatchID: want.BatchID, BodyHash: want.BodyHash, RecordCount: 1})
+		return err
+	}()); code != AckMismatch {
+		t.Fatalf("ACK count overflow code = %s", code)
+	}
+	individualOverflow := strings.Replace(string(ack), `"record_count":2,"stored_count":1,"deduplicated_count":1`, `"record_count":2,"stored_count":3,"deduplicated_count":0`, 1)
+	if code := errorCode(t, func() error { _, err := ValidateAck([]byte(individualOverflow), want); return err }()); code != AckMismatch {
+		t.Fatalf("ACK individual count overflow code = %s", code)
 	}
 }
