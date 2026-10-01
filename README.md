@@ -31,6 +31,21 @@ Go API:
 SIGAP_DB_PATH=./sigap.db SIGAP_HTTP_ADDR=:8080 go run ./cmd/sigap
 ```
 
+Firmware foundation:
+
+```bash
+cd firmware
+uv tool run --from platformio pio test -e native
+uv tool run --from platformio pio run -e sigap_n16r8
+```
+
+The first firmware slice targets the ESP32-S3 DevKitC-1 PlatformIO profile,
+typed AppConfig persistence, deterministic codec/hash, and native-testable NVS
+A/B behavior. Sensor, calibration, FIS, telemetry transport, and provisioning
+implementations remain deferred to later slices. The board profile retains the
+N16R8/OPI assumptions from the firmware specification; physical hardware
+validation is still required.
+
 Monitoring frontend menggunakan relative same-origin `/api/...` pada web. `EXPO_PUBLIC_API_BASE_URL` hanya digunakan untuk development native bila diperlukan.
 
 History API mengembalikan satu halaman cursor-bounded pada `items`, ringkasan lengkap untuk seluruh filter aktif pada `summary`, dan trend terbatas pada `trend`. Trend memakai kalender Asia/Jakarta, memilih bucket harian untuk rentang sampai 31 hari, mingguan sampai 180 hari, dan bulanan untuk rentang lebih panjang. Tanpa periode, trend memakai jendela 30 hari terbaru dan menandainya dengan `default_window`; `truncated` menandai saat bucket lama dipangkas agar tetap bounded. Ekspor CSV tetap memakai seluruh hasil yang cocok dengan filter aktif dan tidak dipengaruhi oleh `limit` atau cursor halaman.
