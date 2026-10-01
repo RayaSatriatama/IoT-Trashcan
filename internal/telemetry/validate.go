@@ -1074,16 +1074,25 @@ func validateEventPayload(eventType string, raw json.RawMessage) error {
 		if startValue > endValue {
 			return contractError(InvalidIdentity, "payload.sequence_end", "gap sequence range is reversed")
 		}
+		var sensorID string
+		var streamID string
 		if !bytes.Equal(bytes.TrimSpace(object["sensor_id"]), []byte("null")) {
 			sensor, err := decodeString(object, "sensor_id")
 			if err != nil || !knownSensors[sensor] {
 				return contractError(InvalidEnum, "payload.sensor_id", "unknown gap sensor")
 			}
+			sensorID = sensor
 		}
 		if !bytes.Equal(bytes.TrimSpace(object["stream"]), []byte("null")) {
 			stream, err := decodeString(object, "stream")
 			if err != nil || !knownStreams[stream] {
 				return contractError(InvalidEnum, "payload.stream", "unknown gap stream")
+			}
+			streamID = stream
+		}
+		if sensorID != "" && streamID != "" {
+			if err := validateSensorStream(sensorID, streamID); err != nil {
+				return err
 			}
 		}
 		if _, err := decodeString(object, "reason"); err != nil {
