@@ -420,7 +420,12 @@ void test_ds18b20_missing_device_produces_disconnected_attempt() {
   RecordFactory factory(allocator, record_context());
   DsFake source{};
   source.request_ok = false;
-  Ds18b20Acquirer acquirer(source, factory, nullptr, 750U);
+  Ds18b20Profile profile{};
+  profile.manifest.validity = ProfileValidity::Valid;
+  profile.manifest.target_id = static_cast<uint32_t>(ProfileTarget::Ds18b20B3);
+  profile.has_rom = true;
+  profile.rom[0] = 0x28U;
+  Ds18b20Acquirer acquirer(source, factory, &profile, 750U);
   SampleRecord record{};
 
   TEST_ASSERT_EQUAL_INT(static_cast<int>(DriverPollStatus::Produced),

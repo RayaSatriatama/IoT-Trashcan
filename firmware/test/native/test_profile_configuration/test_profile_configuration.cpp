@@ -154,10 +154,14 @@ void test_ultrasonic_engineering_fallback_has_no_profile_provenance() {
 
 struct DsReader final : IDs18b20Reader {
   bool request_ok{true};
+  uint32_t request_calls{0U};
   bool ready{true};
   Ds18b20ReadResult result{true, true, true, 8500};
 
-  bool request_conversion() noexcept override { return request_ok; }
+  bool request_conversion() noexcept override {
+    ++request_calls;
+    return request_ok;
+  }
   bool conversion_ready() noexcept override { return ready; }
   Ds18b20ReadResult read_conversion() noexcept override { return result; }
 };
@@ -243,6 +247,24 @@ void test_ds18b20_resolution_mismatch_is_not_operationally_ready() {
   TEST_ASSERT_FALSE(record.converted.primary_available);
 }
 
+void test_ds18b20_missing_profile_is_uncalibrated_without_bus_request() {
+  SequenceAllocator sequence{};
+  RecordFactory factory(sequence, context());
+  DsReader source{};
+  Ds18b20Acquirer acquirer(source, factory, nullptr, 750U);
+  SampleRecord record{};
+
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(DriverPollStatus::Produced),
+                        static_cast<int>(acquirer.poll(0U, record)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(SampleQuality::Uncalibrated),
+                        static_cast<int>(record.quality));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(SampleReason::ProfileMissing),
+                        static_cast<int>(record.reason));
+  TEST_ASSERT_FALSE(record.converted.primary_available);
+  TEST_ASSERT_FALSE(record.header.profile_ref.present);
+  TEST_ASSERT_EQUAL_UINT32(0U, source.request_calls);
+}
+
 void setUp() {}
 void tearDown() {}
 
@@ -258,6 +280,7 @@ void setup() {
   RUN_TEST(test_ds18b20_resolution_controls_conversion_deadline);
   RUN_TEST(test_ds18b20_incomplete_conversion_is_not_ready);
   RUN_TEST(test_ds18b20_resolution_mismatch_is_not_operationally_ready);
+  RUN_TEST(test_ds18b20_missing_profile_is_uncalibrated_without_bus_request);
   UNITY_END();
 }
 

@@ -38,3 +38,12 @@ No network, storage, telemetry, or calibration maintenance workflow is present i
 this slice. `profile_store.h` is only the typed boundary for the later atomic
 profile store. Profile persistence, active-pointer commit, rollback, and
 maintenance commands are deferred to Task 4.
+
+Graph startup rejects only global composition failures such as missing
+mandatory reader dependencies, invalid active runtime configuration, or
+scheduler capacity failure. Sensor-local states such as a missing or invalid
+calibration profile, profile-apply failure, unplugged sensor, CRC error, or
+heater phase produce typed channel records and do not stop unrelated channels.
+In particular, the DS18B20 channel reports `Uncalibrated` with
+`ProfileMissing` when its profile is absent and never requests a one-wire
+conversion without a configured ROM.

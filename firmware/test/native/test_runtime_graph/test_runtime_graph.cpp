@@ -41,8 +41,16 @@ struct MqFake final : IMqAdcReader {
 
 struct DsFake final : IDs18b20Reader {
   bool begin_ok{true};
-  bool begin() noexcept override { return begin_ok; }
-  bool request_conversion() noexcept override { return true; }
+  uint32_t begin_calls{0U};
+  uint32_t request_calls{0U};
+  bool begin() noexcept override {
+    ++begin_calls;
+    return begin_ok;
+  }
+  bool request_conversion() noexcept override {
+    ++request_calls;
+    return true;
+  }
   Ds18b20ReadResult read_conversion() noexcept override {
     return Ds18b20ReadResult{true, true, true, 2500};
   }
@@ -97,10 +105,16 @@ void test_target_graph_registers_all_jobs_and_shares_handoff() {
 
   graph.poll(0);
   TEST_ASSERT_TRUE(graph.enabled());
-  TEST_ASSERT_EQUAL_UINT32(9, graph.handoff().size());
+  TEST_ASSERT_EQUAL_UINT32(10, graph.handoff().size());
+  TEST_ASSERT_EQUAL_UINT32(0U, ds.begin_calls);
+  TEST_ASSERT_EQUAL_UINT32(0U, ds.request_calls);
 
   uint64_t previous = 0;
   bool first = true;
+  bool saw_hx = false;
+  bool saw_mq = false;
+  bool saw_sht = false;
+  bool saw_ds_profile_missing = false;
   SampleRecord record{};
   while (graph.handoff().try_pop(record) == HandoffStatus::Dequeued) {
     if (!first) TEST_ASSERT_TRUE(record.header.sequence > previous);
@@ -108,7 +122,24 @@ void test_target_graph_registers_all_jobs_and_shares_handoff() {
     previous = record.header.sequence;
     TEST_ASSERT_TRUE(record.header.config_ref.present);
     TEST_ASSERT_EQUAL_UINT64(2, record.header.config_ref.config_version);
+    saw_hx = saw_hx || record.header.sensor == SensorId::Hx711Organic ||
+             record.header.sensor == SensorId::Hx711Inorganic ||
+             record.header.sensor == SensorId::Hx711B3;
+    saw_mq = saw_mq || record.header.kind == SampleKind::MqAdc;
+    saw_sht = saw_sht || record.header.kind == SampleKind::Sht31;
+    if (record.header.kind == SampleKind::Ds18b20) {
+      saw_ds_profile_missing = true;
+      TEST_ASSERT_EQUAL_INT(static_cast<int>(SampleQuality::Uncalibrated),
+                            static_cast<int>(record.quality));
+      TEST_ASSERT_EQUAL_INT(static_cast<int>(SampleReason::ProfileMissing),
+                            static_cast<int>(record.reason));
+      TEST_ASSERT_FALSE(record.converted.primary_available);
+    }
   }
+  TEST_ASSERT_TRUE(saw_hx);
+  TEST_ASSERT_TRUE(saw_mq);
+  TEST_ASSERT_TRUE(saw_sht);
+  TEST_ASSERT_TRUE(saw_ds_profile_missing);
 }
 
 void test_target_graph_rejects_missing_reader_dependencies_safely() {
@@ -132,7 +163,7 @@ void test_target_graph_rejects_missing_reader_dependencies_safely() {
   TEST_ASSERT_EQUAL_UINT32(0U, graph.registered_jobs());
 }
 
-void test_target_graph_rejects_ds18b20_profile_setup_failure() {
+void test_target_graph_keeps_other_channels_alive_when_ds_profile_apply_fails() {
   HxFake hx[3]{};
   UltrasonicFake ultrasonic[3]{};
   MqFake mq[4]{};
@@ -146,7 +177,14 @@ void test_target_graph_rejects_ds18b20_profile_setup_failure() {
                           &ds,
                           {&sht, &sht},
                           &heater};
+  Ds18b20Profile ds_profile{};
+  ds_profile.manifest.validity = ProfileValidity::Valid;
+  ds_profile.manifest.target_id =
+      static_cast<uint32_t>(ProfileTarget::Ds18b20B3);
+  ds_profile.has_rom = true;
+  ds_profile.rom[0] = 0x28U;
   TargetProfileSet profiles{};
+  profiles.ds18b20 = &ds_profile;
   ConfigRef config_ref{};
   config_ref.present = true;
   config_ref.schema_version = 1U;
@@ -160,9 +198,67 @@ void test_target_graph_rejects_ds18b20_profile_setup_failure() {
   TargetAcquisitionGraph graph(factory, readers, profiles, handoff);
   sigap::config::SamplingConfig sampling{};
 
-  TEST_ASSERT_FALSE(graph.begin(sampling, 0U));
-  TEST_ASSERT_FALSE(graph.enabled());
-  TEST_ASSERT_EQUAL_UINT32(0U, graph.registered_jobs());
+  TEST_ASSERT_TRUE(graph.begin(sampling, 0U));
+  TEST_ASSERT_TRUE(graph.enabled());
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(DsChannelState::ProfileApplyFailed),
+                        static_cast<int>(graph.ds_channel_state()));
+  graph.poll(0U);
+  TEST_ASSERT_TRUE(graph.handoff().size() > 0U);
+  TEST_ASSERT_EQUAL_UINT32(0U, ds.request_calls);
+  SampleRecord record{};
+  bool saw_ds_failure = false;
+  while (graph.handoff().try_pop(record) == HandoffStatus::Dequeued) {
+    if (record.header.kind == SampleKind::Ds18b20) {
+      saw_ds_failure = true;
+      TEST_ASSERT_EQUAL_INT(static_cast<int>(SampleQuality::Uncalibrated),
+                            static_cast<int>(record.quality));
+      TEST_ASSERT_EQUAL_INT(static_cast<int>(SampleReason::InvalidProfile),
+                            static_cast<int>(record.reason));
+    }
+  }
+  TEST_ASSERT_TRUE(saw_ds_failure);
+}
+
+void test_target_graph_uses_strict_ds_channel_when_profile_setup_succeeds() {
+  HxFake hx[3]{};
+  UltrasonicFake ultrasonic[3]{};
+  MqFake mq[4]{};
+  DsFake ds{};
+  ShtFake sht{};
+  HeaterFake heater{};
+  TargetReaderSet readers{{&hx[0], &hx[1], &hx[2]},
+                          {&ultrasonic[0], &ultrasonic[1], &ultrasonic[2]},
+                          {&mq[0], &mq[1], &mq[2], &mq[3]},
+                          &ds,
+                          {&sht, &sht},
+                          &heater};
+  Ds18b20Profile ds_profile{};
+  ds_profile.manifest.validity = ProfileValidity::Valid;
+  ds_profile.manifest.target_id =
+      static_cast<uint32_t>(ProfileTarget::Ds18b20B3);
+  ds_profile.has_rom = true;
+  ds_profile.rom[0] = 0x28U;
+  TargetProfileSet profiles{};
+  profiles.ds18b20 = &ds_profile;
+  ConfigRef config_ref{};
+  config_ref.present = true;
+  config_ref.schema_version = 1U;
+  config_ref.config_version = 1U;
+  BootId boot{};
+  boot.present = true;
+  RecordContext context{boot, DeviceId{}, config_ref, nullptr};
+  SequenceAllocator sequence{};
+  RecordFactory factory(sequence, context);
+  SampleRing<TargetAcquisitionGraph::kHandoffCapacity> handoff{};
+  TargetAcquisitionGraph graph(factory, readers, profiles, handoff);
+  sigap::config::SamplingConfig sampling{};
+
+  TEST_ASSERT_TRUE(graph.begin(sampling, 0U));
+  TEST_ASSERT_EQUAL_UINT32(1U, ds.begin_calls);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(DsChannelState::Ready),
+                        static_cast<int>(graph.ds_channel_state()));
+  graph.poll(0U);
+  TEST_ASSERT_EQUAL_UINT32(1U, ds.request_calls);
 }
 
 void test_target_graph_services_ultrasonic_before_one_second_trigger_deadline() {
@@ -305,7 +401,8 @@ void setup() {
   UNITY_BEGIN();
   RUN_TEST(test_target_graph_registers_all_jobs_and_shares_handoff);
   RUN_TEST(test_target_graph_rejects_missing_reader_dependencies_safely);
-  RUN_TEST(test_target_graph_rejects_ds18b20_profile_setup_failure);
+  RUN_TEST(test_target_graph_keeps_other_channels_alive_when_ds_profile_apply_fails);
+  RUN_TEST(test_target_graph_uses_strict_ds_channel_when_profile_setup_succeeds);
   RUN_TEST(test_target_graph_services_ultrasonic_before_one_second_trigger_deadline);
   RUN_TEST(test_acquisition_requires_active_config_provenance);
   UNITY_END();

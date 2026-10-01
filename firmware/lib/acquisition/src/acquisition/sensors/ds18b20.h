@@ -13,6 +13,13 @@ struct Ds18b20ReadResult {
   bool resolution_matches{true};
 };
 
+enum class DsChannelState : uint8_t {
+  ProfileMissing,
+  ProfileInvalid,
+  Ready,
+  ProfileApplyFailed,
+};
+
 class IDs18b20Reader {
  public:
   virtual ~IDs18b20Reader() = default;
@@ -30,10 +37,20 @@ class IDs18b20Reader {
 class Ds18b20Acquirer final {
  public:
   Ds18b20Acquirer(IDs18b20Reader& source, RecordFactory& factory,
-                  const Ds18b20Profile* profile, uint64_t conversion_time_us) noexcept
-      : source_(source), factory_(factory), profile_(profile), conversion_time_us_(conversion_time_us) {}
+                  const Ds18b20Profile* profile, uint64_t conversion_time_us,
+                  DsChannelState channel_state = DsChannelState::Ready) noexcept
+      : source_(source), factory_(factory), profile_(profile),
+        conversion_time_us_(conversion_time_us),
+        channel_state_(resolve_channel_state(profile, channel_state)) {}
 
   DriverPollStatus poll(uint64_t now_us, SampleRecord& out) noexcept {
+    if (channel_state_ == DsChannelState::ProfileMissing) {
+      return make_profile_record(now_us, SampleReason::ProfileMissing, out);
+    }
+    if (channel_state_ == DsChannelState::ProfileInvalid ||
+        channel_state_ == DsChannelState::ProfileApplyFailed) {
+      return make_profile_record(now_us, SampleReason::InvalidProfile, out);
+    }
     if (!pending_) {
       if (!source_.request_conversion()) {
         RawObservation raw{};
@@ -100,6 +117,29 @@ class Ds18b20Acquirer final {
   }
 
  private:
+  static DsChannelState resolve_channel_state(
+      const Ds18b20Profile* profile,
+      DsChannelState requested) noexcept {
+    if (requested != DsChannelState::Ready) return requested;
+    if (profile == nullptr) return DsChannelState::ProfileMissing;
+    if (!profile->valid_for_acquisition() ||
+        !profile_matches(profile->manifest, SensorId::Ds18b20B3)) {
+      return DsChannelState::ProfileInvalid;
+    }
+    return DsChannelState::Ready;
+  }
+
+  DriverPollStatus make_profile_record(uint64_t now_us,
+                                       SampleReason reason,
+                                       SampleRecord& out) noexcept {
+    RawObservation raw{};
+    ConvertedObservation converted{};
+    return factory_.make(
+        now_us, SensorId::Ds18b20B3, StreamId::B3, SampleKind::Ds18b20,
+        SampleQuality::Uncalibrated, reason, raw, converted,
+        profile_ref(), out);
+  }
+
   ProfileRef profile_ref() const noexcept {
     return profile_ != nullptr && profile_->valid_for_acquisition() &&
                    profile_matches(profile_->manifest, SensorId::Ds18b20B3)
@@ -111,6 +151,7 @@ class Ds18b20Acquirer final {
   RecordFactory& factory_;
   const Ds18b20Profile* profile_;
   uint64_t conversion_time_us_;
+  DsChannelState channel_state_;
   uint64_t requested_at_{0};
   bool pending_{false};
 };

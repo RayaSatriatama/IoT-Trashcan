@@ -22,7 +22,7 @@ enum class SampleQuality : uint8_t {
 };
 enum class SampleReason : uint8_t {
   None, DataReady, NotReady, Timeout, Disconnected, CrcError,
-  InvalidProfile, HeaterPhase, ConversionPending, OutOfRange,
+  InvalidProfile, HeaterPhase, ConversionPending, OutOfRange, ProfileMissing,
 };
 enum class TimeQuality : uint8_t { Unsynced, Synchronized, Estimated };
 enum class ConvertedKind : uint8_t { None, Kilograms, FillPercent, AdcMillivolts, Celsius, HumidityPercent };

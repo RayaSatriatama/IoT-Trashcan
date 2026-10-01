@@ -116,8 +116,16 @@ class TargetAcquisitionGraph final {
         ds_period == 0U || sht_period == 0U) {
       return false;
     }
-    if (!readers_.ds18b20->begin()) {
-      return false;
+    if (profiles_.ds18b20 == nullptr) {
+      ds_channel_state_ = DsChannelState::ProfileMissing;
+    } else if (!profiles_.ds18b20->valid_for_acquisition() ||
+               !profile_matches(profiles_.ds18b20->manifest,
+                                SensorId::Ds18b20B3)) {
+      ds_channel_state_ = DsChannelState::ProfileInvalid;
+    } else if (!readers_.ds18b20->begin()) {
+      ds_channel_state_ = DsChannelState::ProfileApplyFailed;
+    } else {
+      ds_channel_state_ = DsChannelState::Ready;
     }
 
     scheduler_ = CooperativeScheduler{};
@@ -150,7 +158,8 @@ class TargetAcquisitionGraph final {
     mq7_.emplace(SensorId::Mq7, StreamId::B3, *readers_.mq_adc[2], factory_, profiles_.mq_adc[2], &*heater_);
     mq8_.emplace(SensorId::Mq8, StreamId::B3, *readers_.mq_adc[3], factory_, profiles_.mq_adc[3]);
     ds18b20_.emplace(*readers_.ds18b20, factory_, profiles_.ds18b20,
-                     resolve_ds18b20_conversion_time(profiles_.ds18b20));
+                     resolve_ds18b20_conversion_time(profiles_.ds18b20),
+                     ds_channel_state_);
     sht31_44_.emplace(0x44U, StreamId::Ambient, *readers_.sht31[0], factory_, profiles_.sht31[0]);
     sht31_45_.emplace(0x45U, StreamId::Ambient, *readers_.sht31[1], factory_, profiles_.sht31[1]);
     hx_jobs_[0] = {&*hx_org_, &handoff_, &health_[0]};
@@ -209,6 +218,7 @@ class TargetAcquisitionGraph final {
   const SensorHealthState& health(std::size_t index) const noexcept {
     return health_[index < health_.size() ? index : 0U];
   }
+  DsChannelState ds_channel_state() const noexcept { return ds_channel_state_; }
 
  private:
   static uint64_t milliseconds_to_us(uint32_t milliseconds) noexcept {
@@ -269,6 +279,7 @@ class TargetAcquisitionGraph final {
   std::array<AcquisitionJob<Sht31Acquirer, kHandoffCapacity>, 2> sht_jobs_{};
   HeaterJob heater_job_{};
   std::array<SensorHealthState, 13> health_{};
+  DsChannelState ds_channel_state_{DsChannelState::ProfileMissing};
   CooperativeScheduler scheduler_{};
   std::size_t registered_jobs_{0};
   bool enabled_{false};
