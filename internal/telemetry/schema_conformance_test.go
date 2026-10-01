@@ -42,6 +42,39 @@ func compileTelemetrySchema(t *testing.T) *jsonschema.Schema {
 	return schema
 }
 
+func TestAllTelemetrySchemasCompile(t *testing.T) {
+	root, err := filepath.Abs("../../contracts/telemetry/v3/schema")
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, err := filepath.Glob(filepath.Join(root, "*.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// filepath.Glob does not recurse, so include the nested sample directory
+	// explicitly while keeping the test deterministic.
+	files = append(files, mustGlobSchemas(t, filepath.Join(root, "sample"))...)
+	for _, path := range files {
+		path := path
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			compiler := jsonschema.NewCompiler()
+			compiler.UseLoader(sigapSchemaLoader{root: root})
+			if _, err := compiler.Compile(path); err != nil {
+				t.Fatalf("compile %s: %v", path, err)
+			}
+		})
+	}
+}
+
+func mustGlobSchemas(t *testing.T, root string) []string {
+	t.Helper()
+	files, err := filepath.Glob(filepath.Join(root, "*.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return files
+}
+
 func decodeSchemaInstance(t *testing.T, path string) any {
 	t.Helper()
 	file, err := os.Open(path)
