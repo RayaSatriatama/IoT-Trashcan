@@ -69,6 +69,43 @@ func TestSafetyHazardInputCannotBecomeClear(t *testing.T) {
 	}
 }
 
+func TestSafetyClearRequiresValidatedEvidenceAndConfiguredModel(t *testing.T) {
+	for name, safety := range map[string]map[string]any{
+		"input-missing": {
+			"state": "CLEAR", "reason": "INPUT_MISSING",
+			"model_state": "TEST_ONLY", "trace": nil,
+		},
+		"unconfigured-model": {
+			"state": "CLEAR", "reason": "ALL_VALIDATED_CHANNELS_CLEAR",
+			"model_state": "UNCONFIGURED", "trace": nil,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ValidateBatch(safetyFixture(t, safety)); err == nil {
+				t.Fatal("CLEAR must require validated evidence from a configured safety model")
+			}
+		})
+	}
+
+	valid := safetyFixture(t, map[string]any{
+		"state": "CLEAR", "reason": "ALL_VALIDATED_CHANNELS_CLEAR",
+		"model_state": "TEST_ONLY", "trace": nil,
+	})
+	if _, err := ValidateBatch(valid); err != nil {
+		t.Fatalf("validated TEST_ONLY clear result rejected: %v", err)
+	}
+}
+
+func TestSafetyUnconfiguredStateRequiresUnconfiguredModel(t *testing.T) {
+	body := safetyFixture(t, map[string]any{
+		"state": "UNCONFIGURED", "reason": "SAFETY_NOT_CONFIGURED",
+		"model_state": "TEST_ONLY", "trace": nil,
+	})
+	if _, err := ValidateBatch(body); err == nil {
+		t.Fatal("UNCONFIGURED safety state cannot claim configured model provenance")
+	}
+}
+
 func TestSafetyFaultIsRepresentableWithoutScore(t *testing.T) {
 	body := safetyFixture(t, map[string]any{
 		"state": "FAULT", "reason": "HAZARD_INPUT_INVALID",
