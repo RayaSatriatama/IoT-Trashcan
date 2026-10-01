@@ -358,9 +358,9 @@ Contoh ringkas **proposal kontrak**, bukan paket siap dikirim; fixture resmi waj
     "source_sample_ids": ["SIGAP-01/boot-X/880"],
     "processed": {"fill_pct": null, "weight_kg": null, "weight_utilization_pct": null,
                    "ogi": null, "accumulation_hours": null, "temperature_c": null},
-    "fuzzy": {"state": "UNAVAILABLE", "score": null,
+    "fuzzy": {"state": "UNAVAILABLE", "score": null, "label": null,
               "reason": "INPUT_MISSING", "model_state": "UNCONFIGURED", "trace": null},
-    "safety": {"state": "UNAVAILABLE", "score": null,
+    "safety": {"state": "UNAVAILABLE",
                "reason": "INPUT_MISSING", "model_state": "UNCONFIGURED", "trace": null},
     "config_ref": {"schema_version": 1, "config_version": "4", "config_hash": "sha256:<64-lowercase-hex>"},
     "profile_refs": []
