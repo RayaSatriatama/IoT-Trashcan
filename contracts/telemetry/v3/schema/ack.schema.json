@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sigap.local/contracts/telemetry/v3/ack.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["device_id", "batch_id", "body_hash", "record_count", "stored_count", "deduplicated_count", "status"],
+  "properties": {
+    "device_id": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,128}$"},
+    "batch_id": {"type": "string", "minLength": 1, "maxLength": 512},
+    "body_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "record_count": {"type": "integer", "minimum": 0, "maximum": 128},
+    "stored_count": {"type": "integer", "minimum": 0, "maximum": 128},
+    "deduplicated_count": {"type": "integer", "minimum": 0, "maximum": 128},
+    "status": {"const": "DURABLE"}
+  }
+}

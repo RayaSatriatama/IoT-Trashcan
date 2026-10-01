@@ -447,7 +447,7 @@ void test_sht31_crc_failure_preserves_failure_reason() {
   profile.manifest.validity = ProfileValidity::Valid;
   profile.manifest.target_id = static_cast<uint32_t>(ProfileTarget::Sht31_45);
   profile.address = 0x45U;
-  Sht31Acquirer acquirer(0x45U, StreamId::Ambient, source, factory, &profile);
+  Sht31Acquirer acquirer(0x45U, StreamId::B3, source, factory, &profile);
   SampleRecord record{};
   TEST_ASSERT_EQUAL_INT(static_cast<int>(DriverPollStatus::Produced),
                         static_cast<int>(acquirer.poll(0U, record)));

@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sigap.local/contracts/telemetry/v3/common-record.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["record_id", "record_hash", "kind", "device_id", "boot_id", "sequence", "monotonic_us", "recorded_at", "time_quality", "config_ref", "profile_refs"],
+  "properties": {
+    "record_id": {"type": "string", "minLength": 1, "maxLength": 512},
+    "record_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "kind": {"enum": ["sample", "result", "event", "metadata"]},
+    "device_id": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,128}$"},
+    "boot_id": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,128}$"},
+    "sequence": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$", "maxLength": 20},
+    "monotonic_us": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$", "maxLength": 20},
+    "recorded_at": {"type": ["string", "null"], "maxLength": 64},
+    "time_quality": {"enum": ["UNSYNCED", "SYNCED", "RECONSTRUCTED"]},
+    "config_ref": {"$ref": "config-ref.schema.json"},
+    "profile_refs": {"type": "array", "maxItems": 16, "items": {"$ref": "profile-ref.schema.json"}}
+  }
+}

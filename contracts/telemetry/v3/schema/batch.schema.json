@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sigap.local/contracts/telemetry/v3/batch.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "device_id", "batch_id", "record_count", "samples", "results", "events", "metadata"],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 3},
+    "device_id": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,128}$"},
+    "batch_id": {"type": "string", "minLength": 1, "maxLength": 512},
+    "record_count": {"type": "integer", "minimum": 0, "maximum": 128},
+    "samples": {"type": "array", "maxItems": 128, "items": {"$ref": "sample.schema.json"}},
+    "results": {"type": "array", "maxItems": 128, "items": {"$ref": "result.schema.json"}},
+    "events": {"type": "array", "maxItems": 128, "items": {"$ref": "event.schema.json"}},
+    "metadata": {"type": "array", "maxItems": 128, "items": {"$ref": "metadata.schema.json"}}
+  }
+}

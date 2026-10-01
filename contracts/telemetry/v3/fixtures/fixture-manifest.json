@@ -1,0 +1,50 @@
+{
+  "valid": [
+    "sample-utc-null", "sample-hx711-calibrated", "sample-ultrasonic-profile",
+    "sample-mq-raw", "sample-mq7-heater-phase", "sample-ds18b20",
+    "sample-hx711-timeout", "sample-ultrasonic-timeout", "sample-mq-disconnected",
+    "sample-ds18b20-crc-error", "sample-sht31-crc-error", "sample-sht31-both",
+    "result-multi-source", "result-fuzzy-unavailable", "result-fuzzy-unconfigured",
+    "result-safety-unavailable", "result-safety-unconfigured", "result-safety-fault",
+    "event-clock-anchor", "metadata-profile-activation",
+    "mixed-batch", "max-uint64", "unicode-metadata", "near-limit-result"
+  ],
+  "invalid": {
+    "duplicate-key": "DUPLICATE_KEY",
+    "unsupported-schema": "SCHEMA_UNSUPPORTED",
+    "leading-zero-uint64": "INVALID_UINT64",
+    "overflow-uint64": "INVALID_UINT64",
+    "negative-uint64": "INVALID_UINT64",
+    "129-records": "COUNT_MISMATCH",
+    "count-mismatch": "COUNT_MISMATCH",
+    "duplicate-record-id": "DUPLICATE_RECORD_ID",
+    "wrong-record-hash": "HASH_MISMATCH",
+    "body-too-large": "BODY_TOO_LARGE",
+    "record-too-large": "RECORD_TOO_LARGE",
+    "depth-exceeded": "DEPTH_EXCEEDED",
+    "string-too-long": "STRING_TOO_LONG",
+    "unknown-kind": "INVALID_ENUM",
+    "unknown-sensor": "INVALID_ENUM",
+    "unknown-stream": "INVALID_ENUM",
+    "nonfinite-number": "NONFINITE_NUMBER",
+    "malformed-profile": "PROFILE_REF_INVALID",
+    "inconsistent-record-id": "INVALID_IDENTITY",
+    "missing-source-sample-ids": "SOURCE_SAMPLE_IDS_MISSING",
+    "unexpected-field": "UNKNOWN_FIELD"
+    ,"wrong-raw-shape": "UNKNOWN_FIELD"
+    ,"wrong-converted-shape": "UNKNOWN_FIELD"
+    ,"malformed-result-processed": "UNKNOWN_FIELD"
+    ,"malformed-fuzzy-trace": "MALFORMED_JSON"
+    ,"malformed-safety-trace": "MALFORMED_JSON"
+    ,"malformed-clock-anchor": "UNKNOWN_FIELD"
+    ,"malformed-profile-activation": "UNKNOWN_FIELD"
+    ,"nested-duplicate-key": "DUPLICATE_KEY"
+    ,"ready-null-raw": "MALFORMED_JSON"
+    ,"ready-disconnected": "INVALID_IDENTITY"
+    ,"timeout-converted": "MALFORMED_JSON"
+    ,"crc-converted": "MALFORMED_JSON"
+    ,"ds18b20-short-scratchpad": "MALFORMED_JSON"
+    ,"ambient-result": "INVALID_ENUM"
+    ,"safety-clear-hazard": "INVALID_IDENTITY"
+  }
+}

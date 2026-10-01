@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sigap.local/contracts/telemetry/v3/profile-ref.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["kind", "target", "schema_version", "version", "hash"],
+  "properties": {
+    "kind": {"enum": ["CALIBRATION", "CAPACITY", "FIS", "SAFETY", "HEATER", "ADC"]},
+    "target": {"type": "string", "pattern": "^[a-z0-9_]{1,128}$"},
+    "schema_version": {"type": "integer", "minimum": 1},
+    "version": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$", "maxLength": 20},
+    "hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}

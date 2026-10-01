@@ -114,6 +114,8 @@ void test_target_graph_registers_all_jobs_and_shares_handoff() {
   bool saw_hx = false;
   bool saw_mq = false;
   bool saw_sht = false;
+  bool saw_sht44_organic = false;
+  bool saw_sht45_b3 = false;
   bool saw_ds_profile_missing = false;
   SampleRecord record{};
   while (graph.handoff().try_pop(record) == HandoffStatus::Dequeued) {
@@ -127,6 +129,16 @@ void test_target_graph_registers_all_jobs_and_shares_handoff() {
              record.header.sensor == SensorId::Hx711B3;
     saw_mq = saw_mq || record.header.kind == SampleKind::MqAdc;
     saw_sht = saw_sht || record.header.kind == SampleKind::Sht31;
+    if (record.header.sensor == SensorId::Sht31_44) {
+      saw_sht44_organic = true;
+      TEST_ASSERT_EQUAL_INT(static_cast<int>(StreamId::Organic),
+                            static_cast<int>(record.header.stream));
+    }
+    if (record.header.sensor == SensorId::Sht31_45) {
+      saw_sht45_b3 = true;
+      TEST_ASSERT_EQUAL_INT(static_cast<int>(StreamId::B3),
+                            static_cast<int>(record.header.stream));
+    }
     if (record.header.kind == SampleKind::Ds18b20) {
       saw_ds_profile_missing = true;
       TEST_ASSERT_EQUAL_INT(static_cast<int>(SampleQuality::Uncalibrated),
@@ -139,6 +151,8 @@ void test_target_graph_registers_all_jobs_and_shares_handoff() {
   TEST_ASSERT_TRUE(saw_hx);
   TEST_ASSERT_TRUE(saw_mq);
   TEST_ASSERT_TRUE(saw_sht);
+  TEST_ASSERT_TRUE(saw_sht44_organic);
+  TEST_ASSERT_TRUE(saw_sht45_b3);
   TEST_ASSERT_TRUE(saw_ds_profile_missing);
 }
 
