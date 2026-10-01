@@ -223,7 +223,12 @@ bool ConfigManager::commit_draft() noexcept {
   next_metadata.active_slot = next_slot;
   next_metadata.active_version = candidate.config_version;
   next_metadata.active_hash = encoded_scratch_.hash();
-  if (has_activation_metadata_) {
+  if (has_active_slot_) {
+    next_metadata.has_previous = true;
+    next_metadata.previous_slot = identity_.slot;
+    next_metadata.previous_version = identity_.config_version;
+    next_metadata.previous_hash = identity_.hash;
+  } else if (has_activation_metadata_) {
     next_metadata.has_previous = true;
     next_metadata.previous_slot = activation_metadata_.active_slot;
     next_metadata.previous_version = activation_metadata_.active_version;

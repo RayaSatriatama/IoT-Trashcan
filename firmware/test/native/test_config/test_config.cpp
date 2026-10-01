@@ -319,6 +319,18 @@ void test_config_version_increments_once_per_reboot_commit() {
   TEST_ASSERT_EQUAL_INT(static_cast<int>(ConfigBootResult::ActiveLoaded),
                         static_cast<int>(third.begin()));
   TEST_ASSERT_EQUAL_UINT64(2, third.active().config_version);
+
+  sigap::config::ActivationMetadata metadata{};
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(StoreReadStatus::Found),
+      static_cast<int>(store.read_activation_metadata(metadata)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(sigap::config::ConfigSlot::B),
+                        static_cast<int>(metadata.active_slot));
+  TEST_ASSERT_EQUAL_UINT64(2, metadata.active_version);
+  TEST_ASSERT_TRUE(metadata.has_previous);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(sigap::config::ConfigSlot::A),
+                        static_cast<int>(metadata.previous_slot));
+  TEST_ASSERT_EQUAL_UINT64(1, metadata.previous_version);
 }
 
 void test_failed_write_leaves_previous_slot_authoritative() {
@@ -509,6 +521,66 @@ void test_corrupt_active_slot_does_not_promote_newer_staged_other_slot() {
   TEST_ASSERT_EQUAL_UINT64(0, reboot.active().config_version);
 }
 
+void test_fallback_repair_records_runtime_previous_snapshot() {
+  MemoryConfigStore store;
+  sigap::config::ConfigManager first(store, validation_context());
+  first.begin();
+  valid_draft(first);
+  TEST_ASSERT_TRUE(first.commit_draft());
+
+  sigap::config::ConfigManager second(store, validation_context());
+  second.begin();
+  valid_draft(second);
+  TEST_ASSERT_TRUE(second.commit_draft());
+
+  store.corrupt_slot(sigap::config::ConfigSlot::B);
+  sigap::config::ConfigManager fallback(store, validation_context());
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ConfigBootResult::FallbackLoaded),
+                        static_cast<int>(fallback.begin()));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(sigap::config::ConfigSlot::A),
+                        static_cast<int>(fallback.identity().slot));
+  TEST_ASSERT_EQUAL_UINT64(1, fallback.active().config_version);
+
+  valid_draft(fallback);
+  TEST_ASSERT_TRUE(fallback.commit_draft());
+  TEST_ASSERT_EQUAL_UINT64(3, fallback.draft().config_version);
+
+  sigap::config::ActivationMetadata metadata{};
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(StoreReadStatus::Found),
+      static_cast<int>(store.read_activation_metadata(metadata)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(sigap::config::ConfigSlot::B),
+                        static_cast<int>(metadata.active_slot));
+  TEST_ASSERT_EQUAL_UINT64(3, metadata.active_version);
+  TEST_ASSERT_TRUE(metadata.has_previous);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(sigap::config::ConfigSlot::A),
+                        static_cast<int>(metadata.previous_slot));
+  TEST_ASSERT_EQUAL_UINT64(1, metadata.previous_version);
+
+  ConfigCodec codec;
+  EncodedConfig expected_previous{};
+  EncodedConfig expected_active{};
+  TEST_ASSERT_TRUE(codec.encode(first.draft(), expected_previous));
+  TEST_ASSERT_TRUE(codec.encode(fallback.draft(), expected_active));
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(expected_previous.hash().data(),
+                                metadata.previous_hash.data(),
+                                metadata.previous_hash.size());
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(expected_active.hash().data(),
+                                metadata.active_hash.data(),
+                                metadata.active_hash.size());
+
+  store.corrupt_slot(sigap::config::ConfigSlot::B);
+  sigap::config::ConfigManager repaired_boot(store, validation_context());
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ConfigBootResult::FallbackLoaded),
+                        static_cast<int>(repaired_boot.begin()));
+  TEST_ASSERT_TRUE(repaired_boot.fallback_used());
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ConfigState::Active),
+                        static_cast<int>(repaired_boot.state()));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(sigap::config::ConfigSlot::A),
+                        static_cast<int>(repaired_boot.identity().slot));
+  TEST_ASSERT_EQUAL_UINT64(1, repaired_boot.active().config_version);
+}
+
 void test_store_read_status_distinguishes_absent_and_backend_error() {
   MemoryConfigStore store;
   sigap::config::ActivationMetadata metadata{};
@@ -687,6 +759,7 @@ void setup() {
   RUN_TEST(test_failed_update_keeps_previous_version_authoritative);
   RUN_TEST(test_active_slot_corruption_uses_only_metadata_previous_slot);
   RUN_TEST(test_corrupt_active_slot_does_not_promote_newer_staged_other_slot);
+  RUN_TEST(test_fallback_repair_records_runtime_previous_snapshot);
   RUN_TEST(test_store_read_status_distinguishes_absent_and_backend_error);
   RUN_TEST(test_storage_errors_never_bootstrap_defaults);
   RUN_TEST(test_recovery_preserves_monotonic_config_version);

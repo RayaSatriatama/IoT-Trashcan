@@ -28,7 +28,7 @@ class ConfigManager final {
   ConfigValidation validate_draft() const noexcept;
   bool validate_draft_and_enter() noexcept;
   bool preview_draft() noexcept;
- bool commit_draft() noexcept;
+  bool commit_draft() noexcept;
 
  private:
   enum class SlotLoadStatus : uint8_t {
