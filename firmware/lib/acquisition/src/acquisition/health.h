@@ -20,6 +20,17 @@ struct SensorHealthState {
   SampleQuality readiness{SampleQuality::WarmingUp};
   SensorHealth health{SensorHealth::Offline};
 
+  static constexpr bool is_hardware_failure(SampleQuality quality) noexcept {
+    switch (quality) {
+      case SampleQuality::Timeout:
+      case SampleQuality::Disconnected:
+      case SampleQuality::CrcError:
+        return true;
+      default:
+        return false;
+    }
+  }
+
   void observe(uint64_t now_us, SampleQuality quality) noexcept {
     last_attempt_us = now_us;
     ++total_attempts;
@@ -31,6 +42,16 @@ struct SensorHealthState {
       health = SensorHealth::Online;
       return;
     }
+
+    // Operational readiness is separate from communication health.  A sensor
+    // can be physically online while its profile is missing, a heater is in a
+    // non-detect phase, or a sample is still warming up/calibrating.
+    if (!is_hardware_failure(quality)) {
+      consecutive_failures = 0;
+      health = SensorHealth::Online;
+      return;
+    }
+
     ++consecutive_failures;
     if (quality == SampleQuality::Timeout) ++timeout_count;
     if (quality == SampleQuality::CrcError) ++crc_error_count;

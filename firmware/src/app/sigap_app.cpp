@@ -15,7 +15,11 @@ SigapApp::SigapApp() noexcept
     : config_manager_(config_store_,
                       config::ValidationContext{
                           build::kPreMountLittlefsValidationBytes, 0}),
-      acquisition_(config_manager_) {}
+      record_context_{boot_identity_.boot_id, acquisition::DeviceId{},
+                      acquisition::ConfigRef{}, nullptr},
+      record_factory_(boot_identity_.sequence, record_context_),
+      acquisition_(config_manager_, record_factory_, board::kN16R8Pins,
+                   profiles_) {}
 
 // cppcheck-suppress unusedFunction
 void SigapApp::setup() noexcept {
@@ -23,16 +27,31 @@ void SigapApp::setup() noexcept {
   Serial.begin(115200);
   board::log_runtime_board_memory();
 #endif
-  // Foundation slice: load and validate the immutable per-boot snapshot.
-  (void)config_manager_.begin();
-  acquisition_.set_active_config(config_manager_.active(),
-                                 acquisition::active_config_ref(config_manager_));
+  const config::ConfigBootResult boot_result = config_manager_.begin();
+  (void)boot_result;
+  if (!config_manager_.runtime_ready()) {
+    acquisition_.disable();
+    return;
+  }
+  const acquisition::ConfigRef ref =
+      acquisition::active_config_ref(config_manager_);
+  if (!ref.present) {
+    acquisition_.disable();
+    return;
+  }
+#ifdef ARDUINO
+  const acquisition::ArduinoMonotonicClock clock{};
+  (void)acquisition_.begin(config_manager_.active(), ref, clock.now_us());
+#else
+  (void)acquisition_.begin(config_manager_.active(), ref, 0U);
+#endif
 }
 
 // cppcheck-suppress unusedFunction
 void SigapApp::loop() noexcept {
 #ifdef ARDUINO
-  acquisition_.poll(static_cast<uint64_t>(micros()));
+  const acquisition::ArduinoMonotonicClock clock{};
+  acquisition_.poll(clock.now_us());
 #endif
 }
 

@@ -50,6 +50,10 @@ class Ds18b20Acquirer final {
     } else if (!result.conversion_complete) {
       quality = SampleQuality::Timeout;
       reason = SampleReason::ConversionPending;
+    } else if (profile_ != nullptr &&
+               !profile_matches(profile_->manifest, SensorId::Ds18b20B3)) {
+      quality = SampleQuality::Uncalibrated;
+      reason = SampleReason::InvalidProfile;
     } else if (profile_ == nullptr || !profile_->valid_for_conversion()) {
       quality = SampleQuality::Uncalibrated;
       reason = SampleReason::InvalidProfile;

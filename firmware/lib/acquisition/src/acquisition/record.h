@@ -23,6 +23,10 @@ class RecordFactory final {
   RecordFactory(SequenceAllocator& sequence, const RecordContext& context) noexcept
       : sequence_(sequence), context_(context) {}
 
+  void set_config_ref(const ConfigRef& config_ref) noexcept {
+    context_.config_ref = config_ref;
+  }
+
   DriverPollStatus make(uint64_t monotonic_us, SensorId sensor, StreamId stream,
                         SampleKind kind, SampleQuality quality, SampleReason reason,
                         const RawObservation& raw, const ConvertedObservation& converted,

@@ -45,6 +45,9 @@ class MqAdcAcquirer final {
     } else if (!result.ok) {
       if (reason == SampleReason::None) reason = SampleReason::Timeout;
       quality = SampleQuality::Timeout;
+    } else if (profile_ != nullptr && !profile_matches(profile_->manifest, sensor_)) {
+      quality = SampleQuality::Uncalibrated;
+      reason = SampleReason::InvalidProfile;
     } else if (sensor_ == SensorId::Mq7 &&
                (heater_ == nullptr || !heater_->operational_ready())) {
       quality = SampleQuality::HeaterPhase;

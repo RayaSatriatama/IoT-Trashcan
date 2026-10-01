@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cmath>
+
 #include "acquisition/record.h"
 #include "acquisition/profiles.h"
 
@@ -42,6 +44,10 @@ class Hx711Acquirer final {
     } else if (!result.ok) {
       quality = SampleQuality::Timeout;
       if (reason == SampleReason::None) reason = SampleReason::Timeout;
+    } else if (profile_ != nullptr &&
+               !profile_matches(profile_->manifest, sensor_)) {
+      quality = SampleQuality::Uncalibrated;
+      reason = SampleReason::InvalidProfile;
     } else if (profile_ != nullptr && profile_->manifest.validity == ProfileValidity::Calibrating) {
       quality = SampleQuality::Calibrating;
       reason = SampleReason::InvalidProfile;
@@ -53,7 +59,10 @@ class Hx711Acquirer final {
       reason = SampleReason::DataReady;
       converted.primary_available = true;
       converted.primary_kind = ConvertedKind::Kilograms;
-      converted.primary_value = static_cast<float>(result.counts) / profile_->counts_per_kg;
+      const double net_counts = static_cast<double>(result.counts) -
+                                static_cast<double>(profile_->tare_offset_counts);
+      converted.primary_value = static_cast<float>(net_counts /
+                                                   static_cast<double>(profile_->counts_per_kg));
     }
     return factory_.make(now_us, sensor_, stream_, SampleKind::Hx711Counts,
                          quality, reason, raw, converted,

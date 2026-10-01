@@ -196,6 +196,7 @@ void test_hx711_retains_raw_and_requires_calibration() {
   HxFake source{};
   Hx711Profile profile{};
   profile.manifest.validity = ProfileValidity::Valid;
+  profile.manifest.target_id = static_cast<uint32_t>(ProfileTarget::Hx711Organic);
   profile.counts_per_kg = 1000.0F;
   Hx711Acquirer acquirer(SensorId::Hx711Organic, StreamId::Organic, source,
                          factory, &profile);
@@ -229,6 +230,7 @@ void test_ultrasonic_is_nonblocking_and_rejects_invalid_profile() {
   UltrasonicFake source{};
   UltrasonicProfile invalid{};
   invalid.manifest.validity = ProfileValidity::Valid;
+  invalid.manifest.target_id = static_cast<uint32_t>(ProfileTarget::UltrasonicOrganic);
   invalid.d_empty_mm = 100.0F;
   invalid.d_full_mm = 100.0F;
   UltrasonicAcquirer acquirer(StreamId::Organic, source, factory, &invalid,
@@ -254,6 +256,7 @@ void test_mq_adc_keeps_raw_without_inventing_ppm() {
   MqFake source{};
   MqAdcProfile profile{};
   profile.manifest.validity = ProfileValidity::Valid;
+  profile.manifest.target_id = static_cast<uint32_t>(ProfileTarget::Mq4);
   profile.reference_mv = 3300U;
   profile.full_scale_counts = 4096U;
   profile.divider_numerator = 2U;
@@ -277,6 +280,7 @@ void test_mq7_invalid_heater_phase_keeps_diagnostic_adc_only() {
   MqFake source{};
   MqAdcProfile profile{};
   profile.manifest.validity = ProfileValidity::Valid;
+  profile.manifest.target_id = static_cast<uint32_t>(ProfileTarget::Mq7);
   profile.reference_mv = 3300U;
   profile.full_scale_counts = 4096U;
   profile.divider_numerator = 1U;
@@ -313,6 +317,7 @@ void test_ds18b20_conversion_is_split_and_verified_85c_is_valid() {
   source.result.temperature_centi_c = 8500;
   Ds18b20Profile profile{};
   profile.manifest.validity = ProfileValidity::Valid;
+  profile.manifest.target_id = static_cast<uint32_t>(ProfileTarget::Ds18b20B3);
   profile.has_rom = true;
   profile.rom[0] = 0x28U;
   Ds18b20Acquirer acquirer(source, factory, &profile, 750U);
@@ -363,6 +368,7 @@ void test_ds18b20_crc_failure_is_not_a_temperature() {
   source.result = {true, false, true, 8500};
   Ds18b20Profile profile{};
   profile.manifest.validity = ProfileValidity::Valid;
+  profile.manifest.target_id = static_cast<uint32_t>(ProfileTarget::Ds18b20B3);
   profile.has_rom = true;
   profile.rom[0] = 0x28U;
   Ds18b20Acquirer acquirer(source, factory, &profile, 1U);
@@ -383,6 +389,7 @@ void test_sht31_crc_failure_preserves_failure_reason() {
   source.result = {true, false, 2500, 6000};
   Sht31Profile profile{};
   profile.manifest.validity = ProfileValidity::Valid;
+  profile.manifest.target_id = static_cast<uint32_t>(ProfileTarget::Sht31_45);
   profile.address = 0x45U;
   Sht31Acquirer acquirer(0x45U, StreamId::Ambient, source, factory, &profile);
   SampleRecord record{};
@@ -406,6 +413,18 @@ void test_acquisition_memory_footprint_is_bounded() {
   UnityPrintNumber(static_cast<int>(sizeof(CooperativeScheduler)));
   UnityPrint(" AcquisitionFoundation=");
   UnityPrintNumber(static_cast<int>(sizeof(AcquisitionFoundation)));
+  UnityPrint(" TargetGraph=");
+  UnityPrintNumber(static_cast<int>(sizeof(TargetAcquisitionGraph)));
+  UnityPrint(" TargetAcquisition=");
+  UnityPrintNumber(static_cast<int>(sizeof(TargetAcquisition)));
+  UnityPrint(" Hx711Profile=");
+  UnityPrintNumber(static_cast<int>(sizeof(Hx711Profile)));
+  UnityPrint(" UltrasonicProfile=");
+  UnityPrintNumber(static_cast<int>(sizeof(UltrasonicProfile)));
+  UnityPrint(" MqAdcProfile=");
+  UnityPrintNumber(static_cast<int>(sizeof(MqAdcProfile)));
+  UnityPrint(" Mq7HeaterProfile=");
+  UnityPrintNumber(static_cast<int>(sizeof(Mq7HeaterProfile)));
   UnityPrint("\\n");
   TEST_ASSERT_LESS_OR_EQUAL_UINT(512U, sizeof(SampleRecord));
   TEST_ASSERT_LESS_OR_EQUAL_UINT(16U * sizeof(SampleRecord) + 64U,
@@ -422,6 +441,7 @@ void test_sht31_keeps_temperature_and_humidity_independent() {
   source.result.humidity_centi_pct = 6000;
   Sht31Profile profile{};
   profile.manifest.validity = ProfileValidity::Valid;
+  profile.manifest.target_id = static_cast<uint32_t>(ProfileTarget::Sht31_44);
   profile.address = 0x44U;
   Sht31Acquirer acquirer(0x44U, StreamId::Organic, source, factory, &profile);
   SampleRecord record{};

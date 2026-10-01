@@ -1,10 +1,12 @@
 #pragma once
 
+#include "acquisition/clock.h"
 #include "acquisition/heater.h"
 #include "acquisition/sensors/mq_adc.h"
 
 #ifdef ARDUINO
 #include <Arduino.h>
+#include <esp_timer.h>
 #endif
 
 namespace sigap::acquisition {
@@ -12,7 +14,12 @@ namespace sigap::acquisition {
 #ifdef ARDUINO
 class ArduinoMonotonicClock final {
  public:
-  uint64_t now_us() const noexcept { return static_cast<uint64_t>(micros()); }
+  // ESP-IDF exposes a signed 64-bit monotonic microsecond counter. This avoids
+  // the 32-bit rollover of the Arduino microsecond counter in scheduling.
+  uint64_t now_us() const noexcept {
+    const int64_t value = esp_timer_get_time();
+    return value < 0 ? 0U : static_cast<uint64_t>(value);
+  }
 };
 
 class ArduinoHeaterRail final : public IMq7HeaterRail {

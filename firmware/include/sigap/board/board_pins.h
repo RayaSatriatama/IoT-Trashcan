@@ -75,6 +75,7 @@ constexpr bool is_reserved_pin(uint8_t pin) {
 }
 
 constexpr bool uses_reserved_pin(const BoardPins& pins) {
+  // cppcheck-suppress useStlAlgorithm
   for (const uint8_t pin : pin_values(pins)) {
     if (is_reserved_pin(pin)) {
       return true;

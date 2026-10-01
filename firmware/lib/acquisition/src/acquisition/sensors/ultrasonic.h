@@ -1,5 +1,7 @@
 #pragma once
 
+#include <algorithm>
+
 #include "acquisition/record.h"
 #include "acquisition/profiles.h"
 
@@ -63,18 +65,32 @@ class UltrasonicAcquirer final {
     ConvertedObservation converted{};
     SampleQuality quality{SampleQuality::Timeout};
     SampleReason reason{SampleReason::Timeout};
+    const SensorId sensor = stream_ == StreamId::Inorganic
+                                ? SensorId::UltrasonicInorganic
+                                : (stream_ == StreamId::B3 ? SensorId::UltrasonicB3
+                                                           : SensorId::UltrasonicOrganic);
     if (result.status == UltrasonicEchoStatus::Ready) {
       raw.present = true;
       raw.distance_us = result.echo_us;
-      if (profile_ != nullptr && profile_->valid_for_conversion()) {
+      if (profile_ != nullptr && !profile_matches(profile_->manifest, sensor)) {
+        quality = SampleQuality::Uncalibrated;
+        reason = SampleReason::InvalidProfile;
+      } else if (profile_ != nullptr && profile_->valid_for_conversion()) {
         const float distance_mm = static_cast<float>(result.echo_us) * profile_->echo_mm_per_us;
-        quality = SampleQuality::Ready;
-        reason = SampleReason::DataReady;
-        converted.primary_available = true;
-        converted.primary_kind = ConvertedKind::FillPercent;
-        const float ratio = (profile_->d_empty_mm - distance_mm) /
-                            (profile_->d_empty_mm - profile_->d_full_mm);
-        converted.primary_value = ratio * 100.0F;
+        const float minimum_allowed = profile_->d_full_mm - profile_->overshoot_tolerance_mm;
+        const float maximum_allowed = profile_->d_empty_mm + profile_->overshoot_tolerance_mm;
+        if (distance_mm < minimum_allowed || distance_mm > maximum_allowed) {
+          quality = SampleQuality::OutOfRange;
+          reason = SampleReason::OutOfRange;
+        } else {
+          quality = SampleQuality::Ready;
+          reason = SampleReason::DataReady;
+          converted.primary_available = true;
+          converted.primary_kind = ConvertedKind::FillPercent;
+          const float ratio = (profile_->d_empty_mm - distance_mm) /
+                              (profile_->d_empty_mm - profile_->d_full_mm);
+          converted.primary_value = std::clamp(ratio * 100.0F, 0.0F, 100.0F);
+        }
       } else {
         quality = SampleQuality::Uncalibrated;
         reason = SampleReason::InvalidProfile;
@@ -87,10 +103,6 @@ class UltrasonicAcquirer final {
       reason = SampleReason::Disconnected;
     }
     active_ = false;
-    const SensorId sensor = stream_ == StreamId::Inorganic
-                                ? SensorId::UltrasonicInorganic
-                                : (stream_ == StreamId::B3 ? SensorId::UltrasonicB3
-                                                           : SensorId::UltrasonicOrganic);
     return factory_.make(now_us, sensor, stream_,
                          SampleKind::UltrasonicEcho, quality, reason, raw, converted,
                          profile_ == nullptr ? ProfileRef{} : profile_->ref(), out);

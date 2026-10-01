@@ -39,7 +39,14 @@ class Sht31Acquirer final {
     } else if (!result.crc_valid) {
       quality = SampleQuality::CrcError;
       reason = SampleReason::CrcError;
-    } else if (profile_ == nullptr || !profile_->valid_for_conversion()) {
+    } else if (profile_ != nullptr &&
+               !profile_matches(profile_->manifest,
+                                address_ == 0x45U ? SensorId::Sht31_45
+                                                  : SensorId::Sht31_44)) {
+      quality = SampleQuality::Uncalibrated;
+      reason = SampleReason::InvalidProfile;
+    } else if (profile_ == nullptr || !profile_->valid_for_conversion() ||
+               profile_->address != address_) {
       quality = SampleQuality::Uncalibrated;
       reason = SampleReason::InvalidProfile;
     } else {
