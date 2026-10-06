@@ -85,6 +85,10 @@ The earlier `PSRAM_SIZE_MISMATCH` diagnostic was therefore caused by using an
 allocator metric as physical identity, not by changing the N16R8 acceptance
 contract.
 
+After this corrected-image reboot, native maintenance still reported
+`mode=RUN`, configuration version `1` with the same nonzero hash, and
+`hx711_organic` profile version `2` as `ACTIVE` with a present profile hash.
+
 Task 3 telemetry tests in the firmware native suite continue to pass. The
 committed cross-language golden values remain:
 
