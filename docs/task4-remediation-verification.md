@@ -42,7 +42,8 @@ hardware-in-the-loop evidence that still requires physical references.
 | Check | Result |
 | --- | --- |
 | Native PlatformIO tests | 164/164 passed |
-| ASan/UBSan focused native tests | 42/42 passed |
+| ASan/UBSan focused native tests | 42/42 passed in the prior remediation run; changed board-memory path smoke-tested fresh |
+| Changed board-memory API ASan/UBSan smoke | Passed |
 | cppcheck (`--fail-on-defect=low`) | No defects found |
 | `sigap_n16r8` | Success, RAM 41,368 B, flash 365,985 B |
 | `sigap_n16r8_sd` | Success, RAM 41,368 B, flash 365,985 B |
