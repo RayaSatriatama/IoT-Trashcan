@@ -6,8 +6,8 @@ Branch: `feat/firmware-maintenance-calibration`
 Starting revision for this bounded remediation: `f1d1efd42682ad49a70c9c6617b39eddc3f50a2b`
 
 This report records the Task 4 maintenance and calibration remediation. It
-does not claim sensor calibration accuracy or hardware-in-the-loop validation
-where the board could not be flashed.
+separates successful upload evidence from native USB maintenance and sensor
+hardware-in-the-loop evidence that remains unavailable.
 
 ## Implemented remediation
 
@@ -88,6 +88,13 @@ mass erase; esptool identified an ESP32-S3 rev v0.2 with 8 MiB embedded PSRAM,
 verified every flash hash, and reset through RTS. No credential operation was
 performed.
 
+The official ESP32-S3-DevKitC-1 hardware guide documents two separate USB
+connectors: the USB-to-UART port used here for upload, and the ESP32-S3 USB
+port used for native USB 1.1/JTAG communication. The firmware reserves
+GPIO19/20 for USB D-/D+. No second native USB device appeared in the host
+inventory after reset. Reference: Espressif's [ESP32-S3-DevKitC-1 v1.1
+hardware guide](https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32s3/esp32-s3-devkitc-1/user_guide_v1.1.html).
+
 Consequently there are no truthful serial logs or on-device observations for
 this run. HIL status:
 
@@ -113,6 +120,10 @@ native `Serial` connection state when firmware runs in native USB mode, but no
 native USB device appeared after reset and the bridge produced no runtime
 maintenance response. Physical disconnect acceptance remains unresolved until
 the native USB port is connected and accessible.
+
+Required next physical action: connect a data-capable USB cable to the board
+connector labeled `USB` or `ESP32-S3 USB`, not the `USB-to-UART` connector.
+Then identify the newly enumerated VID/PID and stable path before opening it.
 
 ## Resource audit
 
