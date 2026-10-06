@@ -1,6 +1,6 @@
 # Task 4 remediation verification
 
-Date: 2026-10-06  
+Date: 2026-10-07
 Repository: `RayaSatriatama/IoT-Trashcan`  
 Branch: `feat/firmware-maintenance-calibration`  
 Starting revision for this bounded remediation: `f1d1efd42682ad49a70c9c6617b39eddc3f50a2b`
@@ -63,13 +63,14 @@ committed cross-language golden values remain:
 
 ## Go and schema verification
 
-The repository contains the maintained Go JSON Schema validator and the
-telemetry conformance tests. The current environment has no `go` executable,
-so `go test ./internal/telemetry/...`, `go test ./...`, and `go vet ./...`
-could not be executed. Python parsing confirmed all 14 schema files are valid
-JSON. The frozen manifest still contains 24 valid and 36 invalid fixtures.
-Semantic Go schema execution remains BLOCKED until Go is available.
-No dependency was changed to manufacture a pass.
+The official Go 1.27.1 Linux amd64 archive was verified against SHA-256
+`63d339f0da5ab53635a56f2490a7984dfe12dfcff22ad749f63edaf590168445` and
+installed in the user-owned `/home/raya/.local/opt/go1.27.1` directory. With
+that exact executable, `go test ./internal/telemetry/...`, `go test ./...`, and
+`go vet ./...` all passed. Semantic schema tests compiled all 14 schemas,
+accepted all 24 valid fixtures, and rejected all 36 invalid fixtures with the
+expected validator outcomes. The frozen record and exact-body golden hashes
+also passed. No repository dependency or module file was changed.
 
 ## Hardware inventory and HIL boundary
 
@@ -80,36 +81,38 @@ The connected USB interface was detected as:
 - VID:PID: `1a86:55d3`
 - USB serial: `5A84003000`
 
-The interface is owned by `root:uucp` with mode `0660`; the current user is
-not a member of `uucp`. A non-destructive upload attempt built the corrected
-`sigap_n16r8` image successfully but failed before opening the device with
-`Permission denied`. No group membership, device permission, mass erase, or
-credential operation was performed.
+The interface is owned by `root:uucp` with mode `0660`. The user was added to
+`uucp`, and a fresh `newgrp uucp` process verified read/write open access. The
+corrected `sigap_n16r8` image uploaded successfully through this bridge without
+mass erase; esptool identified an ESP32-S3 rev v0.2 with 8 MiB embedded PSRAM,
+verified every flash hash, and reset through RTS. No credential operation was
+performed.
 
 Consequently there are no truthful serial logs or on-device observations for
 this run. HIL status:
 
 | HIL case | Status | Reason |
 | --- | --- | --- |
-| Physical maintenance command/response | BLOCKED | Firmware could not be uploaded/accessed |
-| Config commit and reboot persistence | BLOCKED | Same access boundary |
-| Complete non-repeating profile export | BLOCKED | Same access boundary |
-| Import finish leaves active unchanged | BLOCKED | Same access boundary |
-| Explicit profile validate/preview/commit | BLOCKED | Same access boundary |
-| Connected sensor calibration evidence | BLOCKED | No serial/runtime access and no known references supplied |
-| CALIBRATING with unrelated channels alive | BLOCKED | No serial/runtime access |
-| Non-heater update preserves acquisition | BLOCKED | No serial/runtime access |
+| Corrected firmware upload | PASS | External bridge opened in fresh `uucp` process; flash hashes verified |
+| Physical maintenance command/response | BLOCKED | Native ESP32 USB Serial/JTAG interface is not visible |
+| Config commit and reboot persistence | BLOCKED | Maintenance transport is unavailable on the visible bridge |
+| Complete non-repeating profile export | BLOCKED | Native maintenance transport unavailable |
+| Import finish leaves active unchanged | BLOCKED | Native maintenance transport unavailable |
+| Explicit profile validate/preview/commit | BLOCKED | Native maintenance transport unavailable |
+| Connected sensor calibration evidence | BLOCKED | Native maintenance transport unavailable; no approved references supplied |
+| CALIBRATING with unrelated channels alive | BLOCKED | Native maintenance transport unavailable |
+| Non-heater update preserves acquisition | BLOCKED | Native maintenance transport unavailable |
 | MQ7 ADC/HEATER coexistence | NOT TESTED | Sensor/heater setup not established |
-| USB inactivity timeout | BLOCKED | No serial/runtime access |
-| USB disconnect cancellation | BLOCKED | Native boundary covered; physical signal unavailable |
+| USB inactivity timeout | BLOCKED | Native maintenance transport unavailable |
+| USB disconnect cancellation | BLOCKED | Native boundary covered; native USB connection signal unavailable |
 | Physical NVS power-cut recovery | NOT TESTED | No controlled power-cut fixture |
 
-The detected device is an external USB-UART bridge, not the ESP32-S3 native
-USB maintenance interface. The target adapter now reports the native
-`Serial` connection state when the firmware is running in native USB mode, but
-that signal was not exercised because the board could not be opened. Physical
-disconnect acceptance remains unresolved until the native USB port is
-accessible.
+The detected device is an external USB-UART bridge used for upload. It is not
+the ESP32-S3 native USB maintenance interface. The target adapter reports the
+native `Serial` connection state when firmware runs in native USB mode, but no
+native USB device appeared after reset and the bridge produced no runtime
+maintenance response. Physical disconnect acceptance remains unresolved until
+the native USB port is connected and accessible.
 
 ## Resource audit
 
