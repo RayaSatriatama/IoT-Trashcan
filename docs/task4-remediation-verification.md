@@ -6,8 +6,8 @@ Branch: `feat/firmware-maintenance-calibration`
 Starting revision for this bounded remediation: `f1d1efd42682ad49a70c9c6617b39eddc3f50a2b`
 
 This report records the Task 4 maintenance and calibration remediation. It
-separates successful upload evidence from native USB maintenance and sensor
-hardware-in-the-loop evidence that remains unavailable.
+separates automated evidence, native USB maintenance evidence, and sensor
+hardware-in-the-loop evidence that still requires physical references.
 
 ## Implemented remediation
 
@@ -72,9 +72,9 @@ accepted all 24 valid fixtures, and rejected all 36 invalid fixtures with the
 expected validator outcomes. The frozen record and exact-body golden hashes
 also passed. No repository dependency or module file was changed.
 
-## Hardware inventory and HIL boundary
+## Hardware inventory and HIL evidence
 
-The connected USB interface was detected as:
+The earlier upload interface was detected as:
 
 - port: `/dev/ttyACM0`
 - stable path: `/dev/serial/by-id/usb-1a86_USB_Single_Serial_5A84003000-if00`
@@ -88,42 +88,79 @@ mass erase; esptool identified an ESP32-S3 rev v0.2 with 8 MiB embedded PSRAM,
 verified every flash hash, and reset through RTS. No credential operation was
 performed.
 
-The official ESP32-S3-DevKitC-1 hardware guide documents two separate USB
-connectors: the USB-to-UART port used here for upload, and the ESP32-S3 USB
-port used for native USB 1.1/JTAG communication. The firmware reserves
-GPIO19/20 for USB D-/D+. No second native USB device appeared in the host
-inventory after reset. Reference: Espressif's [ESP32-S3-DevKitC-1 v1.1
-hardware guide](https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32s3/esp32-s3-devkitc-1/user_guide_v1.1.html).
+The native maintenance interface is now connected and accessible:
 
-Consequently there are no truthful serial logs or on-device observations for
-this run. HIL status:
+- port: `/dev/ttyACM0`
+- stable path: `/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_98:A3:16:F5:C1:50-if00`
+- VID:PID: `303a:1001`
+- USB serial identity: `98:A3:16:F5:C1:50`
+- access: `PASS` from a fresh `uucp` process
+
+The official ESP32-S3-DevKitC-1 hardware guide documents separate USB-to-UART
+and ESP32-S3 USB connectors. The firmware reserves GPIO19/20 for native USB
+D-/D+. Reference: Espressif's [ESP32-S3-DevKitC-1 v1.1 hardware
+guide](https://docs.espressif.com/projects/esp-dev-kits/en/latest/esp32s3/esp32-s3-devkitc-1/user_guide_v1.1.html).
+
+Native `status` returned:
+
+```text
+mode=MAINTENANCE
+config_version=0
+config_hash=0000000000000000000000000000000000000000000000000000000000000000
+```
+
+This was the factory draft/bootstrap state. `config draft start` was rejected
+because the bootstrap draft already existed. The unchanged factory draft then
+passed `config validate`, `config preview`, and `config commit`.
+Before reboot, status remained `config_version=0` with the zero hash and
+reported `REBOOT_REQUIRED`. The explicit reboot response was received before
+reset. After reboot:
+
+```text
+mode=RUN
+config_version=1
+config_hash=8872dc3107056e6ec4f0c1502e078454092fda2c2cf87e1db45d571841d9e540
+```
+
+The same configuration identity was returned by `config active`, proving
+activation after reboot rather than hot reload.
+
+The boot log also reported:
+
+```text
+[SIGAP] board memory flash=16777216 bytes psram_present=true psram=8386295 bytes status=PSRAM_SIZE_MISMATCH
+[SIGAP] BOARD_MEMORY_MISMATCH expected_flash=16777216 expected_psram=8388608
+```
+
+This is an observed runtime diagnostic and remains a hardware/profile
+acceptance gap. No firmware change was made to weaken the identity check.
+
+Native maintenance HIL status:
 
 | HIL case | Status | Reason |
 | --- | --- | --- |
-| Corrected firmware upload | PASS | External bridge opened in fresh `uucp` process; flash hashes verified |
-| Physical maintenance command/response | BLOCKED | Native ESP32 USB Serial/JTAG interface is not visible |
-| Config commit and reboot persistence | BLOCKED | Maintenance transport is unavailable on the visible bridge |
-| Complete non-repeating profile export | BLOCKED | Native maintenance transport unavailable |
-| Import finish leaves active unchanged | BLOCKED | Native maintenance transport unavailable |
-| Explicit profile validate/preview/commit | BLOCKED | Native maintenance transport unavailable |
-| Connected sensor calibration evidence | BLOCKED | Native maintenance transport unavailable; no approved references supplied |
-| CALIBRATING with unrelated channels alive | BLOCKED | Native maintenance transport unavailable |
-| Non-heater update preserves acquisition | BLOCKED | Native maintenance transport unavailable |
-| MQ7 ADC/HEATER coexistence | NOT TESTED | Sensor/heater setup not established |
-| USB inactivity timeout | BLOCKED | Native maintenance transport unavailable |
-| USB disconnect cancellation | BLOCKED | Native boundary covered; native USB connection signal unavailable |
+| Corrected firmware upload | PASS | Earlier bridge upload and flash hash verification passed |
+| Native maintenance status | PASS | `303a:1001`, fresh `uucp` access, response `mode=MAINTENANCE` |
+| Config validate/preview/commit | PASS | Factory draft committed without changing runtime before reboot |
+| Config persistence after reboot | PASS | Version 1 and nonzero hash reloaded; mode `RUN` |
+| Complete non-repeating profile export | PASS | HX711 profile exported in bounded frames: 163 bytes, matching hash `09c724...bb57` |
+| Import finish leaves active unchanged | PASS | Import finish staged `DRAFT`; activation required explicit validation/preview/commit |
+| Explicit profile validate/preview/commit | PASS | HX711 profile version 2 became `ACTIVE` only after explicit steps |
+| Profile persistence after reboot | PASS | HX711 profile version 2 remained `ACTIVE` after controlled reboot |
+| Calibration start/cancel before criteria | PASS | `hx711_organic` bound locally; cancel returned `calibration_active=false` |
+| USB inactivity timeout | PASS | 305-second idle observation expired the session without another command |
+| Physical USB disconnect cancellation | BLOCKED | Host CDC close did not emulate cable removal; physical unplug/reconnect still required |
+| Connected sensor calibration evidence | BLOCKED | No documented physical references or sensor evidence supplied |
+| CALIBRATING with unrelated channels alive | BLOCKED | Sensor evidence and acquisition observation unavailable through maintenance output |
+| Non-heater update preserves acquisition | BLOCKED | No observable connected sensor/acquisition evidence |
+| MQ7 ADC/HEATER coexistence | NOT TESTED | Heater wiring and approved timing profile not established |
 | Physical NVS power-cut recovery | NOT TESTED | No controlled power-cut fixture |
 
-The detected device is an external USB-UART bridge used for upload. It is not
-the ESP32-S3 native USB maintenance interface. The target adapter reports the
-native `Serial` connection state when firmware runs in native USB mode, but no
-native USB device appeared after reset and the bridge produced no runtime
-maintenance response. Physical disconnect acceptance remains unresolved until
-the native USB port is connected and accessible.
-
-Required next physical action: connect a data-capable USB cable to the board
-connector labeled `USB` or `ESP32-S3 USB`, not the `USB-to-UART` connector.
-Then identify the newly enumerated VID/PID and stable path before opening it.
+The QinHeng bridge and native Espressif interface are separate transport paths.
+The current firmware maintenance adapter uses native `Serial`; bridge runtime
+commands are not evidence for this HIL. Physical disconnect acceptance still
+requires unplugging the native USB cable while a calibration or transfer is
+active, then reconnecting and verifying the safe state.
 
 ## Resource audit
 
