@@ -114,13 +114,16 @@ class MaintenanceParser final {
  public:
   MaintenanceParser() noexcept = default;
 
+  // Discard a partial line on transport loss. This also zeroizes sensitive
+  // bytes that may have been buffered before a reconnect.
+  void reset() noexcept;
+
   // Emits one event only when a complete line or rejected oversized line is
   // received. Input may be fragmented across calls.
   bool consume(char byte, ParseEvent& event) noexcept;
 
  private:
   bool emit_line(ParseEvent& event) noexcept;
-  void reset() noexcept;
 
   std::array<char, kMaxCommandLineBytes + 1U> line_{};
   std::size_t size_{0U};

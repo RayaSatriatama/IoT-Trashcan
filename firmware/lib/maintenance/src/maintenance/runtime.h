@@ -39,6 +39,7 @@ class ArduinoUsbTransport final : public IMaintenanceTransport {
   bool available() noexcept override;
   int read() noexcept override;
   bool write(std::string_view value) noexcept override;
+  bool connected() noexcept override;
 };
 
 class ArduinoRebootController final : public IRebootController {
@@ -64,6 +65,8 @@ class NullRebootController final : public IRebootController {
 class CommandRouter final : public IMaintenanceCommandSink,
                             public acquisition::ICalibrationStateProvider {
  public:
+  static constexpr uint64_t kTransferTimeoutUs{300000000ULL};
+
   CommandRouter(config::ConfigManager& config,
                 provisioning::SecretStore& secrets,
                 acquisition::ProfileManager* profiles = nullptr,
@@ -140,6 +143,7 @@ class CommandRouter final : public IMaintenanceCommandSink,
   bool transfer_expected_hash_present_{false};
   bool transfer_import_active_{false};
   bool transfer_export_active_{false};
+  bool transfer_draft_active_{false};
   uint64_t transfer_last_activity_us_{0U};
   DeviceMode mode_{DeviceMode::ConfigRequired};
 };

@@ -96,10 +96,16 @@ void CalibrationEvidenceCache::observe(
                             sample.raw.heater_ready, sample.raw.present && sample.raw.identity_valid};
       break;
     case acquisition::SampleKind::Ds18b20:
-      observation = Ds18b20Trial{sample.raw.temperature_centi_c, sample.quality,
-                                 sample.raw.identity_valid,
-                                 sample.raw.conversion_complete,
-                                 sample.raw.crc_valid};
+      {
+        Ds18b20Trial trial{};
+        trial.temperature_centi_c = sample.raw.temperature_centi_c;
+        trial.quality = sample.quality;
+        trial.raw_present = sample.raw.present;
+        trial.rom_match = sample.raw.identity_valid;
+        trial.conversion_complete = sample.raw.conversion_complete;
+        trial.crc_valid = sample.raw.crc_valid;
+        observation = trial;
+      }
       break;
     case acquisition::SampleKind::Sht31:
       observation = Sht31Trial{sample.raw.temperature_centi_c,
@@ -308,6 +314,36 @@ bool CalibrationSession::start(CalibrationTarget target,
   primary_ = CaptureStats{};
   secondary_ = CaptureStats{};
   validation_ = ValidationResult{};
+  return true;
+}
+
+bool CalibrationSession::begin(CalibrationTarget target,
+                               uint64_t now_us) noexcept {
+  if (state_ != CalibrationState::Idle) return false;
+  target_ = target;
+  started_at_us_ = now_us;
+  last_activity_us_ = now_us;
+  secondary_required_ = target == CalibrationTarget::Hx711Organic ||
+                        target == CalibrationTarget::Hx711Inorganic ||
+                        target == CalibrationTarget::Hx711B3 ||
+                        target == CalibrationTarget::UltrasonicOrganic ||
+                        target == CalibrationTarget::UltrasonicInorganic ||
+                        target == CalibrationTarget::UltrasonicB3;
+  state_ = CalibrationState::Configuring;
+  failure_ = CalibrationFailure::None;
+  primary_ = CaptureStats{};
+  secondary_ = CaptureStats{};
+  validation_ = ValidationResult{};
+  return true;
+}
+
+bool CalibrationSession::configure(const CaptureCriteria& criteria,
+                                   uint64_t now_us) noexcept {
+  if (state_ != CalibrationState::Configuring ||
+      !criteria_valid(criteria)) return false;
+  criteria_ = criteria;
+  if (now_us >= last_activity_us_) last_activity_us_ = now_us;
+  state_ = CalibrationState::Capture;
   return true;
 }
 

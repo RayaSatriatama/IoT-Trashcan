@@ -370,7 +370,10 @@ MaintenancePollStats MaintenanceService::poll(std::uint64_t now_us) noexcept {
   MaintenancePollStats stats{};
   sink_.poll(now_us);
   const bool connected = transport_.connected();
-  if (connected_last_ && !connected) sink_.transport_lost();
+  if (connected_last_ && !connected) {
+    parser_.reset();
+    sink_.transport_lost();
+  }
   connected_last_ = connected;
   while (transport_.available() && stats.bytes_read < kMaxBytesPerPoll) {
     const int value = transport_.read();

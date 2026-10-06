@@ -156,7 +156,7 @@ struct DsReader final : IDs18b20Reader {
   bool request_ok{true};
   uint32_t request_calls{0U};
   bool ready{true};
-  Ds18b20ReadResult result{true, true, true, 8500};
+  Ds18b20ReadResult result{true, true, true, 8500, true, true};
 
   bool request_conversion() noexcept override {
     ++request_calls;

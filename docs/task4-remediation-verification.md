@@ -3,7 +3,7 @@
 Date: 2026-10-06  
 Repository: `RayaSatriatama/IoT-Trashcan`  
 Branch: `feat/firmware-maintenance-calibration`  
-Starting revision: `5f3a5331cf28be399b5b7473b317e80d8a7826b5`
+Starting revision for this bounded remediation: `f1d1efd42682ad49a70c9c6617b39eddc3f50a2b`
 
 This report records the Task 4 maintenance and calibration remediation. It
 does not claim sensor calibration accuracy or hardware-in-the-loop validation
@@ -27,25 +27,33 @@ where the board could not be flashed.
 - Acquisition attempts keep immutable profile snapshots. Non-heater changes do
   not reset unrelated acquisition; heater profile changes take effect at a
   safe cycle boundary and can recover from a missing-profile fault.
-- USB profile transfer is bounded and non-repeating. Import finish only stages
-  a draft; validate, preview, and commit are explicit commands. Polling now
-  evaluates idle timeout and disconnect cancellation.
+- USB profile transfer is bounded and non-repeating. Import chunks are bound to
+  the active transfer context, including offset and size checks. Import finish
+  only stages a draft; validate, preview, and commit are explicit commands.
+  Polling now evaluates idle timeout, transport loss, parser reset, and draft
+  cancellation. The real router workflow is covered for both SHT31 addresses.
+- DS18B20 evidence now carries independently verified ROM identity, conversion
+  completion, and scratchpad CRC state. Calibration maps these fields by name,
+  preventing aggregate-initializer drift. Calibration start enters an explicit
+  Configuring state bound to the requested target before criteria are supplied.
 
 ## Fresh automated verification
 
 | Check | Result |
 | --- | --- |
-| Native PlatformIO tests | 151/151 passed |
-| ASan/UBSan focused native tests | 32/32 passed |
+| Native PlatformIO tests | 162/162 passed |
+| ASan/UBSan focused native tests | 42/42 passed |
 | cppcheck (`--fail-on-defect=low`) | No defects found |
-| `sigap_n16r8` | Success, RAM 41,368 B, flash 365,209 B |
-| `sigap_n16r8_sd` | Success, RAM 41,368 B, flash 365,209 B |
-| `sigap_bench` | Success, RAM 41,368 B, flash 365,209 B |
+| `sigap_n16r8` | Success, RAM 41,368 B, flash 365,729 B |
+| `sigap_n16r8_sd` | Success, RAM 41,368 B, flash 365,729 B |
+| `sigap_bench` | Success, RAM 41,368 B, flash 365,729 B |
 | `git diff --check` | Clean |
 
 The native suite covers metadata corruption and staged-slot recovery, physical
 CALIBRATING evidence, anchor sequencing, provenance hashing, immutable profile
-snapshots, profile transfer parsing, idle polling, and disconnect notification.
+snapshots, DS18B20 identity evidence, profile transfer parsing, complete
+HX711 and SHT31 import workflows, idle polling, parser reset, and disconnect
+notification.
 
 Task 3 telemetry tests in the firmware native suite continue to pass. The
 committed cross-language golden values remain:
@@ -96,8 +104,12 @@ this run. HIL status:
 | USB disconnect cancellation | BLOCKED | Native boundary covered; physical signal unavailable |
 | Physical NVS power-cut recovery | NOT TESTED | No controlled power-cut fixture |
 
-The Arduino USB transport currently has no reliable DTR/connection signal, so
-the native disconnect seam is the available evidence for that boundary.
+The detected device is an external USB-UART bridge, not the ESP32-S3 native
+USB maintenance interface. The target adapter now reports the native
+`Serial` connection state when the firmware is running in native USB mode, but
+that signal was not exercised because the board could not be opened. Physical
+disconnect acceptance remains unresolved until the native USB port is
+accessible.
 
 ## Resource audit
 
@@ -108,9 +120,12 @@ Native sizes printed by the acquisition test are:
 - `TargetAcquisitionGraph`: 4,408 B
 - `AcquisitionFoundation`: 8,888 B
 - profile sizes: HX711 200 B, ultrasonic 208 B, MQ ADC 200 B, MQ7 heater
-  208 B, DS18B20 200 B
+  208 B, DS18B20 200 B, SHT31 200 B
 - `ProfileActivationMetadata`: 96 B in the native representation; the
   serialized NVS envelope is 113 B per copy
+- `MaintenanceParser`/`MaintenanceResponse`/`CommandRouter` remain within the
+  existing bounded native footprint assertions. The additional SHT31 workflow
+  test adds no runtime allocation.
 
 The fixed transfer/parser/response buffers remain bounded. No new unbounded
 allocation was introduced. Hardware stack high-water and heap measurements

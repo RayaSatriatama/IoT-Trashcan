@@ -1,5 +1,6 @@
 #include <array>
 #include <cstdint>
+#include <variant>
 
 #include <unity.h>
 
@@ -135,6 +136,118 @@ void test_calibrating_quality_accepts_only_physical_evidence() {
   TEST_ASSERT_EQUAL_UINT32(1U, session.stats().count);
 }
 
+void test_evidence_cache_maps_ds18b20_physical_flags_without_drift() {
+  CalibrationEvidenceCache cache{};
+  SampleRecord sample{};
+  sample.header.sensor = SensorId::Ds18b20B3;
+  sample.header.kind = SampleKind::Ds18b20;
+  sample.header.sequence = 1U;
+  sample.quality = SampleQuality::Calibrating;
+  sample.raw.present = true;
+  sample.raw.identity_valid = true;
+  sample.raw.conversion_complete = true;
+  sample.raw.crc_valid = true;
+  sample.raw.temperature_centi_c = 2350;
+  cache.observe(sample);
+
+  TrialObservation observation{};
+  uint64_t sequence{0U};
+  TEST_ASSERT_TRUE(cache.latest(CalibrationTarget::Ds18b20B3, 0U,
+                               observation, sequence));
+  const auto& trial = std::get<Ds18b20Trial>(observation);
+  TEST_ASSERT_TRUE(trial.raw_present);
+  TEST_ASSERT_TRUE(trial.rom_match);
+  TEST_ASSERT_TRUE(trial.conversion_complete);
+  TEST_ASSERT_TRUE(trial.crc_valid);
+
+  CalibrationSession session{};
+  TEST_ASSERT_TRUE(session.start(CalibrationTarget::Ds18b20B3,
+                                 Ds18b20CaptureCriteria{1U, 10, true}, 0U));
+  TEST_ASSERT_TRUE(session.observe(observation));
+  TEST_ASSERT_TRUE(session.validate());
+
+  sample.header.sequence = 2U;
+  sample.raw.present = false;
+  cache.observe(sample);
+  TEST_ASSERT_TRUE(cache.latest(CalibrationTarget::Ds18b20B3, 1U,
+                                observation, sequence));
+  TEST_ASSERT_FALSE(std::get<Ds18b20Trial>(observation).raw_present);
+}
+
+void test_evidence_cache_keeps_sht31_addresses_and_crc_fields_independent() {
+  CalibrationEvidenceCache cache{};
+  SampleRecord organic{};
+  organic.header.sensor = SensorId::Sht31_44;
+  organic.header.kind = SampleKind::Sht31;
+  organic.header.sequence = 1U;
+  organic.quality = SampleQuality::Calibrating;
+  organic.raw.present = true;
+  organic.raw.temperature_crc_valid = true;
+  organic.raw.humidity_crc_valid = false;
+  cache.observe(organic);
+
+  SampleRecord b3 = organic;
+  b3.header.sensor = SensorId::Sht31_45;
+  b3.header.sequence = 2U;
+  b3.raw.temperature_crc_valid = false;
+  b3.raw.humidity_crc_valid = true;
+  cache.observe(b3);
+
+  TrialObservation observation{};
+  uint64_t sequence{0U};
+  TEST_ASSERT_TRUE(cache.latest(CalibrationTarget::Sht31_44, 0U,
+                               observation, sequence));
+  const auto& organic_trial = std::get<Sht31Trial>(observation);
+  TEST_ASSERT_TRUE(organic_trial.temperature_crc_valid);
+  TEST_ASSERT_FALSE(organic_trial.humidity_crc_valid);
+  TEST_ASSERT_TRUE(cache.latest(CalibrationTarget::Sht31_45, 0U,
+                               observation, sequence));
+  const auto& b3_trial = std::get<Sht31Trial>(observation);
+  TEST_ASSERT_FALSE(b3_trial.temperature_crc_valid);
+  TEST_ASSERT_TRUE(b3_trial.humidity_crc_valid);
+}
+
+void test_evidence_cache_rejects_each_ds18b20_physical_failure() {
+  for (uint8_t failure = 0U; failure < 4U; ++failure) {
+    CalibrationEvidenceCache cache{};
+    SampleRecord sample{};
+    sample.header.sensor = SensorId::Ds18b20B3;
+    sample.header.kind = SampleKind::Ds18b20;
+    sample.header.sequence = 1U;
+    sample.quality = SampleQuality::Calibrating;
+    sample.raw.present = true;
+    sample.raw.identity_valid = true;
+    sample.raw.conversion_complete = true;
+    sample.raw.crc_valid = true;
+    if (failure == 0U) sample.raw.present = false;
+    if (failure == 1U) sample.raw.identity_valid = false;
+    if (failure == 2U) sample.raw.conversion_complete = false;
+    if (failure == 3U) sample.raw.crc_valid = false;
+    cache.observe(sample);
+
+    TrialObservation observation{};
+    uint64_t sequence{0U};
+    TEST_ASSERT_TRUE(cache.latest(CalibrationTarget::Ds18b20B3, 0U,
+                                 observation, sequence));
+    CalibrationSession session{};
+    TEST_ASSERT_TRUE(session.start(CalibrationTarget::Ds18b20B3,
+                                   Ds18b20CaptureCriteria{1U, 10, true}, 0U));
+    TEST_ASSERT_FALSE(session.observe(observation));
+  }
+}
+
+void test_configuration_phase_binds_target_and_expires_without_criteria() {
+  CalibrationSession session{};
+  TEST_ASSERT_TRUE(session.begin(CalibrationTarget::Ds18b20B3, 100U));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CalibrationState::Configuring),
+                        static_cast<int>(session.state()));
+  TEST_ASSERT_FALSE(session.start(CalibrationTarget::Hx711Organic,
+                                  Hx711CaptureCriteria{1U, 1}, 100U));
+  TEST_ASSERT_TRUE(session.tick(100U + CalibrationSession::kSessionTimeoutUs + 1U));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CalibrationState::Failed),
+                        static_cast<int>(session.state()));
+}
+
 void test_profile_validation_helpers_do_not_invent_calibration() {
   Hx711Profile hx{};
   hx.manifest.validity = ProfileValidity::Valid;
@@ -186,6 +299,10 @@ void setup() {
   RUN_TEST(test_cancel_after_failed_session_returns_idle);
   RUN_TEST(test_protocol_trials_require_actual_evidence);
   RUN_TEST(test_calibrating_quality_accepts_only_physical_evidence);
+  RUN_TEST(test_evidence_cache_maps_ds18b20_physical_flags_without_drift);
+  RUN_TEST(test_evidence_cache_keeps_sht31_addresses_and_crc_fields_independent);
+  RUN_TEST(test_evidence_cache_rejects_each_ds18b20_physical_failure);
+  RUN_TEST(test_configuration_phase_binds_target_and_expires_without_criteria);
   RUN_TEST(test_profile_validation_helpers_do_not_invent_calibration);
   UNITY_END();
 }

@@ -11,6 +11,7 @@ struct Ds18b20ReadResult {
   bool conversion_complete{false};
   int32_t temperature_centi_c{0};
   bool resolution_matches{true};
+  bool identity_valid{false};
 };
 
 enum class DsChannelState : uint8_t {
@@ -118,7 +119,7 @@ class Ds18b20Acquirer final {
     const Ds18b20Profile* active_profile = snapshot_present_ ? &snapshot_ : profile_;
     RawObservation raw{};
     raw.present = result.present;
-    raw.identity_valid = result.resolution_matches;
+    raw.identity_valid = result.identity_valid;
     raw.crc_valid = result.crc_valid;
     raw.conversion_complete = result.conversion_complete;
     raw.temperature_centi_c = result.temperature_centi_c;
@@ -134,6 +135,9 @@ class Ds18b20Acquirer final {
     } else if (!result.conversion_complete) {
       quality = SampleQuality::Timeout;
       reason = SampleReason::ConversionPending;
+    } else if (!result.identity_valid) {
+      quality = SampleQuality::Uncalibrated;
+      reason = SampleReason::InvalidProfile;
     } else if (!result.resolution_matches) {
       quality = SampleQuality::Uncalibrated;
       reason = SampleReason::InvalidProfile;

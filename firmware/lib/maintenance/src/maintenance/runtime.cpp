@@ -161,6 +161,13 @@ bool ArduinoUsbTransport::write(std::string_view value) noexcept {
                       value.size()) == value.size();
 }
 
+bool ArduinoUsbTransport::connected() noexcept {
+  // With ARDUINO_USB_MODE=1 this reports the native ESP32-S3 USB
+  // Serial/JTAG connection. An external USB-UART bridge does not provide
+  // this signal and is intentionally not treated as native maintenance USB.
+  return static_cast<bool>(Serial);
+}
+
 void ArduinoRebootController::request_reboot() noexcept {
   // Defer the actual reset until the application has flushed the response
   // produced by MaintenanceService.  Calling ESP.restart() here can truncate
@@ -181,6 +188,12 @@ bool CommandRouter::calibration_target_from_text(
 }
 
 void CommandRouter::refresh_mode() noexcept {
+  const auto calibration_state = calibration_.state();
+  if (calibration_state != calibration::CalibrationState::Idle &&
+      calibration_state != calibration::CalibrationState::Failed) {
+    mode_ = DeviceMode::Calibrating;
+    return;
+  }
   switch (config_.state()) {
     case config::ConfigState::Active: mode_ = DeviceMode::Run; break;
     case config::ConfigState::RebootRequired: mode_ = DeviceMode::RebootRequired; break;
@@ -288,14 +301,8 @@ CommandStatus CommandRouter::execute_config(const MaintenanceCommand& command,
 
 bool CommandRouter::is_calibrating(acquisition::SensorId sensor) const noexcept {
   const auto state = calibration_.state();
-  if (state != calibration::CalibrationState::Idle &&
-      state != calibration::CalibrationState::Failed &&
-      state != calibration::CalibrationState::Capture &&
-      state != calibration::CalibrationState::Validate &&
-      state != calibration::CalibrationState::Preview &&
-      state != calibration::CalibrationState::Commit) {
-    return false;
-  }
+  if (state == calibration::CalibrationState::Idle ||
+      state == calibration::CalibrationState::Failed) return false;
   acquisition::SensorId expected = acquisition::SensorId::Hx711Organic;
   switch (calibration_.target()) {
     case calibration::CalibrationTarget::Hx711Organic: expected = acquisition::SensorId::Hx711Organic; break;
@@ -312,24 +319,22 @@ bool CommandRouter::is_calibrating(acquisition::SensorId sensor) const noexcept 
     case calibration::CalibrationTarget::Sht31_44: expected = acquisition::SensorId::Sht31_44; break;
     case calibration::CalibrationTarget::Sht31_45: expected = acquisition::SensorId::Sht31_45; break;
   }
-  if (state == calibration::CalibrationState::Failed) return false;
-  if (state == calibration::CalibrationState::Idle) {
-    return mode_ == DeviceMode::Calibrating && sensor == expected;
-  }
   return sensor == expected;
 }
 
 void CommandRouter::cancel_profile_transfer() noexcept {
-  if (profiles_ != nullptr && transfer_import_active_) {
+  if (profiles_ != nullptr && transfer_draft_active_) {
     (void)profiles_->cancel(transfer_key_);
   }
   transfer_import_active_ = false;
   transfer_export_active_ = false;
+  transfer_draft_active_ = false;
   transfer_expected_hash_present_ = false;
   transfer_expected_size_ = 0U;
   transfer_received_size_ = 0U;
   transfer_export_offset_ = 0U;
   transfer_last_activity_us_ = 0U;
+  transfer_profile_ = acquisition::EncodedProfile{};
 }
 
 void CommandRouter::poll(uint64_t now_us) noexcept {
@@ -338,8 +343,7 @@ void CommandRouter::poll(uint64_t now_us) noexcept {
     evidence_sequence_ = 0U;
     mode_ = DeviceMode::Maintenance;
   }
-  constexpr uint64_t kTransferTimeoutUs{300000000ULL};
-  if ((transfer_import_active_ || transfer_export_active_) &&
+  if ((transfer_import_active_ || transfer_export_active_ || transfer_draft_active_) &&
       now_us >= transfer_last_activity_us_ &&
       now_us - transfer_last_activity_us_ > kTransferTimeoutUs) {
     cancel_profile_transfer();
@@ -347,7 +351,7 @@ void CommandRouter::poll(uint64_t now_us) noexcept {
 }
 
 void CommandRouter::transport_lost() noexcept {
-  (void)calibration_.cancel();
+  calibration_.abort();
   criteria_set_ = false;
   evidence_sequence_ = 0U;
   cancel_profile_transfer();
@@ -511,14 +515,13 @@ CommandStatus CommandRouter::profile_transfer(
     transfer_received_size_ = 0U;
     transfer_profile_ = acquisition::EncodedProfile{};
     transfer_import_active_ = true;
-    transfer_last_activity_us_ = 0U;
     return CommandStatus::Accepted;
   }
   if (command.kind == CommandKind::ProfileImportChunk) {
     if (!transfer_import_active_) return CommandStatus::Rejected;
     if (command.has_numeric &&
         command.numeric_value != static_cast<int64_t>(transfer_received_size_)) {
-      transfer_import_active_ = false;
+      cancel_profile_transfer();
       return CommandStatus::InvalidSyntax;
     }
     std::size_t written{0U};
@@ -526,7 +529,7 @@ CommandStatus CommandRouter::profile_transfer(
     if (command.value.view().empty() ||
         !decode_hex(command.value.view(), chunk_bytes.data(), chunk_bytes.size(), written) ||
         transfer_received_size_ + written > transfer_expected_size_) {
-      transfer_import_active_ = false;
+      cancel_profile_transfer();
       return CommandStatus::InvalidSyntax;
     }
     std::copy_n(chunk_bytes.data(), written,
@@ -538,26 +541,28 @@ CommandStatus CommandRouter::profile_transfer(
     acquisition::ProfileKey finish_key{};
     if (!profile_key_from_text(command.target, finish_key) ||
         !(finish_key == transfer_key_)) {
-      transfer_import_active_ = false;
+      cancel_profile_transfer();
       return CommandStatus::InvalidSyntax;
     }
     if (!transfer_import_active_ || transfer_received_size_ != transfer_expected_size_) {
-      transfer_import_active_ = false;
+      cancel_profile_transfer();
       return CommandStatus::Rejected;
     }
     transfer_profile_.size = transfer_received_size_;
     transfer_import_active_ = false;
     if (!transfer_expected_hash_present_ ||
         transfer_profile_.hash() != transfer_expected_hash_) {
-      transfer_expected_hash_present_ = false;
+      cancel_profile_transfer();
       return CommandStatus::Rejected;
     }
     transfer_expected_hash_present_ = false;
     // Finish only stages a draft. Validation, preview, and activation are
     // explicit commands so an import cannot change runtime state implicitly.
     if (!profiles_->stage_import(transfer_key_, transfer_profile_)) {
+      cancel_profile_transfer();
       return CommandStatus::Rejected;
     }
+    transfer_draft_active_ = true;
     return CommandStatus::Accepted;
   }
   return CommandStatus::Rejected;
@@ -573,6 +578,9 @@ CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
     profiles_->set_audit_context(now_us, current_config);
   }
   refresh_mode();
+  if (command.kind == CommandKind::ProfileImportBegin) {
+    cancel_profile_transfer();
+  }
   if (command.kind == CommandKind::ProfileExport ||
       command.kind == CommandKind::ProfileImportBegin ||
       command.kind == CommandKind::ProfileImportChunk ||
@@ -619,6 +627,7 @@ CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
     case CommandKind::CalibrationStart: {
       calibration::CalibrationTarget target{};
       if (!calibration_target_from_text(command.target, target)) return CommandStatus::InvalidSyntax;
+      if (!calibration_.begin(target, now_us)) return CommandStatus::Rejected;
       pending_target_ = target;
       criteria_set_ = false;
       criteria_samples_ = 0U;
@@ -717,13 +726,14 @@ CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
                                                      criteria_temperature_span_,
                                                      criteria_humidity_span_};
       }
-      if (!calibration_.start(pending_target_, criteria, now_us)) return CommandStatus::Rejected;
+      if (!calibration_.configure(criteria, now_us)) return CommandStatus::Rejected;
       criteria_set_ = true;
       return CommandStatus::Accepted;
     }
     case CommandKind::CalibrationStatus:
       if (!response.append("calibration_active=") ||
-          !response.append(calibration_.state() == calibration::CalibrationState::Idle
+          !response.append((calibration_.state() == calibration::CalibrationState::Idle ||
+                            calibration_.state() == calibration::CalibrationState::Failed)
                                ? "false\n" : "true\n")) return CommandStatus::Failed;
       return CommandStatus::Accepted;
     case CommandKind::CalibrationCapture: {
@@ -774,11 +784,17 @@ CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
     case CommandKind::ProfileRollback:
     case CommandKind::ProfileReset: {
       if (profiles_ == nullptr) return CommandStatus::Rejected;
+      if (command.kind == CommandKind::ProfileImportChunk) {
+        if (!transfer_import_active_) return CommandStatus::Rejected;
+        return profile_transfer(command, response);
+      }
       acquisition::ProfileKey key{};
       if (!profile_key_from_text(command.target, key)) return CommandStatus::InvalidSyntax;
+      if (transfer_draft_active_ && key == transfer_key_) {
+        transfer_last_activity_us_ = now_us;
+      }
       if (command.kind == CommandKind::ProfileExport ||
           command.kind == CommandKind::ProfileImportBegin ||
-          command.kind == CommandKind::ProfileImportChunk ||
           command.kind == CommandKind::ProfileImportFinish) {
         return profile_transfer(command, response);
       }
@@ -805,13 +821,22 @@ CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
         return profiles_->preview(key) ? CommandStatus::Accepted : CommandStatus::Rejected;
       }
       if (command.kind == CommandKind::ProfileCommit) {
-        return profiles_->commit(key) ? CommandStatus::Accepted : CommandStatus::Rejected;
+        if (!profiles_->commit(key)) return CommandStatus::Rejected;
+        if (transfer_draft_active_ && key == transfer_key_) {
+          transfer_draft_active_ = false;
+          transfer_profile_ = acquisition::EncodedProfile{};
+        }
+        return CommandStatus::Accepted;
       }
       if (command.kind == CommandKind::ProfileRollback) {
-        return profiles_->rollback(key) ? CommandStatus::Accepted : CommandStatus::Rejected;
+        if (!profiles_->rollback(key)) return CommandStatus::Rejected;
+        if (transfer_draft_active_ && key == transfer_key_) cancel_profile_transfer();
+        return CommandStatus::Accepted;
       }
       if (command.kind == CommandKind::ProfileReset) {
-        return profiles_->reset(key) ? CommandStatus::Accepted : CommandStatus::Rejected;
+        if (!profiles_->reset(key)) return CommandStatus::Rejected;
+        if (transfer_draft_active_ && key == transfer_key_) cancel_profile_transfer();
+        return CommandStatus::Accepted;
       }
       return CommandStatus::Rejected;
     }

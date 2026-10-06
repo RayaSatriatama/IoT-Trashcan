@@ -456,6 +456,8 @@ class TargetDs18b20Reader final : public IDs18b20Reader {
       return false;
     }
 
+    if (!verify_rom_identity()) return false;
+
     Ds18b20Scratchpad scratchpad{};
     if (!read_scratchpad(scratchpad) || !scratchpad.crc_valid) {
       return false;
@@ -515,6 +517,7 @@ class TargetDs18b20Reader final : public IDs18b20Reader {
     result.present = read_scratchpad(scratchpad);
     if (!result.present) return result;
     result.crc_valid = scratchpad.crc_valid;
+    result.identity_valid = verify_rom_identity();
     result.resolution_matches = ds18b20_resolution_matches(
         scratchpad, profile_ != nullptr ? profile_->resolution_bits : 0U);
     result.temperature_centi_c = static_cast<int32_t>(scratchpad.raw_temperature) *
@@ -534,6 +537,15 @@ class TargetDs18b20Reader final : public IDs18b20Reader {
     for (uint8_t& byte : scratchpad) byte = read_byte();
     (void)parse_ds18b20_scratchpad(scratchpad, decoded);
     return true;
+  }
+
+  bool verify_rom_identity() noexcept {
+    if (!expected_rom_valid_ || !reset_presence()) return false;
+
+    write_byte(0x33U);  // READ ROM
+    std::array<uint8_t, 8> rom{};
+    for (uint8_t& byte : rom) byte = read_byte();
+    return ds18b20_crc8(rom.data(), 7U) == rom[7] && rom == expected_rom_;
   }
 
   bool write_scratchpad(uint8_t th, uint8_t tl, uint8_t config) noexcept {

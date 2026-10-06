@@ -17,6 +17,7 @@ namespace sigap::calibration {
 
 enum class CalibrationState : uint8_t {
   Idle,
+  Configuring,
   Capture,
   Validate,
   Preview,
@@ -216,8 +217,10 @@ class CalibrationSession final {
  public:
   CalibrationSession() noexcept = default;
 
+  bool begin(CalibrationTarget target, uint64_t now_us) noexcept;
   bool start(CalibrationTarget target, const CaptureCriteria& criteria,
              uint64_t now_us) noexcept;
+  bool configure(const CaptureCriteria& criteria, uint64_t now_us) noexcept;
   bool observe(const TrialObservation& trial) noexcept;
   bool observe_anchor(const TrialObservation& trial,
                       CalibrationAnchor anchor) noexcept;
