@@ -49,9 +49,8 @@ class AcquisitionFoundation final {
   }
 
   bool refresh_profiles(uint64_t first_due_us) noexcept {
-    (void)first_due_us;
     return enabled_ && config_.runtime_ready() && config_ref_.present &&
-           target_.refresh_profiles();
+           target_.refresh_profiles(first_due_us);
   }
 
   bool enabled() const noexcept { return enabled_; }

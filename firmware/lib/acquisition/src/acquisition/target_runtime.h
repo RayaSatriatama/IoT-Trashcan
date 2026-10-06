@@ -220,11 +220,12 @@ class TargetAcquisitionGraph final {
     calibration_ = provider;
   }
 
-  bool refresh_profiles() noexcept {
+  bool refresh_profiles(uint64_t now_us) noexcept {
     if (!enabled_) return false;
     if (profiles_.heater != nullptr && heater_.has_value()) {
-      heater_->set_profile(*profiles_.heater);
+      heater_->set_profile(*profiles_.heater, now_us);
     }
+    us_gate_.set_minimum_gap(effective_ultrasonic_gap(profiles_.ultrasonic));
     const bool profile_ready =
         profiles_.ds18b20 != nullptr &&
         profiles_.ds18b20->valid_for_acquisition() &&
@@ -238,9 +239,7 @@ class TargetAcquisitionGraph final {
       }
       return true;
     }
-    ds_channel_state_ = readers_.ds18b20->begin()
-                            ? DsChannelState::Ready
-                            : DsChannelState::ProfileApplyFailed;
+    ds_channel_state_ = DsChannelState::Ready;
     if (ds18b20_.has_value()) {
       ds18b20_->rebind_profile(profiles_.ds18b20, ds_channel_state_);
     }
@@ -475,6 +474,11 @@ class TargetDs18b20Reader final : public IDs18b20Reader {
     }
     configured_ = true;
     return true;
+  }
+
+  bool apply_profile(const Ds18b20Profile* profile) noexcept override {
+    set_profile(profile);
+    return begin();
   }
 
   bool request_conversion() noexcept override {
@@ -748,9 +752,8 @@ class TargetAcquisition final {
   }
   void disable() noexcept { graph_.disable(); }
   void poll(uint64_t now_us) noexcept { graph_.poll(now_us); }
-  bool refresh_profiles() noexcept {
-    ds18b20_.set_profile(profiles_.ds18b20);
-    return graph_.refresh_profiles();
+  bool refresh_profiles(uint64_t now_us) noexcept {
+    return graph_.refresh_profiles(now_us);
   }
   void set_sample_observer(ISampleObserver* observer) noexcept {
     graph_.set_sample_observer(observer);

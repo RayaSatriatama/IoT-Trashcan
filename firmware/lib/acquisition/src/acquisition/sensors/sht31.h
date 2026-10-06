@@ -33,12 +33,22 @@ class Sht31Acquirer final {
         profile_(profile), calibration_(calibration) {}
 
   DriverPollStatus poll(uint64_t now_us, SampleRecord& out) noexcept {
+    Sht31Profile attempt_profile{};
+    const Sht31Profile* active_profile = nullptr;
+    if (profile_ != nullptr) {
+      attempt_profile = *profile_;
+      active_profile = &attempt_profile;
+    }
     const Sht31ReadResult result = source_.read(address_);
     if (result.pending) {
       return DriverPollStatus::NoAttempt;
     }
     RawObservation raw{};
     raw.present = result.ok;
+    raw.identity_valid = result.ok;
+    raw.crc_valid = result.crc_valid;
+    raw.temperature_crc_valid = result.temperature_crc_valid;
+    raw.humidity_crc_valid = result.humidity_crc_valid;
     raw.temperature_centi_c = result.temperature_centi_c;
     raw.humidity_centi_pct = result.humidity_centi_pct;
     ConvertedObservation converted{};
@@ -50,19 +60,19 @@ class Sht31Acquirer final {
     } else if (!result.crc_valid) {
       quality = SampleQuality::CrcError;
       reason = SampleReason::CrcError;
+    } else if (active_profile != nullptr &&
+               !profile_matches(active_profile->manifest,
+                                address_ == 0x45U ? SensorId::Sht31_45
+                                                  : SensorId::Sht31_44)) {
+      quality = SampleQuality::Uncalibrated;
+      reason = SampleReason::InvalidProfile;
     } else if (calibration_ != nullptr &&
                calibration_->is_calibrating(address_ == 0x45U ? SensorId::Sht31_45
                                                               : SensorId::Sht31_44)) {
       quality = SampleQuality::Calibrating;
       reason = SampleReason::InvalidProfile;
-    } else if (profile_ != nullptr &&
-               !profile_matches(profile_->manifest,
-                                address_ == 0x45U ? SensorId::Sht31_45
-                                                  : SensorId::Sht31_44)) {
-      quality = SampleQuality::Uncalibrated;
-      reason = SampleReason::InvalidProfile;
-    } else if (profile_ == nullptr || !profile_->valid_for_conversion() ||
-               profile_->address != address_) {
+    } else if (active_profile == nullptr || !active_profile->valid_for_conversion() ||
+               active_profile->address != address_) {
       quality = SampleQuality::Uncalibrated;
       reason = SampleReason::InvalidProfile;
     } else {
@@ -70,15 +80,15 @@ class Sht31Acquirer final {
       reason = SampleReason::DataReady;
       converted.primary_available = true;
       converted.primary_kind = ConvertedKind::Celsius;
-      converted.primary_value = static_cast<float>(result.temperature_centi_c + profile_->temperature_offset_centi_c) / 100.0F;
+      converted.primary_value = static_cast<float>(result.temperature_centi_c + active_profile->temperature_offset_centi_c) / 100.0F;
       converted.secondary_available = true;
       converted.secondary_kind = ConvertedKind::HumidityPercent;
-      converted.secondary_value = static_cast<float>(result.humidity_centi_pct + profile_->humidity_offset_centi_pct) / 100.0F;
+      converted.secondary_value = static_cast<float>(result.humidity_centi_pct + active_profile->humidity_offset_centi_pct) / 100.0F;
     }
     const SensorId sensor = address_ == 0x45U ? SensorId::Sht31_45 : SensorId::Sht31_44;
     return factory_.make(now_us, sensor, stream_, SampleKind::Sht31,
                          quality, reason, raw, converted,
-                         profile_ == nullptr ? ProfileRef{} : profile_->ref(), out);
+                         active_profile == nullptr ? ProfileRef{} : active_profile->ref(), out);
   }
 
  private:

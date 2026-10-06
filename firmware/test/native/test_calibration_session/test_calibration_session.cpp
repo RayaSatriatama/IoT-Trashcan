@@ -34,6 +34,14 @@ void test_hx711_session_requires_explicit_stability_criteria() {
   TEST_ASSERT_TRUE(session.observe(Hx711Trial{1000, SampleQuality::Ready}));
   TEST_ASSERT_TRUE(session.observe(Hx711Trial{1002, SampleQuality::Ready}));
   TEST_ASSERT_TRUE(session.observe(Hx711Trial{1004, SampleQuality::Ready}));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CalibrationState::Capture),
+                        static_cast<int>(session.state()));
+  TEST_ASSERT_TRUE(session.observe_anchor(Hx711Trial{1500, SampleQuality::Ready},
+                                          CalibrationAnchor::Reference));
+  TEST_ASSERT_TRUE(session.observe_anchor(Hx711Trial{1502, SampleQuality::Ready},
+                                          CalibrationAnchor::Reference));
+  TEST_ASSERT_TRUE(session.observe_anchor(Hx711Trial{1504, SampleQuality::Ready},
+                                          CalibrationAnchor::Reference));
   TEST_ASSERT_EQUAL_INT(static_cast<int>(CalibrationState::Validate),
                         static_cast<int>(session.state()));
   TEST_ASSERT_TRUE(session.validate());
@@ -49,6 +57,12 @@ void test_unstable_capture_does_not_preview_or_change_active_profile() {
   TEST_ASSERT_TRUE(session.observe(Hx711Trial{1000, SampleQuality::Ready}));
   TEST_ASSERT_TRUE(session.observe(Hx711Trial{1004, SampleQuality::Ready}));
   TEST_ASSERT_TRUE(session.observe(Hx711Trial{1005, SampleQuality::Ready}));
+  TEST_ASSERT_TRUE(session.observe_anchor(Hx711Trial{1200, SampleQuality::Ready},
+                                          CalibrationAnchor::Reference));
+  TEST_ASSERT_TRUE(session.observe_anchor(Hx711Trial{1204, SampleQuality::Ready},
+                                          CalibrationAnchor::Reference));
+  TEST_ASSERT_TRUE(session.observe_anchor(Hx711Trial{1205, SampleQuality::Ready},
+                                          CalibrationAnchor::Reference));
   TEST_ASSERT_FALSE(session.validate());
   TEST_ASSERT_EQUAL_INT(static_cast<int>(CalibrationState::Validate),
                         static_cast<int>(session.state()));
@@ -110,6 +124,17 @@ void test_protocol_trials_require_actual_evidence() {
   TEST_ASSERT_TRUE(session.validate());
 }
 
+void test_calibrating_quality_accepts_only_physical_evidence() {
+  CalibrationSession session{};
+  TEST_ASSERT_TRUE(session.start(CalibrationTarget::Mq4,
+                                 MqCaptureCriteria{1U, 10U, false}, 0U));
+  TEST_ASSERT_FALSE(session.observe(MqTrial{100U, SampleQuality::Calibrating,
+                                            true, false}));
+  TEST_ASSERT_TRUE(session.observe(MqTrial{100U, SampleQuality::Calibrating,
+                                           true, true}));
+  TEST_ASSERT_EQUAL_UINT32(1U, session.stats().count);
+}
+
 void test_profile_validation_helpers_do_not_invent_calibration() {
   Hx711Profile hx{};
   hx.manifest.validity = ProfileValidity::Valid;
@@ -160,6 +185,7 @@ void setup() {
   RUN_TEST(test_commit_is_external_and_active_profile_is_untouched);
   RUN_TEST(test_cancel_after_failed_session_returns_idle);
   RUN_TEST(test_protocol_trials_require_actual_evidence);
+  RUN_TEST(test_calibrating_quality_accepts_only_physical_evidence);
   RUN_TEST(test_profile_validation_helpers_do_not_invent_calibration);
   UNITY_END();
 }

@@ -66,6 +66,9 @@ enum class CommandKind : std::uint8_t {
   ProfileImportBegin,
   ProfileImportChunk,
   ProfileImportFinish,
+  ProfileValidate,
+  ProfilePreview,
+  ProfileCommit,
   ProfileRollback,
   ProfileReset,
   Reboot,
@@ -154,6 +157,7 @@ class IMaintenanceTransport {
   virtual bool available() noexcept = 0;
   virtual int read() noexcept = 0;
   virtual bool write(std::string_view value) noexcept = 0;
+  virtual bool connected() noexcept { return true; }
 };
 
 class IMaintenanceCommandSink {
@@ -162,6 +166,8 @@ class IMaintenanceCommandSink {
   virtual CommandStatus execute(const MaintenanceCommand& command,
                                 std::uint64_t now_us,
                                 MaintenanceResponse& response) noexcept = 0;
+  virtual void poll(std::uint64_t) noexcept {}
+  virtual void transport_lost() noexcept {}
 };
 
 struct MaintenancePollStats final {
@@ -191,6 +197,7 @@ class MaintenanceService final {
   IMaintenanceCommandSink& sink_;
   MaintenanceParser parser_{};
   std::size_t commands_dispatched_{0U};
+  bool connected_last_{true};
 };
 
 }  // namespace sigap::maintenance

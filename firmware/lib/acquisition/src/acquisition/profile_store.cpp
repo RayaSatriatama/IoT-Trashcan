@@ -16,8 +16,6 @@ namespace {
 
 using telemetry_contract::sha256;
 
-constexpr std::size_t kMetadataCoreBytes{76U};
-
 void put_u32_le(uint8_t* bytes, std::size_t offset, uint32_t value) noexcept {
   bytes[offset] = static_cast<uint8_t>(value);
   bytes[offset + 1U] = static_cast<uint8_t>(value >> 8U);
@@ -33,16 +31,20 @@ uint32_t get_u32_le(const uint8_t* bytes, std::size_t offset) noexcept {
 }
 
 config::ConfigHash metadata_integrity(const ProfileActivationMetadata& metadata) noexcept {
-  std::array<uint8_t, kMetadataCoreBytes> bytes{};
-  bytes[0] = 1U;
-  bytes[1] = metadata.has_active ? 1U : 0U;
-  bytes[2] = static_cast<uint8_t>(metadata.active_slot);
-  put_u32_le(bytes.data(), 3U, metadata.active_version);
-  std::copy(metadata.active_hash.begin(), metadata.active_hash.end(), bytes.begin() + 7U);
-  bytes[39] = metadata.has_previous ? 1U : 0U;
-  bytes[40] = static_cast<uint8_t>(metadata.previous_slot);
-  put_u32_le(bytes.data(), 41U, metadata.previous_version);
-  std::copy(metadata.previous_hash.begin(), metadata.previous_hash.end(), bytes.begin() + 45U);
+  std::array<uint8_t, kActivationMetadataCoreBytes> bytes{};
+  bytes[0] = kActivationMetadataFormatVersion;
+  put_u32_le(bytes.data(), kActivationMetadataGenerationOffset, metadata.generation);
+  bytes[kActivationMetadataHasActiveOffset] = metadata.has_active ? 1U : 0U;
+  bytes[kActivationMetadataActiveSlotOffset] = static_cast<uint8_t>(metadata.active_slot);
+  put_u32_le(bytes.data(), kActivationMetadataActiveVersionOffset, metadata.active_version);
+  std::copy(metadata.active_hash.begin(), metadata.active_hash.end(),
+            bytes.begin() + kActivationMetadataActiveHashOffset);
+  bytes[kActivationMetadataHasPreviousOffset] = metadata.has_previous ? 1U : 0U;
+  bytes[kActivationMetadataPreviousSlotOffset] = static_cast<uint8_t>(metadata.previous_slot);
+  put_u32_le(bytes.data(), kActivationMetadataPreviousVersionOffset,
+             metadata.previous_version);
+  std::copy(metadata.previous_hash.begin(), metadata.previous_hash.end(),
+            bytes.begin() + kActivationMetadataPreviousHashOffset);
   return sha256(std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
 }
 bool metadata_integrity_valid(const ProfileActivationMetadata& metadata) noexcept {
@@ -87,6 +89,18 @@ class Writer final {
   }
   bool bytes(const uint8_t* source, std::size_t count) noexcept {
     return put(source, count);
+  }
+  bool provenance(const ProfileProvenance& value) noexcept {
+    const auto boot_present = value.boot_id.present ? 1U : 0U;
+    return u8(value.present ? 1U : 0U) && u8(boot_present) &&
+           bytes(value.boot_id.bytes.data(), value.boot_id.bytes.size()) &&
+           u64(value.monotonic_us) && u8(value.recorded_at.available ? 1U : 0U) &&
+           i64(value.recorded_at.epoch_ms) && u8(static_cast<uint8_t>(value.time_quality)) &&
+           i64(value.reference_primary) && i64(value.reference_secondary) &&
+           u32(value.evidence_count) && u64(value.evidence_sequence) &&
+           u8(value.units) &&
+           bytes(reinterpret_cast<const uint8_t*>(value.reference_note.data()),
+                 value.reference_note.size());
   }
   std::size_t offset() const noexcept { return offset_; }
 
@@ -153,7 +167,36 @@ class Reader final {
   bool bytes(uint8_t* destination, std::size_t count) noexcept {
     return get(destination, count);
   }
+  bool provenance(ProfileProvenance& value) noexcept {
+    uint8_t present{0U};
+    uint8_t boot_present{0U};
+    uint8_t recorded{0U};
+    uint8_t time_quality{0U};
+    if (!u8(present) || !u8(boot_present) ||
+        !bytes(value.boot_id.bytes.data(), value.boot_id.bytes.size()) ||
+        !u64(value.monotonic_us) || !u8(recorded) ||
+        !i64(value.recorded_at.epoch_ms) || !u8(time_quality) ||
+        !i64(value.reference_primary) || !i64(value.reference_secondary) ||
+        !u32(value.evidence_count) || !u64(value.evidence_sequence) ||
+        !u8(value.units) ||
+        !bytes(reinterpret_cast<uint8_t*>(value.reference_note.data()),
+               value.reference_note.size())) {
+      return false;
+    }
+    if (present > 1U || boot_present > 1U || recorded > 1U ||
+        time_quality > static_cast<uint8_t>(TimeQuality::Estimated)) {
+      return false;
+    }
+    value.present = present != 0U;
+    value.boot_id.present = boot_present != 0U;
+    value.recorded_at.available = recorded != 0U;
+    value.time_quality = static_cast<TimeQuality>(time_quality);
+    return true;
+  }
   std::size_t offset() const noexcept { return offset_; }
+  std::size_t remaining() const noexcept {
+    return offset_ <= size_ ? size_ - offset_ : 0U;
+  }
 
  private:
   bool get(uint8_t* destination, std::size_t count) noexcept {
@@ -178,6 +221,15 @@ struct ParsedHeader final {
   uint16_t payload_length{0U};
   std::size_t payload_offset{kProfileHeaderBytes};
 };
+
+bool read_optional_provenance(Reader& reader, ProfileProvenance& provenance) noexcept {
+  if (reader.remaining() == 0U) {
+    provenance = ProfileProvenance{};
+    return true;
+  }
+  if (reader.remaining() != kProfileProvenanceBytes) return false;
+  return reader.provenance(provenance);
+}
 
 bool parse_header(const EncodedProfile& encoded, ParsedHeader& header) noexcept {
   if (encoded.size < kProfileHeaderBytes + kProfileHashBytes ||
@@ -311,7 +363,8 @@ bool ProfileCodec::encode(const Hx711Profile& profile,
   Writer writer(output.bytes);
   if (!begin_payload(profile.manifest, ProfileTarget::Unknown,
                      ProfileKind::Calibration, output, writer) ||
-      !writer.f32(profile.counts_per_kg) || !writer.i64(profile.tare_offset_counts)) {
+      !writer.f32(profile.counts_per_kg) || !writer.i64(profile.tare_offset_counts) ||
+      !writer.provenance(profile.manifest.provenance)) {
     return false;
   }
   finish_encoded(output, writer.offset());
@@ -327,7 +380,8 @@ bool ProfileCodec::encode(const UltrasonicProfile& profile,
       !writer.f32(profile.echo_mm_per_us) ||
       !writer.f32(profile.overshoot_tolerance_mm) ||
       !writer.u32(profile.echo_timeout_us) ||
-      !writer.u32(profile.inter_sensor_gap_us)) {
+      !writer.u32(profile.inter_sensor_gap_us) ||
+      !writer.provenance(profile.manifest.provenance)) {
     return false;
   }
   finish_encoded(output, writer.offset());
@@ -341,7 +395,8 @@ bool ProfileCodec::encode(const MqAdcProfile& profile,
                      ProfileKind::Adc, output, writer) ||
       !writer.u32(profile.reference_mv) || !writer.u32(profile.full_scale_counts) ||
       !writer.u32(profile.divider_numerator) ||
-      !writer.u32(profile.divider_denominator)) {
+      !writer.u32(profile.divider_denominator) ||
+      !writer.provenance(profile.manifest.provenance)) {
     return false;
   }
   finish_encoded(output, writer.offset());
@@ -356,11 +411,12 @@ bool ProfileCodec::encode(const Mq7HeaterProfile& profile,
   manifest.target_id = profile.target_id;
   manifest.hash = profile.hash;
   manifest.validity = profile.present ? ProfileValidity::Valid : ProfileValidity::Missing;
+  manifest.provenance = profile.provenance;
   Writer writer(output.bytes);
   if (!begin_payload(manifest, ProfileTarget::Mq7,
                      ProfileKind::Heater, output, writer) ||
       !writer.u64(profile.preheat_us) || !writer.u64(profile.high_clean_us) ||
-      !writer.u64(profile.low_detect_us)) {
+      !writer.u64(profile.low_detect_us) || !writer.provenance(manifest.provenance)) {
     return false;
   }
   finish_encoded(output, writer.offset());
@@ -373,7 +429,8 @@ bool ProfileCodec::encode(const Ds18b20Profile& profile,
   if (!begin_payload(profile.manifest, ProfileTarget::Unknown,
                      ProfileKind::Calibration, output, writer) ||
       !writer.u8(profile.has_rom ? 1U : 0U) || !writer.bytes(profile.rom.data(), profile.rom.size()) ||
-      !writer.u8(profile.resolution_bits) || !writer.i32(profile.offset_centi_c)) {
+      !writer.u8(profile.resolution_bits) || !writer.i32(profile.offset_centi_c) ||
+      !writer.provenance(profile.manifest.provenance)) {
     return false;
   }
   finish_encoded(output, writer.offset());
@@ -386,7 +443,8 @@ bool ProfileCodec::encode(const Sht31Profile& profile,
   if (!begin_payload(profile.manifest, ProfileTarget::Unknown,
                      ProfileKind::Calibration, output, writer) ||
       !writer.u8(profile.address) || !writer.i32(profile.temperature_offset_centi_c) ||
-      !writer.i32(profile.humidity_offset_centi_pct)) {
+      !writer.i32(profile.humidity_offset_centi_pct) ||
+      !writer.provenance(profile.manifest.provenance)) {
     return false;
   }
   finish_encoded(output, writer.offset());
@@ -402,6 +460,7 @@ bool ProfileCodec::decode(const EncodedProfile& encoded,
       h.target < ProfileTarget::Hx711Organic || h.target > ProfileTarget::Hx711B3) return false;
   Reader reader(encoded.bytes.data() + h.payload_offset, h.payload_length);
   return reader.f32(output.counts_per_kg) && reader.i64(output.tare_offset_counts) &&
+         read_optional_provenance(reader, output.manifest.provenance) &&
          reader.offset() == h.payload_length;
 }
 
@@ -415,6 +474,7 @@ bool ProfileCodec::decode(const EncodedProfile& encoded,
   return reader.f32(output.d_empty_mm) && reader.f32(output.d_full_mm) &&
          reader.f32(output.echo_mm_per_us) && reader.f32(output.overshoot_tolerance_mm) &&
          reader.u32(output.echo_timeout_us) && reader.u32(output.inter_sensor_gap_us) &&
+         read_optional_provenance(reader, output.manifest.provenance) &&
          reader.offset() == h.payload_length;
 }
 
@@ -427,6 +487,7 @@ bool ProfileCodec::decode(const EncodedProfile& encoded,
   Reader reader(encoded.bytes.data() + h.payload_offset, h.payload_length);
   return reader.u32(output.reference_mv) && reader.u32(output.full_scale_counts) &&
          reader.u32(output.divider_numerator) && reader.u32(output.divider_denominator) &&
+         read_optional_provenance(reader, output.manifest.provenance) &&
          reader.offset() == h.payload_length;
 }
 
@@ -438,7 +499,9 @@ bool ProfileCodec::decode(const EncodedProfile& encoded,
       h.target != ProfileTarget::Mq7) return false;
   Reader reader(encoded.bytes.data() + h.payload_offset, h.payload_length);
   if (!reader.u64(output.preheat_us) || !reader.u64(output.high_clean_us) ||
-      !reader.u64(output.low_detect_us) || reader.offset() != h.payload_length) {
+      !reader.u64(output.low_detect_us) ||
+      !read_optional_provenance(reader, output.provenance) ||
+      reader.offset() != h.payload_length) {
     return false;
   }
   const auto hash = encoded.hash();
@@ -459,10 +522,10 @@ bool ProfileCodec::decode(const EncodedProfile& encoded,
   Reader reader(encoded.bytes.data() + h.payload_offset, h.payload_length);
   uint8_t has_rom{0U};
   if (!reader.u8(has_rom) || !reader.bytes(output.rom.data(), output.rom.size()) ||
-      !reader.u8(output.resolution_bits) || !reader.i32(output.offset_centi_c) ||
-      reader.offset() != h.payload_length) return false;
+      !reader.u8(output.resolution_bits) || !reader.i32(output.offset_centi_c)) return false;
   output.has_rom = has_rom != 0U;
-  return true;
+  return read_optional_provenance(reader, output.manifest.provenance) &&
+         reader.offset() == h.payload_length;
 }
 
 bool ProfileCodec::decode(const EncodedProfile& encoded,
@@ -473,7 +536,9 @@ bool ProfileCodec::decode(const EncodedProfile& encoded,
       (h.target != ProfileTarget::Sht31_44 && h.target != ProfileTarget::Sht31_45)) return false;
   Reader reader(encoded.bytes.data() + h.payload_offset, h.payload_length);
   return reader.u8(output.address) && reader.i32(output.temperature_offset_centi_c) &&
-         reader.i32(output.humidity_offset_centi_pct) && reader.offset() == h.payload_length;
+         reader.i32(output.humidity_offset_centi_pct) &&
+         read_optional_provenance(reader, output.manifest.provenance) &&
+         reader.offset() == h.payload_length;
 }
 
 bool ProfileCodec::validate(const EncodedProfile& encoded,
@@ -550,38 +615,10 @@ ProfileReadStatus ProfilePersistence::load(ProfileKey key,
                                             EncodedProfile& encoded) const noexcept {
   ProfileActivationMetadata metadata{};
   const auto status = store_.read_activation(key, metadata);
-  if (status == ProfileReadStatus::Error) return status;
-  if (status == ProfileReadStatus::Invalid) {
-    EncodedProfile candidates[2]{};
-    bool valid[2]{false, false};
-    ParsedHeader headers[2]{};
-    for (std::size_t index = 0U; index < 2U; ++index) {
-      const auto slot = index == 0U ? ProfileSlot::A : ProfileSlot::B;
-      valid[index] = store_.read_slot(key, slot, candidates[index]) ==
-                        ProfileReadStatus::Found &&
-                    codec_.validate(candidates[index], key) &&
-                    parse_header(candidates[index], headers[index]);
-    }
-    if (!valid[0] && !valid[1]) return ProfileReadStatus::Invalid;
-    const std::size_t selected = !valid[1] ||
-                                         (valid[0] && headers[0].version >= headers[1].version)
-                                     ? 0U
-                                     : 1U;
-    metadata = ProfileActivationMetadata{};
-    metadata.has_active = true;
-    metadata.active_slot = selected == 0U ? ProfileSlot::A : ProfileSlot::B;
-    metadata.active_version = headers[selected].version;
-    metadata.active_hash = candidates[selected].hash();
-    const std::size_t other = selected == 0U ? 1U : 0U;
-    if (valid[other]) {
-      metadata.has_previous = true;
-      metadata.previous_slot = other == 0U ? ProfileSlot::A : ProfileSlot::B;
-      metadata.previous_version = headers[other].version;
-      metadata.previous_hash = candidates[other].hash();
-    }
-    if (!store_.write_activation(key, metadata)) return ProfileReadStatus::Error;
-    encoded = candidates[selected];
-    return ProfileReadStatus::Found;
+  if (status == ProfileReadStatus::Error || status == ProfileReadStatus::Invalid) {
+    // A valid slot without a valid committed activation record is only a
+    // staged candidate. Never promote it during boot recovery.
+    return status;
   }
   if (status != ProfileReadStatus::Found) return status;
   if (!metadata.has_active) return ProfileReadStatus::NotFound;
@@ -609,7 +646,8 @@ ProfileCommitResult ProfilePersistence::commit(ProfileKey key,
 
   ProfileActivationMetadata old{};
   const auto metadata_status = store_.read_activation(key, old);
-  if (metadata_status == ProfileReadStatus::Error) {
+  if (metadata_status == ProfileReadStatus::Error ||
+      metadata_status == ProfileReadStatus::Invalid) {
     return ProfileCommitResult::ActivationFailed;
   }
 
@@ -654,6 +692,12 @@ ProfileCommitResult ProfilePersistence::commit(ProfileKey key,
   }
 
   ProfileActivationMetadata next{};
+  next.generation = metadata_status == ProfileReadStatus::Found
+                        ? old.generation + (old.generation == UINT32_MAX ? 0U : 1U)
+                        : 1U;
+  if (metadata_status == ProfileReadStatus::Found && old.generation == UINT32_MAX) {
+    return ProfileCommitResult::ActivationFailed;
+  }
   next.has_active = true;
   next.active_slot = destination;
   next.active_version = incoming.version;
@@ -705,7 +749,6 @@ bool ProfilePersistence::reset(ProfileKey key) noexcept {
 #ifdef ARDUINO
 namespace {
 constexpr const char* kProfileNamespace{"sigap_profile"};
-constexpr std::size_t kMetadataBytes{108U};
 
 void profile_key(char* output, std::size_t capacity, ProfileKey key,
                  ProfileSlot slot) noexcept {
@@ -716,11 +759,13 @@ void profile_key(char* output, std::size_t capacity, ProfileKey key,
                 static_cast<unsigned>(key.target));
 }
 
-void metadata_key(char* output, std::size_t capacity, ProfileKey key) noexcept {
+void metadata_key(char* output, std::size_t capacity, ProfileKey key,
+                  std::size_t copy) noexcept {
   const char family = key.kind == ProfileKind::Adc ? 'a' :
                       key.kind == ProfileKind::Heater ? 'h' : 'c';
-  std::snprintf(output, capacity, "m_%c%02u", family,
-                static_cast<unsigned>(key.target));
+  std::snprintf(output, capacity, "m_%c%02u_%u", family,
+                static_cast<unsigned>(key.target),
+                static_cast<unsigned>(copy));
 }
 
 void put_u32(uint8_t* bytes, std::size_t offset, uint32_t value) noexcept {
@@ -738,36 +783,48 @@ uint32_t get_u32(const uint8_t* bytes, std::size_t offset) noexcept {
 }
 
 void encode_metadata(const ProfileActivationMetadata& metadata,
-                     std::array<uint8_t, kMetadataBytes>& bytes) noexcept {
+                     std::array<uint8_t, kActivationMetadataBytes>& bytes) noexcept {
   bytes.fill(0U);
-  bytes[0] = 1U;
-  bytes[1] = metadata.has_active ? 1U : 0U;
-  bytes[2] = static_cast<uint8_t>(metadata.active_slot);
-  put_u32(bytes.data(), 3U, metadata.active_version);
-  std::copy(metadata.active_hash.begin(), metadata.active_hash.end(), bytes.begin() + 7U);
-  bytes[39] = metadata.has_previous ? 1U : 0U;
-  bytes[40] = static_cast<uint8_t>(metadata.previous_slot);
-  put_u32(bytes.data(), 41U, metadata.previous_version);
-  std::copy(metadata.previous_hash.begin(), metadata.previous_hash.end(), bytes.begin() + 45U);
+  bytes[0] = kActivationMetadataFormatVersion;
+  put_u32(bytes.data(), kActivationMetadataGenerationOffset, metadata.generation);
+  bytes[kActivationMetadataHasActiveOffset] = metadata.has_active ? 1U : 0U;
+  bytes[kActivationMetadataActiveSlotOffset] = static_cast<uint8_t>(metadata.active_slot);
+  put_u32(bytes.data(), kActivationMetadataActiveVersionOffset, metadata.active_version);
+  std::copy(metadata.active_hash.begin(), metadata.active_hash.end(),
+            bytes.begin() + kActivationMetadataActiveHashOffset);
+  bytes[kActivationMetadataHasPreviousOffset] = metadata.has_previous ? 1U : 0U;
+  bytes[kActivationMetadataPreviousSlotOffset] = static_cast<uint8_t>(metadata.previous_slot);
+  put_u32(bytes.data(), kActivationMetadataPreviousVersionOffset,
+          metadata.previous_version);
+  std::copy(metadata.previous_hash.begin(), metadata.previous_hash.end(),
+            bytes.begin() + kActivationMetadataPreviousHashOffset);
   const auto integrity = metadata_integrity(metadata);
-  std::copy(integrity.begin(), integrity.end(), bytes.begin() + kMetadataCoreBytes);
+  std::copy(integrity.begin(), integrity.end(),
+            bytes.begin() + kActivationMetadataIntegrityOffset);
 }
 
 bool decode_metadata(const uint8_t* bytes, std::size_t size,
                      ProfileActivationMetadata& metadata) noexcept {
-  if (bytes == nullptr || size != kMetadataBytes || bytes[0] != 1U ||
-      bytes[2] > static_cast<uint8_t>(ProfileSlot::B) ||
-      bytes[40] > static_cast<uint8_t>(ProfileSlot::B)) return false;
+  if (bytes == nullptr || size != kActivationMetadataBytes ||
+      bytes[0] != kActivationMetadataFormatVersion ||
+      bytes[kActivationMetadataActiveSlotOffset] > static_cast<uint8_t>(ProfileSlot::B) ||
+      bytes[kActivationMetadataPreviousSlotOffset] > static_cast<uint8_t>(ProfileSlot::B)) {
+    return false;
+  }
   metadata = ProfileActivationMetadata{};
-  metadata.has_active = bytes[1] != 0U;
-  metadata.active_slot = static_cast<ProfileSlot>(bytes[2]);
-  metadata.active_version = get_u32(bytes, 3U);
-  std::copy_n(bytes + 7U, metadata.active_hash.size(), metadata.active_hash.begin());
-  metadata.has_previous = bytes[39] != 0U;
-  metadata.previous_slot = static_cast<ProfileSlot>(bytes[40]);
-  metadata.previous_version = get_u32(bytes, 41U);
-  std::copy_n(bytes + 45U, metadata.previous_hash.size(), metadata.previous_hash.begin());
-  std::copy_n(bytes + kMetadataCoreBytes, metadata.integrity.size(), metadata.integrity.begin());
+  metadata.generation = get_u32(bytes, kActivationMetadataGenerationOffset);
+  metadata.has_active = bytes[kActivationMetadataHasActiveOffset] != 0U;
+  metadata.active_slot = static_cast<ProfileSlot>(bytes[kActivationMetadataActiveSlotOffset]);
+  metadata.active_version = get_u32(bytes, kActivationMetadataActiveVersionOffset);
+  std::copy_n(bytes + kActivationMetadataActiveHashOffset, metadata.active_hash.size(),
+              metadata.active_hash.begin());
+  metadata.has_previous = bytes[kActivationMetadataHasPreviousOffset] != 0U;
+  metadata.previous_slot = static_cast<ProfileSlot>(bytes[kActivationMetadataPreviousSlotOffset]);
+  metadata.previous_version = get_u32(bytes, kActivationMetadataPreviousVersionOffset);
+  std::copy_n(bytes + kActivationMetadataPreviousHashOffset, metadata.previous_hash.size(),
+              metadata.previous_hash.begin());
+  std::copy_n(bytes + kActivationMetadataIntegrityOffset, metadata.integrity.size(),
+              metadata.integrity.begin());
   return metadata_integrity_valid(metadata);
 }
 }
@@ -783,16 +840,36 @@ ProfileReadStatus NvsProfileStore::read_activation(
   const esp_err_t opened = nvs_open(kProfileNamespace, NVS_READONLY, &handle);
   if (opened == ESP_ERR_NVS_NOT_FOUND) return ProfileReadStatus::NotFound;
   if (opened != ESP_OK) return ProfileReadStatus::Error;
-  char key[12]{};
-  metadata_key(key, sizeof(key), profile_key_id);
-  std::array<uint8_t, kMetadataBytes> bytes{};
-  std::size_t size = bytes.size();
-  const esp_err_t result = nvs_get_blob(handle, key, bytes.data(), &size);
+  ProfileActivationMetadata selected{};
+  bool found = false;
+  bool invalid = false;
+  for (std::size_t copy = 0U; copy < kActivationMetadataCopyCount; ++copy) {
+    char key[16]{};
+    metadata_key(key, sizeof(key), profile_key_id, copy);
+    std::array<uint8_t, kActivationMetadataBytes> bytes{};
+    std::size_t size = bytes.size();
+    const esp_err_t result = nvs_get_blob(handle, key, bytes.data(), &size);
+    if (result == ESP_ERR_NVS_NOT_FOUND) continue;
+    if (result != ESP_OK) {
+      nvs_close(handle);
+      return ProfileReadStatus::Error;
+    }
+    ProfileActivationMetadata candidate{};
+    if (!decode_metadata(bytes.data(), size, candidate)) {
+      invalid = true;
+      continue;
+    }
+    if (!found || candidate.generation > selected.generation) {
+      selected = candidate;
+      found = true;
+    }
+  }
   nvs_close(handle);
-  if (result == ESP_ERR_NVS_NOT_FOUND) return ProfileReadStatus::NotFound;
-  if (result != ESP_OK) return ProfileReadStatus::Error;
-  return decode_metadata(bytes.data(), size, metadata) ? ProfileReadStatus::Found
-                                                       : ProfileReadStatus::Invalid;
+  if (found) {
+    metadata = selected;
+    return ProfileReadStatus::Found;
+  }
+  return invalid ? ProfileReadStatus::Invalid : ProfileReadStatus::NotFound;
 }
 
 ProfileReadStatus NvsProfileStore::read_slot(
@@ -845,10 +922,50 @@ bool NvsProfileStore::write_activation(
     ProfileKey profile_key_id, const ProfileActivationMetadata& metadata) noexcept {
   nvs_handle_t handle{};
   if (nvs_open(kProfileNamespace, NVS_READWRITE, &handle) != ESP_OK) return false;
-  char key[12]{};
-  metadata_key(key, sizeof(key), profile_key_id);
-  std::array<uint8_t, kMetadataBytes> bytes{};
-  encode_metadata(metadata, bytes);
+  // Write a new metadata copy while retaining the previous committed copy.
+  std::size_t destination = 0U;
+  uint32_t generation = metadata.generation;
+  uint32_t newest_generation = 0U;
+  std::size_t newest_copy = 0U;
+  bool have_existing = false;
+  for (std::size_t copy = 0U; copy < kActivationMetadataCopyCount; ++copy) {
+    char existing_key[16]{};
+    metadata_key(existing_key, sizeof(existing_key), profile_key_id, copy);
+    std::array<uint8_t, kActivationMetadataBytes> existing_bytes{};
+    std::size_t size = existing_bytes.size();
+    const esp_err_t result = nvs_get_blob(handle, existing_key, existing_bytes.data(), &size);
+    if (result == ESP_OK) {
+      ProfileActivationMetadata existing{};
+      if (decode_metadata(existing_bytes.data(), size, existing)) {
+        if (!have_existing || existing.generation > newest_generation) {
+          newest_generation = existing.generation;
+          newest_copy = copy;
+          have_existing = true;
+        }
+      }
+    } else if (result != ESP_ERR_NVS_NOT_FOUND) {
+      nvs_close(handle);
+      return false;
+    }
+  }
+  if (generation == UINT32_MAX) {
+    nvs_close(handle);
+    return false;
+  }
+  if (have_existing) {
+    generation = std::max(generation, newest_generation);
+    if (generation == UINT32_MAX) {
+      nvs_close(handle);
+      return false;
+    }
+    destination = newest_copy == 0U ? 1U : 0U;
+  }
+  ProfileActivationMetadata to_write = metadata;
+  to_write.generation = generation + 1U;
+  char key[16]{};
+  metadata_key(key, sizeof(key), profile_key_id, destination);
+  std::array<uint8_t, kActivationMetadataBytes> bytes{};
+  encode_metadata(to_write, bytes);
   const esp_err_t result = nvs_set_blob(handle, key, bytes.data(), bytes.size());
   const esp_err_t committed = result == ESP_OK ? nvs_commit(handle) : result;
   nvs_close(handle);
@@ -913,10 +1030,25 @@ ProfileReadStatus MemoryProfileStore::read_activation(
     return ProfileReadStatus::Error;
   }
   const auto index = key_index(key);
-  if (!metadata_present_[index]) return ProfileReadStatus::NotFound;
-  metadata = metadata_[index];
-  return metadata_integrity_valid(metadata) ? ProfileReadStatus::Found
-                                            : ProfileReadStatus::Invalid;
+  bool found = false;
+  bool invalid = false;
+  ProfileActivationMetadata selected{};
+  for (std::size_t copy = 0U; copy < kActivationMetadataCopyCount; ++copy) {
+    if (!metadata_present_[index][copy]) continue;
+    if (!metadata_integrity_valid(metadata_[index][copy])) {
+      invalid = true;
+      continue;
+    }
+    if (!found || metadata_[index][copy].generation > selected.generation) {
+      selected = metadata_[index][copy];
+      found = true;
+    }
+  }
+  if (found) {
+    metadata = selected;
+    return ProfileReadStatus::Found;
+  }
+  return invalid ? ProfileReadStatus::Invalid : ProfileReadStatus::NotFound;
 }
 
 ProfileReadStatus MemoryProfileStore::read_slot(ProfileTarget target, ProfileSlot slot,
@@ -971,9 +1103,30 @@ bool MemoryProfileStore::write_activation(
     return false;
   }
   const auto index = key_index(key);
-  metadata_[index] = metadata;
-  metadata_[index].integrity = metadata_integrity(metadata_[index]);
-  metadata_present_[index] = true;
+  std::size_t destination = 0U;
+  uint32_t generation = metadata.generation;
+  bool found = false;
+  uint32_t newest_generation = 0U;
+  std::size_t newest_copy = 0U;
+  for (std::size_t copy = 0U; copy < kActivationMetadataCopyCount; ++copy) {
+    if (!metadata_present_[index][copy] || !metadata_integrity_valid(metadata_[index][copy])) {
+      continue;
+    }
+    found = true;
+    if (!found || metadata_[index][copy].generation > newest_generation) {
+      newest_generation = metadata_[index][copy].generation;
+      newest_copy = copy;
+    }
+  }
+  if (found) {
+    generation = std::max(generation, newest_generation);
+    if (generation == UINT32_MAX) return false;
+    destination = newest_copy == 0U ? 1U : 0U;
+  }
+  metadata_[index][destination] = metadata;
+  metadata_[index][destination].generation = found ? generation + 1U : 1U;
+  metadata_[index][destination].integrity = metadata_integrity(metadata_[index][destination]);
+  metadata_present_[index][destination] = true;
   return true;
 }
 
@@ -994,7 +1147,17 @@ bool MemoryProfileStore::slot_present(ProfileTarget target, ProfileSlot slot) co
 
 void MemoryProfileStore::corrupt_activation(ProfileKey key) noexcept {
   const auto index = key_index(key);
-  if (metadata_present_[index]) metadata_[index].active_hash[0] ^= 0xffU;
+  for (std::size_t copy = 0U; copy < kActivationMetadataCopyCount; ++copy) {
+    if (metadata_present_[index][copy]) metadata_[index][copy].active_hash[0] ^= 0xffU;
+  }
+}
+
+void MemoryProfileStore::corrupt_activation_copy(ProfileKey key,
+                                                  std::size_t copy) noexcept {
+  const auto index = key_index(key);
+  if (copy < kActivationMetadataCopyCount && metadata_present_[index][copy]) {
+    metadata_[index][copy].active_hash[0] ^= 0xffU;
+  }
 }
 
 }  // namespace sigap::acquisition

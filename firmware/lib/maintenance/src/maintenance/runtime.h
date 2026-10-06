@@ -69,9 +69,10 @@ class CommandRouter final : public IMaintenanceCommandSink,
                 acquisition::ProfileManager* profiles = nullptr,
                 calibration::ICalibrationEvidenceSource* evidence = nullptr,
                 IRebootController* reboot = nullptr,
-                acquisition::IProfileAuditSink* audit = nullptr) noexcept
+                acquisition::IProfileAuditSink* audit = nullptr,
+                const acquisition::BootId* boot_id = nullptr) noexcept
       : config_(config), secrets_(secrets), profiles_(profiles),
-        evidence_(evidence), reboot_(reboot), audit_(audit) {
+        evidence_(evidence), reboot_(reboot), audit_(audit), boot_id_(boot_id) {
     refresh_mode();
   }
 
@@ -83,6 +84,8 @@ class CommandRouter final : public IMaintenanceCommandSink,
   DeviceMode mode() const noexcept { return mode_; }
   bool is_calibrating(acquisition::SensorId sensor) const noexcept override;
   bool reboot_requested() const noexcept { return reboot_requested_; }
+  void poll(uint64_t now_us) noexcept override;
+  void transport_lost() noexcept override;
 
  private:
   static bool field_from_text(const FixedText<64U>& text,
@@ -97,9 +100,10 @@ class CommandRouter final : public IMaintenanceCommandSink,
       calibration::CalibrationTarget& target) noexcept;
   CommandStatus execute_config(const MaintenanceCommand& command,
                                MaintenanceResponse& response) noexcept;
-  bool build_and_stage_calibration_profile() noexcept;
+  bool build_and_stage_calibration_profile(uint64_t now_us) noexcept;
   CommandStatus profile_transfer(const MaintenanceCommand& command,
                                  MaintenanceResponse& response) noexcept;
+  void cancel_profile_transfer() noexcept;
 
   config::ConfigManager& config_;
   provisioning::SecretStore& secrets_;
@@ -107,6 +111,7 @@ class CommandRouter final : public IMaintenanceCommandSink,
   calibration::ICalibrationEvidenceSource* evidence_{nullptr};
   IRebootController* reboot_{nullptr};
   acquisition::IProfileAuditSink* audit_{nullptr};
+  const acquisition::BootId* boot_id_{nullptr};
   calibration::CalibrationSession calibration_{};
   uint64_t evidence_sequence_{0U};
   bool criteria_set_{false};
@@ -114,6 +119,10 @@ class CommandRouter final : public IMaintenanceCommandSink,
   uint16_t criteria_samples_{0U};
   int64_t criteria_span_{0};
   bool criteria_span_set_{false};
+  int32_t criteria_temperature_span_{0};
+  int32_t criteria_humidity_span_{0};
+  bool criteria_temperature_span_set_{false};
+  bool criteria_humidity_span_set_{false};
   uint64_t reference_mass_mg_{0U};
   int32_t reference_temperature_centi_c_{0};
   int32_t reference_humidity_centi_pct_{0};
@@ -131,6 +140,7 @@ class CommandRouter final : public IMaintenanceCommandSink,
   bool transfer_expected_hash_present_{false};
   bool transfer_import_active_{false};
   bool transfer_export_active_{false};
+  uint64_t transfer_last_activity_us_{0U};
   DeviceMode mode_{DeviceMode::ConfigRequired};
 };
 

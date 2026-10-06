@@ -40,6 +40,10 @@ class UltrasonicTriggerGate final {
     has_trigger_ = true;
   }
 
+  void set_minimum_gap(uint32_t minimum_gap_us) noexcept {
+    minimum_gap_us_ = minimum_gap_us;
+  }
+
  private:
   uint32_t minimum_gap_us_;
   uint64_t last_trigger_us_{0};
@@ -177,6 +181,7 @@ class UltrasonicAcquirer final {
         attempt_profile_present_ ? &attempt_profile_ : profile_;
     if (result.status == UltrasonicEchoStatus::Ready) {
       raw.present = true;
+      raw.identity_valid = true;
       raw.distance_us = result.echo_us;
       if (active_profile != nullptr &&
           !profile_matches(active_profile->manifest, sensor)) {

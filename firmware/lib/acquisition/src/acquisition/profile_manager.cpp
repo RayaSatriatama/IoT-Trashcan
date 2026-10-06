@@ -174,6 +174,17 @@ bool ProfileManager::reset(ProfileKey key) noexcept {
   return true;
 }
 
+bool ProfileManager::cancel(ProfileKey key) noexcept {
+  const auto target_index = key_index(key);
+  if (!valid_key(key) || target_index >= kTargetCount) return false;
+  draft_present_[target_index] = false;
+  draft_[target_index] = EncodedProfile{};
+  states_[target_index] = active_present_[target_index]
+                              ? ProfileManagerState::Active
+                              : ProfileManagerState::Unloaded;
+  return true;
+}
+
 bool ProfileManager::export_active(ProfileKey key,
                                    EncodedProfile& encoded) const noexcept {
   const auto target_index = key_index(key);

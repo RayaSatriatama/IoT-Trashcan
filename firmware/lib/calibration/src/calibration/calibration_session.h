@@ -1,12 +1,17 @@
 #pragma once
 
 #include <cstdint>
+#include <array>
 #include <variant>
 
 #include "acquisition/acquisition_types.h"
 #include "acquisition/record.h"
 #include "acquisition/heater.h"
 #include "acquisition/profiles.h"
+
+namespace sigap::acquisition {
+struct TargetProfileSet;
+}
 
 namespace sigap::calibration {
 
@@ -104,17 +109,20 @@ using CaptureCriteria = std::variant<Hx711CaptureCriteria,
 struct Hx711Trial final {
   int64_t counts{0};
   acquisition::SampleQuality quality{acquisition::SampleQuality::Timeout};
+  bool raw_present{true};
 };
 
 struct UltrasonicTrial final {
   float distance_mm{0.0F};
   acquisition::SampleQuality quality{acquisition::SampleQuality::Timeout};
+  bool conversion_valid{true};
 };
 
 struct MqTrial final {
   uint16_t adc_counts{0U};
   acquisition::SampleQuality quality{acquisition::SampleQuality::Timeout};
   bool heater_ready{true};
+  bool raw_present{true};
 };
 
 struct Ds18b20Trial final {
@@ -153,6 +161,9 @@ class CalibrationEvidenceCache final
       public ICalibrationEvidenceSource {
  public:
   void observe(const acquisition::SampleRecord& sample) noexcept override;
+  void set_profiles(const acquisition::TargetProfileSet* profiles) noexcept {
+    profiles_ = profiles;
+  }
   bool latest(CalibrationTarget target, uint64_t after_sequence,
               TrialObservation& output,
               uint64_t& observed_sequence) const noexcept override;
@@ -162,6 +173,7 @@ class CalibrationEvidenceCache final
   std::array<TrialObservation, kTargetCount> observations_{};
   std::array<uint64_t, kTargetCount> sequences_{};
   std::array<bool, kTargetCount> present_{};
+  const acquisition::TargetProfileSet* profiles_{nullptr};
 };
 
 struct ValidationResult final {
@@ -216,6 +228,7 @@ class CalibrationSession final {
   bool request_commit() noexcept;
   bool complete_commit(bool committed) noexcept;
   bool cancel() noexcept;
+  void abort() noexcept { reset(); }
   void fail(CalibrationFailure failure) noexcept;
 
   CalibrationState state() const noexcept { return state_; }

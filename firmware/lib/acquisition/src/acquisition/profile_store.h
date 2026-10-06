@@ -36,6 +36,7 @@ struct EncodedProfile final {
 };
 
 struct ProfileActivationMetadata final {
+  uint32_t generation{0U};
   bool has_active{false};
   ProfileSlot active_slot{ProfileSlot::A};
   uint32_t active_version{0U};
@@ -46,6 +47,57 @@ struct ProfileActivationMetadata final {
   config::ConfigHash previous_hash{};
   config::ConfigHash integrity{};
 };
+
+// Versioned metadata is stored as a complete bounded blob. Keep all offsets
+// in one definition so the native and NVS implementations cannot drift.
+inline constexpr uint8_t kActivationMetadataFormatVersion{2U};
+inline constexpr std::size_t kActivationMetadataGenerationOffset{1U};
+inline constexpr std::size_t kActivationMetadataHasActiveOffset{5U};
+inline constexpr std::size_t kActivationMetadataActiveSlotOffset{6U};
+inline constexpr std::size_t kActivationMetadataActiveVersionOffset{7U};
+inline constexpr std::size_t kActivationMetadataActiveHashOffset{11U};
+inline constexpr std::size_t kActivationMetadataHasPreviousOffset{43U};
+inline constexpr std::size_t kActivationMetadataPreviousSlotOffset{44U};
+inline constexpr std::size_t kActivationMetadataPreviousVersionOffset{45U};
+inline constexpr std::size_t kActivationMetadataPreviousHashOffset{49U};
+inline constexpr std::size_t kActivationMetadataCoreBytes{81U};
+inline constexpr std::size_t kActivationMetadataIntegrityOffset{
+    kActivationMetadataCoreBytes};
+inline constexpr std::size_t kActivationMetadataBytes{
+    kActivationMetadataCoreBytes + kProfileHashBytes};
+inline constexpr std::size_t kActivationMetadataCopyCount{2U};
+static_assert(kActivationMetadataActiveHashOffset + kProfileHashBytes ==
+                  kActivationMetadataHasPreviousOffset,
+              "active metadata fields overlap");
+static_assert(kActivationMetadataGenerationOffset + sizeof(uint32_t) <=
+                  kActivationMetadataHasActiveOffset,
+              "generation metadata field overlaps");
+static_assert(kActivationMetadataHasActiveOffset + 1U <=
+                  kActivationMetadataActiveSlotOffset,
+              "active flag metadata field overlaps");
+static_assert(kActivationMetadataActiveSlotOffset + 1U <=
+                  kActivationMetadataActiveVersionOffset,
+              "active slot metadata field overlaps");
+static_assert(kActivationMetadataActiveVersionOffset + sizeof(uint32_t) <=
+                  kActivationMetadataActiveHashOffset,
+              "active version metadata field overlaps");
+static_assert(kActivationMetadataHasPreviousOffset + 1U <=
+                  kActivationMetadataPreviousSlotOffset,
+              "previous flag metadata field overlaps");
+static_assert(kActivationMetadataPreviousSlotOffset + 1U <=
+                  kActivationMetadataPreviousVersionOffset,
+              "previous slot metadata field overlaps");
+static_assert(kActivationMetadataPreviousVersionOffset + sizeof(uint32_t) <=
+                  kActivationMetadataPreviousHashOffset,
+              "previous version metadata field overlaps");
+static_assert(kActivationMetadataPreviousHashOffset + kProfileHashBytes ==
+                  kActivationMetadataCoreBytes,
+              "previous metadata fields overlap");
+static_assert(kActivationMetadataIntegrityOffset + kProfileHashBytes ==
+                  kActivationMetadataBytes,
+              "metadata integrity exceeds storage blob");
+static_assert(sizeof(ProfileActivationMetadata) >= kProfileHashBytes * 3U,
+              "metadata object unexpectedly lost integrity fields");
 
 class IProfileSlotStore {
  public:
@@ -202,8 +254,9 @@ class MemoryProfileStore final : public IProfileSlotStore {
 
   std::array<std::array<EncodedProfile, 2>, kTargetCount> slots_{};
   std::array<std::array<bool, 2>, kTargetCount> present_{};
-  std::array<ProfileActivationMetadata, kTargetCount> metadata_{};
-  std::array<bool, kTargetCount> metadata_present_{};
+  std::array<std::array<ProfileActivationMetadata, kActivationMetadataCopyCount>, kTargetCount>
+      metadata_{};
+  std::array<std::array<bool, kActivationMetadataCopyCount>, kTargetCount> metadata_present_{};
   mutable Fault pending_fault_{Fault::WriteSlot};
   mutable bool has_pending_fault_{false};
 
@@ -217,6 +270,7 @@ class MemoryProfileStore final : public IProfileSlotStore {
   bool write_activation(ProfileKey key,
                         const ProfileActivationMetadata& metadata) noexcept override;
   void corrupt_activation(ProfileKey key) noexcept;
+  void corrupt_activation_copy(ProfileKey key, std::size_t copy) noexcept;
 };
 
 // Target implementation uses a separate NVS namespace and deterministic

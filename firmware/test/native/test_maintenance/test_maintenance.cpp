@@ -22,6 +22,7 @@ struct FakeTransport final : IMaintenanceTransport {
   std::string input;
   std::string output;
   std::size_t offset{0};
+  bool link{true};
 
   bool available() noexcept override { return offset < input.size(); }
 
@@ -34,10 +35,14 @@ struct FakeTransport final : IMaintenanceTransport {
     output.append(value.data(), value.size());
     return true;
   }
+
+  bool connected() noexcept override { return link; }
 };
 
 struct FakeSink final : IMaintenanceCommandSink {
   std::size_t calls{0};
+  std::size_t poll_calls{0};
+  std::size_t transport_lost_calls{0};
   MaintenanceCommand last{};
 
   CommandStatus execute(const MaintenanceCommand& command, uint64_t,
@@ -49,7 +54,43 @@ struct FakeSink final : IMaintenanceCommandSink {
     response.append("\n");
     return CommandStatus::Accepted;
   }
+
+  void poll(uint64_t) noexcept override { ++poll_calls; }
+
+  void transport_lost() noexcept override { ++transport_lost_calls; }
 };
+
+void test_profile_lifecycle_commands_parse_as_explicit_steps() {
+  FakeTransport transport{};
+  transport.input = "profile validate hx711_organic\n"
+                    "profile preview hx711_organic\n"
+                    "profile commit hx711_organic\n";
+  FakeSink sink{};
+  MaintenanceService service(transport, sink);
+
+  while (transport.available()) service.poll(0U);
+
+  TEST_ASSERT_EQUAL_UINT32(3U, sink.calls);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandKind::ProfileCommit),
+                        static_cast<int>(sink.last.kind));
+  TEST_ASSERT_EQUAL_STRING("hx711_organic", sink.last.target.c_str());
+}
+
+void test_service_polls_without_input_and_reports_disconnect_once() {
+  FakeTransport transport{};
+  FakeSink sink{};
+  MaintenanceService service(transport, sink);
+
+  service.poll(10U);
+  TEST_ASSERT_TRUE(sink.poll_calls >= 1U);
+  TEST_ASSERT_EQUAL_UINT32(0U, sink.transport_lost_calls);
+
+  transport.link = false;
+  service.poll(20U);
+  TEST_ASSERT_EQUAL_UINT32(1U, sink.transport_lost_calls);
+  service.poll(30U);
+  TEST_ASSERT_EQUAL_UINT32(1U, sink.transport_lost_calls);
+}
 
 void test_fragmented_input_is_buffered_until_line_end() {
   FakeTransport transport{};
@@ -200,6 +241,8 @@ void tearDown() {}
 void setup() {
   UNITY_BEGIN();
   RUN_TEST(test_fragmented_input_is_buffered_until_line_end);
+  RUN_TEST(test_profile_lifecycle_commands_parse_as_explicit_steps);
+  RUN_TEST(test_service_polls_without_input_and_reports_disconnect_once);
   RUN_TEST(test_multiple_commands_are_processed_with_poll_budget);
   RUN_TEST(test_oversized_command_is_rejected_and_parser_recovers);
   RUN_TEST(test_unknown_empty_and_invalid_numeric_commands_are_explicit);

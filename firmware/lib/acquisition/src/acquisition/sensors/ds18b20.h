@@ -27,6 +27,7 @@ class IDs18b20Reader {
   // resolution. Native fakes retain the default because their seam already
   // represents a configured device.
   virtual bool begin() noexcept { return true; }
+  virtual bool apply_profile(const Ds18b20Profile*) noexcept { return true; }
   virtual bool request_conversion() noexcept = 0;
   // The default keeps native seams source-compatible while target adapters
   // can report the actual one-wire conversion-complete state.
@@ -47,25 +48,28 @@ class Ds18b20Acquirer final {
 
   void rebind_profile(const Ds18b20Profile* profile,
                       DsChannelState channel_state) noexcept {
-    profile_ = profile;
-    channel_state_ = resolve_channel_state(profile, channel_state);
-    pending_ = false;
-    snapshot_present_ = false;
-    snapshot_ref_ = ProfileRef{};
+    pending_profile_ = profile;
+    pending_channel_state_ = resolve_channel_state(profile, channel_state);
+    profile_update_pending_ = true;
   }
 
   DriverPollStatus poll(uint64_t now_us, SampleRecord& out) noexcept {
+    if (!pending_ && profile_update_pending_) {
+      const bool profile_ready = pending_channel_state_ == DsChannelState::ProfileMissing ||
+                                 pending_channel_state_ == DsChannelState::ProfileInvalid
+                                     ? true
+                                     : source_.apply_profile(pending_profile_);
+      profile_ = pending_profile_;
+      channel_state_ = profile_ready ? pending_channel_state_
+                                     : DsChannelState::ProfileApplyFailed;
+      profile_update_pending_ = false;
+    }
     if (channel_state_ == DsChannelState::ProfileMissing) {
       return make_profile_record(now_us, SampleReason::ProfileMissing, out);
     }
     if (channel_state_ == DsChannelState::ProfileInvalid ||
         channel_state_ == DsChannelState::ProfileApplyFailed) {
       return make_profile_record(now_us, SampleReason::InvalidProfile, out);
-    }
-    if (calibration_ != nullptr &&
-        calibration_->is_calibrating(SensorId::Ds18b20B3)) {
-      return make_profile_record(now_us, SampleReason::InvalidProfile, out,
-                                 SampleQuality::Calibrating);
     }
     if (!pending_) {
       snapshot_present_ = profile_ != nullptr;
@@ -114,6 +118,9 @@ class Ds18b20Acquirer final {
     const Ds18b20Profile* active_profile = snapshot_present_ ? &snapshot_ : profile_;
     RawObservation raw{};
     raw.present = result.present;
+    raw.identity_valid = result.resolution_matches;
+    raw.crc_valid = result.crc_valid;
+    raw.conversion_complete = result.conversion_complete;
     raw.temperature_centi_c = result.temperature_centi_c;
     ConvertedObservation converted{};
     SampleQuality quality{SampleQuality::Timeout};
@@ -136,6 +143,10 @@ class Ds18b20Acquirer final {
       reason = SampleReason::InvalidProfile;
     } else if (active_profile == nullptr || !active_profile->valid_for_conversion()) {
       quality = SampleQuality::Uncalibrated;
+      reason = SampleReason::InvalidProfile;
+    } else if (calibration_ != nullptr &&
+               calibration_->is_calibrating(SensorId::Ds18b20B3)) {
+      quality = SampleQuality::Calibrating;
       reason = SampleReason::InvalidProfile;
     } else {
       quality = SampleQuality::Ready;
@@ -193,6 +204,9 @@ class Ds18b20Acquirer final {
   ProfileRef snapshot_ref_{};
   bool snapshot_present_{false};
   const ICalibrationStateProvider* calibration_{nullptr};
+  const Ds18b20Profile* pending_profile_{nullptr};
+  DsChannelState pending_channel_state_{DsChannelState::ProfileMissing};
+  bool profile_update_pending_{false};
 };
 
 }  // namespace sigap::acquisition

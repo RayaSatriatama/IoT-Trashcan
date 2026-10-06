@@ -1,6 +1,7 @@
 #include <array>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 
 #include <unity.h>
 
@@ -105,6 +106,22 @@ void test_profile_codec_round_trips_all_profile_families() {
   TEST_ASSERT_TRUE(codec.decode(encoded, sht_restored));
   TEST_ASSERT_EQUAL_UINT8(0x44U, sht_restored.address);
   TEST_ASSERT_EQUAL_INT(-7, sht_restored.humidity_offset_centi_pct);
+}
+
+void test_profile_provenance_is_part_of_hashed_bytes() {
+  ProfileCodec codec{};
+  Hx711Profile first = hx(1U);
+  first.manifest.provenance.present = true;
+  first.manifest.provenance.monotonic_us = 100U;
+  Hx711Profile second = first;
+  second.manifest.provenance.monotonic_us = 101U;
+  EncodedProfile first_encoded{};
+  EncodedProfile second_encoded{};
+  TEST_ASSERT_TRUE(codec.encode(first, first_encoded));
+  TEST_ASSERT_TRUE(codec.encode(second, second_encoded));
+  TEST_ASSERT_NOT_EQUAL(0, std::memcmp(first_encoded.hash().data(),
+                                       second_encoded.hash().data(),
+                                       first_encoded.hash().size()));
 }
 
 void test_profile_commit_pointer_last_and_reload() {
@@ -293,7 +310,7 @@ void test_mq7_adc_and_heater_profiles_coexist_by_typed_key() {
   TEST_ASSERT_EQUAL_UINT32(7U, runtime.heater->profile_version);
 }
 
-void test_corrupt_activation_metadata_recovers_highest_valid_slot() {
+void test_corrupt_activation_metadata_never_promotes_staged_slot() {
   MemoryProfileStore store{};
   ProfilePersistence persistence(store);
   ProfileCodec codec{};
@@ -307,11 +324,29 @@ void test_corrupt_activation_metadata_recovers_highest_valid_slot() {
                         static_cast<int>(persistence.commit(ProfileTarget::Hx711Organic, v2)));
   store.corrupt_activation(default_profile_key(ProfileTarget::Hx711Organic));
   EncodedProfile loaded{};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileReadStatus::Invalid),
+                        static_cast<int>(persistence.load(ProfileTarget::Hx711Organic, loaded)));
+}
+
+void test_corrupt_newest_metadata_copy_uses_previous_committed_generation() {
+  MemoryProfileStore store{};
+  ProfilePersistence persistence(store);
+  ProfileCodec codec{};
+  EncodedProfile v1{};
+  EncodedProfile v2{};
+  TEST_ASSERT_TRUE(codec.encode(hx(1U), v1));
+  TEST_ASSERT_TRUE(codec.encode(hx(2U), v2));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileCommitResult::Committed),
+                        static_cast<int>(persistence.commit(ProfileTarget::Hx711Organic, v1)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileCommitResult::Committed),
+                        static_cast<int>(persistence.commit(ProfileTarget::Hx711Organic, v2)));
+  store.corrupt_activation_copy(default_profile_key(ProfileTarget::Hx711Organic), 1U);
+  EncodedProfile loaded{};
   TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileReadStatus::Found),
                         static_cast<int>(persistence.load(ProfileTarget::Hx711Organic, loaded)));
   Hx711Profile restored{};
   TEST_ASSERT_TRUE(codec.decode(loaded, restored));
-  TEST_ASSERT_EQUAL_UINT32(2U, restored.manifest.profile_version);
+  TEST_ASSERT_EQUAL_UINT32(1U, restored.manifest.profile_version);
 }
 
 void test_profile_audit_ring_records_activation_context_and_overflow() {
@@ -356,6 +391,7 @@ void tearDown() {}
 void setup() {
   UNITY_BEGIN();
   RUN_TEST(test_profile_codec_round_trips_all_profile_families);
+  RUN_TEST(test_profile_provenance_is_part_of_hashed_bytes);
   RUN_TEST(test_profile_commit_pointer_last_and_reload);
   RUN_TEST(test_failed_commit_keeps_previous_active);
   RUN_TEST(test_readback_and_pointer_faults_keep_previous_generation);
@@ -363,7 +399,8 @@ void setup() {
   RUN_TEST(test_profile_manager_import_preview_commit_and_snapshot_identity);
   RUN_TEST(test_profile_memory_footprint_is_bounded);
   RUN_TEST(test_mq7_adc_and_heater_profiles_coexist_by_typed_key);
-  RUN_TEST(test_corrupt_activation_metadata_recovers_highest_valid_slot);
+  RUN_TEST(test_corrupt_activation_metadata_never_promotes_staged_slot);
+  RUN_TEST(test_corrupt_newest_metadata_copy_uses_previous_committed_generation);
   RUN_TEST(test_profile_audit_ring_records_activation_context_and_overflow);
   UNITY_END();
 }

@@ -96,6 +96,9 @@ const char* command_name(CommandKind command) noexcept {
     case CommandKind::ProfileImportBegin: return "profile.import.begin";
     case CommandKind::ProfileImportChunk: return "profile.import.chunk";
     case CommandKind::ProfileImportFinish: return "profile.import.finish";
+    case CommandKind::ProfileValidate: return "profile.validate";
+    case CommandKind::ProfilePreview: return "profile.preview";
+    case CommandKind::ProfileCommit: return "profile.commit";
     case CommandKind::ProfileRollback: return "profile.rollback";
     case CommandKind::ProfileReset: return "profile.reset";
     case CommandKind::Reboot: return "reboot";
@@ -285,6 +288,12 @@ bool MaintenanceParser::emit_line(ParseEvent& event) noexcept {
                equals(line_.data(), tokens[2], "chunk")) {
       command.kind = CommandKind::ProfileImportChunk;
       valid = copy_token(line_.data(), tokens[3], command.value);
+    } else if (count == 5U && equals(line_.data(), tokens[1], "import") &&
+               equals(line_.data(), tokens[2], "chunk")) {
+      command.kind = CommandKind::ProfileImportChunk;
+      valid = copy_token(line_.data(), tokens[4], command.value);
+      numeric = true;
+      numeric_token = tokens[3];
     } else if (count == 4U && equals(line_.data(), tokens[1], "import") &&
                equals(line_.data(), tokens[2], "finish")) {
       command.kind = CommandKind::ProfileImportFinish;
@@ -296,6 +305,15 @@ bool MaintenanceParser::emit_line(ParseEvent& event) noexcept {
       command.kind = CommandKind::ProfileReset;
       valid = copy_token(line_.data(), tokens[2], command.target) &&
               equals(line_.data(), tokens[3], "CONFIRM");
+    } else if (count == 3U && equals(line_.data(), tokens[1], "validate")) {
+      command.kind = CommandKind::ProfileValidate;
+      valid = copy_token(line_.data(), tokens[2], command.target);
+    } else if (count == 3U && equals(line_.data(), tokens[1], "preview")) {
+      command.kind = CommandKind::ProfilePreview;
+      valid = copy_token(line_.data(), tokens[2], command.target);
+    } else if (count == 3U && equals(line_.data(), tokens[1], "commit")) {
+      command.kind = CommandKind::ProfileCommit;
+      valid = copy_token(line_.data(), tokens[2], command.target);
     } else {
       valid = false;
     }
@@ -350,6 +368,10 @@ bool MaintenanceResponse::append_presence(std::string_view label,
 
 MaintenancePollStats MaintenanceService::poll(std::uint64_t now_us) noexcept {
   MaintenancePollStats stats{};
+  sink_.poll(now_us);
+  const bool connected = transport_.connected();
+  if (connected_last_ && !connected) sink_.transport_lost();
+  connected_last_ = connected;
   while (transport_.available() && stats.bytes_read < kMaxBytesPerPoll) {
     const int value = transport_.read();
     if (value < 0) break;
@@ -359,6 +381,7 @@ MaintenancePollStats MaintenanceService::poll(std::uint64_t now_us) noexcept {
       dispatch(event, now_us, stats);
     }
   }
+  sink_.poll(now_us);
   return stats;
 }
 

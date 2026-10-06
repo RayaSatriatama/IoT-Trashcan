@@ -73,6 +73,12 @@ struct RecordedAt {
 
 struct RawObservation {
   bool present{false};
+  bool crc_valid{false};
+  bool conversion_complete{false};
+  bool identity_valid{false};
+  bool temperature_crc_valid{false};
+  bool humidity_crc_valid{false};
+  bool heater_ready{false};
   int64_t signed_counts{0};
   uint16_t adc_counts{0};
   uint32_t distance_us{0};

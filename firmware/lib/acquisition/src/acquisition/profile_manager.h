@@ -129,6 +129,7 @@ class ProfileManager final {
   bool commit(ProfileKey key) noexcept;
   bool rollback(ProfileKey key) noexcept;
   bool reset(ProfileKey key) noexcept;
+  bool cancel(ProfileKey key) noexcept;
   bool export_active(ProfileKey key, EncodedProfile& encoded) const noexcept;
   bool snapshot(ProfileKey key, ActiveProfileSnapshot& snapshot) const noexcept;
   ProfileManagerState state(ProfileKey key) const noexcept;

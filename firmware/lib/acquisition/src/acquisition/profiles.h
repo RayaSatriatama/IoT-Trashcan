@@ -42,6 +42,22 @@ struct ProfileKey final {
 struct ProfileManifest;
 inline ProfileRef to_ref(const ProfileManifest& manifest) noexcept;
 
+struct ProfileProvenance final {
+  bool present{false};
+  BootId boot_id{};
+  uint64_t monotonic_us{0U};
+  RecordedAt recorded_at{};
+  TimeQuality time_quality{TimeQuality::Unsynced};
+  int64_t reference_primary{0};
+  int64_t reference_secondary{0};
+  uint32_t evidence_count{0U};
+  uint64_t evidence_sequence{0U};
+  uint8_t units{0U};
+  std::array<char, 32> reference_note{};
+};
+
+inline constexpr std::size_t kProfileProvenanceBytes{97U};
+
 struct ProfileManifest {
   ProfileKind kind{ProfileKind::Calibration};
   uint32_t schema_version{1};
@@ -49,6 +65,7 @@ struct ProfileManifest {
   uint32_t target_id{0};
   config::ConfigHash hash{};
   ProfileValidity validity{ProfileValidity::Missing};
+  ProfileProvenance provenance{};
 };
 
 inline constexpr ProfileKind default_profile_kind(ProfileTarget target) noexcept {

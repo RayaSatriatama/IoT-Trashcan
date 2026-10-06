@@ -40,15 +40,20 @@ as a bounded deterministic envelope with an inactive-slot/readback/hash check an
 pointer-last activation. `MemoryProfileStore`
 provides native fault injection; `NvsProfileStore` uses the separate
 `sigap_profile` namespace on target. `ProfileManager` keeps immutable encoded
-snapshots, stages imports through validate/preview/commit, supports rollback and
+snapshots, stages imports through explicit validate/preview/commit commands, supports rollback and
 reset, and emits a non-durable activation audit event. Secrets remain in the
 separate `sigap_secret` namespace and are never included in profile exports.
+Calibration-built profiles also carry bounded provenance in the hashed envelope:
+boot identity, monotonic capture time, UTC/time-quality state, accepted
+reference values, units, and an evidence summary. Legacy envelopes without this
+optional payload remain readable but are not treated as new calibration evidence.
 
 The maintenance layer uses native USB CDC on target with a fixed line buffer and
 per-poll byte budget. It exposes the AppConfig draft lifecycle, redacted secret
 status/write/clear operations, evidence-backed target calibration sessions, and
-bounded profile export/import/rollback/reset routing. Import uses a declared size
-and SHA-256 digest before preview/commit. Reboot is deferred until the response
+bounded profile export/import/validate/preview/commit/rollback/reset routing.
+Import uses a declared size and SHA-256 digest before staging; finish never
+activates a draft. Reboot is deferred until the response
 has been written. A bounded audit ring records config/profile activation events;
 overflow is observable. Persistent logger, telemetry, and network workers remain
 out of scope. Profile persistence maintenance commands remain intentionally

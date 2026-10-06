@@ -25,9 +25,11 @@ SigapApp::SigapApp() noexcept
       acquisition_(config_manager_, record_factory_, board::kN16R8Pins,
                    profiles_),
       maintenance_router_(config_manager_, secret_store_, &profile_manager_,
-                          &evidence_cache_, &reboot_controller_, &audit_ring_),
+                          &evidence_cache_, &reboot_controller_, &audit_ring_,
+                          &boot_identity_.boot_id),
       maintenance_service_(maintenance_transport_, maintenance_router_) {
   profile_manager_.bind_runtime_profiles(profiles_);
+  evidence_cache_.set_profiles(&profiles_);
   acquisition_.set_sample_observer(&evidence_cache_);
   acquisition_.set_calibration_state_provider(&maintenance_router_);
 }

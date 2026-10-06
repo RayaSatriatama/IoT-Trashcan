@@ -1,7 +1,9 @@
 #include "maintenance/runtime.h"
 
+#include <algorithm>
 #include <charconv>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 
 #ifdef ARDUINO
@@ -108,10 +110,33 @@ bool decode_hex(std::string_view text, uint8_t* output,
 }
 
 bool decode_hash(std::string_view text, config::ConfigHash& output) noexcept {
+  if (text.substr(0U, 5U) == "hash=") text.remove_prefix(5U);
   std::size_t written{0U};
   return text.size() == output.size() * 2U &&
          decode_hex(text, output.data(), output.size(), written) &&
          written == output.size();
+}
+
+void set_calibration_provenance(acquisition::ProfileProvenance& provenance,
+                                const acquisition::BootId* boot_id,
+                                uint64_t now_us,
+                                int64_t primary,
+                                int64_t secondary,
+                                uint32_t evidence_count,
+                                uint64_t evidence_sequence,
+                                uint8_t units) noexcept {
+  provenance = acquisition::ProfileProvenance{};
+  provenance.present = true;
+  if (boot_id != nullptr) provenance.boot_id = *boot_id;
+  provenance.monotonic_us = now_us;
+  provenance.time_quality = acquisition::TimeQuality::Unsynced;
+  provenance.reference_primary = primary;
+  provenance.reference_secondary = secondary;
+  provenance.evidence_count = evidence_count;
+  provenance.evidence_sequence = evidence_sequence;
+  provenance.units = units;
+  constexpr char note[] = "calibration-evidence";
+  std::memcpy(provenance.reference_note.data(), note, sizeof(note) - 1U);
 }
 
 bool append_hex(MaintenanceResponse& response, const uint8_t* bytes,
@@ -294,7 +319,42 @@ bool CommandRouter::is_calibrating(acquisition::SensorId sensor) const noexcept 
   return sensor == expected;
 }
 
-bool CommandRouter::build_and_stage_calibration_profile() noexcept {
+void CommandRouter::cancel_profile_transfer() noexcept {
+  if (profiles_ != nullptr && transfer_import_active_) {
+    (void)profiles_->cancel(transfer_key_);
+  }
+  transfer_import_active_ = false;
+  transfer_export_active_ = false;
+  transfer_expected_hash_present_ = false;
+  transfer_expected_size_ = 0U;
+  transfer_received_size_ = 0U;
+  transfer_export_offset_ = 0U;
+  transfer_last_activity_us_ = 0U;
+}
+
+void CommandRouter::poll(uint64_t now_us) noexcept {
+  if (calibration_.tick(now_us)) {
+    criteria_set_ = false;
+    evidence_sequence_ = 0U;
+    mode_ = DeviceMode::Maintenance;
+  }
+  constexpr uint64_t kTransferTimeoutUs{300000000ULL};
+  if ((transfer_import_active_ || transfer_export_active_) &&
+      now_us >= transfer_last_activity_us_ &&
+      now_us - transfer_last_activity_us_ > kTransferTimeoutUs) {
+    cancel_profile_transfer();
+  }
+}
+
+void CommandRouter::transport_lost() noexcept {
+  (void)calibration_.cancel();
+  criteria_set_ = false;
+  evidence_sequence_ = 0U;
+  cancel_profile_transfer();
+  refresh_mode();
+}
+
+bool CommandRouter::build_and_stage_calibration_profile(uint64_t now_us) noexcept {
   if (profiles_ == nullptr) return false;
   const auto target = static_cast<acquisition::ProfileTarget>(
       static_cast<uint8_t>(pending_target_) + 1U);
@@ -306,6 +366,7 @@ bool CommandRouter::build_and_stage_calibration_profile() noexcept {
       target};
   acquisition::ActiveProfileSnapshot active{};
   if (!profiles_->snapshot(key, active)) return false;
+  if (active.present && active.ref.profile_version == UINT32_MAX) return false;
   const uint32_t version = active.present ? active.ref.profile_version + 1U : 1U;
   acquisition::ProfileCodec codec{};
   acquisition::EncodedProfile encoded{};
@@ -323,6 +384,12 @@ bool CommandRouter::build_and_stage_calibration_profile() noexcept {
       const double kg = static_cast<double>(reference_mass_mg_) / 1000000.0;
       const double delta = calibration_.secondary_stats().mean - calibration_.stats().mean;
       profile.counts_per_kg = static_cast<float>(delta / kg);
+      set_calibration_provenance(profile.manifest.provenance, boot_id_, now_us,
+                                 static_cast<int64_t>(profile.tare_offset_counts),
+                                 static_cast<int64_t>(reference_mass_mg_),
+                                 calibration_.stats().count +
+                                     calibration_.secondary_stats().count,
+                                 evidence_sequence_, 1U);
       if (!profile.valid_for_conversion() || !codec.encode(profile, encoded)) return false;
       break;
     }
@@ -336,6 +403,12 @@ bool CommandRouter::build_and_stage_calibration_profile() noexcept {
       profile.d_empty_mm = static_cast<float>(calibration_.stats().mean);
       profile.d_full_mm = static_cast<float>(calibration_.secondary_stats().mean);
       profile.manifest.validity = acquisition::ProfileValidity::Valid;
+      set_calibration_provenance(profile.manifest.provenance, boot_id_, now_us,
+                                 static_cast<int64_t>(calibration_.stats().mean),
+                                 static_cast<int64_t>(calibration_.secondary_stats().mean),
+                                 calibration_.stats().count +
+                                     calibration_.secondary_stats().count,
+                                 evidence_sequence_, 2U);
       if (!profile.valid_for_conversion() || !codec.encode(profile, encoded)) return false;
       break;
     }
@@ -348,6 +421,9 @@ bool CommandRouter::build_and_stage_calibration_profile() noexcept {
         profile.manifest.profile_version = version;
         profile.offset_centi_c = reference_temperature_centi_c_ -
                                  static_cast<int32_t>(calibration_.stats().mean);
+        set_calibration_provenance(profile.manifest.provenance, boot_id_, now_us,
+                                   reference_temperature_centi_c_, 0,
+                                   calibration_.stats().count, evidence_sequence_, 3U);
         if (!profile.valid_for_conversion() || !codec.encode(profile, encoded)) return false;
       } else if (pending_target_ == calibration::CalibrationTarget::Sht31_44 ||
                  pending_target_ == calibration::CalibrationTarget::Sht31_45) {
@@ -361,6 +437,12 @@ bool CommandRouter::build_and_stage_calibration_profile() noexcept {
         profile.humidity_offset_centi_pct =
             reference_humidity_centi_pct_ -
             static_cast<int32_t>(calibration_.secondary_stats().mean);
+        set_calibration_provenance(profile.manifest.provenance, boot_id_, now_us,
+                                   reference_temperature_centi_c_,
+                                   reference_humidity_centi_pct_,
+                                   calibration_.stats().count +
+                                       calibration_.secondary_stats().count,
+                                   evidence_sequence_, 4U);
         if (!profile.valid_for_conversion() || !codec.encode(profile, encoded)) return false;
       } else {
         // MQ calibration retains validated ADC evidence without inventing a
@@ -368,6 +450,9 @@ bool CommandRouter::build_and_stage_calibration_profile() noexcept {
         acquisition::MqAdcProfile profile{};
         if (!codec.decode(active.encoded, profile)) return false;
         profile.manifest.profile_version = version;
+        set_calibration_provenance(profile.manifest.provenance, boot_id_, now_us,
+                                   static_cast<int64_t>(calibration_.stats().mean),
+                                   0, calibration_.stats().count, evidence_sequence_, 5U);
         if (!profile.valid_for_conversion() || !codec.encode(profile, encoded)) return false;
       }
       break;
@@ -398,7 +483,10 @@ CommandStatus CommandRouter::profile_transfer(
       return CommandStatus::Failed;
     }
     const std::size_t remaining = transfer_profile_.size - transfer_export_offset_;
-    const std::size_t chunk = remaining > 48U ? 48U : remaining;
+    if (response.size() + 1U >= kMaxResponseBytes) return CommandStatus::Failed;
+    const std::size_t capacity = (kMaxResponseBytes - response.size() - 1U) / 2U;
+    const std::size_t chunk = std::min(remaining, capacity);
+    if (chunk == 0U) return CommandStatus::Failed;
     if (!append_hex(response, transfer_profile_.bytes.data() + transfer_export_offset_, chunk) ||
         !response.append("\n")) return CommandStatus::Failed;
     transfer_export_offset_ += chunk;
@@ -423,17 +511,26 @@ CommandStatus CommandRouter::profile_transfer(
     transfer_received_size_ = 0U;
     transfer_profile_ = acquisition::EncodedProfile{};
     transfer_import_active_ = true;
+    transfer_last_activity_us_ = 0U;
     return CommandStatus::Accepted;
   }
   if (command.kind == CommandKind::ProfileImportChunk) {
     if (!transfer_import_active_) return CommandStatus::Rejected;
+    if (command.has_numeric &&
+        command.numeric_value != static_cast<int64_t>(transfer_received_size_)) {
+      transfer_import_active_ = false;
+      return CommandStatus::InvalidSyntax;
+    }
     std::size_t written{0U};
-    if (!decode_hex(command.value.view(), transfer_profile_.bytes.data() + transfer_received_size_,
-                    transfer_profile_.bytes.size() - transfer_received_size_, written) ||
+    std::array<uint8_t, acquisition::kEncodedProfileBytes> chunk_bytes{};
+    if (command.value.view().empty() ||
+        !decode_hex(command.value.view(), chunk_bytes.data(), chunk_bytes.size(), written) ||
         transfer_received_size_ + written > transfer_expected_size_) {
       transfer_import_active_ = false;
       return CommandStatus::InvalidSyntax;
     }
+    std::copy_n(chunk_bytes.data(), written,
+                transfer_profile_.bytes.begin() + transfer_received_size_);
     transfer_received_size_ += written;
     return CommandStatus::Accepted;
   }
@@ -456,9 +553,11 @@ CommandStatus CommandRouter::profile_transfer(
       return CommandStatus::Rejected;
     }
     transfer_expected_hash_present_ = false;
-    if (!profiles_->stage_import(transfer_key_, transfer_profile_) ||
-        !profiles_->validate(transfer_key_) || !profiles_->preview(transfer_key_) ||
-        !profiles_->commit(transfer_key_)) return CommandStatus::Rejected;
+    // Finish only stages a draft. Validation, preview, and activation are
+    // explicit commands so an import cannot change runtime state implicitly.
+    if (!profiles_->stage_import(transfer_key_, transfer_profile_)) {
+      return CommandStatus::Rejected;
+    }
     return CommandStatus::Accepted;
   }
   return CommandStatus::Rejected;
@@ -474,6 +573,12 @@ CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
     profiles_->set_audit_context(now_us, current_config);
   }
   refresh_mode();
+  if (command.kind == CommandKind::ProfileExport ||
+      command.kind == CommandKind::ProfileImportBegin ||
+      command.kind == CommandKind::ProfileImportChunk ||
+      command.kind == CommandKind::ProfileImportFinish) {
+    transfer_last_activity_us_ = now_us;
+  }
   (void)calibration_.tick(now_us);
   switch (command.kind) {
     case CommandKind::Status:
@@ -519,6 +624,10 @@ CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
       criteria_samples_ = 0U;
       criteria_span_ = 0;
       criteria_span_set_ = false;
+      criteria_temperature_span_ = 0;
+      criteria_humidity_span_ = 0;
+      criteria_temperature_span_set_ = false;
+      criteria_humidity_span_set_ = false;
       reference_mass_mg_ = 0U;
       reference_temperature_centi_c_ = 0;
       reference_humidity_centi_pct_ = 0;
@@ -551,6 +660,18 @@ CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
       if (field == "samples") {
         if (command.numeric_value > UINT16_MAX) return CommandStatus::InvalidNumeric;
         criteria_samples_ = static_cast<uint16_t>(command.numeric_value);
+      } else if (field == "max_temperature_span_centi_c") {
+        if (command.numeric_value > std::numeric_limits<int32_t>::max()) {
+          return CommandStatus::InvalidNumeric;
+        }
+        criteria_temperature_span_ = static_cast<int32_t>(command.numeric_value);
+        criteria_temperature_span_set_ = true;
+      } else if (field == "max_humidity_span_centi_pct") {
+        if (command.numeric_value > std::numeric_limits<int32_t>::max()) {
+          return CommandStatus::InvalidNumeric;
+        }
+        criteria_humidity_span_ = static_cast<int32_t>(command.numeric_value);
+        criteria_humidity_span_set_ = true;
       } else if (field == "max_span" || field == "max_span_counts") {
         criteria_span_ = command.numeric_value;
         criteria_span_set_ = true;
@@ -560,7 +681,23 @@ CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
       } else {
         return CommandStatus::InvalidSyntax;
       }
-      if (criteria_samples_ == 0U || !criteria_span_set_) return CommandStatus::Accepted;
+      const bool is_sht = pending_target_ == calibration::CalibrationTarget::Sht31_44 ||
+                          pending_target_ == calibration::CalibrationTarget::Sht31_45;
+      if (criteria_samples_ == 0U ||
+          (!is_sht && !criteria_span_set_) ||
+          (is_sht && (!criteria_temperature_span_set_ ||
+                      !criteria_humidity_span_set_))) {
+        return CommandStatus::Accepted;
+      }
+      if (pending_target_ >= calibration::CalibrationTarget::Mq4 &&
+          pending_target_ <= calibration::CalibrationTarget::Mq8 &&
+          criteria_span_ > std::numeric_limits<uint16_t>::max()) {
+        return CommandStatus::InvalidNumeric;
+      }
+      if (pending_target_ == calibration::CalibrationTarget::Ds18b20B3 &&
+          criteria_span_ > std::numeric_limits<int32_t>::max()) {
+        return CommandStatus::InvalidNumeric;
+      }
       calibration::CaptureCriteria criteria{calibration::Hx711CaptureCriteria{
           criteria_samples_, criteria_span_}};
       if (pending_target_ >= calibration::CalibrationTarget::UltrasonicOrganic &&
@@ -577,8 +714,8 @@ CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
       } else if (pending_target_ == calibration::CalibrationTarget::Sht31_44 ||
                  pending_target_ == calibration::CalibrationTarget::Sht31_45) {
         criteria = calibration::Sht31CaptureCriteria{criteria_samples_,
-                                                     static_cast<int32_t>(criteria_span_),
-                                                     static_cast<int32_t>(criteria_span_)};
+                                                     criteria_temperature_span_,
+                                                     criteria_humidity_span_};
       }
       if (!calibration_.start(pending_target_, criteria, now_us)) return CommandStatus::Rejected;
       criteria_set_ = true;
@@ -613,7 +750,7 @@ CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
       return calibration_.preview() ? CommandStatus::Accepted : CommandStatus::Rejected;
     case CommandKind::CalibrationCommit:
       if (!calibration_.request_commit()) return CommandStatus::Rejected;
-      if (!build_and_stage_calibration_profile()) {
+      if (!build_and_stage_calibration_profile(now_us)) {
         (void)calibration_.complete_commit(false);
         return CommandStatus::Rejected;
       }
@@ -631,6 +768,9 @@ CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
     case CommandKind::ProfileImportBegin:
     case CommandKind::ProfileImportChunk:
     case CommandKind::ProfileImportFinish:
+    case CommandKind::ProfileValidate:
+    case CommandKind::ProfilePreview:
+    case CommandKind::ProfileCommit:
     case CommandKind::ProfileRollback:
     case CommandKind::ProfileReset: {
       if (profiles_ == nullptr) return CommandStatus::Rejected;
@@ -658,6 +798,15 @@ CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
         }
         return CommandStatus::Accepted;
       }
+      if (command.kind == CommandKind::ProfileValidate) {
+        return profiles_->validate(key) ? CommandStatus::Accepted : CommandStatus::Rejected;
+      }
+      if (command.kind == CommandKind::ProfilePreview) {
+        return profiles_->preview(key) ? CommandStatus::Accepted : CommandStatus::Rejected;
+      }
+      if (command.kind == CommandKind::ProfileCommit) {
+        return profiles_->commit(key) ? CommandStatus::Accepted : CommandStatus::Rejected;
+      }
       if (command.kind == CommandKind::ProfileRollback) {
         return profiles_->rollback(key) ? CommandStatus::Accepted : CommandStatus::Rejected;
       }
@@ -667,6 +816,9 @@ CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
       return CommandStatus::Rejected;
     }
     case CommandKind::Reboot:
+      calibration_.abort();
+      criteria_set_ = false;
+      cancel_profile_transfer();
       mode_ = DeviceMode::RebootRequired;
       reboot_requested_ = true;
       if (reboot_ != nullptr) reboot_->request_reboot();

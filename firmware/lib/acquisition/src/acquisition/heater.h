@@ -17,6 +17,7 @@ struct Mq7HeaterProfile : ProfileRef {
   uint64_t preheat_us{0};
   uint64_t high_clean_us{0};
   uint64_t low_detect_us{0};
+  ProfileProvenance provenance{};
   bool valid() const noexcept {
     // A non-zero, profile-defined timing tuple is the minimum safe test or
     // production profile.  Unknown durations must never energize the rail.
@@ -42,12 +43,19 @@ class Mq7HeaterController final {
 
   void reset(uint64_t now_us) noexcept { start(now_us); }
 
-  void set_profile(const Mq7HeaterProfile& profile) noexcept {
-    profile_ = profile;
-    if (!profile_.valid()) {
-      ready_ = false;
-      state_ = Mq7HeaterState::Fault;
+  void set_profile(const Mq7HeaterProfile& profile,
+                   uint64_t now_us) noexcept {
+    if (state_ == Mq7HeaterState::Fault) {
+      profile_ = profile;
+      if (profile_.valid()) start(now_us);
+      return;
     }
+    pending_profile_ = profile;
+    pending_profile_valid_ = true;
+  }
+
+  void set_profile(const Mq7HeaterProfile& profile) noexcept {
+    set_profile(profile, state_started_at_);
   }
 
   void tick(uint64_t now_us) noexcept {
@@ -73,6 +81,15 @@ class Mq7HeaterController final {
 
  private:
   void enter_high_clean(uint64_t now_us) noexcept {
+    if (pending_profile_valid_) {
+      profile_ = pending_profile_;
+      pending_profile_valid_ = false;
+    }
+    if (!profile_.valid()) {
+      ready_ = false;
+      state_ = Mq7HeaterState::Fault;
+      return;
+    }
     ready_ = false;
     if (!rail_.select_high()) {
       state_ = Mq7HeaterState::Fault;
@@ -98,6 +115,8 @@ class Mq7HeaterController final {
   uint64_t state_started_at_{0};
   Mq7HeaterState state_{Mq7HeaterState::Fault};
   bool ready_{false};
+  Mq7HeaterProfile pending_profile_{};
+  bool pending_profile_valid_{false};
 };
 
 }  // namespace sigap::acquisition
