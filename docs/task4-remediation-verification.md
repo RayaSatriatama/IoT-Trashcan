@@ -41,12 +41,12 @@ hardware-in-the-loop evidence that still requires physical references.
 
 | Check | Result |
 | --- | --- |
-| Native PlatformIO tests | 162/162 passed |
+| Native PlatformIO tests | 164/164 passed |
 | ASan/UBSan focused native tests | 42/42 passed |
 | cppcheck (`--fail-on-defect=low`) | No defects found |
-| `sigap_n16r8` | Success, RAM 41,368 B, flash 365,729 B |
-| `sigap_n16r8_sd` | Success, RAM 41,368 B, flash 365,729 B |
-| `sigap_bench` | Success, RAM 41,368 B, flash 365,729 B |
+| `sigap_n16r8` | Success, RAM 41,368 B, flash 365,985 B |
+| `sigap_n16r8_sd` | Success, RAM 41,368 B, flash 365,985 B |
+| `sigap_bench` | Success, RAM 41,368 B, flash 365,985 B |
 | `git diff --check` | Clean |
 
 The native suite covers metadata corruption and staged-slot recovery, physical
@@ -54,6 +54,36 @@ CALIBRATING evidence, anchor sequencing, provenance hashing, immutable profile
 snapshots, DS18B20 identity evidence, profile transfer parsing, complete
 HX711 and SHT31 import workflows, idle polling, parser reset, and disconnect
 notification.
+
+## PSRAM probe follow-up
+
+This follow-up was executed from HEAD `f06a17e1d64e664f07d9947f0809ac01e41443cc`.
+The installed target toolchain is explicitly pinned and was inspected locally:
+
+- PlatformIO platform: `espressif32@7.1.3`
+- Arduino-ESP32 package: `4.20017.260907+sha.dcc1105b`
+- ESP-IDF headers: `4.4.7`
+
+In this Arduino package, `ESP.getPsramSize()` is implemented with
+`heap_caps_get_info(..., MALLOC_CAP_SPIRAM)`, so it reports the allocator's
+total PSRAM heap region. It is not the physical chip-capacity identity. The
+probe now uses the ESP-IDF `esp_spiram_get_size()` API for the exact physical
+capacity check and separately records the allocator total, free, and largest
+free block as diagnostics only. The acceptance values remain exactly 16 MiB
+flash and 8 MiB physical PSRAM; missing and wrong-size states remain failures.
+
+Fresh native regression coverage proves that physical 8 MiB with a heap total
+of `8,386,295` bytes is `MATCH`, while a wrong physical size is rejected even
+when a heap diagnostic is set to 8 MiB. The fresh target boot after native USB
+upload and controlled reboot reported:
+
+```text
+[SIGAP] board memory flash=16777216 bytes psram_present=true psram_physical=8388608 bytes psram_heap_total=8388607 psram_heap_free=8386295 psram_heap_largest=8257524 status=MATCH
+```
+
+The earlier `PSRAM_SIZE_MISMATCH` diagnostic was therefore caused by using an
+allocator metric as physical identity, not by changing the N16R8 acceptance
+contract.
 
 Task 3 telemetry tests in the firmware native suite continue to pass. The
 committed cross-language golden values remain:
@@ -125,21 +155,21 @@ config_hash=8872dc3107056e6ec4f0c1502e078454092fda2c2cf87e1db45d571841d9e540
 The same configuration identity was returned by `config active`, proving
 activation after reboot rather than hot reload.
 
-The boot log also reported:
+The previous boot log before the probe correction reported:
 
 ```text
 [SIGAP] board memory flash=16777216 bytes psram_present=true psram=8386295 bytes status=PSRAM_SIZE_MISMATCH
 [SIGAP] BOARD_MEMORY_MISMATCH expected_flash=16777216 expected_psram=8388608
 ```
 
-This is an observed runtime diagnostic and remains a hardware/profile
-acceptance gap. No firmware change was made to weaken the identity check.
+That historical diagnostic is superseded by the fresh `status=MATCH` boot
+above. The exact physical identity check remains enabled.
 
 Native maintenance HIL status:
 
 | HIL case | Status | Reason |
 | --- | --- | --- |
-| Corrected firmware upload | PASS | Earlier bridge upload and flash hash verification passed |
+| Corrected firmware upload | PASS | Native USB upload also succeeded; esptool flash hashes verified without erase |
 | Native maintenance status | PASS | `303a:1001`, fresh `uucp` access, response `mode=MAINTENANCE` |
 | Config validate/preview/commit | PASS | Factory draft committed without changing runtime before reboot |
 | Config persistence after reboot | PASS | Version 1 and nonzero hash reloaded; mode `RUN` |
@@ -155,6 +185,25 @@ Native maintenance HIL status:
 | Non-heater update preserves acquisition | BLOCKED | No observable connected sensor/acquisition evidence |
 | MQ7 ADC/HEATER coexistence | NOT TESTED | Heater wiring and approved timing profile not established |
 | Physical NVS power-cut recovery | NOT TESTED | No controlled power-cut fixture |
+
+The only currently observed native interface is the Espressif USB
+Serial/JTAG device and only one data cable is available. Software inspection
+cannot establish whether unplugging that cable removes board power; no
+independent documented supply path is available in the current setup. The
+host CDC close experiment is not physical unplug evidence. A same-boot
+disconnect test therefore remains `BLOCKED` until a controlled unplug/reconnect
+observation is performed. If the board reboots when unplugged, the result must
+be classified as reboot/power-loss recovery rather than same-boot cancellation.
+
+Sensor acceptance mapping remains explicit: HX711 requires wired load cells and
+known reference masses; ultrasonic requires installed transducers plus measured
+empty/full geometry; DS18B20 requires the approved ROM and known temperature
+reference; SHT31 requires both addressed devices and temperature/humidity
+references; MQ channels require the installed divider/calibration evidence; and
+MQ-7 requires documented heater wiring and an approved timing profile. The
+test-only HX711 profile used in maintenance HIL remains a fixture and is not
+physical calibration evidence. No sensor, heater-continuity, or NVS power-cut
+evidence is invented.
 
 The QinHeng bridge and native Espressif interface are separate transport paths.
 The current firmware maintenance adapter uses native `Serial`; bridge runtime
