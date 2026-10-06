@@ -28,6 +28,11 @@ struct FixedText final {
   [[nodiscard]] std::string_view view() const noexcept {
     return std::string_view(bytes.data(), size);
   }
+  void clear() noexcept {
+    volatile char* output = bytes.data();
+    for (std::size_t i = 0U; i < bytes.size(); ++i) output[i] = '\0';
+    size = 0U;
+  }
 };
 
 enum class CommandKind : std::uint8_t {
@@ -48,6 +53,7 @@ enum class CommandKind : std::uint8_t {
   SecretRotateToken,
   SecretClear,
   CalibrationStart,
+  CalibrationCriteria,
   CalibrationStatus,
   CalibrationCapture,
   CalibrationValidate,
@@ -57,6 +63,9 @@ enum class CommandKind : std::uint8_t {
   ProfileStatus,
   ProfileExport,
   ProfileImport,
+  ProfileImportBegin,
+  ProfileImportChunk,
+  ProfileImportFinish,
   ProfileRollback,
   ProfileReset,
   Reboot,
@@ -80,9 +89,17 @@ struct MaintenanceCommand final {
   CommandKind kind{CommandKind::Unknown};
   FixedText<64U> target{};
   FixedText<64U> field{};
-  FixedText<64U> value{};
+  FixedText<129U> value{};
   std::int64_t numeric_value{0};
   bool has_numeric{false};
+
+  void clear_sensitive() noexcept {
+    target.clear();
+    field.clear();
+    value.clear();
+    numeric_value = 0;
+    has_numeric = false;
+  }
 };
 
 struct ParseEvent final {
@@ -167,7 +184,7 @@ class MaintenanceService final {
   }
 
  private:
-  void dispatch(const ParseEvent& event, std::uint64_t now_us,
+  void dispatch(ParseEvent& event, std::uint64_t now_us,
                 MaintenancePollStats& stats) noexcept;
 
   IMaintenanceTransport& transport_;

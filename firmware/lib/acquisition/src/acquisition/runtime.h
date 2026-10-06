@@ -20,6 +20,14 @@ class AcquisitionFoundation final {
         record_factory_(record_factory),
         target_(record_factory_, pins, profiles, handoff_) {}
 
+  void set_sample_observer(ISampleObserver* observer) noexcept {
+    target_.set_sample_observer(observer);
+  }
+  void set_calibration_state_provider(
+      const ICalibrationStateProvider* provider) noexcept {
+    target_.set_calibration_state_provider(provider);
+  }
+
   bool begin(const config::AppConfig& active, const ConfigRef& ref,
              uint64_t first_due_us) noexcept {
     disable();
@@ -41,10 +49,9 @@ class AcquisitionFoundation final {
   }
 
   bool refresh_profiles(uint64_t first_due_us) noexcept {
-    if (!enabled_ || !config_.runtime_ready() || !config_ref_.present) return false;
-    target_.disable();
-    enabled_ = target_.begin(sampling_, first_due_us);
-    return enabled_;
+    (void)first_due_us;
+    return enabled_ && config_.runtime_ready() && config_ref_.present &&
+           target_.refresh_profiles();
   }
 
   bool enabled() const noexcept { return enabled_; }

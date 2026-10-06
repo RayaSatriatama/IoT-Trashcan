@@ -54,6 +54,7 @@ struct AcquisitionJob final {
   Acquirer* acquirer{nullptr};
   SampleRing<Capacity>* handoff{nullptr};
   SensorHealthState* health{nullptr};
+  ISampleObserver* observer{nullptr};
 
   static void run(void* context, uint64_t now_us) noexcept {
     auto* job = static_cast<AcquisitionJob*>(context);
@@ -65,6 +66,7 @@ struct AcquisitionJob final {
       if (job->health != nullptr) {
         job->health->observe(now_us, record.quality);
       }
+      if (job->observer != nullptr) job->observer->observe(record);
       (void)job->handoff->try_push(record);
     }
   }
@@ -116,7 +118,8 @@ class TargetAcquisitionGraph final {
         ds_period == 0U || sht_period == 0U) {
       return false;
     }
-    if (profiles_.ds18b20 == nullptr) {
+    if (profiles_.ds18b20 == nullptr ||
+        profiles_.ds18b20->manifest.validity == ProfileValidity::Missing) {
       ds_channel_state_ = DsChannelState::ProfileMissing;
     } else if (!profiles_.ds18b20->valid_for_acquisition() ||
                !profile_matches(profiles_.ds18b20->manifest,
@@ -135,47 +138,47 @@ class TargetAcquisitionGraph final {
         effective_ultrasonic_gap(profiles_.ultrasonic));
     heater_profile_ = profiles_.heater != nullptr ? *profiles_.heater : Mq7HeaterProfile{};
     heater_.emplace(*readers_.heater_rail, heater_profile_);
-    hx_org_.emplace(SensorId::Hx711Organic, StreamId::Organic, *readers_.hx711[0], factory_, profiles_.hx711[0]);
-    hx_inorganic_.emplace(SensorId::Hx711Inorganic, StreamId::Inorganic, *readers_.hx711[1], factory_, profiles_.hx711[1]);
-    hx_b3_.emplace(SensorId::Hx711B3, StreamId::B3, *readers_.hx711[2], factory_, profiles_.hx711[2]);
+    hx_org_.emplace(SensorId::Hx711Organic, StreamId::Organic, *readers_.hx711[0], factory_, profiles_.hx711[0], calibration_);
+    hx_inorganic_.emplace(SensorId::Hx711Inorganic, StreamId::Inorganic, *readers_.hx711[1], factory_, profiles_.hx711[1], calibration_);
+    hx_b3_.emplace(SensorId::Hx711B3, StreamId::B3, *readers_.hx711[2], factory_, profiles_.hx711[2], calibration_);
     us_org_.emplace(StreamId::Organic, *readers_.ultrasonic[0], factory_,
                     profiles_.ultrasonic[0],
                     resolve_ultrasonic_params(profiles_.ultrasonic[0],
                                               SensorId::UltrasonicOrganic),
-                    us_gate_);
+                    us_gate_, calibration_);
     us_inorganic_.emplace(StreamId::Inorganic, *readers_.ultrasonic[1], factory_,
                           profiles_.ultrasonic[1],
                           resolve_ultrasonic_params(profiles_.ultrasonic[1],
                                                     SensorId::UltrasonicInorganic),
-                          us_gate_);
+                          us_gate_, calibration_);
     us_b3_.emplace(StreamId::B3, *readers_.ultrasonic[2], factory_,
                    profiles_.ultrasonic[2],
                    resolve_ultrasonic_params(profiles_.ultrasonic[2],
                                              SensorId::UltrasonicB3),
-                   us_gate_);
-    mq4_.emplace(SensorId::Mq4, StreamId::Organic, *readers_.mq_adc[0], factory_, profiles_.mq_adc[0]);
-    mq135_.emplace(SensorId::Mq135, StreamId::Organic, *readers_.mq_adc[1], factory_, profiles_.mq_adc[1]);
-    mq7_.emplace(SensorId::Mq7, StreamId::B3, *readers_.mq_adc[2], factory_, profiles_.mq_adc[2], &*heater_);
-    mq8_.emplace(SensorId::Mq8, StreamId::B3, *readers_.mq_adc[3], factory_, profiles_.mq_adc[3]);
+                   us_gate_, calibration_);
+    mq4_.emplace(SensorId::Mq4, StreamId::Organic, *readers_.mq_adc[0], factory_, profiles_.mq_adc[0], calibration_);
+    mq135_.emplace(SensorId::Mq135, StreamId::Organic, *readers_.mq_adc[1], factory_, profiles_.mq_adc[1], calibration_);
+    mq7_.emplace(SensorId::Mq7, StreamId::B3, *readers_.mq_adc[2], factory_, profiles_.mq_adc[2], &*heater_, calibration_);
+    mq8_.emplace(SensorId::Mq8, StreamId::B3, *readers_.mq_adc[3], factory_, profiles_.mq_adc[3], calibration_);
     ds18b20_.emplace(*readers_.ds18b20, factory_, profiles_.ds18b20,
                      resolve_ds18b20_conversion_time(profiles_.ds18b20),
-                     ds_channel_state_);
-    sht31_44_.emplace(0x44U, StreamId::Organic, *readers_.sht31[0], factory_, profiles_.sht31[0]);
-    sht31_45_.emplace(0x45U, StreamId::B3, *readers_.sht31[1], factory_, profiles_.sht31[1]);
-    hx_jobs_[0] = {&*hx_org_, &handoff_, &health_[0]};
-    hx_jobs_[1] = {&*hx_inorganic_, &handoff_, &health_[1]};
-    hx_jobs_[2] = {&*hx_b3_, &handoff_, &health_[2]};
+                     ds_channel_state_, calibration_);
+    sht31_44_.emplace(0x44U, StreamId::Organic, *readers_.sht31[0], factory_, profiles_.sht31[0], calibration_);
+    sht31_45_.emplace(0x45U, StreamId::B3, *readers_.sht31[1], factory_, profiles_.sht31[1], calibration_);
+    hx_jobs_[0] = {&*hx_org_, &handoff_, &health_[0], observer_};
+    hx_jobs_[1] = {&*hx_inorganic_, &handoff_, &health_[1], observer_};
+    hx_jobs_[2] = {&*hx_b3_, &handoff_, &health_[2], observer_};
     us_jobs_[0] = {&*us_org_};
     us_jobs_[1] = {&*us_inorganic_};
     us_jobs_[2] = {&*us_b3_};
-    mq_jobs_[0] = {&*mq4_, &handoff_, &health_[6]};
-    mq_jobs_[1] = {&*mq135_, &handoff_, &health_[7]};
-    mq_jobs_[2] = {&*mq7_, &handoff_, &health_[8]};
-    mq_jobs_[3] = {&*mq8_, &handoff_, &health_[9]};
+    mq_jobs_[0] = {&*mq4_, &handoff_, &health_[6], observer_};
+    mq_jobs_[1] = {&*mq135_, &handoff_, &health_[7], observer_};
+    mq_jobs_[2] = {&*mq7_, &handoff_, &health_[8], observer_};
+    mq_jobs_[3] = {&*mq8_, &handoff_, &health_[9], observer_};
     heater_job_.controller = &*heater_;
-    ds_job_ = {&*ds18b20_, &handoff_, &health_[10]};
-    sht_jobs_[0] = {&*sht31_44_, &handoff_, &health_[11]};
-    sht_jobs_[1] = {&*sht31_45_, &handoff_, &health_[12]};
+    ds_job_ = {&*ds18b20_, &handoff_, &health_[10], observer_};
+    sht_jobs_[0] = {&*sht31_44_, &handoff_, &health_[11], observer_};
+    sht_jobs_[1] = {&*sht31_45_, &handoff_, &health_[12], observer_};
 
     bool ok = true;
     ok = add(hx_period, &AcquisitionJob<Hx711Acquirer, kHandoffCapacity>::run, &hx_jobs_[0], first_due_us) && ok;
@@ -207,6 +210,42 @@ class TargetAcquisitionGraph final {
   }
 
   void disable() noexcept { enabled_ = false; }
+
+  void set_sample_observer(ISampleObserver* observer) noexcept {
+    observer_ = observer;
+  }
+
+  void set_calibration_state_provider(
+      const ICalibrationStateProvider* provider) noexcept {
+    calibration_ = provider;
+  }
+
+  bool refresh_profiles() noexcept {
+    if (!enabled_) return false;
+    if (profiles_.heater != nullptr && heater_.has_value()) {
+      heater_->set_profile(*profiles_.heater);
+    }
+    const bool profile_ready =
+        profiles_.ds18b20 != nullptr &&
+        profiles_.ds18b20->valid_for_acquisition() &&
+        profile_matches(profiles_.ds18b20->manifest, SensorId::Ds18b20B3);
+    if (!profile_ready) {
+      ds_channel_state_ = profiles_.ds18b20 == nullptr
+                              ? DsChannelState::ProfileMissing
+                              : DsChannelState::ProfileInvalid;
+      if (ds18b20_.has_value()) {
+        ds18b20_->rebind_profile(profiles_.ds18b20, ds_channel_state_);
+      }
+      return true;
+    }
+    ds_channel_state_ = readers_.ds18b20->begin()
+                            ? DsChannelState::Ready
+                            : DsChannelState::ProfileApplyFailed;
+    if (ds18b20_.has_value()) {
+      ds18b20_->rebind_profile(profiles_.ds18b20, ds_channel_state_);
+    }
+    return true;
+  }
 
   bool enabled() const noexcept { return enabled_; }
   std::size_t registered_jobs() const noexcept { return registered_jobs_; }
@@ -241,6 +280,7 @@ class TargetAcquisitionGraph final {
     SampleRecord record{};
     if (acquirer.service(now_us, record) == DriverPollStatus::Produced) {
       health.observe(now_us, record.quality);
+      if (observer_ != nullptr) observer_->observe(record);
       (void)handoff_.try_push(record);
     }
   }
@@ -283,6 +323,8 @@ class TargetAcquisitionGraph final {
   CooperativeScheduler scheduler_{};
   std::size_t registered_jobs_{0};
   bool enabled_{false};
+  ISampleObserver* observer_{nullptr};
+  const ICalibrationStateProvider* calibration_{nullptr};
 };
 
 // Minimal target GPIO adapters. They intentionally expose only bounded,
@@ -388,8 +430,18 @@ class TargetDs18b20Reader final : public IDs18b20Reader {
  public:
   TargetDs18b20Reader(uint8_t data_pin,
                       const Ds18b20Profile* profile = nullptr) noexcept
-      : data_pin_(data_pin), profile_(profile) {
+      : data_pin_(data_pin) {
     pinMode(data_pin_, INPUT_PULLUP);
+    set_profile(profile);
+  }
+
+  void set_profile(const Ds18b20Profile* profile) noexcept {
+    profile_ = profile;
+    expected_rom_ = {};
+    expected_rom_valid_ = false;
+    configured_ = false;
+    conversion_requested_ = false;
+    completion_observed_ = false;
     if (profile_ != nullptr && profile_->valid_for_acquisition() &&
         profile_matches(profile_->manifest, SensorId::Ds18b20B3) &&
         profile_->rom[0] == 0x28U &&
@@ -647,6 +699,7 @@ class TargetUltrasonicReader final : public IUltrasonicReader {
 class TargetDs18b20Reader final : public IDs18b20Reader {
  public:
   explicit TargetDs18b20Reader(uint8_t, const Ds18b20Profile* = nullptr) noexcept {}
+  void set_profile(const Ds18b20Profile*) noexcept {}
   bool request_conversion() noexcept override { return false; }
   Ds18b20ReadResult read_conversion() noexcept override { return Ds18b20ReadResult{}; }
 };
@@ -680,8 +733,9 @@ class TargetAcquisition final {
         us_inorganic_(pins_.inorganic_ultrasonic_trig, pins_.inorganic_ultrasonic_echo),
         us_b3_(pins_.b3_ultrasonic_trig, pins_.b3_ultrasonic_echo),
         mq4_(pins_.mq4_adc), mq135_(pins_.mq135_adc), mq7_(pins_.mq7_adc), mq8_(pins_.mq8_adc),
-        ds18b20_(pins_.ds18b20_data, profiles.ds18b20), sht31_(pins_.sht31_sda, pins_.sht31_scl),
+        ds18b20_(pins_.ds18b20_data, nullptr), sht31_(pins_.sht31_sda, pins.sht31_scl),
         heater_rail_(pins_.mq7_heater_select),
+        profiles_(profiles),
         readers_{{&hx_org_, &hx_inorganic_, &hx_b3_},
                  {&us_org_, &us_inorganic_, &us_b3_},
                  {&mq4_, &mq135_, &mq7_, &mq8_}, &ds18b20_,
@@ -689,10 +743,22 @@ class TargetAcquisition final {
         graph_(factory, readers_, profiles, handoff) {}
 
   bool begin(const config::SamplingConfig& sampling, uint64_t first_due_us) noexcept {
+    ds18b20_.set_profile(profiles_.ds18b20);
     return graph_.begin(sampling, first_due_us);
   }
   void disable() noexcept { graph_.disable(); }
   void poll(uint64_t now_us) noexcept { graph_.poll(now_us); }
+  bool refresh_profiles() noexcept {
+    ds18b20_.set_profile(profiles_.ds18b20);
+    return graph_.refresh_profiles();
+  }
+  void set_sample_observer(ISampleObserver* observer) noexcept {
+    graph_.set_sample_observer(observer);
+  }
+  void set_calibration_state_provider(
+      const ICalibrationStateProvider* provider) noexcept {
+    graph_.set_calibration_state_provider(provider);
+  }
   bool enabled() const noexcept { return graph_.enabled(); }
   std::size_t registered_jobs() const noexcept { return graph_.registered_jobs(); }
   SampleRing<kHandoffCapacity>& handoff() noexcept { return graph_.handoff(); }
@@ -712,6 +778,7 @@ class TargetAcquisition final {
   TargetDs18b20Reader ds18b20_;
   TargetSht31Reader sht31_;
   TargetHeaterRail heater_rail_;
+  const TargetProfileSet& profiles_;
   TargetReaderSet readers_{};
   TargetAcquisitionGraph graph_;
 };

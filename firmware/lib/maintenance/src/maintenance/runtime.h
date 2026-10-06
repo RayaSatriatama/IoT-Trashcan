@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 #include "config/config_manager.h"
@@ -26,6 +27,12 @@ class NullTransport final : public IMaintenanceTransport {
   bool write(std::string_view) noexcept override { return true; }
 };
 
+class IRebootController {
+ public:
+  virtual ~IRebootController() = default;
+  virtual void request_reboot() noexcept = 0;
+};
+
 #ifdef ARDUINO
 class ArduinoUsbTransport final : public IMaintenanceTransport {
  public:
@@ -33,14 +40,38 @@ class ArduinoUsbTransport final : public IMaintenanceTransport {
   int read() noexcept override;
   bool write(std::string_view value) noexcept override;
 };
+
+class ArduinoRebootController final : public IRebootController {
+ public:
+  void request_reboot() noexcept override;
+  bool consume_request() noexcept {
+    const bool requested = requested_;
+    requested_ = false;
+    return requested;
+  }
+
+ private:
+  bool requested_{false};
+};
 #endif
 
-class CommandRouter final : public IMaintenanceCommandSink {
+class NullRebootController final : public IRebootController {
+ public:
+  void request_reboot() noexcept override {}
+  bool consume_request() noexcept { return false; }
+};
+
+class CommandRouter final : public IMaintenanceCommandSink,
+                            public acquisition::ICalibrationStateProvider {
  public:
   CommandRouter(config::ConfigManager& config,
                 provisioning::SecretStore& secrets,
-                acquisition::ProfileManager* profiles = nullptr) noexcept
-      : config_(config), secrets_(secrets), profiles_(profiles) {
+                acquisition::ProfileManager* profiles = nullptr,
+                calibration::ICalibrationEvidenceSource* evidence = nullptr,
+                IRebootController* reboot = nullptr,
+                acquisition::IProfileAuditSink* audit = nullptr) noexcept
+      : config_(config), secrets_(secrets), profiles_(profiles),
+        evidence_(evidence), reboot_(reboot), audit_(audit) {
     refresh_mode();
   }
 
@@ -50,12 +81,15 @@ class CommandRouter final : public IMaintenanceCommandSink {
 
   void refresh_mode() noexcept;
   DeviceMode mode() const noexcept { return mode_; }
+  bool is_calibrating(acquisition::SensorId sensor) const noexcept override;
+  bool reboot_requested() const noexcept { return reboot_requested_; }
 
  private:
   static bool field_from_text(const FixedText<64U>& text,
                               config::ConfigField& field) noexcept;
   static bool append_u64(MaintenanceResponse& response,
-                         const char* label, uint64_t value) noexcept;
+                         const char* label, uint64_t value,
+                         bool newline = true) noexcept;
   static bool append_hash(MaintenanceResponse& response,
                           const config::ConfigHash& hash) noexcept;
   static bool calibration_target_from_text(
@@ -63,11 +97,40 @@ class CommandRouter final : public IMaintenanceCommandSink {
       calibration::CalibrationTarget& target) noexcept;
   CommandStatus execute_config(const MaintenanceCommand& command,
                                MaintenanceResponse& response) noexcept;
+  bool build_and_stage_calibration_profile() noexcept;
+  CommandStatus profile_transfer(const MaintenanceCommand& command,
+                                 MaintenanceResponse& response) noexcept;
 
   config::ConfigManager& config_;
   provisioning::SecretStore& secrets_;
   acquisition::ProfileManager* profiles_{nullptr};
+  calibration::ICalibrationEvidenceSource* evidence_{nullptr};
+  IRebootController* reboot_{nullptr};
+  acquisition::IProfileAuditSink* audit_{nullptr};
   calibration::CalibrationSession calibration_{};
+  uint64_t evidence_sequence_{0U};
+  bool criteria_set_{false};
+  calibration::CalibrationTarget pending_target_{calibration::CalibrationTarget::Hx711Organic};
+  uint16_t criteria_samples_{0U};
+  int64_t criteria_span_{0};
+  bool criteria_span_set_{false};
+  uint64_t reference_mass_mg_{0U};
+  int32_t reference_temperature_centi_c_{0};
+  int32_t reference_humidity_centi_pct_{0};
+  bool reference_temperature_set_{false};
+  bool reference_humidity_set_{false};
+  bool reboot_requested_{false};
+  acquisition::ProfileKey transfer_key_{
+      acquisition::ProfileKind::Calibration,
+      acquisition::ProfileTarget::Unknown};
+  acquisition::EncodedProfile transfer_profile_{};
+  std::size_t transfer_expected_size_{0U};
+  std::size_t transfer_received_size_{0U};
+  std::size_t transfer_export_offset_{0U};
+  config::ConfigHash transfer_expected_hash_{};
+  bool transfer_expected_hash_present_{false};
+  bool transfer_import_active_{false};
+  bool transfer_export_active_{false};
   DeviceMode mode_{DeviceMode::ConfigRequired};
 };
 

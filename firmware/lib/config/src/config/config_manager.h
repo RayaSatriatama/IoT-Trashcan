@@ -34,6 +34,7 @@ class ConfigManager final {
 
   const AppConfig& active() const noexcept { return active_; }
   const ConfigIdentity& identity() const noexcept { return identity_; }
+  const ConfigIdentity& pending_identity() const noexcept { return pending_identity_; }
   const AppConfig& draft() const noexcept { return draft_; }
   bool has_draft() const noexcept { return has_draft_; }
 
@@ -78,6 +79,7 @@ class ConfigManager final {
   EncodedConfig encoded_scratch_{};
   EncodedConfig readback_scratch_{};
   ActivationMetadata activation_metadata_{};
+  ConfigIdentity pending_identity_{};
 };
 
 }  // namespace sigap::config

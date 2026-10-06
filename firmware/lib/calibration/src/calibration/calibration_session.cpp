@@ -28,7 +28,81 @@ ProfileValidationResult profile_result(ProfileValidationCode code) noexcept {
   return ProfileValidationResult{code};
 }
 
+std::size_t target_index(CalibrationTarget target) noexcept {
+  return static_cast<std::size_t>(target);
+}
+
+bool target_from_sensor(acquisition::SensorId sensor,
+                        CalibrationTarget& target) noexcept {
+  switch (sensor) {
+    case SensorId::Hx711Organic: target = CalibrationTarget::Hx711Organic; return true;
+    case SensorId::Hx711Inorganic: target = CalibrationTarget::Hx711Inorganic; return true;
+    case SensorId::Hx711B3: target = CalibrationTarget::Hx711B3; return true;
+    case SensorId::UltrasonicOrganic: target = CalibrationTarget::UltrasonicOrganic; return true;
+    case SensorId::UltrasonicInorganic: target = CalibrationTarget::UltrasonicInorganic; return true;
+    case SensorId::UltrasonicB3: target = CalibrationTarget::UltrasonicB3; return true;
+    case SensorId::Mq4: target = CalibrationTarget::Mq4; return true;
+    case SensorId::Mq135: target = CalibrationTarget::Mq135; return true;
+    case SensorId::Mq7: target = CalibrationTarget::Mq7; return true;
+    case SensorId::Mq8: target = CalibrationTarget::Mq8; return true;
+    case SensorId::Ds18b20B3: target = CalibrationTarget::Ds18b20B3; return true;
+    case SensorId::Sht31_44: target = CalibrationTarget::Sht31_44; return true;
+    case SensorId::Sht31_45: target = CalibrationTarget::Sht31_45; return true;
+  }
+  return false;
+}
+
 }  // namespace
+
+void CalibrationEvidenceCache::observe(
+    const acquisition::SampleRecord& sample) noexcept {
+  CalibrationTarget target{};
+  if (!target_from_sensor(sample.header.sensor, target)) return;
+  const auto index = target_index(target);
+  if (index >= present_.size() ||
+      (present_[index] && sample.header.sequence <= sequences_[index])) return;
+  TrialObservation observation{};
+  switch (sample.header.kind) {
+    case acquisition::SampleKind::Hx711Counts:
+      observation = Hx711Trial{sample.raw.signed_counts, sample.quality};
+      break;
+    case acquisition::SampleKind::UltrasonicEcho:
+      observation = UltrasonicTrial{static_cast<float>(sample.raw.distance_us),
+                                    sample.quality};
+      break;
+    case acquisition::SampleKind::MqAdc:
+      observation = MqTrial{sample.raw.adc_counts, sample.quality,
+                            sample.quality == acquisition::SampleQuality::Ready};
+      break;
+    case acquisition::SampleKind::Ds18b20:
+      observation = Ds18b20Trial{sample.raw.temperature_centi_c, sample.quality,
+                                 sample.raw.present, sample.header.profile_ref.present,
+                                 sample.quality == acquisition::SampleQuality::Ready,
+                                 sample.quality != acquisition::SampleQuality::CrcError};
+      break;
+    case acquisition::SampleKind::Sht31:
+      observation = Sht31Trial{sample.raw.temperature_centi_c,
+                               sample.raw.humidity_centi_pct, sample.quality,
+                               sample.raw.present,
+                               sample.quality != acquisition::SampleQuality::CrcError,
+                               sample.quality != acquisition::SampleQuality::CrcError};
+      break;
+  }
+  observations_[index] = observation;
+  sequences_[index] = sample.header.sequence;
+  present_[index] = true;
+}
+
+bool CalibrationEvidenceCache::latest(
+    CalibrationTarget target, uint64_t after_sequence,
+    TrialObservation& output, uint64_t& observed_sequence) const noexcept {
+  const auto index = target_index(target);
+  if (index >= present_.size() || !present_[index] ||
+      sequences_[index] <= after_sequence) return false;
+  output = observations_[index];
+  observed_sequence = sequences_[index];
+  return true;
+}
 
 void CaptureStats::observe(double value) noexcept {
   if (!std::isfinite(value) || count == UINT32_MAX) {
@@ -201,6 +275,8 @@ bool CalibrationSession::start(CalibrationTarget target,
   }
   criteria_ = criteria;
   started_at_us_ = now_us;
+  last_activity_us_ = now_us;
+  secondary_required_ = false;
   state_ = CalibrationState::Capture;
   failure_ = CalibrationFailure::None;
   primary_ = CaptureStats{};
@@ -214,9 +290,15 @@ bool CalibrationSession::valid_span(double span, double maximum) const noexcept 
 }
 
 bool CalibrationSession::required_samples_reached() const noexcept {
-  return std::visit(
+  const bool primary_ready = std::visit(
       [this](const auto& value) noexcept {
         return primary_.count >= value.required_samples;
+      },
+      criteria_);
+  if (!primary_ready || !secondary_required_) return primary_ready;
+  return std::visit(
+      [this](const auto& value) noexcept {
+        return secondary_.count >= value.required_samples;
       },
       criteria_);
 }
@@ -308,6 +390,40 @@ bool CalibrationSession::observe(const TrialObservation& trial) noexcept {
   return accepted;
 }
 
+void CalibrationSession::touch(uint64_t now_us) noexcept {
+  if (state_ != CalibrationState::Idle && now_us >= last_activity_us_) {
+    last_activity_us_ = now_us;
+  }
+}
+
+bool CalibrationSession::observe_anchor(const TrialObservation& trial,
+                                        CalibrationAnchor anchor) noexcept {
+  if (anchor == CalibrationAnchor::Primary ||
+      anchor == CalibrationAnchor::Tare ||
+      anchor == CalibrationAnchor::Empty) {
+    return observe(trial);
+  }
+  if (state_ != CalibrationState::Capture) return false;
+  const CaptureStats saved_primary = primary_;
+  primary_ = secondary_;
+  const bool accepted = observe(trial);
+  secondary_ = primary_;
+  primary_ = saved_primary;
+  secondary_required_ = true;
+  if (state_ == CalibrationState::Validate && !required_samples_reached()) {
+    state_ = CalibrationState::Capture;
+  }
+  return accepted;
+}
+
+bool CalibrationSession::tick(uint64_t now_us) noexcept {
+  if (state_ == CalibrationState::Idle || state_ == CalibrationState::Failed ||
+      now_us < last_activity_us_) return false;
+  if (now_us - last_activity_us_ <= kSessionTimeoutUs) return false;
+  fail(CalibrationFailure::Timeout);
+  return true;
+}
+
 bool CalibrationSession::validate() noexcept {
   if (state_ != CalibrationState::Validate) return false;
   validation_ = ValidationResult{};
@@ -315,6 +431,10 @@ bool CalibrationSession::validate() noexcept {
   validation_.secondary = secondary_;
   if (primary_.count == 0U) {
     validation_.code = ValidationCode::NoEvidence;
+    return false;
+  }
+  if (secondary_required_ && secondary_.count == 0U) {
+    validation_.code = ValidationCode::InsufficientSamples;
     return false;
   }
   if (!required_samples_reached()) {
@@ -326,9 +446,11 @@ bool CalibrationSession::validate() noexcept {
       [this, &stable](const auto& value) noexcept {
         using T = std::decay_t<decltype(value)>;
         if constexpr (std::is_same_v<T, Hx711CaptureCriteria>) {
-          stable = valid_span(primary_.span(), static_cast<double>(value.max_span_counts));
+          stable = valid_span(primary_.span(), static_cast<double>(value.max_span_counts)) &&
+                   (!secondary_required_ || valid_span(secondary_.span(), static_cast<double>(value.max_span_counts)));
         } else if constexpr (std::is_same_v<T, DistanceCaptureCriteria>) {
-          stable = valid_span(primary_.span(), value.max_span_mm);
+          stable = valid_span(primary_.span(), value.max_span_mm) &&
+                   (!secondary_required_ || valid_span(secondary_.span(), value.max_span_mm));
         } else if constexpr (std::is_same_v<T, MqCaptureCriteria>) {
           stable = valid_span(primary_.span(), value.max_span_counts);
         } else if constexpr (std::is_same_v<T, Ds18b20CaptureCriteria>) {
@@ -387,6 +509,8 @@ void CalibrationSession::reset() noexcept {
   validation_ = ValidationResult{};
   failure_ = CalibrationFailure::None;
   started_at_us_ = 0U;
+  last_activity_us_ = 0U;
+  secondary_required_ = false;
 }
 
 }  // namespace sigap::calibration

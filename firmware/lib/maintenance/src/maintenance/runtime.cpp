@@ -2,6 +2,7 @@
 
 #include <charconv>
 #include <cstdint>
+#include <limits>
 
 #ifdef ARDUINO
 #include <Arduino.h>
@@ -28,6 +29,16 @@ const char* mode_name(DeviceMode mode) noexcept {
     case DeviceMode::StorageError: return "STORAGE_ERROR";
   }
   return "STORAGE_ERROR";
+}
+
+acquisition::ConfigRef config_ref_from_identity(
+    const config::ConfigIdentity& identity) noexcept {
+  acquisition::ConfigRef ref{};
+  ref.schema_version = identity.schema_version;
+  ref.config_version = identity.config_version;
+  ref.hash = identity.hash;
+  ref.present = identity.has_slot;
+  return ref;
 }
 
 bool profile_target_from_text(const FixedText<64U>& text,
@@ -57,6 +68,62 @@ bool profile_target_from_text(const FixedText<64U>& text,
   return false;
 }
 
+bool profile_key_from_text(const FixedText<64U>& text,
+                           acquisition::ProfileKey& key) noexcept {
+  const std::string_view value = text.view();
+  const auto separator = value.find(':');
+  FixedText<64U> base{};
+  if (!base.assign(value.substr(0U, separator == std::string_view::npos
+                                      ? value.size() : separator))) return false;
+  if (!profile_target_from_text(base, key.target)) return false;
+  key.kind = acquisition::default_profile_kind(key.target);
+  if (separator != std::string_view::npos) {
+    if (value.substr(separator + 1U) == "heater") {
+      key.kind = acquisition::ProfileKind::Heater;
+    } else if (value.substr(separator + 1U) != "adc") {
+      return false;
+    }
+  }
+  return true;
+}
+
+int hex_digit(char value) noexcept {
+  if (value >= '0' && value <= '9') return value - '0';
+  if (value >= 'a' && value <= 'f') return value - 'a' + 10;
+  if (value >= 'A' && value <= 'F') return value - 'A' + 10;
+  return -1;
+}
+
+bool decode_hex(std::string_view text, uint8_t* output,
+                std::size_t capacity, std::size_t& written) noexcept {
+  if (output == nullptr || (text.size() % 2U) != 0U || text.size() / 2U > capacity) return false;
+  written = text.size() / 2U;
+  for (std::size_t i = 0U; i < written; ++i) {
+    const int high = hex_digit(text[i * 2U]);
+    const int low = hex_digit(text[i * 2U + 1U]);
+    if (high < 0 || low < 0) return false;
+    output[i] = static_cast<uint8_t>((high << 4) | low);
+  }
+  return true;
+}
+
+bool decode_hash(std::string_view text, config::ConfigHash& output) noexcept {
+  std::size_t written{0U};
+  return text.size() == output.size() * 2U &&
+         decode_hex(text, output.data(), output.size(), written) &&
+         written == output.size();
+}
+
+bool append_hex(MaintenanceResponse& response, const uint8_t* bytes,
+                std::size_t size) noexcept {
+  static constexpr char digits[] = "0123456789abcdef";
+  for (std::size_t i = 0U; i < size; ++i) {
+    char output[2]{digits[bytes[i] >> 4U], digits[bytes[i] & 0x0fU]};
+    if (!response.append(std::string_view(output, 2U))) return false;
+  }
+  return true;
+}
+
 }  // namespace
 
 #ifdef ARDUINO
@@ -67,6 +134,13 @@ int ArduinoUsbTransport::read() noexcept { return Serial.read(); }
 bool ArduinoUsbTransport::write(std::string_view value) noexcept {
   return Serial.write(reinterpret_cast<const uint8_t*>(value.data()),
                       value.size()) == value.size();
+}
+
+void ArduinoRebootController::request_reboot() noexcept {
+  // Defer the actual reset until the application has flushed the response
+  // produced by MaintenanceService.  Calling ESP.restart() here can truncate
+  // the acknowledgement on the USB transport.
+  requested_ = true;
 }
 #endif
 
@@ -121,14 +195,17 @@ bool CommandRouter::field_from_text(const FixedText<64U>& text,
 }
 
 bool CommandRouter::append_u64(MaintenanceResponse& response,
-                               const char* label, uint64_t value) noexcept {
+                               const char* label, uint64_t value,
+                               bool newline) noexcept {
   char buffer[21]{};
   const auto result = std::to_chars(buffer, buffer + sizeof(buffer), value);
   if (result.ec != std::errc{}) return false;
-  return response.append(label) &&
-         response.append(std::string_view(buffer,
-                                          static_cast<std::size_t>(result.ptr - buffer))) &&
-         response.append("\n");
+  if (!response.append(label) ||
+      !response.append(std::string_view(
+          buffer, static_cast<std::size_t>(result.ptr - buffer)))) {
+    return false;
+  }
+  return !newline || response.append("\n");
 }
 
 bool CommandRouter::append_hash(MaintenanceResponse& response,
@@ -169,6 +246,10 @@ CommandStatus CommandRouter::execute_config(const MaintenanceCommand& command,
     case CommandKind::ConfigCommit:
       if (!config_.commit_draft()) return CommandStatus::Rejected;
       mode_ = DeviceMode::RebootRequired;
+      if (audit_ != nullptr) {
+        audit_->config_committed(
+            config_ref_from_identity(config_.pending_identity()));
+      }
       return CommandStatus::Accepted;
     case CommandKind::ConfigCancel:
       return config_.cancel_draft() ? CommandStatus::Accepted : CommandStatus::Rejected;
@@ -180,10 +261,220 @@ CommandStatus CommandRouter::execute_config(const MaintenanceCommand& command,
   }
 }
 
+bool CommandRouter::is_calibrating(acquisition::SensorId sensor) const noexcept {
+  const auto state = calibration_.state();
+  if (state != calibration::CalibrationState::Idle &&
+      state != calibration::CalibrationState::Failed &&
+      state != calibration::CalibrationState::Capture &&
+      state != calibration::CalibrationState::Validate &&
+      state != calibration::CalibrationState::Preview &&
+      state != calibration::CalibrationState::Commit) {
+    return false;
+  }
+  acquisition::SensorId expected = acquisition::SensorId::Hx711Organic;
+  switch (calibration_.target()) {
+    case calibration::CalibrationTarget::Hx711Organic: expected = acquisition::SensorId::Hx711Organic; break;
+    case calibration::CalibrationTarget::Hx711Inorganic: expected = acquisition::SensorId::Hx711Inorganic; break;
+    case calibration::CalibrationTarget::Hx711B3: expected = acquisition::SensorId::Hx711B3; break;
+    case calibration::CalibrationTarget::UltrasonicOrganic: expected = acquisition::SensorId::UltrasonicOrganic; break;
+    case calibration::CalibrationTarget::UltrasonicInorganic: expected = acquisition::SensorId::UltrasonicInorganic; break;
+    case calibration::CalibrationTarget::UltrasonicB3: expected = acquisition::SensorId::UltrasonicB3; break;
+    case calibration::CalibrationTarget::Mq4: expected = acquisition::SensorId::Mq4; break;
+    case calibration::CalibrationTarget::Mq135: expected = acquisition::SensorId::Mq135; break;
+    case calibration::CalibrationTarget::Mq7: expected = acquisition::SensorId::Mq7; break;
+    case calibration::CalibrationTarget::Mq8: expected = acquisition::SensorId::Mq8; break;
+    case calibration::CalibrationTarget::Ds18b20B3: expected = acquisition::SensorId::Ds18b20B3; break;
+    case calibration::CalibrationTarget::Sht31_44: expected = acquisition::SensorId::Sht31_44; break;
+    case calibration::CalibrationTarget::Sht31_45: expected = acquisition::SensorId::Sht31_45; break;
+  }
+  if (state == calibration::CalibrationState::Failed) return false;
+  if (state == calibration::CalibrationState::Idle) {
+    return mode_ == DeviceMode::Calibrating && sensor == expected;
+  }
+  return sensor == expected;
+}
+
+bool CommandRouter::build_and_stage_calibration_profile() noexcept {
+  if (profiles_ == nullptr) return false;
+  const auto target = static_cast<acquisition::ProfileTarget>(
+      static_cast<uint8_t>(pending_target_) + 1U);
+  const acquisition::ProfileKey key{
+      (pending_target_ >= calibration::CalibrationTarget::Mq4 &&
+       pending_target_ <= calibration::CalibrationTarget::Mq8)
+          ? acquisition::ProfileKind::Adc
+          : acquisition::ProfileKind::Calibration,
+      target};
+  acquisition::ActiveProfileSnapshot active{};
+  if (!profiles_->snapshot(key, active)) return false;
+  const uint32_t version = active.present ? active.ref.profile_version + 1U : 1U;
+  acquisition::ProfileCodec codec{};
+  acquisition::EncodedProfile encoded{};
+  switch (pending_target_) {
+    case calibration::CalibrationTarget::Hx711Organic:
+    case calibration::CalibrationTarget::Hx711Inorganic:
+    case calibration::CalibrationTarget::Hx711B3: {
+      if (reference_mass_mg_ == 0U || calibration_.secondary_stats().count == 0U) return false;
+      acquisition::Hx711Profile profile{};
+      profile.manifest.kind = acquisition::ProfileKind::Calibration;
+      profile.manifest.profile_version = version;
+      profile.manifest.target_id = static_cast<uint32_t>(target);
+      profile.manifest.validity = acquisition::ProfileValidity::Valid;
+      profile.tare_offset_counts = static_cast<int64_t>(calibration_.stats().mean);
+      const double kg = static_cast<double>(reference_mass_mg_) / 1000000.0;
+      const double delta = calibration_.secondary_stats().mean - calibration_.stats().mean;
+      profile.counts_per_kg = static_cast<float>(delta / kg);
+      if (!profile.valid_for_conversion() || !codec.encode(profile, encoded)) return false;
+      break;
+    }
+    case calibration::CalibrationTarget::UltrasonicOrganic:
+    case calibration::CalibrationTarget::UltrasonicInorganic:
+    case calibration::CalibrationTarget::UltrasonicB3: {
+      if (!active.present || calibration_.secondary_stats().count == 0U) return false;
+      acquisition::UltrasonicProfile profile{};
+      if (!codec.decode(active.encoded, profile)) return false;
+      profile.manifest.profile_version = version;
+      profile.d_empty_mm = static_cast<float>(calibration_.stats().mean);
+      profile.d_full_mm = static_cast<float>(calibration_.secondary_stats().mean);
+      profile.manifest.validity = acquisition::ProfileValidity::Valid;
+      if (!profile.valid_for_conversion() || !codec.encode(profile, encoded)) return false;
+      break;
+    }
+    default:
+      if (!active.present) return false;
+      if (pending_target_ == calibration::CalibrationTarget::Ds18b20B3) {
+        if (!reference_temperature_set_) return false;
+        acquisition::Ds18b20Profile profile{};
+        if (!codec.decode(active.encoded, profile)) return false;
+        profile.manifest.profile_version = version;
+        profile.offset_centi_c = reference_temperature_centi_c_ -
+                                 static_cast<int32_t>(calibration_.stats().mean);
+        if (!profile.valid_for_conversion() || !codec.encode(profile, encoded)) return false;
+      } else if (pending_target_ == calibration::CalibrationTarget::Sht31_44 ||
+                 pending_target_ == calibration::CalibrationTarget::Sht31_45) {
+        if (!reference_temperature_set_ || !reference_humidity_set_) return false;
+        acquisition::Sht31Profile profile{};
+        if (!codec.decode(active.encoded, profile)) return false;
+        profile.manifest.profile_version = version;
+        profile.temperature_offset_centi_c =
+            reference_temperature_centi_c_ -
+            static_cast<int32_t>(calibration_.stats().mean);
+        profile.humidity_offset_centi_pct =
+            reference_humidity_centi_pct_ -
+            static_cast<int32_t>(calibration_.secondary_stats().mean);
+        if (!profile.valid_for_conversion() || !codec.encode(profile, encoded)) return false;
+      } else {
+        // MQ calibration retains validated ADC evidence without inventing a
+        // gas model, ppm conversion, R0, or alarm threshold.
+        acquisition::MqAdcProfile profile{};
+        if (!codec.decode(active.encoded, profile)) return false;
+        profile.manifest.profile_version = version;
+        if (!profile.valid_for_conversion() || !codec.encode(profile, encoded)) return false;
+      }
+      break;
+  }
+  return profiles_->stage_import(key, encoded) && profiles_->validate(key) &&
+         profiles_->preview(key) && profiles_->commit(key);
+}
+
+CommandStatus CommandRouter::profile_transfer(
+    const MaintenanceCommand& command, MaintenanceResponse& response) noexcept {
+  if (profiles_ == nullptr) return CommandStatus::Rejected;
+  if (command.kind == CommandKind::ProfileExport) {
+    acquisition::ProfileKey key{};
+    if (!profile_key_from_text(command.target, key)) return CommandStatus::InvalidSyntax;
+    if (!transfer_export_active_ || !(key == transfer_key_)) {
+      if (!profiles_->export_active(key, transfer_profile_)) return CommandStatus::Rejected;
+      transfer_key_ = key;
+      transfer_export_offset_ = 0U;
+      transfer_export_active_ = true;
+    }
+    if (transfer_export_offset_ == 0U) {
+      if (!response.append("PROFILE BEGIN ") ||
+          !append_u64(response, "size=", transfer_profile_.size, false) ||
+          !response.append(" hash=") ||
+          !append_hex(response, transfer_profile_.hash().data(), transfer_profile_.hash().size()) ||
+          !response.append("\nDATA ")) return CommandStatus::Failed;
+    } else if (!response.append("DATA ")) {
+      return CommandStatus::Failed;
+    }
+    const std::size_t remaining = transfer_profile_.size - transfer_export_offset_;
+    const std::size_t chunk = remaining > 48U ? 48U : remaining;
+    if (!append_hex(response, transfer_profile_.bytes.data() + transfer_export_offset_, chunk) ||
+        !response.append("\n")) return CommandStatus::Failed;
+    transfer_export_offset_ += chunk;
+    if (transfer_export_offset_ >= transfer_profile_.size) transfer_export_active_ = false;
+    return CommandStatus::Accepted;
+  }
+  if (command.kind == CommandKind::ProfileImportBegin) {
+    acquisition::ProfileKey key{};
+    if (!profile_key_from_text(command.target, key) || !command.has_numeric ||
+        command.numeric_value <= 0 ||
+        static_cast<std::size_t>(command.numeric_value) > transfer_profile_.bytes.size()) {
+      return CommandStatus::InvalidSyntax;
+    }
+    config::ConfigHash expected_hash{};
+    if (!decode_hash(command.value.view(), expected_hash)) {
+      return CommandStatus::InvalidSyntax;
+    }
+    transfer_key_ = key;
+    transfer_expected_hash_ = expected_hash;
+    transfer_expected_hash_present_ = true;
+    transfer_expected_size_ = static_cast<std::size_t>(command.numeric_value);
+    transfer_received_size_ = 0U;
+    transfer_profile_ = acquisition::EncodedProfile{};
+    transfer_import_active_ = true;
+    return CommandStatus::Accepted;
+  }
+  if (command.kind == CommandKind::ProfileImportChunk) {
+    if (!transfer_import_active_) return CommandStatus::Rejected;
+    std::size_t written{0U};
+    if (!decode_hex(command.value.view(), transfer_profile_.bytes.data() + transfer_received_size_,
+                    transfer_profile_.bytes.size() - transfer_received_size_, written) ||
+        transfer_received_size_ + written > transfer_expected_size_) {
+      transfer_import_active_ = false;
+      return CommandStatus::InvalidSyntax;
+    }
+    transfer_received_size_ += written;
+    return CommandStatus::Accepted;
+  }
+  if (command.kind == CommandKind::ProfileImportFinish) {
+    acquisition::ProfileKey finish_key{};
+    if (!profile_key_from_text(command.target, finish_key) ||
+        !(finish_key == transfer_key_)) {
+      transfer_import_active_ = false;
+      return CommandStatus::InvalidSyntax;
+    }
+    if (!transfer_import_active_ || transfer_received_size_ != transfer_expected_size_) {
+      transfer_import_active_ = false;
+      return CommandStatus::Rejected;
+    }
+    transfer_profile_.size = transfer_received_size_;
+    transfer_import_active_ = false;
+    if (!transfer_expected_hash_present_ ||
+        transfer_profile_.hash() != transfer_expected_hash_) {
+      transfer_expected_hash_present_ = false;
+      return CommandStatus::Rejected;
+    }
+    transfer_expected_hash_present_ = false;
+    if (!profiles_->stage_import(transfer_key_, transfer_profile_) ||
+        !profiles_->validate(transfer_key_) || !profiles_->preview(transfer_key_) ||
+        !profiles_->commit(transfer_key_)) return CommandStatus::Rejected;
+    return CommandStatus::Accepted;
+  }
+  return CommandStatus::Rejected;
+}
+
 CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
-                                     uint64_t,
+                                     uint64_t now_us,
                                      MaintenanceResponse& response) noexcept {
+  const acquisition::ConfigRef current_config =
+      config_ref_from_identity(config_.identity());
+  if (audit_ != nullptr) audit_->set_context(now_us, current_config);
+  if (profiles_ != nullptr) {
+    profiles_->set_audit_context(now_us, current_config);
+  }
   refresh_mode();
+  (void)calibration_.tick(now_us);
   switch (command.kind) {
     case CommandKind::Status:
       if (!response.append("mode=") || !response.append(mode_name(mode_)) ||
@@ -223,24 +514,74 @@ CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
     case CommandKind::CalibrationStart: {
       calibration::CalibrationTarget target{};
       if (!calibration_target_from_text(command.target, target)) return CommandStatus::InvalidSyntax;
-      calibration::CaptureCriteria criteria{calibration::Hx711CaptureCriteria{1U, INT64_MAX}};
-      switch (target) {
-        case calibration::CalibrationTarget::UltrasonicOrganic:
-        case calibration::CalibrationTarget::UltrasonicInorganic:
-        case calibration::CalibrationTarget::UltrasonicB3:
-          criteria = calibration::DistanceCaptureCriteria{1U, 3.402823e+38F};
-          break;
-        case calibration::CalibrationTarget::Mq4:
-        case calibration::CalibrationTarget::Mq135:
-        case calibration::CalibrationTarget::Mq7:
-        case calibration::CalibrationTarget::Mq8:
-          criteria = calibration::MqCaptureCriteria{1U, UINT16_MAX,
-              target == calibration::CalibrationTarget::Mq7};
-          break;
-        default: break;
-      }
-      if (!calibration_.start(target, criteria, 0U)) return CommandStatus::Rejected;
+      pending_target_ = target;
+      criteria_set_ = false;
+      criteria_samples_ = 0U;
+      criteria_span_ = 0;
+      criteria_span_set_ = false;
+      reference_mass_mg_ = 0U;
+      reference_temperature_centi_c_ = 0;
+      reference_humidity_centi_pct_ = 0;
+      reference_temperature_set_ = false;
+      reference_humidity_set_ = false;
       mode_ = DeviceMode::Calibrating;
+      return CommandStatus::Accepted;
+    }
+    case CommandKind::CalibrationCriteria: {
+      const auto field = command.field.view();
+      if (field == "reference_temperature_centi_c") {
+        if (command.numeric_value < std::numeric_limits<int32_t>::min() ||
+            command.numeric_value > std::numeric_limits<int32_t>::max()) {
+          return CommandStatus::InvalidNumeric;
+        }
+        reference_temperature_centi_c_ = static_cast<int32_t>(command.numeric_value);
+        reference_temperature_set_ = true;
+        return CommandStatus::Accepted;
+      }
+      if (field == "reference_humidity_centi_pct") {
+        if (command.numeric_value < 0 ||
+            command.numeric_value > std::numeric_limits<int32_t>::max()) {
+          return CommandStatus::InvalidNumeric;
+        }
+        reference_humidity_centi_pct_ = static_cast<int32_t>(command.numeric_value);
+        reference_humidity_set_ = true;
+        return CommandStatus::Accepted;
+      }
+      if (command.numeric_value <= 0) return CommandStatus::InvalidNumeric;
+      if (field == "samples") {
+        if (command.numeric_value > UINT16_MAX) return CommandStatus::InvalidNumeric;
+        criteria_samples_ = static_cast<uint16_t>(command.numeric_value);
+      } else if (field == "max_span" || field == "max_span_counts") {
+        criteria_span_ = command.numeric_value;
+        criteria_span_set_ = true;
+      } else if (field == "reference_mass_mg") {
+        reference_mass_mg_ = static_cast<uint64_t>(command.numeric_value);
+        return CommandStatus::Accepted;
+      } else {
+        return CommandStatus::InvalidSyntax;
+      }
+      if (criteria_samples_ == 0U || !criteria_span_set_) return CommandStatus::Accepted;
+      calibration::CaptureCriteria criteria{calibration::Hx711CaptureCriteria{
+          criteria_samples_, criteria_span_}};
+      if (pending_target_ >= calibration::CalibrationTarget::UltrasonicOrganic &&
+          pending_target_ <= calibration::CalibrationTarget::UltrasonicB3) {
+        criteria = calibration::DistanceCaptureCriteria{criteria_samples_, static_cast<float>(criteria_span_)};
+      } else if (pending_target_ >= calibration::CalibrationTarget::Mq4 &&
+                 pending_target_ <= calibration::CalibrationTarget::Mq8) {
+        criteria = calibration::MqCaptureCriteria{criteria_samples_,
+                                                   static_cast<uint16_t>(criteria_span_),
+                                                   pending_target_ == calibration::CalibrationTarget::Mq7};
+      } else if (pending_target_ == calibration::CalibrationTarget::Ds18b20B3) {
+        criteria = calibration::Ds18b20CaptureCriteria{criteria_samples_,
+                                                        static_cast<int32_t>(criteria_span_), true};
+      } else if (pending_target_ == calibration::CalibrationTarget::Sht31_44 ||
+                 pending_target_ == calibration::CalibrationTarget::Sht31_45) {
+        criteria = calibration::Sht31CaptureCriteria{criteria_samples_,
+                                                     static_cast<int32_t>(criteria_span_),
+                                                     static_cast<int32_t>(criteria_span_)};
+      }
+      if (!calibration_.start(pending_target_, criteria, now_us)) return CommandStatus::Rejected;
+      criteria_set_ = true;
       return CommandStatus::Accepted;
     }
     case CommandKind::CalibrationStatus:
@@ -248,43 +589,61 @@ CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
           !response.append(calibration_.state() == calibration::CalibrationState::Idle
                                ? "false\n" : "true\n")) return CommandStatus::Failed;
       return CommandStatus::Accepted;
-    case CommandKind::CalibrationCapture:
-      if (!command.has_numeric) return CommandStatus::InvalidSyntax;
-      if (calibration_.target() <= calibration::CalibrationTarget::Hx711B3) {
-        return calibration_.observe(calibration::Hx711Trial{
-                    command.numeric_value, acquisition::SampleQuality::Ready})
-                   ? CommandStatus::Accepted : CommandStatus::Rejected;
+    case CommandKind::CalibrationCapture: {
+      if (!criteria_set_ || evidence_ == nullptr || command.has_numeric) return CommandStatus::Rejected;
+      calibration::TrialObservation trial{};
+      uint64_t sequence{0U};
+      if (!evidence_->latest(pending_target_, evidence_sequence_, trial, sequence)) {
+        return CommandStatus::Rejected;
       }
-      if (calibration_.target() >= calibration::CalibrationTarget::Mq4 &&
-          calibration_.target() <= calibration::CalibrationTarget::Mq8) {
-        if (command.numeric_value < 0 || command.numeric_value > UINT16_MAX)
-          return CommandStatus::InvalidNumeric;
-        return calibration_.observe(calibration::MqTrial{
-                    static_cast<uint16_t>(command.numeric_value),
-                    acquisition::SampleQuality::Ready, true})
-                   ? CommandStatus::Accepted : CommandStatus::Rejected;
-      }
-      return CommandStatus::Rejected;
+      calibration::CalibrationAnchor anchor = calibration::CalibrationAnchor::Primary;
+      if (command.target.view() == "tare") anchor = calibration::CalibrationAnchor::Tare;
+      else if (command.target.view() == "reference") anchor = calibration::CalibrationAnchor::Reference;
+      else if (command.target.view() == "empty") anchor = calibration::CalibrationAnchor::Empty;
+      else if (command.target.view() == "full") anchor = calibration::CalibrationAnchor::Full;
+      else return CommandStatus::InvalidSyntax;
+      if (!calibration_.observe_anchor(trial, anchor)) return CommandStatus::Rejected;
+      calibration_.touch(now_us);
+      evidence_sequence_ = sequence;
+      return CommandStatus::Accepted;
+    }
     case CommandKind::CalibrationValidate:
       return calibration_.validate() ? CommandStatus::Accepted : CommandStatus::Rejected;
     case CommandKind::CalibrationPreview:
       return calibration_.preview() ? CommandStatus::Accepted : CommandStatus::Rejected;
     case CommandKind::CalibrationCommit:
-      return calibration_.request_commit() ? CommandStatus::Accepted : CommandStatus::Rejected;
+      if (!calibration_.request_commit()) return CommandStatus::Rejected;
+      if (!build_and_stage_calibration_profile()) {
+        (void)calibration_.complete_commit(false);
+        return CommandStatus::Rejected;
+      }
+      (void)calibration_.complete_commit(true);
+      mode_ = DeviceMode::Maintenance;
+      return CommandStatus::Accepted;
     case CommandKind::CalibrationCancel:
       if (!calibration_.cancel()) return CommandStatus::Rejected;
+      criteria_set_ = false;
       refresh_mode();
       return CommandStatus::Accepted;
     case CommandKind::ProfileStatus:
     case CommandKind::ProfileExport:
     case CommandKind::ProfileImport:
+    case CommandKind::ProfileImportBegin:
+    case CommandKind::ProfileImportChunk:
+    case CommandKind::ProfileImportFinish:
     case CommandKind::ProfileRollback:
     case CommandKind::ProfileReset: {
       if (profiles_ == nullptr) return CommandStatus::Rejected;
-      acquisition::ProfileTarget target{};
-      if (!profile_target_from_text(command.target, target)) return CommandStatus::InvalidSyntax;
+      acquisition::ProfileKey key{};
+      if (!profile_key_from_text(command.target, key)) return CommandStatus::InvalidSyntax;
+      if (command.kind == CommandKind::ProfileExport ||
+          command.kind == CommandKind::ProfileImportBegin ||
+          command.kind == CommandKind::ProfileImportChunk ||
+          command.kind == CommandKind::ProfileImportFinish) {
+        return profile_transfer(command, response);
+      }
       if (command.kind == CommandKind::ProfileStatus) {
-        const auto state = profiles_->state(target);
+        const auto state = profiles_->state(key);
         if (!response.append("profile_state=") ||
             !response.append(state == acquisition::ProfileManagerState::Active ? "ACTIVE" :
                              state == acquisition::ProfileManagerState::Draft ? "DRAFT" :
@@ -292,7 +651,7 @@ CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
                              state == acquisition::ProfileManagerState::Error ? "ERROR" : "MISSING") ||
             !response.append("\n")) return CommandStatus::Failed;
         acquisition::ActiveProfileSnapshot snapshot{};
-        if (!profiles_->snapshot(target, snapshot)) return CommandStatus::Failed;
+        if (!profiles_->snapshot(key, snapshot)) return CommandStatus::Failed;
         if (snapshot.present) {
           if (!append_u64(response, "profile_version=", snapshot.ref.profile_version) ||
               !response.append("profile_hash_present=true\n")) return CommandStatus::Failed;
@@ -300,17 +659,17 @@ CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
         return CommandStatus::Accepted;
       }
       if (command.kind == CommandKind::ProfileRollback) {
-        return profiles_->rollback(target) ? CommandStatus::Accepted : CommandStatus::Rejected;
+        return profiles_->rollback(key) ? CommandStatus::Accepted : CommandStatus::Rejected;
       }
       if (command.kind == CommandKind::ProfileReset) {
-        return profiles_->reset(target) ? CommandStatus::Accepted : CommandStatus::Rejected;
+        return profiles_->reset(key) ? CommandStatus::Accepted : CommandStatus::Rejected;
       }
-      // Import/export payload transfer is deliberately kept behind the typed
-      // ProfileManager API; this line protocol does not accept unbounded blobs.
       return CommandStatus::Rejected;
     }
     case CommandKind::Reboot:
       mode_ = DeviceMode::RebootRequired;
+      reboot_requested_ = true;
+      if (reboot_ != nullptr) reboot_->request_reboot();
       return CommandStatus::Accepted;
     case CommandKind::ConfigActive:
     case CommandKind::ConfigDraftStart:

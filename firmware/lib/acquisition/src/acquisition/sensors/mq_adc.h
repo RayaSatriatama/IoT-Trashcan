@@ -22,14 +22,17 @@ class IMqAdcReader {
 class MqAdcAcquirer final {
  public:
   MqAdcAcquirer(SensorId sensor, StreamId stream, IMqAdcReader& source,
-                RecordFactory& factory, const MqAdcProfile* profile) noexcept
-      : sensor_(sensor), stream_(stream), source_(source), factory_(factory), profile_(profile) {}
+                RecordFactory& factory, const MqAdcProfile* profile,
+                const ICalibrationStateProvider* calibration = nullptr) noexcept
+      : sensor_(sensor), stream_(stream), source_(source), factory_(factory),
+        profile_(profile), calibration_(calibration) {}
 
   MqAdcAcquirer(SensorId sensor, StreamId stream, IMqAdcReader& source,
                 RecordFactory& factory, const MqAdcProfile* profile,
-                const Mq7HeaterController* heater) noexcept
+                const Mq7HeaterController* heater,
+                const ICalibrationStateProvider* calibration = nullptr) noexcept
       : sensor_(sensor), stream_(stream), source_(source), factory_(factory),
-        profile_(profile), heater_(heater) {}
+        profile_(profile), heater_(heater), calibration_(calibration) {}
 
   DriverPollStatus poll(uint64_t now_us, SampleRecord& out) noexcept {
     const MqAdcReadResult result = source_.read();
@@ -49,6 +52,9 @@ class MqAdcAcquirer final {
       quality = SampleQuality::Timeout;
     } else if (profile_ != nullptr && !profile_matches(profile_->manifest, sensor_)) {
       quality = SampleQuality::Uncalibrated;
+      reason = SampleReason::InvalidProfile;
+    } else if (calibration_ != nullptr && calibration_->is_calibrating(sensor_)) {
+      quality = SampleQuality::Calibrating;
       reason = SampleReason::InvalidProfile;
     } else if (sensor_ == SensorId::Mq7 &&
                (heater_ == nullptr || !heater_->operational_ready())) {
@@ -83,6 +89,7 @@ class MqAdcAcquirer final {
   RecordFactory& factory_;
   const MqAdcProfile* profile_;
   const Mq7HeaterController* heater_{nullptr};
+  const ICalibrationStateProvider* calibration_{nullptr};
 };
 
 }  // namespace sigap::acquisition

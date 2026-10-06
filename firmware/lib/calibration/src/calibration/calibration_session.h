@@ -4,6 +4,7 @@
 #include <variant>
 
 #include "acquisition/acquisition_types.h"
+#include "acquisition/record.h"
 #include "acquisition/heater.h"
 #include "acquisition/profiles.h"
 
@@ -39,8 +40,11 @@ enum class CalibrationFailure : uint8_t {
   InvalidCriteria,
   SensorDisconnected,
   CommitRejected,
+  Timeout,
   Internal,
 };
+
+enum class CalibrationAnchor : uint8_t { Primary, Tare, Reference, Empty, Full };
 
 enum class ValidationCode : uint8_t {
   Valid,
@@ -134,6 +138,32 @@ struct Sht31Trial final {
 using TrialObservation = std::variant<Hx711Trial, UltrasonicTrial, MqTrial,
                                       Ds18b20Trial, Sht31Trial>;
 
+class ICalibrationEvidenceSource {
+ public:
+  virtual ~ICalibrationEvidenceSource() = default;
+  virtual bool latest(CalibrationTarget target, uint64_t after_sequence,
+                      TrialObservation& output,
+                      uint64_t& observed_sequence) const noexcept = 0;
+};
+
+// A single latest observation per channel keeps calibration independent from
+// the future logger handoff and bounds RAM usage.
+class CalibrationEvidenceCache final
+    : public acquisition::ISampleObserver,
+      public ICalibrationEvidenceSource {
+ public:
+  void observe(const acquisition::SampleRecord& sample) noexcept override;
+  bool latest(CalibrationTarget target, uint64_t after_sequence,
+              TrialObservation& output,
+              uint64_t& observed_sequence) const noexcept override;
+
+ private:
+  static constexpr std::size_t kTargetCount{13U};
+  std::array<TrialObservation, kTargetCount> observations_{};
+  std::array<uint64_t, kTargetCount> sequences_{};
+  std::array<bool, kTargetCount> present_{};
+};
+
 struct ValidationResult final {
   ValidationCode code{ValidationCode::NoEvidence};
   CaptureStats primary{};
@@ -177,6 +207,10 @@ class CalibrationSession final {
   bool start(CalibrationTarget target, const CaptureCriteria& criteria,
              uint64_t now_us) noexcept;
   bool observe(const TrialObservation& trial) noexcept;
+  bool observe_anchor(const TrialObservation& trial,
+                      CalibrationAnchor anchor) noexcept;
+  void touch(uint64_t now_us) noexcept;
+  bool tick(uint64_t now_us) noexcept;
   bool validate() noexcept;
   bool preview() noexcept;
   bool request_commit() noexcept;
@@ -192,6 +226,8 @@ class CalibrationSession final {
   const ValidationResult& validation() const noexcept { return validation_; }
   bool commit_requested() const noexcept { return state_ == CalibrationState::Commit; }
   uint64_t started_at_us() const noexcept { return started_at_us_; }
+  uint64_t last_activity_us() const noexcept { return last_activity_us_; }
+  static constexpr uint64_t kSessionTimeoutUs{300000000ULL};
 
  private:
   bool criteria_valid(const CaptureCriteria& criteria) const noexcept;
@@ -213,6 +249,8 @@ class CalibrationSession final {
   ValidationResult validation_{};
   CalibrationFailure failure_{CalibrationFailure::None};
   uint64_t started_at_us_{0U};
+  uint64_t last_activity_us_{0U};
+  bool secondary_required_{false};
 };
 
 }  // namespace sigap::calibration

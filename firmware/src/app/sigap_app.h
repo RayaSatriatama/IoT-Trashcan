@@ -9,6 +9,7 @@
 #include "acquisition/profile_store.h"
 #include "maintenance/runtime.h"
 #include "provisioning/secret_store.h"
+#include "calibration/calibration_session.h"
 #include "sigap/board/board_pins.h"
 
 namespace sigap {
@@ -39,15 +40,19 @@ class SigapApp final {
   acquisition::BootRuntimeIdentity boot_identity_{};
   acquisition::RecordContext record_context_{};
   acquisition::RecordFactory record_factory_;
+  calibration::CalibrationEvidenceCache evidence_cache_{};
   acquisition::TargetProfileSet profiles_{};
+  acquisition::ProfileAuditRing<16U> audit_ring_{};
   acquisition::NvsProfileStore profile_store_{};
   acquisition::ProfilePersistence profile_persistence_;
   acquisition::ProfileManager profile_manager_;
   acquisition::AcquisitionFoundation acquisition_;
 #ifdef ARDUINO
   maintenance::ArduinoUsbTransport maintenance_transport_{};
+  maintenance::ArduinoRebootController reboot_controller_{};
 #else
   maintenance::NullTransport maintenance_transport_{};
+  maintenance::NullRebootController reboot_controller_{};
 #endif
   maintenance::CommandRouter maintenance_router_;
   maintenance::MaintenanceService maintenance_service_;

@@ -29,16 +29,43 @@ enum class ProfileTarget : uint32_t {
   Sht31_45 = 13,
 };
 
+struct ProfileKey final {
+  ProfileKind kind{ProfileKind::Calibration};
+  ProfileTarget target{ProfileTarget::Unknown};
+
+  friend constexpr bool operator==(const ProfileKey& left,
+                                   const ProfileKey& right) noexcept {
+    return left.kind == right.kind && left.target == right.target;
+  }
+};
+
 struct ProfileManifest;
 inline ProfileRef to_ref(const ProfileManifest& manifest) noexcept;
 
 struct ProfileManifest {
+  ProfileKind kind{ProfileKind::Calibration};
   uint32_t schema_version{1};
   uint32_t profile_version{0};
   uint32_t target_id{0};
   config::ConfigHash hash{};
   ProfileValidity validity{ProfileValidity::Missing};
 };
+
+inline constexpr ProfileKind default_profile_kind(ProfileTarget target) noexcept {
+  switch (target) {
+    case ProfileTarget::Mq4:
+    case ProfileTarget::Mq135:
+    case ProfileTarget::Mq7:
+    case ProfileTarget::Mq8:
+      return ProfileKind::Adc;
+    default:
+      return ProfileKind::Calibration;
+  }
+}
+
+inline constexpr ProfileKey default_profile_key(ProfileTarget target) noexcept {
+  return ProfileKey{default_profile_kind(target), target};
+}
 
 inline ProfileTarget expected_profile_target(SensorId sensor) noexcept {
   switch (sensor) {
@@ -59,9 +86,26 @@ inline ProfileTarget expected_profile_target(SensorId sensor) noexcept {
   return ProfileTarget::Unknown;
 }
 
+inline constexpr ProfileKind expected_profile_kind(SensorId sensor) noexcept {
+  switch (sensor) {
+    case SensorId::Mq4:
+    case SensorId::Mq135:
+    case SensorId::Mq7:
+    case SensorId::Mq8:
+      return ProfileKind::Adc;
+    default:
+      return ProfileKind::Calibration;
+  }
+}
+
 inline bool profile_matches(const ProfileManifest& manifest, SensorId sensor) noexcept {
   const auto target = static_cast<ProfileTarget>(manifest.target_id);
-  return target == expected_profile_target(sensor);
+  const bool legacy_native_fixture =
+      manifest.profile_version == 0U &&
+      manifest.kind == ProfileKind::Calibration;
+  return target == expected_profile_target(sensor) &&
+         (manifest.kind == expected_profile_kind(sensor) ||
+          (legacy_native_fixture && expected_profile_kind(sensor) == ProfileKind::Adc));
 }
 
 inline bool profile_validity_allows_conversion(ProfileValidity validity) noexcept {
@@ -191,7 +235,7 @@ struct Sht31Profile {
 };
 
 inline ProfileRef to_ref(const ProfileManifest& manifest) noexcept {
-  return ProfileRef{manifest.schema_version, manifest.profile_version,
+  return ProfileRef{manifest.kind, manifest.schema_version, manifest.profile_version,
                     manifest.target_id, manifest.hash, true};
 }
 

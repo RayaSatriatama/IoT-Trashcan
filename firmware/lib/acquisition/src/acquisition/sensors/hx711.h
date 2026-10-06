@@ -26,8 +26,10 @@ class IHx711Reader {
 class Hx711Acquirer final {
  public:
   Hx711Acquirer(SensorId sensor, StreamId stream, IHx711Reader& source,
-                RecordFactory& factory, const Hx711Profile* profile) noexcept
-      : sensor_(sensor), stream_(stream), source_(source), factory_(factory), profile_(profile) {}
+                RecordFactory& factory, const Hx711Profile* profile,
+                const ICalibrationStateProvider* calibration = nullptr) noexcept
+      : sensor_(sensor), stream_(stream), source_(source), factory_(factory),
+        profile_(profile), calibration_(calibration) {}
 
   DriverPollStatus poll(uint64_t now_us, SampleRecord& out) noexcept {
     RawObservation raw{};
@@ -56,6 +58,9 @@ class Hx711Acquirer final {
     } else if (!result.ok) {
       quality = SampleQuality::Timeout;
       if (reason == SampleReason::None) reason = SampleReason::Timeout;
+    } else if (calibration_ != nullptr && calibration_->is_calibrating(sensor_)) {
+      quality = SampleQuality::Calibrating;
+      reason = SampleReason::InvalidProfile;
     } else if (profile_ != nullptr &&
                !profile_matches(profile_->manifest, sensor_)) {
       quality = SampleQuality::Uncalibrated;
@@ -87,6 +92,7 @@ class Hx711Acquirer final {
   IHx711Reader& source_;
   RecordFactory& factory_;
   const Hx711Profile* profile_;
+  const ICalibrationStateProvider* calibration_{nullptr};
 };
 
 }  // namespace sigap::acquisition

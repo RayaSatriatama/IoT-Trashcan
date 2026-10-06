@@ -57,6 +57,7 @@ ConfigBootResult ConfigManager::begin() noexcept {
   has_activation_metadata_ = false;
   last_committed_version_ = 0;
   activation_metadata_ = ActivationMetadata{};
+  pending_identity_ = ConfigIdentity{};
   state_ = ConfigState::Booting;
 
   const StoreReadStatus metadata_status =
@@ -311,6 +312,11 @@ bool ConfigManager::commit_draft() noexcept {
     return false;
   }
 
+  pending_identity_.slot = next_slot;
+  pending_identity_.schema_version = candidate.schema_version;
+  pending_identity_.config_version = candidate.config_version;
+  pending_identity_.hash = encoded_scratch_.hash();
+  pending_identity_.has_slot = true;
   draft_ = candidate;
   state_ = ConfigState::RebootRequired;
   return true;

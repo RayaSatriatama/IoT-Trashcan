@@ -42,6 +42,14 @@ class Mq7HeaterController final {
 
   void reset(uint64_t now_us) noexcept { start(now_us); }
 
+  void set_profile(const Mq7HeaterProfile& profile) noexcept {
+    profile_ = profile;
+    if (!profile_.valid()) {
+      ready_ = false;
+      state_ = Mq7HeaterState::Fault;
+    }
+  }
+
   void tick(uint64_t now_us) noexcept {
     if (state_ == Mq7HeaterState::Fault || now_us < state_started_at_ || !profile_.valid()) return;
     const uint64_t elapsed = now_us - state_started_at_;

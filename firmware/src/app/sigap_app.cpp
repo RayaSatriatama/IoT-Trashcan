@@ -19,12 +19,17 @@ SigapApp::SigapApp() noexcept
                       acquisition::ConfigRef{}, nullptr},
       record_factory_(boot_identity_.sequence, record_context_),
       profile_persistence_(profile_store_),
-      profile_manager_(profile_persistence_),
+      profile_manager_(profile_persistence_,
+                       acquisition::ProfilePersistence::default_codec(),
+                       &audit_ring_),
       acquisition_(config_manager_, record_factory_, board::kN16R8Pins,
                    profiles_),
-      maintenance_router_(config_manager_, secret_store_, &profile_manager_),
+      maintenance_router_(config_manager_, secret_store_, &profile_manager_,
+                          &evidence_cache_, &reboot_controller_, &audit_ring_),
       maintenance_service_(maintenance_transport_, maintenance_router_) {
   profile_manager_.bind_runtime_profiles(profiles_);
+  acquisition_.set_sample_observer(&evidence_cache_);
+  acquisition_.set_calibration_state_provider(&maintenance_router_);
 }
 
 // cppcheck-suppress unusedFunction
@@ -39,6 +44,8 @@ void SigapApp::setup() noexcept {
     (void)profile_manager_.load(
         static_cast<acquisition::ProfileTarget>(target));
   }
+  (void)profile_manager_.load(acquisition::ProfileKey{
+      acquisition::ProfileKind::Heater, acquisition::ProfileTarget::Mq7});
   profile_generation_ = profile_manager_.generation();
   maintenance_router_.refresh_mode();
   if (!config_manager_.runtime_ready()) {
@@ -67,10 +74,17 @@ void SigapApp::loop() noexcept {
   maintenance_service_.poll(now_us);
   if (profile_generation_ != profile_manager_.generation()) {
     profile_generation_ = profile_manager_.generation();
+    // Apply profile objects at the channel boundary without rebuilding the
+    // scheduler or restarting unrelated sensors.
     (void)acquisition_.refresh_profiles(now_us);
   }
   acquisition_.poll(now_us);
   maintenance_service_.poll(now_us);
+#ifdef ARDUINO
+  if (reboot_controller_.consume_request()) {
+    ESP.restart();
+  }
+#endif
 #endif
 }
 

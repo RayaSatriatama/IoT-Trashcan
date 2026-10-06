@@ -27,8 +27,10 @@ class ISht31Reader {
 class Sht31Acquirer final {
  public:
   Sht31Acquirer(uint8_t address, StreamId stream, ISht31Reader& source,
-                RecordFactory& factory, const Sht31Profile* profile) noexcept
-      : address_(address), stream_(stream), source_(source), factory_(factory), profile_(profile) {}
+                RecordFactory& factory, const Sht31Profile* profile,
+                const ICalibrationStateProvider* calibration = nullptr) noexcept
+      : address_(address), stream_(stream), source_(source), factory_(factory),
+        profile_(profile), calibration_(calibration) {}
 
   DriverPollStatus poll(uint64_t now_us, SampleRecord& out) noexcept {
     const Sht31ReadResult result = source_.read(address_);
@@ -48,6 +50,11 @@ class Sht31Acquirer final {
     } else if (!result.crc_valid) {
       quality = SampleQuality::CrcError;
       reason = SampleReason::CrcError;
+    } else if (calibration_ != nullptr &&
+               calibration_->is_calibrating(address_ == 0x45U ? SensorId::Sht31_45
+                                                              : SensorId::Sht31_44)) {
+      quality = SampleQuality::Calibrating;
+      reason = SampleReason::InvalidProfile;
     } else if (profile_ != nullptr &&
                !profile_matches(profile_->manifest,
                                 address_ == 0x45U ? SensorId::Sht31_45
@@ -80,6 +87,7 @@ class Sht31Acquirer final {
   ISht31Reader& source_;
   RecordFactory& factory_;
   const Sht31Profile* profile_;
+  const ICalibrationStateProvider* calibration_{nullptr};
 };
 
 }  // namespace sigap::acquisition

@@ -162,6 +162,24 @@ void test_invalid_secret_input_is_rejected_without_persistence() {
   TEST_ASSERT_FALSE(backend.present(SecretSlot::DeviceToken));
 }
 
+void test_maximum_token_length_is_bounded_and_round_trips() {
+  std::array<char, 129> token{};
+  for (std::size_t index = 0U; index < 128U; ++index) {
+    token[index] = static_cast<char>('A' + (index % 26U));
+  }
+  sigap::provisioning::EncodedSecretBlob encoded{};
+  TEST_ASSERT_TRUE(SecretBlobCodec::encode_token(token.data(), encoded));
+  NetworkSecrets output{};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(SecretStoreResult::Ok),
+                        static_cast<int>(SecretBlobCodec::decode_token(
+                            encoded.bytes.data(), encoded.size, output)));
+  TEST_ASSERT_EQUAL_UINT32(128U,
+                           static_cast<uint32_t>(std::strlen(output.device_token.data())));
+  TEST_ASSERT_EQUAL_MEMORY(token.data(), output.device_token.data(), 128U);
+  sigap::provisioning::secure_zero(&output, sizeof(output));
+  sigap::provisioning::secure_zero(token.data(), token.size());
+}
+
 }  // namespace
 
 void setup() {
@@ -177,6 +195,7 @@ void setup() {
   RUN_TEST(test_clear_requires_confirmation_and_erases_both_blobs);
   RUN_TEST(test_clear_failure_preserves_both_blobs);
   RUN_TEST(test_invalid_secret_input_is_rejected_without_persistence);
+  RUN_TEST(test_maximum_token_length_is_bounded_and_round_trips);
   UNITY_END();
 }
 

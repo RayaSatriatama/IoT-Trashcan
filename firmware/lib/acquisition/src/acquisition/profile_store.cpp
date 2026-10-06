@@ -2,10 +2,10 @@
 
 #include <algorithm>
 #include <cstring>
-#include <limits>
 #include <cstdio>
 
 #include "../../../telemetry_contract/src/telemetry/sha256.h"
+#include "acquisition/target_protocol.h"
 
 #ifdef ARDUINO
 #include <nvs.h>
@@ -16,6 +16,38 @@ namespace {
 
 using telemetry_contract::sha256;
 
+constexpr std::size_t kMetadataCoreBytes{76U};
+
+void put_u32_le(uint8_t* bytes, std::size_t offset, uint32_t value) noexcept {
+  bytes[offset] = static_cast<uint8_t>(value);
+  bytes[offset + 1U] = static_cast<uint8_t>(value >> 8U);
+  bytes[offset + 2U] = static_cast<uint8_t>(value >> 16U);
+  bytes[offset + 3U] = static_cast<uint8_t>(value >> 24U);
+}
+
+uint32_t get_u32_le(const uint8_t* bytes, std::size_t offset) noexcept {
+  return static_cast<uint32_t>(bytes[offset]) |
+         (static_cast<uint32_t>(bytes[offset + 1U]) << 8U) |
+         (static_cast<uint32_t>(bytes[offset + 2U]) << 16U) |
+         (static_cast<uint32_t>(bytes[offset + 3U]) << 24U);
+}
+
+config::ConfigHash metadata_integrity(const ProfileActivationMetadata& metadata) noexcept {
+  std::array<uint8_t, kMetadataCoreBytes> bytes{};
+  bytes[0] = 1U;
+  bytes[1] = metadata.has_active ? 1U : 0U;
+  bytes[2] = static_cast<uint8_t>(metadata.active_slot);
+  put_u32_le(bytes.data(), 3U, metadata.active_version);
+  std::copy(metadata.active_hash.begin(), metadata.active_hash.end(), bytes.begin() + 7U);
+  bytes[39] = metadata.has_previous ? 1U : 0U;
+  bytes[40] = static_cast<uint8_t>(metadata.previous_slot);
+  put_u32_le(bytes.data(), 41U, metadata.previous_version);
+  std::copy(metadata.previous_hash.begin(), metadata.previous_hash.end(), bytes.begin() + 45U);
+  return sha256(std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
+}
+bool metadata_integrity_valid(const ProfileActivationMetadata& metadata) noexcept {
+  return metadata.integrity == metadata_integrity(metadata);
+}
 class Writer final {
  public:
   explicit Writer(std::array<uint8_t, kEncodedProfileBytes>& bytes) noexcept
@@ -69,7 +101,6 @@ class Writer final {
   std::array<uint8_t, kEncodedProfileBytes>& bytes_;
   std::size_t offset_{0U};
 };
-
 class Reader final {
  public:
   Reader(const uint8_t* bytes, std::size_t size) noexcept
@@ -138,9 +169,9 @@ class Reader final {
   std::size_t size_{0U};
   std::size_t offset_{0U};
 };
-
 struct ParsedHeader final {
   uint32_t schema{0U};
+  ProfileKind kind{ProfileKind::Calibration};
   ProfileTarget target{ProfileTarget::Unknown};
   uint32_t version{0U};
   ProfileValidity validity{ProfileValidity::Missing};
@@ -157,10 +188,12 @@ bool parse_header(const EncodedProfile& encoded, ParsedHeader& header) noexcept 
   uint32_t magic{0U};
   uint16_t format{0U};
   uint32_t target{0U};
+  uint8_t kind{0U};
   uint8_t validity{0U};
   if (!reader.u32(magic) || !reader.u16(format) || !reader.u32(header.schema) ||
       !reader.u32(target) || !reader.u32(header.version) ||
-      !reader.u8(validity) || !reader.u16(header.payload_length)) {
+      !reader.u8(kind) || !reader.u8(validity) ||
+      !reader.u16(header.payload_length)) {
     return false;
   }
   if (magic != kProfileMagic || format != kProfileFormatVersion ||
@@ -170,10 +203,12 @@ bool parse_header(const EncodedProfile& encoded, ParsedHeader& header) noexcept 
     return false;
   }
   header.target = static_cast<ProfileTarget>(target);
+  header.kind = static_cast<ProfileKind>(kind);
   header.validity = static_cast<ProfileValidity>(validity);
-  return header.validity <= ProfileValidity::TestOnly;
+  return header.kind >= ProfileKind::Calibration &&
+         header.kind <= ProfileKind::Capacity &&
+         header.validity <= ProfileValidity::TestOnly;
 }
-
 bool hash_matches(const EncodedProfile& encoded) noexcept {
   ParsedHeader header{};
   if (!parse_header(encoded, header)) return false;
@@ -184,8 +219,8 @@ bool hash_matches(const EncodedProfile& encoded) noexcept {
                     encoded.bytes.begin() + kProfileHeaderBytes +
                         header.payload_length);
 }
-
 bool begin_payload(const ProfileManifest& manifest, ProfileTarget fallback,
+                   ProfileKind kind,
                    EncodedProfile& output, Writer& writer) noexcept {
   output = EncodedProfile{};
   const ProfileTarget target = manifest.target_id == 0U
@@ -199,26 +234,26 @@ bool begin_payload(const ProfileManifest& manifest, ProfileTarget fallback,
       !writer.u32(manifest.schema_version) ||
       !writer.u32(static_cast<uint32_t>(target)) ||
       !writer.u32(manifest.profile_version) ||
+      !writer.u8(static_cast<uint8_t>(kind)) ||
       !writer.u8(static_cast<uint8_t>(manifest.validity)) ||
       !writer.u16(0U)) {
     return false;
   }
   return true;
 }
-
 void finish_encoded(EncodedProfile& output, std::size_t payload_end) noexcept {
   const std::size_t payload_length = payload_end - kProfileHeaderBytes;
-  output.bytes[19U] = static_cast<uint8_t>(payload_length);
-  output.bytes[20U] = static_cast<uint8_t>(payload_length >> 8U);
+  output.bytes[20U] = static_cast<uint8_t>(payload_length);
+  output.bytes[21U] = static_cast<uint8_t>(payload_length >> 8U);
   const auto digest = sha256(std::string_view(
       reinterpret_cast<const char*>(output.bytes.data()), payload_end));
   std::copy(digest.begin(), digest.end(), output.bytes.begin() + payload_end);
   output.size = payload_end + kProfileHashBytes;
 }
-
 ProfileManifest manifest_from(const ParsedHeader& header,
                               const config::ConfigHash& hash) noexcept {
   ProfileManifest manifest{};
+  manifest.kind = header.kind;
   manifest.schema_version = header.schema;
   manifest.profile_version = header.version;
   manifest.target_id = static_cast<uint32_t>(header.target);
@@ -231,11 +266,28 @@ bool valid_target(ProfileTarget actual, ProfileTarget expected) noexcept {
   return expected == ProfileTarget::Unknown || actual == expected;
 }
 
+bool valid_key(const ParsedHeader& actual, ProfileKey expected) noexcept {
+  return (expected.target == ProfileTarget::Unknown ||
+          actual.target == expected.target) && actual.kind == expected.kind;
+}
+
 template <typename Profile>
 bool decode_header(const EncodedProfile& encoded, ProfileTarget expected,
                    ParsedHeader& header, Profile& output) noexcept {
   if (!parse_header(encoded, header) || !hash_matches(encoded) ||
       !valid_target(header.target, expected)) {
+    return false;
+  }
+  output = Profile{};
+  output.manifest = manifest_from(header, encoded.hash());
+  return true;
+}
+
+template <typename Profile>
+bool decode_key_header(const EncodedProfile& encoded, ProfileKey expected,
+                       ParsedHeader& header, Profile& output) noexcept {
+  if (!parse_header(encoded, header) || !hash_matches(encoded) ||
+      !valid_key(header, expected)) {
     return false;
   }
   output = Profile{};
@@ -257,7 +309,8 @@ config::ConfigHash EncodedProfile::hash() const noexcept {
 bool ProfileCodec::encode(const Hx711Profile& profile,
                           EncodedProfile& output) const noexcept {
   Writer writer(output.bytes);
-  if (!begin_payload(profile.manifest, ProfileTarget::Unknown, output, writer) ||
+  if (!begin_payload(profile.manifest, ProfileTarget::Unknown,
+                     ProfileKind::Calibration, output, writer) ||
       !writer.f32(profile.counts_per_kg) || !writer.i64(profile.tare_offset_counts)) {
     return false;
   }
@@ -268,7 +321,8 @@ bool ProfileCodec::encode(const Hx711Profile& profile,
 bool ProfileCodec::encode(const UltrasonicProfile& profile,
                           EncodedProfile& output) const noexcept {
   Writer writer(output.bytes);
-  if (!begin_payload(profile.manifest, ProfileTarget::Unknown, output, writer) ||
+  if (!begin_payload(profile.manifest, ProfileTarget::Unknown,
+                     ProfileKind::Calibration, output, writer) ||
       !writer.f32(profile.d_empty_mm) || !writer.f32(profile.d_full_mm) ||
       !writer.f32(profile.echo_mm_per_us) ||
       !writer.f32(profile.overshoot_tolerance_mm) ||
@@ -283,7 +337,8 @@ bool ProfileCodec::encode(const UltrasonicProfile& profile,
 bool ProfileCodec::encode(const MqAdcProfile& profile,
                           EncodedProfile& output) const noexcept {
   Writer writer(output.bytes);
-  if (!begin_payload(profile.manifest, ProfileTarget::Unknown, output, writer) ||
+  if (!begin_payload(profile.manifest, ProfileTarget::Unknown,
+                     ProfileKind::Adc, output, writer) ||
       !writer.u32(profile.reference_mv) || !writer.u32(profile.full_scale_counts) ||
       !writer.u32(profile.divider_numerator) ||
       !writer.u32(profile.divider_denominator)) {
@@ -302,7 +357,8 @@ bool ProfileCodec::encode(const Mq7HeaterProfile& profile,
   manifest.hash = profile.hash;
   manifest.validity = profile.present ? ProfileValidity::Valid : ProfileValidity::Missing;
   Writer writer(output.bytes);
-  if (!begin_payload(manifest, ProfileTarget::Mq7, output, writer) ||
+  if (!begin_payload(manifest, ProfileTarget::Mq7,
+                     ProfileKind::Heater, output, writer) ||
       !writer.u64(profile.preheat_us) || !writer.u64(profile.high_clean_us) ||
       !writer.u64(profile.low_detect_us)) {
     return false;
@@ -314,7 +370,8 @@ bool ProfileCodec::encode(const Mq7HeaterProfile& profile,
 bool ProfileCodec::encode(const Ds18b20Profile& profile,
                           EncodedProfile& output) const noexcept {
   Writer writer(output.bytes);
-  if (!begin_payload(profile.manifest, ProfileTarget::Unknown, output, writer) ||
+  if (!begin_payload(profile.manifest, ProfileTarget::Unknown,
+                     ProfileKind::Calibration, output, writer) ||
       !writer.u8(profile.has_rom ? 1U : 0U) || !writer.bytes(profile.rom.data(), profile.rom.size()) ||
       !writer.u8(profile.resolution_bits) || !writer.i32(profile.offset_centi_c)) {
     return false;
@@ -326,7 +383,8 @@ bool ProfileCodec::encode(const Ds18b20Profile& profile,
 bool ProfileCodec::encode(const Sht31Profile& profile,
                           EncodedProfile& output) const noexcept {
   Writer writer(output.bytes);
-  if (!begin_payload(profile.manifest, ProfileTarget::Unknown, output, writer) ||
+  if (!begin_payload(profile.manifest, ProfileTarget::Unknown,
+                     ProfileKind::Calibration, output, writer) ||
       !writer.u8(profile.address) || !writer.i32(profile.temperature_offset_centi_c) ||
       !writer.i32(profile.humidity_offset_centi_pct)) {
     return false;
@@ -340,7 +398,8 @@ bool ProfileCodec::decode(const EncodedProfile& encoded,
   ParsedHeader h{};
   if (!decode_header(encoded, static_cast<ProfileTarget>(output.manifest.target_id), h,
                      output)) return false;
-  if (h.target < ProfileTarget::Hx711Organic || h.target > ProfileTarget::Hx711B3) return false;
+  if (h.kind != ProfileKind::Calibration ||
+      h.target < ProfileTarget::Hx711Organic || h.target > ProfileTarget::Hx711B3) return false;
   Reader reader(encoded.bytes.data() + h.payload_offset, h.payload_length);
   return reader.f32(output.counts_per_kg) && reader.i64(output.tare_offset_counts) &&
          reader.offset() == h.payload_length;
@@ -350,6 +409,7 @@ bool ProfileCodec::decode(const EncodedProfile& encoded,
                           UltrasonicProfile& output) const noexcept {
   ParsedHeader h{};
   if (!decode_header(encoded, ProfileTarget::Unknown, h, output) ||
+      h.kind != ProfileKind::Calibration ||
       h.target < ProfileTarget::UltrasonicOrganic || h.target > ProfileTarget::UltrasonicB3) return false;
   Reader reader(encoded.bytes.data() + h.payload_offset, h.payload_length);
   return reader.f32(output.d_empty_mm) && reader.f32(output.d_full_mm) &&
@@ -362,6 +422,7 @@ bool ProfileCodec::decode(const EncodedProfile& encoded,
                           MqAdcProfile& output) const noexcept {
   ParsedHeader h{};
   if (!decode_header(encoded, ProfileTarget::Unknown, h, output) ||
+      h.kind != ProfileKind::Adc ||
       h.target < ProfileTarget::Mq4 || h.target > ProfileTarget::Mq8) return false;
   Reader reader(encoded.bytes.data() + h.payload_offset, h.payload_length);
   return reader.u32(output.reference_mv) && reader.u32(output.full_scale_counts) &&
@@ -373,6 +434,7 @@ bool ProfileCodec::decode(const EncodedProfile& encoded,
                           Mq7HeaterProfile& output) const noexcept {
   ParsedHeader h{};
   if (!parse_header(encoded, h) || !hash_matches(encoded) ||
+      h.kind != ProfileKind::Heater ||
       h.target != ProfileTarget::Mq7) return false;
   Reader reader(encoded.bytes.data() + h.payload_offset, h.payload_length);
   if (!reader.u64(output.preheat_us) || !reader.u64(output.high_clean_us) ||
@@ -392,7 +454,8 @@ bool ProfileCodec::decode(const EncodedProfile& encoded,
 bool ProfileCodec::decode(const EncodedProfile& encoded,
                           Ds18b20Profile& output) const noexcept {
   ParsedHeader h{};
-  if (!decode_header(encoded, ProfileTarget::Ds18b20B3, h, output)) return false;
+  if (!decode_header(encoded, ProfileTarget::Ds18b20B3, h, output) ||
+      h.kind != ProfileKind::Calibration) return false;
   Reader reader(encoded.bytes.data() + h.payload_offset, h.payload_length);
   uint8_t has_rom{0U};
   if (!reader.u8(has_rom) || !reader.bytes(output.rom.data(), output.rom.size()) ||
@@ -406,6 +469,7 @@ bool ProfileCodec::decode(const EncodedProfile& encoded,
                           Sht31Profile& output) const noexcept {
   ParsedHeader h{};
   if (!decode_header(encoded, ProfileTarget::Unknown, h, output) ||
+      h.kind != ProfileKind::Calibration ||
       (h.target != ProfileTarget::Sht31_44 && h.target != ProfileTarget::Sht31_45)) return false;
   Reader reader(encoded.bytes.data() + h.payload_offset, h.payload_length);
   return reader.u8(output.address) && reader.i32(output.temperature_offset_centi_c) &&
@@ -413,10 +477,68 @@ bool ProfileCodec::decode(const EncodedProfile& encoded,
 }
 
 bool ProfileCodec::validate(const EncodedProfile& encoded,
-                            ProfileTarget expected) const noexcept {
+                            ProfileKey expected) const noexcept {
   ParsedHeader header{};
-  return parse_header(encoded, header) && hash_matches(encoded) &&
-         valid_target(header.target, expected) && header.version != 0U;
+  if (!parse_header(encoded, header) || !hash_matches(encoded) ||
+      !valid_key(header, expected) || header.version == 0U ||
+      (header.validity != ProfileValidity::Valid &&
+       header.validity != ProfileValidity::TestOnly)) {
+    return false;
+  }
+  switch (expected.kind) {
+    case ProfileKind::Calibration: {
+      if (header.target >= ProfileTarget::Hx711Organic &&
+          header.target <= ProfileTarget::Hx711B3) {
+        Hx711Profile profile{};
+        return decode(encoded, profile) && profile.valid_for_conversion();
+      }
+      if (header.target >= ProfileTarget::UltrasonicOrganic &&
+          header.target <= ProfileTarget::UltrasonicB3) {
+        UltrasonicProfile profile{};
+        return decode(encoded, profile) && profile.valid_for_conversion();
+      }
+      if (header.target == ProfileTarget::Ds18b20B3) {
+        Ds18b20Profile profile{};
+        return decode(encoded, profile) && profile.valid_for_conversion() &&
+               ds18b20_crc8(profile.rom.data(), 7U) == profile.rom[7];
+      }
+      if (header.target == ProfileTarget::Sht31_44 ||
+          header.target == ProfileTarget::Sht31_45) {
+        Sht31Profile profile{};
+        return decode(encoded, profile) && profile.valid_for_conversion() &&
+               ((header.target == ProfileTarget::Sht31_44 && profile.address == 0x44U) ||
+                (header.target == ProfileTarget::Sht31_45 && profile.address == 0x45U));
+      }
+      return false;
+    }
+    case ProfileKind::Adc: {
+      if (header.target < ProfileTarget::Mq4 || header.target > ProfileTarget::Mq8) {
+        return false;
+      }
+      MqAdcProfile profile{};
+      return decode(encoded, profile) && profile.valid_for_conversion();
+    }
+    case ProfileKind::Heater: {
+      if (header.target != ProfileTarget::Mq7) return false;
+      Mq7HeaterProfile profile{};
+      return decode(encoded, profile) && profile.valid();
+    }
+    default:
+      return false;
+  }
+}
+
+bool ProfileCodec::validate(const EncodedProfile& encoded,
+                            ProfileTarget expected) const noexcept {
+  if (expected != ProfileTarget::Unknown) {
+    return validate(encoded, default_profile_key(expected));
+  }
+  ParsedHeader header{};
+  if (!parse_header(encoded, header) || !hash_matches(encoded) ||
+      header.target == ProfileTarget::Unknown) {
+    return false;
+  }
+  return validate(encoded, ProfileKey{header.kind, header.target});
 }
 
 const ProfileCodec& ProfilePersistence::default_codec() noexcept {
@@ -424,36 +546,69 @@ const ProfileCodec& ProfilePersistence::default_codec() noexcept {
   return codec;
 }
 
-ProfileReadStatus ProfilePersistence::load(ProfileTarget target,
+ProfileReadStatus ProfilePersistence::load(ProfileKey key,
                                             EncodedProfile& encoded) const noexcept {
   ProfileActivationMetadata metadata{};
-  const auto status = store_.read_activation(target, metadata);
+  const auto status = store_.read_activation(key, metadata);
+  if (status == ProfileReadStatus::Error) return status;
+  if (status == ProfileReadStatus::Invalid) {
+    EncodedProfile candidates[2]{};
+    bool valid[2]{false, false};
+    ParsedHeader headers[2]{};
+    for (std::size_t index = 0U; index < 2U; ++index) {
+      const auto slot = index == 0U ? ProfileSlot::A : ProfileSlot::B;
+      valid[index] = store_.read_slot(key, slot, candidates[index]) ==
+                        ProfileReadStatus::Found &&
+                    codec_.validate(candidates[index], key) &&
+                    parse_header(candidates[index], headers[index]);
+    }
+    if (!valid[0] && !valid[1]) return ProfileReadStatus::Invalid;
+    const std::size_t selected = !valid[1] ||
+                                         (valid[0] && headers[0].version >= headers[1].version)
+                                     ? 0U
+                                     : 1U;
+    metadata = ProfileActivationMetadata{};
+    metadata.has_active = true;
+    metadata.active_slot = selected == 0U ? ProfileSlot::A : ProfileSlot::B;
+    metadata.active_version = headers[selected].version;
+    metadata.active_hash = candidates[selected].hash();
+    const std::size_t other = selected == 0U ? 1U : 0U;
+    if (valid[other]) {
+      metadata.has_previous = true;
+      metadata.previous_slot = other == 0U ? ProfileSlot::A : ProfileSlot::B;
+      metadata.previous_version = headers[other].version;
+      metadata.previous_hash = candidates[other].hash();
+    }
+    if (!store_.write_activation(key, metadata)) return ProfileReadStatus::Error;
+    encoded = candidates[selected];
+    return ProfileReadStatus::Found;
+  }
   if (status != ProfileReadStatus::Found) return status;
   if (!metadata.has_active) return ProfileReadStatus::NotFound;
-  auto active_status = store_.read_slot(target, metadata.active_slot, encoded);
+  auto active_status = store_.read_slot(key, metadata.active_slot, encoded);
   if (active_status == ProfileReadStatus::Found &&
-      codec_.validate(encoded, target) && encoded.hash() == metadata.active_hash) {
+      codec_.validate(encoded, key) && encoded.hash() == metadata.active_hash) {
     return ProfileReadStatus::Found;
   }
   if (!metadata.has_previous) {
     return active_status == ProfileReadStatus::Error ? ProfileReadStatus::Error
                                                      : ProfileReadStatus::Invalid;
   }
-  active_status = store_.read_slot(target, metadata.previous_slot, encoded);
+  active_status = store_.read_slot(key, metadata.previous_slot, encoded);
   if (active_status == ProfileReadStatus::Found &&
-      codec_.validate(encoded, target) && encoded.hash() == metadata.previous_hash) {
+      codec_.validate(encoded, key) && encoded.hash() == metadata.previous_hash) {
     return ProfileReadStatus::Found;
   }
   return active_status == ProfileReadStatus::Error ? ProfileReadStatus::Error
                                                    : ProfileReadStatus::Invalid;
 }
 
-ProfileCommitResult ProfilePersistence::commit(ProfileTarget target,
+ProfileCommitResult ProfilePersistence::commit(ProfileKey key,
                                                const EncodedProfile& encoded) noexcept {
-  if (!codec_.validate(encoded, target)) return ProfileCommitResult::Invalid;
+  if (!codec_.validate(encoded, key)) return ProfileCommitResult::Invalid;
 
   ProfileActivationMetadata old{};
-  const auto metadata_status = store_.read_activation(target, old);
+  const auto metadata_status = store_.read_activation(key, old);
   if (metadata_status == ProfileReadStatus::Error) {
     return ProfileCommitResult::ActivationFailed;
   }
@@ -463,15 +618,15 @@ ProfileCommitResult ProfilePersistence::commit(ProfileTarget target,
   ProfileSlot destination = ProfileSlot::A;
   if (metadata_status == ProfileReadStatus::Found && old.has_active) {
     EncodedProfile active{};
-    const auto active_status = store_.read_slot(target, old.active_slot, active);
-    if (active_status == ProfileReadStatus::Found && codec_.validate(active, target) &&
+    const auto active_status = store_.read_slot(key, old.active_slot, active);
+    if (active_status == ProfileReadStatus::Found && codec_.validate(active, key) &&
         active.hash() == old.active_hash) {
       current = active;
       have_current = true;
       destination = other_profile_slot(old.active_slot);
     } else if (old.has_previous) {
-      const auto previous_status = store_.read_slot(target, old.previous_slot, current);
-      if (previous_status == ProfileReadStatus::Found && codec_.validate(current, target) &&
+      const auto previous_status = store_.read_slot(key, old.previous_slot, current);
+      if (previous_status == ProfileReadStatus::Found && codec_.validate(current, key) &&
           current.hash() == old.previous_hash) {
         have_current = true;
         destination = old.active_slot;
@@ -490,11 +645,11 @@ ProfileCommitResult ProfilePersistence::commit(ProfileTarget target,
     }
   }
 
-  if (!store_.write_slot(target, destination, encoded)) return ProfileCommitResult::WriteFailed;
+  if (!store_.write_slot(key, destination, encoded)) return ProfileCommitResult::WriteFailed;
   EncodedProfile readback{};
-  const auto read_status = store_.read_slot(target, destination, readback);
+  const auto read_status = store_.read_slot(key, destination, readback);
   if (read_status != ProfileReadStatus::Found) return ProfileCommitResult::ReadbackFailed;
-  if (!codec_.validate(readback, target) || readback.hash() != encoded.hash()) {
+  if (!codec_.validate(readback, key) || readback.hash() != encoded.hash()) {
     return ProfileCommitResult::IntegrityFailed;
   }
 
@@ -515,19 +670,19 @@ ProfileCommitResult ProfilePersistence::commit(ProfileTarget target,
     next.previous_version = previous.version;
     next.previous_hash = current.hash();
   }
-  if (!store_.write_activation(target, next)) return ProfileCommitResult::ActivationFailed;
+  if (!store_.write_activation(key, next)) return ProfileCommitResult::ActivationFailed;
   return ProfileCommitResult::Committed;
 }
 
-ProfileReadStatus ProfilePersistence::rollback(ProfileTarget target) noexcept {
+ProfileReadStatus ProfilePersistence::rollback(ProfileKey key) noexcept {
   ProfileActivationMetadata metadata{};
-  if (store_.read_activation(target, metadata) != ProfileReadStatus::Found ||
+  if (store_.read_activation(key, metadata) != ProfileReadStatus::Found ||
       !metadata.has_active || !metadata.has_previous) {
     return ProfileReadStatus::NotFound;
   }
   EncodedProfile previous{};
-  if (store_.read_slot(target, metadata.previous_slot, previous) != ProfileReadStatus::Found ||
-      !codec_.validate(previous, target) || previous.hash() != metadata.previous_hash) {
+  if (store_.read_slot(key, metadata.previous_slot, previous) != ProfileReadStatus::Found ||
+      !codec_.validate(previous, key) || previous.hash() != metadata.previous_hash) {
     return ProfileReadStatus::Invalid;
   }
   ProfileActivationMetadata next{};
@@ -539,27 +694,33 @@ ProfileReadStatus ProfilePersistence::rollback(ProfileTarget target) noexcept {
   next.previous_slot = metadata.active_slot;
   next.previous_version = metadata.active_version;
   next.previous_hash = metadata.active_hash;
-  if (!store_.write_activation(target, next)) return ProfileReadStatus::Error;
+  if (!store_.write_activation(key, next)) return ProfileReadStatus::Error;
   return ProfileReadStatus::Found;
 }
 
-bool ProfilePersistence::reset(ProfileTarget target) noexcept {
-  return store_.write_activation(target, ProfileActivationMetadata{});
+bool ProfilePersistence::reset(ProfileKey key) noexcept {
+  return store_.write_activation(key, ProfileActivationMetadata{});
 }
 
 #ifdef ARDUINO
 namespace {
 constexpr const char* kProfileNamespace{"sigap_profile"};
-constexpr std::size_t kMetadataBytes{76U};
+constexpr std::size_t kMetadataBytes{108U};
 
-void profile_key(char* output, std::size_t capacity, ProfileTarget target,
+void profile_key(char* output, std::size_t capacity, ProfileKey key,
                  ProfileSlot slot) noexcept {
-  std::snprintf(output, capacity, "%c%u", slot == ProfileSlot::A ? 'a' : 'b',
-                static_cast<unsigned>(target));
+  const char family = key.kind == ProfileKind::Adc ? 'a' :
+                      key.kind == ProfileKind::Heater ? 'h' : 'c';
+  std::snprintf(output, capacity, "%c_%c%02u",
+                slot == ProfileSlot::A ? 'a' : 'b', family,
+                static_cast<unsigned>(key.target));
 }
 
-void metadata_key(char* output, std::size_t capacity, ProfileTarget target) noexcept {
-  std::snprintf(output, capacity, "m%u", static_cast<unsigned>(target));
+void metadata_key(char* output, std::size_t capacity, ProfileKey key) noexcept {
+  const char family = key.kind == ProfileKind::Adc ? 'a' :
+                      key.kind == ProfileKind::Heater ? 'h' : 'c';
+  std::snprintf(output, capacity, "m_%c%02u", family,
+                static_cast<unsigned>(key.target));
 }
 
 void put_u32(uint8_t* bytes, std::size_t offset, uint32_t value) noexcept {
@@ -588,6 +749,8 @@ void encode_metadata(const ProfileActivationMetadata& metadata,
   bytes[40] = static_cast<uint8_t>(metadata.previous_slot);
   put_u32(bytes.data(), 41U, metadata.previous_version);
   std::copy(metadata.previous_hash.begin(), metadata.previous_hash.end(), bytes.begin() + 45U);
+  const auto integrity = metadata_integrity(metadata);
+  std::copy(integrity.begin(), integrity.end(), bytes.begin() + kMetadataCoreBytes);
 }
 
 bool decode_metadata(const uint8_t* bytes, std::size_t size,
@@ -604,18 +767,24 @@ bool decode_metadata(const uint8_t* bytes, std::size_t size,
   metadata.previous_slot = static_cast<ProfileSlot>(bytes[40]);
   metadata.previous_version = get_u32(bytes, 41U);
   std::copy_n(bytes + 45U, metadata.previous_hash.size(), metadata.previous_hash.begin());
-  return true;
+  std::copy_n(bytes + kMetadataCoreBytes, metadata.integrity.size(), metadata.integrity.begin());
+  return metadata_integrity_valid(metadata);
 }
 }
 
 ProfileReadStatus NvsProfileStore::read_activation(
     ProfileTarget target, ProfileActivationMetadata& metadata) const noexcept {
+  return read_activation(default_profile_key(target), metadata);
+}
+
+ProfileReadStatus NvsProfileStore::read_activation(
+    ProfileKey profile_key_id, ProfileActivationMetadata& metadata) const noexcept {
   nvs_handle_t handle{};
   const esp_err_t opened = nvs_open(kProfileNamespace, NVS_READONLY, &handle);
   if (opened == ESP_ERR_NVS_NOT_FOUND) return ProfileReadStatus::NotFound;
   if (opened != ESP_OK) return ProfileReadStatus::Error;
   char key[12]{};
-  metadata_key(key, sizeof(key), target);
+  metadata_key(key, sizeof(key), profile_key_id);
   std::array<uint8_t, kMetadataBytes> bytes{};
   std::size_t size = bytes.size();
   const esp_err_t result = nvs_get_blob(handle, key, bytes.data(), &size);
@@ -628,12 +797,17 @@ ProfileReadStatus NvsProfileStore::read_activation(
 
 ProfileReadStatus NvsProfileStore::read_slot(
     ProfileTarget target, ProfileSlot slot, EncodedProfile& encoded) const noexcept {
+  return read_slot(default_profile_key(target), slot, encoded);
+}
+
+ProfileReadStatus NvsProfileStore::read_slot(
+    ProfileKey profile_key_id, ProfileSlot slot, EncodedProfile& encoded) const noexcept {
   nvs_handle_t handle{};
   const esp_err_t opened = nvs_open(kProfileNamespace, NVS_READONLY, &handle);
   if (opened == ESP_ERR_NVS_NOT_FOUND) return ProfileReadStatus::NotFound;
   if (opened != ESP_OK) return ProfileReadStatus::Error;
   char key[12]{};
-  profile_key(key, sizeof(key), target, slot);
+  profile_key(key, sizeof(key), profile_key_id, slot);
   std::size_t size = encoded.bytes.size();
   const esp_err_t result = nvs_get_blob(handle, key, encoded.bytes.data(), &size);
   nvs_close(handle);
@@ -646,11 +820,16 @@ ProfileReadStatus NvsProfileStore::read_slot(
 
 bool NvsProfileStore::write_slot(ProfileTarget target, ProfileSlot slot,
                                   const EncodedProfile& encoded) noexcept {
+  return write_slot(default_profile_key(target), slot, encoded);
+}
+
+bool NvsProfileStore::write_slot(ProfileKey profile_key_id, ProfileSlot slot,
+                                  const EncodedProfile& encoded) noexcept {
   if (encoded.size == 0U || encoded.size > encoded.bytes.size()) return false;
   nvs_handle_t handle{};
   if (nvs_open(kProfileNamespace, NVS_READWRITE, &handle) != ESP_OK) return false;
   char key[12]{};
-  profile_key(key, sizeof(key), target, slot);
+  profile_key(key, sizeof(key), profile_key_id, slot);
   const esp_err_t result = nvs_set_blob(handle, key, encoded.bytes.data(), encoded.size);
   const esp_err_t committed = result == ESP_OK ? nvs_commit(handle) : result;
   nvs_close(handle);
@@ -659,10 +838,15 @@ bool NvsProfileStore::write_slot(ProfileTarget target, ProfileSlot slot,
 
 bool NvsProfileStore::write_activation(
     ProfileTarget target, const ProfileActivationMetadata& metadata) noexcept {
+  return write_activation(default_profile_key(target), metadata);
+}
+
+bool NvsProfileStore::write_activation(
+    ProfileKey profile_key_id, const ProfileActivationMetadata& metadata) noexcept {
   nvs_handle_t handle{};
   if (nvs_open(kProfileNamespace, NVS_READWRITE, &handle) != ESP_OK) return false;
   char key[12]{};
-  metadata_key(key, sizeof(key), target);
+  metadata_key(key, sizeof(key), profile_key_id);
   std::array<uint8_t, kMetadataBytes> bytes{};
   encode_metadata(metadata, bytes);
   const esp_err_t result = nvs_set_blob(handle, key, bytes.data(), bytes.size());
@@ -675,14 +859,26 @@ ProfileReadStatus NvsProfileStore::read_activation(
     ProfileTarget, ProfileActivationMetadata&) const noexcept {
   return ProfileReadStatus::Error;
 }
+ProfileReadStatus NvsProfileStore::read_activation(
+    ProfileKey, ProfileActivationMetadata&) const noexcept {
+  return ProfileReadStatus::Error;
+}
 ProfileReadStatus NvsProfileStore::read_slot(
     ProfileTarget, ProfileSlot, EncodedProfile&) const noexcept {
   return ProfileReadStatus::Error;
 }
+ProfileReadStatus NvsProfileStore::read_slot(
+    ProfileKey, ProfileSlot, EncodedProfile&) const noexcept {
+  return ProfileReadStatus::Error;
+}
 bool NvsProfileStore::write_slot(ProfileTarget, ProfileSlot,
+                                 const EncodedProfile&) noexcept { return false; }
+bool NvsProfileStore::write_slot(ProfileKey, ProfileSlot,
                                  const EncodedProfile&) noexcept { return false; }
 bool NvsProfileStore::write_activation(
     ProfileTarget, const ProfileActivationMetadata&) noexcept { return false; }
+bool NvsProfileStore::write_activation(
+    ProfileKey, const ProfileActivationMetadata&) noexcept { return false; }
 #endif
 
 std::size_t MemoryProfileStore::target_index(ProfileTarget target) noexcept {
@@ -690,25 +886,51 @@ std::size_t MemoryProfileStore::target_index(ProfileTarget target) noexcept {
   return value < kTargetCount ? static_cast<std::size_t>(value) : 0U;
 }
 
+std::size_t MemoryProfileStore::key_index(ProfileKey key) noexcept {
+  const auto target = static_cast<uint32_t>(key.target);
+  if (key.kind == ProfileKind::Calibration) {
+    if (target >= 1U && target <= 6U) return target - 1U;
+    if (target == 11U) return 6U;
+    if (target == 12U) return 7U;
+    if (target == 13U) return 8U;
+  } else if (key.kind == ProfileKind::Adc && target >= 7U && target <= 10U) {
+    return 9U + target - 7U;
+  } else if (key.kind == ProfileKind::Heater && key.target == ProfileTarget::Mq7) {
+    return 13U;
+  }
+  return 0U;
+}
+
 ProfileReadStatus MemoryProfileStore::read_activation(
     ProfileTarget target, ProfileActivationMetadata& metadata) const noexcept {
+  return read_activation(default_profile_key(target), metadata);
+}
+
+ProfileReadStatus MemoryProfileStore::read_activation(
+    ProfileKey key, ProfileActivationMetadata& metadata) const noexcept {
   if (has_pending_fault_ && pending_fault_ == Fault::ReadActivation) {
     has_pending_fault_ = false;
     return ProfileReadStatus::Error;
   }
-  const auto index = target_index(target);
+  const auto index = key_index(key);
   if (!metadata_present_[index]) return ProfileReadStatus::NotFound;
   metadata = metadata_[index];
-  return ProfileReadStatus::Found;
+  return metadata_integrity_valid(metadata) ? ProfileReadStatus::Found
+                                            : ProfileReadStatus::Invalid;
 }
 
 ProfileReadStatus MemoryProfileStore::read_slot(ProfileTarget target, ProfileSlot slot,
+                                                EncodedProfile& encoded) const noexcept {
+  return read_slot(default_profile_key(target), slot, encoded);
+}
+
+ProfileReadStatus MemoryProfileStore::read_slot(ProfileKey key, ProfileSlot slot,
                                                 EncodedProfile& encoded) const noexcept {
   if (has_pending_fault_ && pending_fault_ == Fault::ReadSlot) {
     has_pending_fault_ = false;
     return ProfileReadStatus::Error;
   }
-  const auto target_i = target_index(target);
+  const auto target_i = key_index(key);
   const auto slot_i = slot_index(slot);
   if (!present_[target_i][slot_i]) return ProfileReadStatus::NotFound;
   encoded = slots_[target_i][slot_i];
@@ -717,11 +939,16 @@ ProfileReadStatus MemoryProfileStore::read_slot(ProfileTarget target, ProfileSlo
 
 bool MemoryProfileStore::write_slot(ProfileTarget target, ProfileSlot slot,
                                     const EncodedProfile& encoded) noexcept {
+  return write_slot(default_profile_key(target), slot, encoded);
+}
+
+bool MemoryProfileStore::write_slot(ProfileKey key, ProfileSlot slot,
+                                    const EncodedProfile& encoded) noexcept {
   if (has_pending_fault_ && pending_fault_ == Fault::WriteSlot) {
     has_pending_fault_ = false;
     return false;
   }
-  const auto target_i = target_index(target);
+  const auto target_i = key_index(key);
   const auto slot_i = slot_index(slot);
   slots_[target_i][slot_i] = encoded;
   present_[target_i][slot_i] = true;
@@ -734,12 +961,18 @@ bool MemoryProfileStore::write_slot(ProfileTarget target, ProfileSlot slot,
 
 bool MemoryProfileStore::write_activation(
     ProfileTarget target, const ProfileActivationMetadata& metadata) noexcept {
+  return write_activation(default_profile_key(target), metadata);
+}
+
+bool MemoryProfileStore::write_activation(
+    ProfileKey key, const ProfileActivationMetadata& metadata) noexcept {
   if (has_pending_fault_ && pending_fault_ == Fault::WriteActivation) {
     has_pending_fault_ = false;
     return false;
   }
-  const auto index = target_index(target);
+  const auto index = key_index(key);
   metadata_[index] = metadata;
+  metadata_[index].integrity = metadata_integrity(metadata_[index]);
   metadata_present_[index] = true;
   return true;
 }
@@ -750,13 +983,18 @@ void MemoryProfileStore::fail_next(Fault fault) noexcept {
 }
 
 void MemoryProfileStore::corrupt_slot(ProfileTarget target, ProfileSlot slot) noexcept {
-  const auto target_i = target_index(target);
+  const auto target_i = key_index(default_profile_key(target));
   const auto slot_i = slot_index(slot);
   if (present_[target_i][slot_i]) slots_[target_i][slot_i].bytes[0] ^= 0xffU;
 }
 
 bool MemoryProfileStore::slot_present(ProfileTarget target, ProfileSlot slot) const noexcept {
-  return present_[target_index(target)][slot_index(slot)];
+  return present_[key_index(default_profile_key(target))][slot_index(slot)];
+}
+
+void MemoryProfileStore::corrupt_activation(ProfileKey key) noexcept {
+  const auto index = key_index(key);
+  if (metadata_present_[index]) metadata_[index].active_hash[0] ^= 0xffU;
 }
 
 }  // namespace sigap::acquisition
