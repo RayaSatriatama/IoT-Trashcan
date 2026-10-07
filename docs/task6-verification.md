@@ -93,13 +93,14 @@ its bounded target entries and frame scratch remain instance-owned.
 
 ## Budget measurement
 
-The native serialized workload test appends and reconstructs 4,680 bounded
-sample frames against the 6 MiB quota and verifies every identity/hash after
-restart without overwriting pending data. A second integrated fixture uses
-representative result trace, event, and metadata payloads through the typed
-decoder and batch builder. The 4,680-frame sample workload is a serialized
-capacity measurement, not a claim of physical flash or SD endurance; physical
-media throughput/endurance remains unverified.
+The native serialized workload test appends and reconstructs a mixed 60-second
+fixture of 4,500 sample frames, 180 result frames, and 4 event frames (4,684
+records) against the 6 MiB quota. Every identity/hash is reconciled after
+restart without overwriting pending data. A separate integrated fixture uses a
+representative BOOT metadata payload and result trace through the typed decoder
+and batch builder. This is serialized native capacity evidence, not a claim of
+physical flash or SD endurance; physical media throughput/endurance remains
+unverified.
 
 The archive runtime regression also verifies that a result containing FIS and
 Safety evidence serializes differently from the same result without that
