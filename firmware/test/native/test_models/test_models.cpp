@@ -387,6 +387,77 @@ void test_lifecycle_rejects_non_monotonic_version_and_recovers_previous() {
   TEST_ASSERT_EQUAL_UINT32(2U, snapshot.ref.profile_version);
 }
 
+void test_persistence_does_not_promote_staged_candidate_after_activation_failure() {
+  ModelProfileCodec codec{};
+  FaultInjectableModelPersistence persistence(codec);
+  const ModelProfileKey key{
+      sigap::acquisition::ProfileKind::Fis, ModelTarget::FisOrganic};
+
+  EncodedModelProfile v1{};
+  EncodedModelProfile v2{};
+  TEST_ASSERT_TRUE(codec.encode(test_fis(1U), v1));
+  TEST_ASSERT_TRUE(codec.encode(test_fis(2U), v2));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ModelCommitResult::Committed),
+                        static_cast<int>(persistence.commit(key, v1)));
+
+  persistence.fail_next(ModelPersistenceFault::Activate);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ModelCommitResult::ActivationFailed),
+                        static_cast<int>(persistence.commit(key, v2)));
+  persistence.corrupt_activation(key);
+
+  EncodedModelProfile loaded{};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ModelLoadStatus::Invalid),
+                        static_cast<int>(persistence.load(key, loaded)));
+}
+
+void test_persistence_recovers_only_committed_previous_generation() {
+  ModelProfileCodec codec{};
+  FaultInjectableModelPersistence persistence(codec);
+  const ModelProfileKey key{
+      sigap::acquisition::ProfileKind::Fis, ModelTarget::FisOrganic};
+  EncodedModelProfile v1{};
+  EncodedModelProfile v2{};
+  TEST_ASSERT_TRUE(codec.encode(test_fis(1U), v1));
+  TEST_ASSERT_TRUE(codec.encode(test_fis(2U), v2));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ModelCommitResult::Committed),
+                        static_cast<int>(persistence.commit(key, v1)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ModelCommitResult::Committed),
+                        static_cast<int>(persistence.commit(key, v2)));
+
+  persistence.corrupt_active(key);
+  EncodedModelProfile loaded{};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ModelLoadStatus::Found),
+                        static_cast<int>(persistence.load(key, loaded)));
+  ModelProfileIdentity identity{};
+  TEST_ASSERT_TRUE(codec.identity(loaded, identity));
+  TEST_ASSERT_EQUAL_UINT32(1U, identity.profile_version);
+}
+
+void test_persistence_keeps_model_kind_and_target_keys_independent() {
+  ModelProfileCodec codec{};
+  FaultInjectableModelPersistence persistence(codec);
+  const ModelProfileKey fis_key{
+      sigap::acquisition::ProfileKind::Fis, ModelTarget::FisOrganic};
+  const ModelProfileKey safety_key{
+      sigap::acquisition::ProfileKind::Safety, ModelTarget::SafetyB3};
+  EncodedModelProfile fis{};
+  EncodedModelProfile safety{};
+  TEST_ASSERT_TRUE(codec.encode(test_fis(1U), fis));
+  TEST_ASSERT_TRUE(codec.encode(test_safety(1U), safety));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ModelCommitResult::Committed),
+                        static_cast<int>(persistence.commit(fis_key, fis)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ModelCommitResult::Committed),
+                        static_cast<int>(persistence.commit(safety_key, safety)));
+
+  persistence.corrupt_active(fis_key);
+  EncodedModelProfile loaded{};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ModelLoadStatus::Found),
+                        static_cast<int>(persistence.load(safety_key, loaded)));
+  ModelProfileIdentity identity{};
+  TEST_ASSERT_TRUE(codec.identity(loaded, identity));
+  TEST_ASSERT_TRUE(identity.key == safety_key);
+}
+
 void test_model_profile_memory_is_bounded() {
   std::printf("memory FisModelProfile=%zu SafetyModelProfile=%zu "
               "EncodedModelProfile=%zu ModelProfileLifecycle=%zu\n",
@@ -417,6 +488,9 @@ void setup() {
   RUN_TEST(test_lifecycle_snapshot_is_immutable_across_successful_activation);
   RUN_TEST(test_lifecycle_requires_storage_load_before_staging);
   RUN_TEST(test_lifecycle_rejects_non_monotonic_version_and_recovers_previous);
+  RUN_TEST(test_persistence_does_not_promote_staged_candidate_after_activation_failure);
+  RUN_TEST(test_persistence_recovers_only_committed_previous_generation);
+  RUN_TEST(test_persistence_keeps_model_kind_and_target_keys_independent);
   RUN_TEST(test_model_profile_memory_is_bounded);
   UNITY_END();
 }
