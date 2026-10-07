@@ -30,7 +30,8 @@ SigapApp::SigapApp() noexcept
       maintenance_service_(maintenance_transport_, maintenance_router_) {
   profile_manager_.bind_runtime_profiles(profiles_);
   evidence_cache_.set_profiles(&profiles_);
-  acquisition_.set_sample_observer(&evidence_cache_);
+  processing_runtime_.set_downstream_observer(&evidence_cache_);
+  acquisition_.set_sample_observer(&processing_runtime_);
   acquisition_.set_calibration_state_provider(&maintenance_router_);
 }
 
@@ -60,12 +61,25 @@ void SigapApp::setup() noexcept {
     acquisition_.disable();
     return;
   }
-  (void)processing_runtime_.begin(ref);
+  record_context_.config_ref = ref;
+  const processing::ResultRecordContext result_context{
+      record_context_.device_id,
+      record_context_.boot_id,
+      ref,
+      record_context_.utc_source,
+  };
 #ifdef ARDUINO
   const acquisition::ArduinoMonotonicClock clock{};
-  (void)acquisition_.begin(config_manager_.active(), ref, clock.now_us());
+  const uint64_t now_us = clock.now_us();
+  (void)processing_runtime_.begin(config_manager_.active(), ref,
+                                  boot_identity_.sequence, result_context,
+                                  profiles_, now_us);
+  (void)acquisition_.begin(config_manager_.active(), ref, now_us);
 #else
   (void)acquisition_.begin(config_manager_.active(), ref, 0U);
+  (void)processing_runtime_.begin(config_manager_.active(), ref,
+                                  boot_identity_.sequence, result_context,
+                                  profiles_, 0U);
 #endif
 }
 
@@ -82,6 +96,7 @@ void SigapApp::loop() noexcept {
     (void)acquisition_.refresh_profiles(now_us);
   }
   acquisition_.poll(now_us);
+  processing_runtime_.poll(now_us);
   maintenance_service_.poll(now_us);
 #ifdef ARDUINO
   if (reboot_controller_.consume_request()) {
