@@ -32,7 +32,9 @@ enum class ArchiveMedia : uint8_t { Unknown, LittleFs, Sd };
 // budget is still explicit so a caller can decline a record that would make
 // the current storage-worker slice exceed its byte budget.
 struct MigrationBudget final {
-  std::size_t max_bytes_per_poll{32U * 1024U};
+  // Includes the source read, destination append, identity/hash verification,
+  // checkpoint, and reclaim metadata writes for one bounded record.
+  std::size_t max_bytes_per_poll{64U * 1024U};
 };
 
 enum class MigrationPhase : uint8_t {
@@ -51,6 +53,23 @@ struct MigrationReceipt final {
   uint64_t checkpoint_generation{0U};
   MigrationPhase phase{MigrationPhase::None};
   bool durable{false};
+};
+
+enum class MigrationReceiptLoad : uint8_t {
+  NotFound,
+  Found,
+  Error,
+};
+
+// Optional durable metadata boundary for a checkpointed copy.  The target
+// composition can inject a journal without making migration depend on a
+// particular filesystem implementation.
+class IMigrationReceiptJournal {
+ public:
+  virtual ~IMigrationReceiptJournal() = default;
+  virtual MigrationReceiptLoad load(MigrationReceipt& receipt) noexcept = 0;
+  virtual bool persist(const MigrationReceipt& receipt) noexcept = 0;
+  virtual bool clear(const MigrationReceipt& receipt) noexcept = 0;
 };
 
 class IMigrationSource {
@@ -150,9 +169,10 @@ class ArchiveMediaMigration final {
                         IMigrationDestination& destination,
                         ArchiveMedia source_media = ArchiveMedia::Unknown,
                         ArchiveMedia destination_media = ArchiveMedia::Unknown,
-                        MigrationBudget budget = {}) noexcept
+                        MigrationBudget budget = {},
+                        IMigrationReceiptJournal* journal = nullptr) noexcept
       : source_(source), destination_(destination), source_media_(source_media),
-        destination_media_(destination_media), budget_(budget) {}
+        destination_media_(destination_media), budget_(budget), journal_(journal) {}
 
   MigrationStatus migrate_one() noexcept {
     return migrate_one(budget_.max_bytes_per_poll);
@@ -163,13 +183,28 @@ class ArchiveMediaMigration final {
   // authoritative until reclaim has succeeded.
   MigrationStatus migrate_one(std::size_t max_bytes) noexcept {
     bytes_migrated_last_poll_ = 0U;
+    if (!initialize_journal()) return MigrationStatus::Fault;
+
+    // Complete a source-reclaim transaction whose metadata clear was
+    // interrupted.  No new source record is read until this transition ends.
+    if (has_pending_receipt_ &&
+        pending_receipt_.phase == MigrationPhase::Reclaimed) {
+      if (journal_ != nullptr && !journal_->clear(pending_receipt_)) {
+        return MigrationStatus::Retryable;
+      }
+      pending_receipt_ = MigrationReceipt{};
+      has_pending_receipt_ = false;
+      return MigrationStatus::Durable;
+    }
+
     if (!source_.peek(scratch_)) {
       return has_pending_receipt_ ? MigrationStatus::Retryable
                                   : MigrationStatus::Idle;
     }
     if (!RecordCodec::valid(scratch_)) return MigrationStatus::Fault;
 
-    if (scratch_.size > max_bytes) return MigrationStatus::LoggingBlocked;
+    const std::size_t estimated_io = estimated_io_bytes(scratch_.size);
+    if (estimated_io > max_bytes) return MigrationStatus::LoggingBlocked;
 
     if (has_pending_receipt_) {
       if (!same_archive_identity(scratch_.identity, pending_receipt_.identity) ||
@@ -181,8 +216,14 @@ class ArchiveMediaMigration final {
       if (!source_.reclaim(pending_receipt_)) return MigrationStatus::Retryable;
       pending_receipt_.phase = MigrationPhase::Reclaimed;
       pending_receipt_.durable = true;
+      if (journal_ != nullptr && !journal_->clear(pending_receipt_)) {
+        bytes_migrated_last_poll_ = scratch_.size;
+        return MigrationStatus::Retryable;
+      }
+      pending_receipt_ = MigrationReceipt{};
       has_pending_receipt_ = false;
       bytes_migrated_last_poll_ = scratch_.size;
+      io_bytes_last_poll_ = estimated_io;
       return MigrationStatus::Durable;
     }
 
@@ -208,10 +249,20 @@ class ArchiveMediaMigration final {
     receipt.durable = true;
     pending_receipt_ = receipt;
     has_pending_receipt_ = true;
+    if (journal_ != nullptr && !journal_->persist(pending_receipt_)) {
+      return MigrationStatus::Retryable;
+    }
     if (!source_.reclaim(pending_receipt_)) return MigrationStatus::Retryable;
     pending_receipt_.phase = MigrationPhase::Reclaimed;
+    if (journal_ != nullptr && !journal_->clear(pending_receipt_)) {
+      bytes_migrated_last_poll_ = scratch_.size;
+      io_bytes_last_poll_ = estimated_io;
+      return MigrationStatus::Retryable;
+    }
+    pending_receipt_ = MigrationReceipt{};
     has_pending_receipt_ = false;
     bytes_migrated_last_poll_ = scratch_.size;
+    io_bytes_last_poll_ = estimated_io;
     return MigrationStatus::Durable;
   }
 
@@ -219,11 +270,38 @@ class ArchiveMediaMigration final {
     return bytes_migrated_last_poll_;
   }
 
+  std::size_t io_bytes_last_poll() const noexcept { return io_bytes_last_poll_; }
+
   const MigrationReceipt* pending_receipt() const noexcept {
     return has_pending_receipt_ ? &pending_receipt_ : nullptr;
   }
 
  private:
+  bool initialize_journal() noexcept {
+    if (journal_ == nullptr || journal_loaded_) return true;
+    MigrationReceipt persisted{};
+    const auto status = journal_->load(persisted);
+    if (status == MigrationReceiptLoad::Error) return false;
+    if (status == MigrationReceiptLoad::Found) {
+      if (!persisted.durable ||
+          persisted.phase != MigrationPhase::Checkpointed ||
+          persisted.checkpoint_generation == 0U) {
+        return false;
+      }
+      pending_receipt_ = persisted;
+      has_pending_receipt_ = true;
+    }
+    journal_loaded_ = true;
+    return true;
+  }
+
+  static constexpr std::size_t estimated_io_bytes(std::size_t record_bytes) noexcept {
+    constexpr std::size_t kIdentityBytes = sizeof(ArchiveIdentity);
+    constexpr std::size_t kHashBytes = 32U;
+    constexpr std::size_t kMetadataBytes = 32U;
+    return record_bytes + record_bytes + kIdentityBytes + kHashBytes + kMetadataBytes;
+  }
+
   IMigrationSource& source_;
   IMigrationDestination& destination_;
   ArchiveMedia source_media_{ArchiveMedia::Unknown};
@@ -231,7 +309,10 @@ class ArchiveMediaMigration final {
   MigrationBudget budget_{};
   MigrationReceipt pending_receipt_{};
   std::size_t bytes_migrated_last_poll_{0U};
+  std::size_t io_bytes_last_poll_{0U};
   bool has_pending_receipt_{false};
+  IMigrationReceiptJournal* journal_{nullptr};
+  bool journal_loaded_{false};
   // One bounded instance-owned frame avoids a 16 KiB call-stack temporary.
   ImmutableRecordBytes scratch_{};
 };

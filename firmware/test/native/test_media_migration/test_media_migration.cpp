@@ -108,6 +108,36 @@ class Destination final : public IMigrationDestination {
   bool append_retry_{false};
 };
 
+class ReceiptJournal final : public IMigrationReceiptJournal {
+ public:
+  MigrationReceiptLoad load(MigrationReceipt& output) noexcept override {
+    if (!present_) return MigrationReceiptLoad::NotFound;
+    output = receipt_;
+    return MigrationReceiptLoad::Found;
+  }
+
+  bool persist(const MigrationReceipt& value) noexcept override {
+    receipt_ = value;
+    present_ = true;
+    return true;
+  }
+
+  bool clear(const MigrationReceipt& value) noexcept override {
+    if (!present_ || receipt_.hash != value.hash ||
+        receipt_.checkpoint_generation != value.checkpoint_generation) {
+      return false;
+    }
+    present_ = false;
+    return true;
+  }
+
+  bool present() const noexcept { return present_; }
+
+ private:
+  MigrationReceipt receipt_{};
+  bool present_{false};
+};
+
 void test_budget_prevents_unbounded_migration() {
   const auto value = record(1U);
   Source source(value);
@@ -156,6 +186,43 @@ void test_checkpoint_retry_preserves_source_and_receipt_is_not_faked() {
   TEST_ASSERT_TRUE(source.reclaimed());
 }
 
+void test_checkpoint_receipt_reconstructs_after_runtime_restart() {
+  const auto value = record(4U);
+  Source source(value);
+  source.fail_reclaim_once();
+  Destination destination;
+  ReceiptJournal journal;
+
+  {
+    ArchiveMediaMigration migration(source, destination, ArchiveMedia::LittleFs,
+                                     ArchiveMedia::Sd, {}, &journal);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(MigrationStatus::Retryable),
+                          static_cast<int>(migration.migrate_one()));
+    TEST_ASSERT_TRUE(journal.present());
+    TEST_ASSERT_NOT_NULL(migration.pending_receipt());
+  }
+
+  // A recreated migration object must resume from the durable checkpoint,
+  // without appending the destination record a second time.
+  ArchiveMediaMigration restarted(source, destination, ArchiveMedia::LittleFs,
+                                  ArchiveMedia::Sd, {}, &journal);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(MigrationStatus::Durable),
+                        static_cast<int>(restarted.migrate_one()));
+  TEST_ASSERT_TRUE(source.reclaimed());
+  TEST_ASSERT_FALSE(journal.present());
+  TEST_ASSERT_EQUAL_UINT32(1U, destination.append_calls());
+}
+
+void test_migration_reports_estimated_io_budget() {
+  const auto value = record(5U);
+  Source source(value);
+  Destination destination;
+  ArchiveMediaMigration migration(source, destination);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(MigrationStatus::Durable),
+                        static_cast<int>(migration.migrate_one()));
+  TEST_ASSERT_TRUE(migration.io_bytes_last_poll() > value.size);
+}
+
 }  // namespace
 
 int main() {
@@ -163,5 +230,7 @@ int main() {
   RUN_TEST(test_budget_prevents_unbounded_migration);
   RUN_TEST(test_reclaim_retry_reuses_checkpointed_receipt);
   RUN_TEST(test_checkpoint_retry_preserves_source_and_receipt_is_not_faked);
+  RUN_TEST(test_checkpoint_receipt_reconstructs_after_runtime_restart);
+  RUN_TEST(test_migration_reports_estimated_io_budget);
   return UNITY_END();
 }
