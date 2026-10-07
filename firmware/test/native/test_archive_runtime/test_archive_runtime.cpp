@@ -171,6 +171,27 @@ void test_queue_loss_counts_every_dropped_attempt() {
   TEST_ASSERT_EQUAL_UINT64(5U, runtime.gaps().at(0U).record_count);
   TEST_ASSERT_EQUAL_UINT64(16U, runtime.gaps().at(0U).first_sequence);
   TEST_ASSERT_EQUAL_UINT64(20U, runtime.gaps().at(0U).last_sequence);
+  TEST_ASSERT_EQUAL_UINT32(1U, store.gap_size());
+  TEST_ASSERT_EQUAL_UINT64(5U, store.gap_at(0U).record_count);
+}
+
+void test_gap_reserve_failure_is_observable_without_dropping_record_retry() {
+  storage::MemoryArchiveStore<4U> store(64U * 1024U);
+  ArchiveRuntime runtime(&store);
+  ArchiveRuntime::SampleHandoff handoff{};
+  auto value = sample();
+  value.header.sequence = 1U;
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(HandoffStatus::Enqueued),
+                        static_cast<int>(handoff.try_push(value)));
+  store.set_fault(storage::StoreFault::MediaFailure);
+  TEST_ASSERT_TRUE(runtime.drain_samples(handoff));
+  TEST_ASSERT_EQUAL_UINT64(1U, runtime.gaps().unlogged_records());
+  TEST_ASSERT_TRUE(runtime.gap_persistence_failures() > 0U);
+  TEST_ASSERT_EQUAL_UINT32(0U, store.gap_size());
+  store.set_fault(storage::StoreFault::None);
+  TEST_ASSERT_EQUAL_UINT32(1U, handoff.size());
+  TEST_ASSERT_TRUE(runtime.drain_samples(handoff));
+  TEST_ASSERT_EQUAL_UINT32(1U, store.size());
 }
 
 }  // namespace
@@ -182,5 +203,6 @@ int main() {
   RUN_TEST(test_failed_result_append_keeps_handoff_for_retry);
   RUN_TEST(test_result_codec_persists_fis_and_safety_evidence);
   RUN_TEST(test_queue_loss_counts_every_dropped_attempt);
+  RUN_TEST(test_gap_reserve_failure_is_observable_without_dropping_record_retry);
   return UNITY_END();
 }

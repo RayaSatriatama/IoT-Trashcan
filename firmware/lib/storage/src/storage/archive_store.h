@@ -128,6 +128,12 @@ class IArchiveStore {
  public:
   virtual ~IArchiveStore() = default;
   virtual AppendStatus append(const ImmutableRecordBytes& record) noexcept = 0;
+  // Gap metadata is a reserved accounting path.  It must not consume the
+  // pending-record quota, and a backend that cannot persist it reports a
+  // retryable status so the runtime can expose the traceability limitation.
+  virtual AppendStatus append_gap(const GapRange&) noexcept {
+    return AppendStatus::Retryable;
+  }
   virtual bool checkpoint() noexcept = 0;
   virtual bool recover() noexcept = 0;
   virtual uint64_t pending_bytes() const noexcept = 0;
@@ -140,6 +146,7 @@ enum class StoreFault : uint8_t { None, ShortWrite, FlushFailure, CorruptTail, M
 template <std::size_t Capacity>
 class MemoryArchiveStore final : public IArchiveStore {
  public:
+  static constexpr std::size_t kGapCapacity{32U};
   explicit MemoryArchiveStore(uint64_t quota_bytes) noexcept
       : quota_bytes_(quota_bytes) {}
 
@@ -161,6 +168,30 @@ class MemoryArchiveStore final : public IArchiveStore {
     }
     records_[count_++] = record;
     pending_bytes_ += record.size;
+    return AppendStatus::Durable;
+  }
+
+  AppendStatus append_gap(const GapRange& range) noexcept override {
+    if (!range.present || range.record_count == 0U) {
+      return AppendStatus::Invalid;
+    }
+    for (std::size_t i = 0U; i < gap_count_; ++i) {
+      GapRange& existing = gaps_[i];
+      if (existing.reason == range.reason &&
+          existing.device_id.bytes == range.device_id.bytes &&
+          existing.boot_id.bytes == range.boot_id.bytes &&
+          existing.sensor == range.sensor && existing.stream == range.stream &&
+          existing.first_sequence == range.first_sequence) {
+        existing = range;
+        return AppendStatus::Durable;
+      }
+    }
+    if (gap_count_ == kGapCapacity || fault_ == StoreFault::MediaFailure ||
+        fault_ == StoreFault::ShortWrite) {
+      health_ = ArchiveHealth::Degraded;
+      return AppendStatus::Retryable;
+    }
+    gaps_[gap_count_++] = range;
     return AppendStatus::Durable;
   }
 
@@ -192,6 +223,8 @@ class MemoryArchiveStore final : public IArchiveStore {
   std::size_t size() const noexcept { return count_; }
   bool checkpointed() const noexcept { return checkpointed_; }
   const ImmutableRecordBytes& at(std::size_t index) const noexcept { return records_[index]; }
+  std::size_t gap_size() const noexcept { return gap_count_; }
+  const GapRange& gap_at(std::size_t index) const noexcept { return gaps_[index]; }
   void corrupt_last_byte() noexcept {
     if (count_ != 0U && records_[count_ - 1U].size != 0U) {
       records_[count_ - 1U].bytes[records_[count_ - 1U].size - 1U] ^= 0x01U;
@@ -206,9 +239,11 @@ class MemoryArchiveStore final : public IArchiveStore {
            left.boot_id.bytes == right.boot_id.bytes;
   }
   std::array<ImmutableRecordBytes, Capacity> records_{};
+  std::array<GapRange, kGapCapacity> gaps_{};
   uint64_t quota_bytes_{0U};
   uint64_t pending_bytes_{0U};
   std::size_t count_{0U};
+  std::size_t gap_count_{0U};
   StoreFault fault_{StoreFault::None};
   ArchiveHealth health_{ArchiveHealth::Healthy};
   bool checkpointed_{false};
