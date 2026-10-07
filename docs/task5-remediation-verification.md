@@ -17,6 +17,10 @@ available, so evidence is native and target-build based.
 | Persistent B3 safety latch | `processing_engine.h`, `safety.h` | pipeline/runtime safety tests and two-clear-cycle tests |
 | Snapshot/provenance isolation | processing snapshot and result factory | profile conflict, source context, and model snapshot tests |
 | MQ model evidence | typed ADC profile capture and mV metrics | valid ADC evidence test; unavailable values remain explicit |
+| Independent processing cadence and bounded retention | `processing_policy::kProcessingPeriodUs`, latest-per-channel cache, current-time late poll | cadence, 13-channel/20-round retention, and late-poll tests |
+| Mechanical capacity provenance | `OperationalCapacityProfile`, typed codec, ProfileManager A/B binding, runtime snapshot | codec/lifecycle/reload and utilization snapshot tests |
+| Model import ownership | validation-before-stage and router-owned draft/transfer state | wrong hash/target, competing export, and explicit activation tests |
+| Safety/unit semantics | MQ7/MQ8 hazard mapping, B3 evaluator isolation, model input-unit mapping | pipeline latch and MQ hazard tests; all five input-unit mismatch cases |
 
 ## Policy boundaries
 
@@ -27,14 +31,19 @@ remain in SecretStore. Runtime state, safety latch, windows, and handoff rings
 are instance-owned RAM state. TEST_ONLY model fixtures are never installed by
 target composition.
 
+The processing cycle is intentionally independent of `telemetry.summary_period_ms`:
+the bounded engineering policy is one cycle per second. The window retains one
+newest attempt for each of the 13 current acquisition channels within 16 fixed
+records and forwards every observed sample to the downstream logger observer.
+Capacity profiles use the existing typed ProfileManager and pointer-last store;
+no load-cell rating is used as an operational default.
+
 ## Verification record
 
 Fresh verification on the integrated source completed as follows:
 
-- Native PlatformIO tests: **228/228 passed**.
-- Native ASan/UBSan PlatformIO copy: **227/227 passed**; the additional final
-  test is a compile-time footprint assertion and production source was
-  unchanged by that test-only addition.
+- Native PlatformIO tests: **239/239 passed**.
+- Native ASan/UBSan PlatformIO copy: **239/239 passed**.
 - Cppcheck: **No defects found** with `--fail-on-defect=low`.
 - Target builds: `sigap_n16r8`, `sigap_n16r8_sd`, and `sigap_bench` all passed.
 - Go 1.27.1 isolated toolchain: telemetry tests, full `go test ./...`, and
@@ -46,10 +55,16 @@ Fresh verification on the integrated source completed as follows:
 
 ## Resource notes
 
-Final target footprint is 72,584 B RAM / 398,417 B flash for each of the three
-profiles. Native measured sizes are: `ProcessingRuntime` 13,392 B,
-`ProcessingSnapshot` 1,800 B, `ProcessedValues` 96 B, result envelope 2,968 B,
-`ModelProfileLifecycle` 11,952 B, `FisModelProfile` 1,416 B,
-`SafetyModelProfile` 240 B, and `EncodedModelProfile` 1,464 B. The fixed
-acquisition baseline remains bounded (`SampleRing<16>` 4,128 B); model and
-result handoffs reject full pushes without overwriting older entries.
+Final target footprint is **77,680 B RAM / 400,517 B flash** for each of the
+three profiles. Native measured sizes are: `ProcessingRuntime` 16,728 B,
+`ProcessingSnapshot` 1,944 B, `ProcessedValues` 96 B, result envelope 2,968 B,
+`ModelProfileLifecycle` 11,952 B, `ProfileManager` 10,120 B,
+`OperationalCapacityProfile` 200 B, `ProfileManifest` 184 B,
+`EncodedProfile` 192 B, and `SampleRing<16>` 4,128 B. Acquisition remains
+bounded (`SampleRecord` 256 B, `AcquisitionFoundation` 8,888 B,
+`TargetAcquisitionGraph` 4,408 B); model, sample, and result handoffs reject
+full pushes without overwriting older entries.
+
+The remediation adds 11 native regression cases over the previous checkpoint
+and retains the fixed 13-channel processing budget. No target heap high-water
+or sensor timing claim is made because no sensors or outputs are connected.

@@ -87,17 +87,31 @@ bool append_size(MaintenanceResponse& response, std::size_t value) noexcept {
                                           static_cast<std::size_t>(converted.ptr - digits)));
 }
 
-void ModelMaintenanceRouter::cancel_transfer() noexcept {
-  if (draft_active_) (void)lifecycle_.cancel(transfer_key_);
+void ModelMaintenanceRouter::clear_transfer_state() noexcept {
   import_active_ = false;
   export_active_ = false;
-  draft_active_ = false;
   expected_size_ = 0U;
   received_size_ = 0U;
   export_offset_ = 0U;
   last_activity_us_ = 0U;
   expected_hash_ = config::ConfigHash{};
   transfer_profile_ = models::EncodedModelProfile{};
+}
+
+void ModelMaintenanceRouter::cancel_transfer() noexcept {
+  if (draft_owned_) (void)lifecycle_.cancel(draft_key_);
+  draft_owned_ = false;
+  draft_active_ = false;
+  draft_key_ = models::ModelProfileKey{};
+  transfer_key_ = models::ModelProfileKey{};
+  clear_transfer_state();
+}
+
+bool ModelMaintenanceRouter::command_targets_transfer(
+    const MaintenanceCommand& command) const noexcept {
+  if (command.target.view().empty()) return true;
+  models::ModelProfileKey key{};
+  return key_from_text(command.target, key) && key == transfer_key_;
 }
 
 void ModelMaintenanceRouter::cancel_model() noexcept { cancel_transfer(); }
@@ -116,14 +130,53 @@ CommandStatus ModelMaintenanceRouter::execute_model(
   models::ModelProfileKey key{};
   if (command.kind == CommandKind::ModelImportChunk) {
     if (!import_active_) return CommandStatus::Rejected;
+    if (!command_targets_transfer(command)) {
+      cancel_transfer();
+      return CommandStatus::Rejected;
+    }
     key = transfer_key_;
   } else if (!key_from_text(command.target, key)) {
     return CommandStatus::InvalidSyntax;
   }
-  last_activity_us_ = now_us;
+
+  // A transfer has one owner and one bound key.  Competing operations are
+  // rejected without changing the in-flight bytes or its timeout clock.
+  if (import_active_ && command.kind != CommandKind::ModelImportChunk &&
+      command.kind != CommandKind::ModelImportFinish &&
+      command.kind != CommandKind::ModelCancel &&
+      command.kind != CommandKind::ModelStatus) {
+    return CommandStatus::Rejected;
+  }
+  if (export_active_ && command.kind != CommandKind::ModelExport &&
+      command.kind != CommandKind::ModelCancel &&
+      command.kind != CommandKind::ModelStatus) {
+    return CommandStatus::Rejected;
+  }
+  if (draft_owned_ && (command.kind == CommandKind::ModelImportBegin ||
+                       command.kind == CommandKind::ModelExport)) {
+    return CommandStatus::Rejected;
+  }
+  if ((import_active_ || export_active_) &&
+      (command.kind == CommandKind::ModelCancel ||
+       command.kind == CommandKind::ModelStatus) &&
+      !(key == transfer_key_)) {
+    return CommandStatus::Rejected;
+  }
+
+  // Only accepted transfer activity refreshes the timeout.
+  if (command.kind != CommandKind::ModelImportBegin &&
+      command.kind != CommandKind::ModelStatus &&
+      command.kind != CommandKind::ModelValidate &&
+      command.kind != CommandKind::ModelPreview &&
+      command.kind != CommandKind::ModelCommit &&
+      command.kind != CommandKind::ModelCancel &&
+      command.kind != CommandKind::ModelRollback) {
+    last_activity_us_ = now_us;
+  }
 
   if (command.kind == CommandKind::ModelExport) {
-    if (!export_active_ || !(key == transfer_key_)) {
+    if (export_active_ && !(key == transfer_key_)) return CommandStatus::Rejected;
+    if (!export_active_) {
       models::ModelProfileSnapshot snapshot{};
       if (!lifecycle_.snapshot(key, snapshot) || !snapshot.present) {
         return CommandStatus::Rejected;
@@ -157,11 +210,14 @@ CommandStatus ModelMaintenanceRouter::execute_model(
                     chunk) ||
         !response.append("\n")) return CommandStatus::Failed;
     export_offset_ += chunk;
-    if (export_offset_ == transfer_profile_.size) export_active_ = false;
+    if (export_offset_ == transfer_profile_.size) clear_transfer_state();
     return CommandStatus::Accepted;
   }
 
   if (command.kind == CommandKind::ModelImportBegin) {
+    if (import_active_ || export_active_ || draft_owned_) {
+      return CommandStatus::Rejected;
+    }
     config::ConfigHash requested_hash{};
     if (!command.has_numeric || command.numeric_value <= 0 ||
         static_cast<std::size_t>(command.numeric_value) >
@@ -169,10 +225,12 @@ CommandStatus ModelMaintenanceRouter::execute_model(
         !decode_hash(command.value.view(), requested_hash)) {
       return CommandStatus::InvalidSyntax;
     }
-    cancel_transfer();
     transfer_key_ = key;
+    transfer_profile_ = models::EncodedModelProfile{};
     expected_hash_ = requested_hash;
     expected_size_ = static_cast<std::size_t>(command.numeric_value);
+    received_size_ = 0U;
+    export_offset_ = 0U;
     import_active_ = true;
     last_activity_us_ = now_us;
     return CommandStatus::Accepted;
@@ -195,24 +253,38 @@ CommandStatus ModelMaintenanceRouter::execute_model(
     std::copy_n(chunk_bytes.data(), written,
                 transfer_profile_.bytes.begin() + received_size_);
     received_size_ += written;
+    last_activity_us_ = now_us;
     return CommandStatus::Accepted;
   }
 
   if (command.kind == CommandKind::ModelImportFinish) {
-    if (!import_active_ || received_size_ != expected_size_) {
+    if (!import_active_ || !command_targets_transfer(command) ||
+        received_size_ != expected_size_) {
       cancel_transfer();
       return CommandStatus::Rejected;
     }
     transfer_profile_.size = received_size_;
     const bool hash_ok = transfer_profile_.hash() == expected_hash_;
     const bool codec_ok = codec_.validate(transfer_profile_, key);
-    const bool staged = codec_ok && lifecycle_.stage(key, transfer_profile_);
-    if (!hash_ok || !codec_ok || !staged) {
+    // Validate the complete candidate before touching lifecycle draft state.
+    if (!hash_ok || !codec_ok) {
+      cancel_transfer();
+      return CommandStatus::Rejected;
+    }
+    if (!lifecycle_.stage(key, transfer_profile_)) {
       cancel_transfer();
       return CommandStatus::Rejected;
     }
     import_active_ = false;
     draft_active_ = true;
+    draft_owned_ = true;
+    draft_key_ = key;
+    expected_size_ = 0U;
+    received_size_ = 0U;
+    export_offset_ = 0U;
+    expected_hash_ = config::ConfigHash{};
+    transfer_profile_ = models::EncodedModelProfile{};
+    last_activity_us_ = now_us;
     return CommandStatus::Accepted;
   }
 
@@ -229,22 +301,35 @@ CommandStatus ModelMaintenanceRouter::execute_model(
   }
 
   if (command.kind == CommandKind::ModelValidate) {
+    if (draft_owned_ && !(key == draft_key_)) return CommandStatus::Rejected;
     return lifecycle_.validate(key) ? CommandStatus::Accepted : CommandStatus::Rejected;
   }
   if (command.kind == CommandKind::ModelPreview) {
+    if (draft_owned_ && !(key == draft_key_)) return CommandStatus::Rejected;
     return lifecycle_.preview(key) ? CommandStatus::Accepted : CommandStatus::Rejected;
   }
   if (command.kind == CommandKind::ModelCommit) {
+    if (draft_owned_ && !(key == draft_key_)) return CommandStatus::Rejected;
     const bool ok = lifecycle_.commit(key);
-    if (ok) draft_active_ = false;
+    if (ok && draft_owned_ && key == draft_key_) {
+      draft_active_ = false;
+      draft_owned_ = false;
+      draft_key_ = models::ModelProfileKey{};
+    }
     return ok ? CommandStatus::Accepted : CommandStatus::Rejected;
   }
   if (command.kind == CommandKind::ModelCancel) {
+    if (draft_owned_ && !(key == draft_key_)) return CommandStatus::Rejected;
+    if (import_active_ || export_active_) {
+      cancel_transfer();
+      return CommandStatus::Accepted;
+    }
     const bool ok = lifecycle_.cancel(key);
     if (ok) cancel_transfer();
     return ok ? CommandStatus::Accepted : CommandStatus::Rejected;
   }
   if (command.kind == CommandKind::ModelRollback) {
+    if (draft_owned_ && !(key == draft_key_)) return CommandStatus::Rejected;
     return lifecycle_.rollback(key) ? CommandStatus::Accepted : CommandStatus::Rejected;
   }
   return CommandStatus::Rejected;

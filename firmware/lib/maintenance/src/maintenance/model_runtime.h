@@ -34,6 +34,8 @@ class ModelMaintenanceRouter final : public IModelCommandHandler {
   static bool append_hex(MaintenanceResponse& response, const uint8_t* bytes,
                          std::size_t size) noexcept;
   void cancel_transfer() noexcept;
+  void clear_transfer_state() noexcept;
+  bool command_targets_transfer(const MaintenanceCommand& command) const noexcept;
 
   models::ModelProfileLifecycle& lifecycle_;
   const models::ModelProfileCodec& codec_;
@@ -47,6 +49,11 @@ class ModelMaintenanceRouter final : public IModelCommandHandler {
   bool import_active_{false};
   bool export_active_{false};
   bool draft_active_{false};
+  // A draft is owned only after this router successfully stages an import.
+  // Existing lifecycle drafts are never cancelled as a side effect of an
+  // unrelated transfer.
+  bool draft_owned_{false};
+  models::ModelProfileKey draft_key_{};
 };
 
 }  // namespace sigap::maintenance

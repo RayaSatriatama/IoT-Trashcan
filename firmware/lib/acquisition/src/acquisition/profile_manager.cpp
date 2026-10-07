@@ -12,7 +12,8 @@ bool ProfileManager::valid_key(ProfileKey key) noexcept {
     return (target >= 1U && target <= 6U) || (target >= 11U && target <= 13U);
   }
   if (key.kind == ProfileKind::Adc) return target >= 7U && target <= 10U;
-  return key.kind == ProfileKind::Heater && key.target == ProfileTarget::Mq7;
+  if (key.kind == ProfileKind::Heater) return key.target == ProfileTarget::Mq7;
+  return key.kind == ProfileKind::Capacity && target >= 1U && target <= 3U;
 }
 
 std::size_t ProfileManager::key_index(ProfileKey key) noexcept {
@@ -26,6 +27,8 @@ std::size_t ProfileManager::key_index(ProfileKey key) noexcept {
     return 9U + target - 7U;
   } else if (key.kind == ProfileKind::Heater && key.target == ProfileTarget::Mq7) {
     return 13U;
+  } else if (key.kind == ProfileKind::Capacity && target >= 1U && target <= 3U) {
+    return 14U + target - 1U;
   }
   return kTargetCount;
 }
@@ -214,10 +217,14 @@ ProfileManagerState ProfileManager::state(ProfileKey key) const noexcept {
 void ProfileManager::bind_runtime_profiles(TargetProfileSet& profiles) noexcept {
   runtime_profiles_ = &profiles;
   profiles = TargetProfileSet{};
-  for (uint32_t target = 1U; target < kTargetCount; ++target) {
+  for (uint32_t target = 1U; target <= 13U; ++target) {
     sync_runtime_target(static_cast<ProfileTarget>(target));
   }
   sync_runtime_key(ProfileKey{ProfileKind::Heater, ProfileTarget::Mq7});
+  for (uint32_t target = 1U; target <= 3U; ++target) {
+    sync_runtime_key(ProfileKey{ProfileKind::Capacity,
+                                static_cast<ProfileTarget>(target)});
+  }
 }
 
 void ProfileManager::sync_runtime_target(ProfileTarget target) noexcept {
@@ -233,6 +240,14 @@ void ProfileManager::sync_runtime_key(ProfileKey key) noexcept {
     heater_runtime_ = Mq7HeaterProfile{};
     if (present) (void)codec_.decode(active_[target_index], heater_runtime_);
     runtime_profiles_->heater = &heater_runtime_;
+    return;
+  }
+  if (key.kind == ProfileKind::Capacity && target >= ProfileTarget::Hx711Organic &&
+      target <= ProfileTarget::Hx711B3) {
+    const std::size_t slot = static_cast<std::size_t>(target) - 1U;
+    capacity_runtime_[slot] = OperationalCapacityProfile{};
+    if (present) (void)codec_.decode(active_[target_index], capacity_runtime_[slot]);
+    runtime_profiles_->capacity[slot] = &capacity_runtime_[slot];
     return;
   }
   if (key.kind == ProfileKind::Adc &&

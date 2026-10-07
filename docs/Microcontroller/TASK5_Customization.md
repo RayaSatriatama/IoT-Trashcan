@@ -14,9 +14,11 @@ Changing a value in source does not overwrite an active NVS snapshot.
 | `sampling.ds18b20_period_ms` | `uint32_t`, ms | factory default `1000`; validated positive range | `AppConfig` | draft, validate, preview, commit; active after reboot |
 | `sampling.sht31_period_ms` | `uint32_t`, ms | factory default `2000`; validated positive range | `AppConfig` | draft, validate, preview, commit; active after reboot |
 | `telemetry.summary_period_ms` | `uint32_t`, ms | factory default `15000`; validated range | `AppConfig` | draft, validate, preview, commit; active after reboot |
+| processing cycle cadence | `uint64_t`, us | engineering policy `1,000,000` in `config_defaults.h` | processing policy | firmware policy; independent from telemetry summary cadence |
 | `telemetry.max_records_per_batch` | `uint16_t`, records | factory default `128`; hard bounded | `AppConfig` | draft, validate, preview, commit; active after reboot |
 | `telemetry.retry_min_ms/max_ms` | `uint32_t`, ms | `1000` / `60000`; min <= max | `AppConfig` | draft, validate, preview, commit; active after reboot |
 | pending storage quotas | `uint64_t`, bytes | factory defaults in `config_defaults.h`; reserve enforced | `AppConfig` | draft, validate, preview, commit; active after reboot |
+| slot operational capacity | `float`, kg | absent until a finite positive mechanical profile is committed | typed capacity profile | ProfileManager DRAFT/VALIDATE/PREVIEW/COMMIT; copied into the next processing snapshot |
 | HX711 tare and scale | typed counts and `float` counts/kg | absent until a valid profile exists | calibration profile | maintenance workflow; new acquisition cycle/profile boundary |
 | ultrasonic empty/full/tolerance and timing | typed mm/us fields | absent until validated profile; explicit engineering fallback only for raw acquisition | calibration profile | maintenance workflow; next acquisition attempt |
 | MQ ADC reference/divider | typed counts/mV ratio | absent until validated profile | calibration profile | maintenance workflow; next acquisition attempt |
@@ -34,6 +36,14 @@ The only factory AppConfig definition is
 `firmware/lib/config/src/config/`; model/profile validation lives beside each
 typed model. A draft is not visible to runtime consumers. No production model
 threshold or sensor reading is supplied by Task 5.
+
+The processing window retains one newest attempt per acquisition channel in a
+fixed 16-record budget (13 current channels, with overflow observable). This
+keeps the 100 ms HX711/MQ, 1 s ultrasonic/DS18B20, and 2 s SHT31 acquisition
+rates bounded without consuming the logger handoff. A late poll uses the
+observed monotonic time as the cycle boundary, so collected samples are never
+made future-dated by an old scheduler deadline. Operational capacity is a
+mechanical profile and is never inferred from a load-cell rating.
 
 ## Model maintenance workflow
 

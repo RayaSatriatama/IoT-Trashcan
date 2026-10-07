@@ -12,6 +12,7 @@
 #include "models/model_profiles.h"
 #include "processing/processing_engine.h"
 #include "safety/safety.h"
+#include "sigap/config/config_defaults.h"
 
 namespace sigap {
 
@@ -21,6 +22,11 @@ namespace sigap {
 class ProcessingRuntime final : public acquisition::ISampleObserver {
  public:
   static constexpr std::size_t kWindowCapacity{16U};
+  // One retained attempt per acquisition channel: 3 HX711, 3 ultrasonic,
+  // 4 MQ, DS18B20, and two SHT31 channels.
+  static constexpr std::size_t kChannelCapacity{13U};
+  static_assert(kChannelCapacity <= kWindowCapacity,
+                "processing retention must fit the processing window");
   static constexpr std::size_t kSourceCapacity{16U};
   static constexpr std::size_t kResultHandoffCapacity{3U};
 
@@ -39,8 +45,8 @@ class ProcessingRuntime final : public acquisition::ISampleObserver {
              const acquisition::TargetProfileSet& profiles,
              uint64_t first_due_us) noexcept {
     disable();
-    const uint64_t period_us =
-        static_cast<uint64_t>(active.telemetry.summary_period_ms) * 1000U;
+    (void)active;
+    const uint64_t period_us = processing_policy::kProcessingPeriodUs;
     if (!config_ref.present || config_ref.schema_version == 0U ||
         !processing::same_config_ref(config_ref, context.config_ref) ||
         !context.device_id.present || !context.boot_id.present ||
@@ -54,6 +60,7 @@ class ProcessingRuntime final : public acquisition::ISampleObserver {
     profiles_ = &profiles;
     period_us_ = period_us;
     next_due_us_ = first_due_us;
+    retained_count_ = 0U;
     enabled_ = true;
     return true;
   }
@@ -69,6 +76,7 @@ class ProcessingRuntime final : public acquisition::ISampleObserver {
     period_us_ = 0U;
     next_due_us_ = 0U;
     window_ = processing::SampleWindow<kWindowCapacity>{};
+    retained_count_ = 0U;
     safety_evaluator_.reset();
   }
 
@@ -105,12 +113,14 @@ class ProcessingRuntime final : public acquisition::ISampleObserver {
       ++rejected_samples_;
       return;
     }
-    const auto status = window_.try_add(sample);
-    if (status == processing::WindowStatus::Added) {
+    const auto status = retain_latest(sample);
+    if (status == RetainedStatus::Added ||
+        status == RetainedStatus::Replaced) {
       ++observed_samples_;
-    } else if (status == processing::WindowStatus::Full) {
+    } else if (status == RetainedStatus::Full) {
       ++dropped_samples_;
-    } else if (status == processing::WindowStatus::Invalid) {
+    } else if (status == RetainedStatus::Invalid ||
+               status == RetainedStatus::Older) {
       ++rejected_samples_;
     }
   }
@@ -121,9 +131,12 @@ class ProcessingRuntime final : public acquisition::ISampleObserver {
       return;
     }
 
-    const uint64_t due = next_due_us_;
     advance_due(now_us);
-    evaluate_cycle(due);
+    // A missed deadline is a scheduling fact, not a future sample timestamp.
+    // Capture the cycle at the observed monotonic time so records collected
+    // after the old deadline remain eligible rather than being future-dated.
+    evaluate_cycle(now_us);
+    retained_count_ = 0U;
     window_ = processing::SampleWindow<kWindowCapacity>{};
     ++cycles_completed_;
   }
@@ -139,6 +152,8 @@ class ProcessingRuntime final : public acquisition::ISampleObserver {
   uint64_t dropped_samples() const noexcept { return dropped_samples_; }
   uint64_t cycles_completed() const noexcept { return cycles_completed_; }
   uint64_t result_failures() const noexcept { return result_failures_; }
+  uint64_t processing_period_us() const noexcept { return period_us_; }
+  std::size_t retained_samples() const noexcept { return retained_count_; }
 
  private:
   static constexpr std::size_t stream_index(
@@ -150,6 +165,39 @@ class ProcessingRuntime final : public acquisition::ISampleObserver {
       case acquisition::StreamId::Ambient: return 3U;
     }
     return 3U;
+  }
+
+  enum class RetainedStatus : uint8_t {
+    Added,
+    Replaced,
+    Older,
+    Full,
+    Invalid,
+  };
+
+  static bool same_channel(const acquisition::SampleRecord& left,
+                           const acquisition::SampleRecord& right) noexcept {
+    return left.header.sensor == right.header.sensor &&
+           left.header.stream == right.header.stream;
+  }
+
+  RetainedStatus retain_latest(
+      const acquisition::SampleRecord& sample) noexcept {
+    if (!sample.header.device_id.present || !sample.header.boot_id.present) {
+      return RetainedStatus::Invalid;
+    }
+    for (std::size_t index = 0U; index < retained_count_; ++index) {
+      if (!same_channel(retained_[index], sample)) continue;
+      if (sample.header.sequence < retained_[index].header.sequence ||
+          sample.header.monotonic_us < retained_[index].header.monotonic_us) {
+        return RetainedStatus::Older;
+      }
+      retained_[index] = sample;
+      return RetainedStatus::Replaced;
+    }
+    if (retained_count_ == retained_.size()) return RetainedStatus::Full;
+    retained_[retained_count_++] = sample;
+    return RetainedStatus::Added;
   }
 
   bool sample_matches_runtime(
@@ -189,6 +237,9 @@ class ProcessingRuntime final : public acquisition::ISampleObserver {
       profiles.sht31_present = true;
       profiles.temperature_source = processing::TemperatureSource::Sht31_45;
     }
+    if (index < 3U && source.capacity[index] != nullptr) {
+      profiles.capacity = *source.capacity[index];
+    }
     for (std::size_t mq_index = 0U; mq_index < source.mq_adc.size();
          ++mq_index) {
       if (source.mq_adc[mq_index] != nullptr) {
@@ -200,6 +251,14 @@ class ProcessingRuntime final : public acquisition::ISampleObserver {
   }
 
   void evaluate_cycle(uint64_t cycle_started_us) noexcept {
+    // Materialize the bounded latest-per-channel retention cache into the
+    // processing window only at cycle evaluation. This keeps every acquired
+    // record available to the logger observer while processing retains a
+    // deterministic one-attempt view for each channel.
+    window_ = processing::SampleWindow<kWindowCapacity>{};
+    for (std::size_t index = 0U; index < retained_count_; ++index) {
+      (void)window_.try_add(retained_[index]);
+    }
     if (window_.empty()) return;
 
     for (const auto stream : {acquisition::StreamId::Organic,
@@ -277,6 +336,8 @@ class ProcessingRuntime final : public acquisition::ISampleObserver {
   std::array<const models::FisModelProfile*, 3U> fis_profiles_{};
   const models::SafetyModelProfile* safety_profile_{nullptr};
   processing::SampleWindow<kWindowCapacity> window_{};
+  std::array<acquisition::SampleRecord, kChannelCapacity> retained_{};
+  std::size_t retained_count_{0U};
   safety::SafetyEvaluator safety_evaluator_{};
   Handoff handoff_{};
   uint64_t period_us_{0U};

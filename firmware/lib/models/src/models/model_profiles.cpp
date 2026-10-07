@@ -125,7 +125,10 @@ ModelValidationResult validate_definition_body(
 ModelValidationResult validate_definition(
     const FisInputDefinition& definition) noexcept {
   if (!valid_input(definition.id) || !valid_unit(definition.unit)) {
-    return result(ModelValidationError::InvalidDomain);
+    return result(ModelValidationError::InvalidUnit);
+  }
+  if (definition.unit != model_unit_for_input(definition.id)) {
+    return result(ModelValidationError::InvalidUnit);
   }
   return validate_definition_body(definition);
 }

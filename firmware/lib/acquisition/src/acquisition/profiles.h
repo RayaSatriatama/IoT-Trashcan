@@ -68,6 +68,40 @@ struct ProfileManifest {
   ProfileProvenance provenance{};
 };
 
+constexpr uint32_t capacity_target_id(StreamId stream) noexcept {
+  switch (stream) {
+    case StreamId::Organic: return 1U;
+    case StreamId::Inorganic: return 2U;
+    case StreamId::B3: return 3U;
+    case StreamId::Ambient: return 0U;
+  }
+  return 0U;
+}
+
+// Mechanical capacity is a versioned profile, not a load-cell rating or an
+// AppConfig field. The same typed object is persisted by ProfileManager and
+// copied into each immutable processing snapshot.
+struct OperationalCapacityProfile final {
+  ProfileManifest manifest{};
+  StreamId stream{StreamId::Organic};
+  float operational_capacity_kg{0.0F};
+  bool present{false};
+
+  bool valid_for_normalization() const noexcept {
+    return present &&
+           (manifest.validity == ProfileValidity::Valid ||
+            manifest.validity == ProfileValidity::TestOnly) &&
+           manifest.kind == ProfileKind::Capacity &&
+           manifest.schema_version > 0U &&
+           manifest.profile_version > 0U &&
+           manifest.target_id == capacity_target_id(stream) &&
+           std::isfinite(operational_capacity_kg) &&
+           operational_capacity_kg > 0.0F;
+  }
+
+  ProfileRef ref() const noexcept { return to_ref(manifest); }
+};
+
 inline constexpr ProfileKind default_profile_kind(ProfileTarget target) noexcept {
   switch (target) {
     case ProfileTarget::Mq4:

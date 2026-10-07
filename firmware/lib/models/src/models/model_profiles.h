@@ -56,6 +56,23 @@ enum class ModelUnit : uint8_t {
   Millivolts = 3U,
 };
 
+// Each model input has one physical unit. Keeping this mapping in the model
+// boundary prevents a syntactically valid profile from applying (for example)
+// Celsius membership functions to an ADC input.
+constexpr ModelUnit model_unit_for_input(ModelInput value) noexcept {
+  switch (value) {
+    case ModelInput::FillPercent:
+    case ModelInput::WeightUtilizationPercent:
+      return ModelUnit::Percent;
+    case ModelInput::TemperatureC:
+      return ModelUnit::Celsius;
+    case ModelInput::Mq7AdcMillivolts:
+    case ModelInput::Mq8AdcMillivolts:
+      return ModelUnit::Millivolts;
+  }
+  return static_cast<ModelUnit>(0U);
+}
+
 enum class MembershipShape : uint8_t {
   Triangle = 1U,
   Trapezoid = 2U,
@@ -155,6 +172,7 @@ enum class ModelValidationError : uint8_t {
   None = 0U,
   InvalidManifest,
   InvalidTarget,
+  InvalidUnit,
   ValidityMismatch,
   ResourceLimit,
   NonFinite,

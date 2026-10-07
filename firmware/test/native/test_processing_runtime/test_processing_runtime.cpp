@@ -1,5 +1,7 @@
+#include <array>
 #include <cstdint>
 #include <cstdio>
+#include <utility>
 
 #include <unity.h>
 
@@ -20,6 +22,17 @@ ConfigRef active_config_ref() {
   ref.config_version = 7U;
   ref.hash[0] = 0xA7U;
   return ref;
+}
+
+ProfileManifest profile_manifest(ProfileKind kind, ProfileTarget target) {
+  ProfileManifest manifest{};
+  manifest.kind = kind;
+  manifest.schema_version = 1U;
+  manifest.profile_version = 1U;
+  manifest.target_id = static_cast<uint32_t>(target);
+  manifest.validity = ProfileValidity::Valid;
+  manifest.hash[0] = 0x31U;
+  return manifest;
 }
 
 DeviceId device_id() {
@@ -91,6 +104,115 @@ void test_runtime_observes_sample_without_consuming_acquisition_handoff() {
   TEST_ASSERT_EQUAL_UINT32(1U, runtime.observed_samples());
 }
 
+void test_processing_cadence_is_independent_of_summary_period() {
+  SequenceAllocator sequence{};
+  TargetProfileSet profiles{};
+  CountingObserver downstream{};
+  ProcessingRuntime runtime{};
+  initialize_runtime(runtime, sequence, profiles, downstream);
+
+  TEST_ASSERT_EQUAL_UINT64(1'000'000U, runtime.processing_period_us());
+}
+
+void test_runtime_retains_latest_attempt_per_channel_with_bounded_budget() {
+  SequenceAllocator sequence{};
+  TargetProfileSet profiles{};
+  CountingObserver downstream{};
+  ProcessingRuntime runtime{};
+  initialize_runtime(runtime, sequence, profiles, downstream);
+
+  const std::array<std::pair<SensorId, StreamId>, 13U> channels{{
+      {SensorId::Hx711Organic, StreamId::Organic},
+      {SensorId::Hx711Inorganic, StreamId::Inorganic},
+      {SensorId::Hx711B3, StreamId::B3},
+      {SensorId::UltrasonicOrganic, StreamId::Organic},
+      {SensorId::UltrasonicInorganic, StreamId::Inorganic},
+      {SensorId::UltrasonicB3, StreamId::B3},
+      {SensorId::Mq4, StreamId::Organic},
+      {SensorId::Mq135, StreamId::Organic},
+      {SensorId::Mq7, StreamId::B3},
+      {SensorId::Mq8, StreamId::B3},
+      {SensorId::Ds18b20B3, StreamId::B3},
+      {SensorId::Sht31_44, StreamId::Organic},
+      {SensorId::Sht31_45, StreamId::B3},
+  }};
+  uint64_t sequence_number = 100U;
+  for (uint32_t round = 0U; round < 20U; ++round) {
+    for (const auto [sensor, stream] : channels) {
+      auto record = organic_attempt(sequence_number++,
+                                    100'000U + round * 100'000U);
+      record.header.sensor = sensor;
+      record.header.stream = stream;
+      runtime.observe(record);
+    }
+  }
+
+  TEST_ASSERT_EQUAL_UINT32(13U, runtime.retained_samples());
+  TEST_ASSERT_EQUAL_UINT64(0U, runtime.dropped_samples());
+  TEST_ASSERT_EQUAL_UINT64(260U, runtime.observed_samples());
+}
+
+void test_late_poll_uses_observed_time_not_stale_deadline() {
+  SequenceAllocator sequence{};
+  TargetProfileSet profiles{};
+  CountingObserver downstream{};
+  ProcessingRuntime runtime{};
+  initialize_runtime(runtime, sequence, profiles, downstream);
+
+  runtime.observe(organic_attempt(500U, 900'000U));
+  runtime.poll(2'500'000U);
+
+  ProcessingRuntime::ResultEnvelope result{};
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(processing::ResultHandoffStatus::Dequeued),
+      static_cast<int>(runtime.handoff().try_pop(result)));
+  TEST_ASSERT_EQUAL_UINT64(2'500'000U, result.header.monotonic_us);
+}
+
+void test_capacity_profile_is_captured_in_runtime_snapshot() {
+  SequenceAllocator sequence{};
+  TargetProfileSet profiles{};
+  Hx711Profile hx{};
+  hx.manifest = profile_manifest(ProfileKind::Calibration,
+                                  ProfileTarget::Hx711Organic);
+  hx.counts_per_kg = 500.0F;
+  hx.tare_offset_counts = 1000;
+  profiles.hx711[0] = &hx;
+
+  processing::SlotCapacityProfile capacity{};
+  capacity.present = true;
+  capacity.stream = StreamId::Organic;
+  capacity.operational_capacity_kg = 4.0F;
+  capacity.manifest.kind = ProfileKind::Capacity;
+  capacity.manifest.schema_version = 1U;
+  capacity.manifest.profile_version = 2U;
+  capacity.manifest.target_id = 1U;
+  capacity.manifest.validity = ProfileValidity::TestOnly;
+  capacity.manifest.hash[0] = 0x42U;
+  profiles.capacity[0] = &capacity;
+
+  CountingObserver downstream{};
+  ProcessingRuntime runtime{};
+  initialize_runtime(runtime, sequence, profiles, downstream);
+  auto record = organic_attempt(700U, 900'000U);
+  record.header.profile_ref = hx.ref();
+  record.quality = SampleQuality::Ready;
+  record.reason = SampleReason::DataReady;
+  record.raw.present = true;
+  record.raw.signed_counts = 2000;
+  runtime.observe(record);
+  runtime.poll(1'000'000U);
+
+  ProcessingRuntime::ResultEnvelope result{};
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(processing::ResultHandoffStatus::Dequeued),
+      static_cast<int>(runtime.handoff().try_pop(result)));
+  TEST_ASSERT_TRUE(result.result.processing.processed.weight_utilization_pct.available);
+  TEST_ASSERT_FLOAT_WITHIN(
+      0.001F, 50.0F,
+      result.result.processing.processed.weight_utilization_pct.value);
+}
+
 void test_runtime_cycle_emits_unconfigured_result_with_shared_provenance() {
   SequenceAllocator sequence{};
   TargetProfileSet profiles{};
@@ -159,6 +281,10 @@ void test_processing_resource_footprint_is_bounded() {
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_runtime_observes_sample_without_consuming_acquisition_handoff);
+  RUN_TEST(test_processing_cadence_is_independent_of_summary_period);
+  RUN_TEST(test_runtime_retains_latest_attempt_per_channel_with_bounded_budget);
+  RUN_TEST(test_late_poll_uses_observed_time_not_stale_deadline);
+  RUN_TEST(test_capacity_profile_is_captured_in_runtime_snapshot);
   RUN_TEST(test_runtime_cycle_emits_unconfigured_result_with_shared_provenance);
   RUN_TEST(test_runtime_full_result_handoff_is_observable_and_preserves_old_result);
   RUN_TEST(test_processing_resource_footprint_is_bounded);

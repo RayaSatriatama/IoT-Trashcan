@@ -170,6 +170,57 @@ void test_fis_profile_rejects_invalid_operator_grid_and_deployment_identity() {
       static_cast<int>(validate_fis_model(profile).error));
 }
 
+void test_fis_profile_rejects_semantic_input_unit_mismatches() {
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ModelUnit::Percent),
+                        static_cast<int>(model_unit_for_input(
+                            ModelInput::FillPercent)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ModelUnit::Percent),
+                        static_cast<int>(model_unit_for_input(
+                            ModelInput::WeightUtilizationPercent)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ModelUnit::Celsius),
+                        static_cast<int>(model_unit_for_input(
+                            ModelInput::TemperatureC)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ModelUnit::Millivolts),
+                        static_cast<int>(model_unit_for_input(
+                            ModelInput::Mq7AdcMillivolts)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ModelUnit::Millivolts),
+                        static_cast<int>(model_unit_for_input(
+                            ModelInput::Mq8AdcMillivolts)));
+
+  auto profile = test_fis();
+  profile.inputs[0].unit = ModelUnit::Celsius;
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(ModelValidationError::InvalidUnit),
+      static_cast<int>(validate_fis_model(profile).error));
+
+  profile = test_fis();
+  profile.inputs[1].unit = ModelUnit::Millivolts;
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(ModelValidationError::InvalidUnit),
+      static_cast<int>(validate_fis_model(profile).error));
+
+  profile = test_fis();
+  profile.inputs[1].id = ModelInput::TemperatureC;
+  profile.inputs[1].unit = ModelUnit::Percent;
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(ModelValidationError::InvalidUnit),
+      static_cast<int>(validate_fis_model(profile).error));
+
+  profile = test_fis();
+  profile.inputs[1].id = ModelInput::Mq7AdcMillivolts;
+  profile.inputs[1].unit = ModelUnit::Celsius;
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(ModelValidationError::InvalidUnit),
+      static_cast<int>(validate_fis_model(profile).error));
+
+  profile = test_fis();
+  profile.inputs[1].id = ModelInput::Mq8AdcMillivolts;
+  profile.inputs[1].unit = ModelUnit::Percent;
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(ModelValidationError::InvalidUnit),
+      static_cast<int>(validate_fis_model(profile).error));
+}
+
 void test_safety_profile_rejects_invalid_hysteresis_duplicate_and_unbounded_clear() {
   TEST_ASSERT_TRUE(validate_safety_model(test_safety()).valid());
 
@@ -480,6 +531,7 @@ void setup() {
   RUN_TEST(test_fis_profile_rejects_nonfinite_domain_and_membership);
   RUN_TEST(test_fis_profile_rejects_shoulder_gap_and_incomplete_rule_coverage);
   RUN_TEST(test_fis_profile_rejects_invalid_operator_grid_and_deployment_identity);
+  RUN_TEST(test_fis_profile_rejects_semantic_input_unit_mismatches);
   RUN_TEST(test_safety_profile_rejects_invalid_hysteresis_duplicate_and_unbounded_clear);
   RUN_TEST(test_codec_is_deterministic_and_round_trips_fis_and_safety);
   RUN_TEST(test_codec_rejects_corrupt_truncated_wrong_key_and_invalid_semantics);

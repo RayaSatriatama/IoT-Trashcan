@@ -157,6 +157,8 @@ class ProfileCodec final {
   bool encode(const Mq7HeaterProfile& profile, EncodedProfile& output) const noexcept;
   bool encode(const Ds18b20Profile& profile, EncodedProfile& output) const noexcept;
   bool encode(const Sht31Profile& profile, EncodedProfile& output) const noexcept;
+  bool encode(const OperationalCapacityProfile& profile,
+              EncodedProfile& output) const noexcept;
 
   bool decode(const EncodedProfile& encoded, Hx711Profile& output) const noexcept;
   bool decode(const EncodedProfile& encoded, UltrasonicProfile& output) const noexcept;
@@ -164,6 +166,8 @@ class ProfileCodec final {
   bool decode(const EncodedProfile& encoded, Mq7HeaterProfile& output) const noexcept;
   bool decode(const EncodedProfile& encoded, Ds18b20Profile& output) const noexcept;
   bool decode(const EncodedProfile& encoded, Sht31Profile& output) const noexcept;
+  bool decode(const EncodedProfile& encoded,
+              OperationalCapacityProfile& output) const noexcept;
 
   bool validate(const EncodedProfile& encoded,
                 ProfileTarget expected = ProfileTarget::Unknown) const noexcept;
@@ -245,7 +249,7 @@ class MemoryProfileStore final : public IProfileSlotStore {
   bool slot_present(ProfileTarget target, ProfileSlot slot) const noexcept;
 
  private:
-  static constexpr std::size_t kTargetCount{14U};
+  static constexpr std::size_t kTargetCount{17U};
   static std::size_t target_index(ProfileTarget target) noexcept;
   static std::size_t key_index(ProfileKey key) noexcept;
   static std::size_t slot_index(ProfileSlot slot) noexcept {

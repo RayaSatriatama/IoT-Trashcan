@@ -67,6 +67,39 @@ void run_line(maintenance::ModelMaintenanceRouter& router,
                         static_cast<int>(result));
 }
 
+maintenance::CommandStatus run_line_status(
+    maintenance::ModelMaintenanceRouter& router,
+    maintenance::MaintenanceParser& parser,
+    const std::string& line, uint64_t now_us) {
+  maintenance::ParseEvent event{};
+  bool emitted{false};
+  for (const char character : line) {
+    emitted = parser.consume(character, event) || emitted;
+  }
+  TEST_ASSERT_TRUE(emitted);
+  maintenance::MaintenanceResponse response{};
+  return router.execute_model(event.command, now_us, response);
+}
+
+void load_active_safety(models::ModelProfileLifecycle& lifecycle,
+                        const models::ModelProfileCodec& codec,
+                        models::EncodedModelProfile& encoded) {
+  const models::ModelProfileKey key{acquisition::ProfileKind::Safety,
+                                    models::ModelTarget::SafetyB3};
+  TEST_ASSERT_TRUE(lifecycle.load(key));
+  TEST_ASSERT_TRUE(codec.encode(safety_fixture(1U), encoded));
+  TEST_ASSERT_TRUE(lifecycle.stage(key, encoded));
+  TEST_ASSERT_TRUE(lifecycle.validate(key));
+  TEST_ASSERT_TRUE(lifecycle.preview(key));
+  TEST_ASSERT_TRUE(lifecycle.commit(key));
+}
+
+std::string different_hash(std::string value) {
+  TEST_ASSERT_FALSE(value.empty());
+  value[0] = value[0] == '0' ? '1' : '0';
+  return value;
+}
+
 void test_model_import_stages_then_requires_explicit_activation() {
   models::MemoryModelSlotStore store{};
   models::ModelProfileCodec codec{};
@@ -204,6 +237,120 @@ void test_model_export_is_complete_and_non_repeating() {
   TEST_ASSERT_EQUAL_STRING(hex(encoded).c_str(), wire_data.c_str());
 }
 
+void test_model_wrong_hash_does_not_create_draft_or_change_active() {
+  models::MemoryModelSlotStore store{};
+  models::ModelProfileCodec codec{};
+  models::ModelProfilePersistence persistence(store, codec);
+  models::ModelProfileLifecycle lifecycle(persistence, codec);
+  models::EncodedModelProfile active_encoded{};
+  load_active_safety(lifecycle, codec, active_encoded);
+  const models::ModelProfileKey key{acquisition::ProfileKind::Safety,
+                                    models::ModelTarget::SafetyB3};
+
+  models::EncodedModelProfile candidate{};
+  TEST_ASSERT_TRUE(codec.encode(safety_fixture(2U), candidate));
+  maintenance::ModelMaintenanceRouter router(lifecycle, codec);
+  maintenance::MaintenanceParser parser{};
+  const std::string wrong = different_hash(hash_hex(candidate));
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(maintenance::CommandStatus::Accepted),
+      static_cast<int>(run_line_status(
+          router, parser,
+          "model import begin safety_b3 " + std::to_string(candidate.size) +
+              " " + wrong + "\n",
+          10U)));
+  const std::string encoded = hex(candidate);
+  for (std::size_t offset = 0U; offset < candidate.size; offset += 20U) {
+    const std::size_t bytes = std::min<std::size_t>(20U,
+                                                     candidate.size - offset);
+    TEST_ASSERT_EQUAL_INT(
+        static_cast<int>(maintenance::CommandStatus::Accepted),
+        static_cast<int>(run_line_status(
+            router, parser,
+            "model import chunk " + std::to_string(offset) + " " +
+                encoded.substr(offset * 2U, bytes * 2U) + "\n",
+            11U + offset)));
+  }
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(maintenance::CommandStatus::Rejected),
+      static_cast<int>(run_line_status(
+          router, parser, "model import finish safety_b3\n", 100U)));
+  models::ModelProfileSnapshot snapshot{};
+  TEST_ASSERT_TRUE(lifecycle.snapshot(key, snapshot));
+  TEST_ASSERT_TRUE(snapshot.present);
+  TEST_ASSERT_EQUAL_UINT32(1U, snapshot.ref.profile_version);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(models::ModelLifecycleState::Active),
+                        static_cast<int>(lifecycle.state(key)));
+  (void)active_encoded;
+}
+
+void test_model_export_is_rejected_while_import_is_in_flight() {
+  models::MemoryModelSlotStore store{};
+  models::ModelProfileCodec codec{};
+  models::ModelProfilePersistence persistence(store, codec);
+  models::ModelProfileLifecycle lifecycle(persistence, codec);
+  models::EncodedModelProfile active_encoded{};
+  load_active_safety(lifecycle, codec, active_encoded);
+  models::EncodedModelProfile candidate{};
+  TEST_ASSERT_TRUE(codec.encode(safety_fixture(2U), candidate));
+  maintenance::ModelMaintenanceRouter router(lifecycle, codec);
+  maintenance::MaintenanceParser parser{};
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(maintenance::CommandStatus::Accepted),
+      static_cast<int>(run_line_status(
+          router, parser,
+          "model import begin safety_b3 " + std::to_string(candidate.size) +
+              " " + hash_hex(candidate) + "\n",
+          10U)));
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(maintenance::CommandStatus::Rejected),
+      static_cast<int>(run_line_status(
+          router, parser, "model export safety_b3\n", 11U)));
+  const std::string encoded = hex(candidate);
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(maintenance::CommandStatus::Accepted),
+      static_cast<int>(run_line_status(
+          router, parser,
+          "model import chunk 0 " + encoded.substr(0U, 40U) + "\n", 12U)));
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(maintenance::CommandStatus::Accepted),
+      static_cast<int>(run_line_status(
+          router, parser, "model cancel safety_b3\n", 13U)));
+  (void)active_encoded;
+}
+
+void test_model_wrong_finish_target_discards_only_owned_transfer() {
+  models::MemoryModelSlotStore store{};
+  models::ModelProfileCodec codec{};
+  models::ModelProfilePersistence persistence(store, codec);
+  models::ModelProfileLifecycle lifecycle(persistence, codec);
+  models::EncodedModelProfile active_encoded{};
+  load_active_safety(lifecycle, codec, active_encoded);
+  const models::ModelProfileKey safety_key{acquisition::ProfileKind::Safety,
+                                            models::ModelTarget::SafetyB3};
+  models::EncodedModelProfile candidate{};
+  TEST_ASSERT_TRUE(codec.encode(safety_fixture(2U), candidate));
+  // This pre-existing draft is not owned by the transfer router and must
+  // survive a rejected import.
+  TEST_ASSERT_TRUE(lifecycle.stage(safety_key, candidate));
+  maintenance::ModelMaintenanceRouter router(lifecycle, codec);
+  maintenance::MaintenanceParser parser{};
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(maintenance::CommandStatus::Accepted),
+      static_cast<int>(run_line_status(
+          router, parser,
+          "model import begin safety_b3 " + std::to_string(candidate.size) +
+              " " + hash_hex(candidate) + "\n",
+          10U)));
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(maintenance::CommandStatus::Rejected),
+      static_cast<int>(run_line_status(
+          router, parser, "model import finish fis_b3\n", 11U)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(models::ModelLifecycleState::Draft),
+                        static_cast<int>(lifecycle.state(safety_key)));
+  (void)active_encoded;
+}
+
 }  // namespace
 
 int main(int, char**) {
@@ -212,5 +359,8 @@ int main(int, char**) {
   RUN_TEST(test_model_parser_binds_typed_commands);
   RUN_TEST(test_model_transfer_finish_only_stages_until_explicit_commit);
   RUN_TEST(test_model_export_is_complete_and_non_repeating);
+  RUN_TEST(test_model_wrong_hash_does_not_create_draft_or_change_active);
+  RUN_TEST(test_model_export_is_rejected_while_import_is_in_flight);
+  RUN_TEST(test_model_wrong_finish_target_discards_only_owned_transfer);
   return UNITY_END();
 }

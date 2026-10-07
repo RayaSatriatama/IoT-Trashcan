@@ -90,12 +90,8 @@ ProcessingProfiles organic_profiles() {
   profiles.capacity.present = true;
   profiles.capacity.stream = StreamId::Organic;
   profiles.capacity.operational_capacity_kg = 4.0F;
-  profiles.capacity.ref.kind = ProfileKind::Capacity;
-  profiles.capacity.ref.schema_version = 1U;
-  profiles.capacity.ref.profile_version = 2U;
-  profiles.capacity.ref.target_id = 1U;
-  profiles.capacity.ref.present = true;
-  profiles.capacity.ref.hash[0] = 0xc1U;
+  profiles.capacity.manifest =
+      manifest(ProfileKind::Capacity, ProfileTarget::Hx711Organic, 2U, 0xc1U);
   return profiles;
 }
 

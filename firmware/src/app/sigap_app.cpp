@@ -85,6 +85,11 @@ void SigapApp::setup() noexcept {
   }
   (void)profile_manager_.load(acquisition::ProfileKey{
       acquisition::ProfileKind::Heater, acquisition::ProfileTarget::Mq7});
+  for (uint32_t target = 1U; target <= 3U; ++target) {
+    (void)profile_manager_.load(acquisition::ProfileKey{
+        acquisition::ProfileKind::Capacity,
+        static_cast<acquisition::ProfileTarget>(target)});
+  }
   (void)model_lifecycle_.load(models::ModelProfileKey{
       acquisition::ProfileKind::Fis, models::ModelTarget::FisOrganic});
   (void)model_lifecycle_.load(models::ModelProfileKey{

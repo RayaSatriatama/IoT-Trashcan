@@ -1,5 +1,4 @@
 #pragma once
-
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -13,11 +12,8 @@
 #include "models/model_profiles.h"
 #include "processing/contracts.h"
 #include "safety/safety.h"
-
 namespace sigap::processing {
-
 enum class WindowStatus : uint8_t { Added, Duplicate, Invalid, Full };
-
 inline bool same_record_identity(const acquisition::SampleRecord& left,
                                  const acquisition::SampleRecord& right) noexcept {
   return left.header.sequence == right.header.sequence &&
@@ -59,41 +55,7 @@ class SampleWindow final {
   std::size_t size_{0U};
   bool overflowed_{false};
 };
-
-enum class CapacityTarget : uint32_t {
-  Organic = 1U,
-  Inorganic = 2U,
-  B3 = 3U,
-};
-inline constexpr CapacityTarget capacity_target(
-    acquisition::StreamId stream) noexcept {
-  switch (stream) {
-    case acquisition::StreamId::Organic:
-      return CapacityTarget::Organic;
-    case acquisition::StreamId::Inorganic:
-      return CapacityTarget::Inorganic;
-    case acquisition::StreamId::B3:
-    case acquisition::StreamId::Ambient:
-      return CapacityTarget::B3;
-  }
-  return CapacityTarget::B3;
-}
-
-struct SlotCapacityProfile final {
-  acquisition::ProfileRef ref{};
-  acquisition::StreamId stream{acquisition::StreamId::Organic};
-  float operational_capacity_kg{0.0F};
-  bool present{false};
-  bool valid_for_normalization() const noexcept {
-    return present && ref.present &&
-           ref.kind == acquisition::ProfileKind::Capacity &&
-           ref.schema_version > 0U &&
-           ref.target_id == static_cast<uint32_t>(capacity_target(stream)) &&
-           std::isfinite(operational_capacity_kg) &&
-           operational_capacity_kg > 0.0F;
-  }
-};
-
+using SlotCapacityProfile = acquisition::OperationalCapacityProfile;
 enum class TemperatureSource : uint8_t {
   None,
   Ds18b20B3,
@@ -114,7 +76,6 @@ struct ProcessingProfiles final {
   SlotCapacityProfile capacity{};
   TemperatureSource temperature_source{TemperatureSource::None};
 };
-
 enum class ProcessingSnapshotStatus : uint8_t {
   Captured,
   InvalidConfig,
@@ -170,13 +131,11 @@ class ProcessingSnapshot final {
   acquisition::ConfigRef config_ref_{};
   ProcessingProfiles profiles_{};
 };
-
 struct ProcessedMetric final {
   bool available{false};
   float value{0.0F};
   InputDisposition disposition{};
 };
-
 struct ProcessedValues final {
   ProcessedMetric fill_pct{};
   ProcessedMetric weight_kg{};
@@ -187,7 +146,6 @@ struct ProcessedValues final {
   ProcessedMetric mq7_mv{};
   ProcessedMetric mq8_mv{};
 };
-
 template <std::size_t SourceCapacity>
 struct ProcessedResult final {
   acquisition::StreamId stream{acquisition::StreamId::Organic};
@@ -205,14 +163,12 @@ enum class ProcessStatus : uint8_t {
   SourceCapacityExceeded,
   ProfileCapacityExceeded,
 };
-
 inline bool same_config_ref(const acquisition::ConfigRef& left,
                             const acquisition::ConfigRef& right) noexcept {
   return left.present && right.present &&
          left.schema_version == right.schema_version &&
          left.config_version == right.config_version && left.hash == right.hash;
 }
-
 inline bool same_profile_ref(const acquisition::ProfileRef& left,
                              const acquisition::ProfileRef& right) noexcept {
   return left.present && right.present && left.kind == right.kind &&
@@ -220,7 +176,6 @@ inline bool same_profile_ref(const acquisition::ProfileRef& left,
          left.profile_version == right.profile_version &&
          left.target_id == right.target_id && left.hash == right.hash;
 }
-
 inline InputDisposition sample_disposition(
     acquisition::SampleQuality quality) noexcept {
   switch (quality) {
@@ -249,7 +204,6 @@ inline InputDisposition sample_disposition(
   }
   return {InputQuality::Missing, ProcessingReason::InputMissing};
 }
-
 inline acquisition::SensorId hx_sensor(acquisition::StreamId stream) noexcept {
   switch (stream) {
     case acquisition::StreamId::Organic:
@@ -262,7 +216,6 @@ inline acquisition::SensorId hx_sensor(acquisition::StreamId stream) noexcept {
   }
   return acquisition::SensorId::Hx711B3;
 }
-
 inline acquisition::SensorId ultrasonic_sensor(
     acquisition::StreamId stream) noexcept {
   switch (stream) {
@@ -276,13 +229,11 @@ inline acquisition::SensorId ultrasonic_sensor(
   }
   return acquisition::SensorId::UltrasonicB3;
 }
-
 inline bool finite_float(double value) noexcept {
   return std::isfinite(value) &&
          value >= -static_cast<double>(std::numeric_limits<float>::max()) &&
          value <= static_cast<double>(std::numeric_limits<float>::max());
 }
-
 template <std::size_t SourceCapacity>
 bool add_source(const acquisition::SampleRecord& sample,
                 SourceSampleIds<SourceCapacity>& sources) noexcept {
@@ -292,7 +243,6 @@ bool add_source(const acquisition::SampleRecord& sample,
   return status == CollectionStatus::Added ||
          status == CollectionStatus::Duplicate;
 }
-
 inline bool add_profile(const acquisition::ProfileRef& ref,
                         ProfileRefSet& profiles) noexcept {
   if (!ref.present) return true;
@@ -714,7 +664,7 @@ class SlotProcessor final {
         return false;
       }
     }
-    return add_profile(profiles.capacity.ref, refs);
+    return add_profile(profiles.capacity.ref(), refs);
   }
 };
 inline fuzzy::FisInputState to_fis_input_state(
@@ -740,6 +690,30 @@ inline const ProcessedMetric* metric_for_input(
     case models::ModelInput::Mq8AdcMillivolts: return &values.mq8_mv;
   }
   return nullptr;
+}
+inline safety::HazardInputState to_hazard_input_state(
+    const ProcessedMetric& metric) noexcept {
+  if (metric.available && metric.disposition.operational()) {
+    return safety::HazardInputState::Ready;
+  }
+  switch (metric.disposition.quality) {
+    case InputQuality::Stale:
+      return safety::HazardInputState::Stale;
+    case InputQuality::Calibrating:
+      return safety::HazardInputState::Calibrating;
+    case InputQuality::Uncalibrated:
+      return safety::HazardInputState::Uncalibrated;
+    case InputQuality::Timeout:
+      return safety::HazardInputState::Timeout;
+    case InputQuality::Missing:
+      return safety::HazardInputState::Missing;
+    case InputQuality::Disconnected:
+    case InputQuality::CrcError:
+    case InputQuality::OutOfRange:
+    case InputQuality::Ready:
+      return safety::HazardInputState::Invalid;
+  }
+  return safety::HazardInputState::Invalid;
 }
 template <typename FuzzyResult, typename SafetyResult,
           std::size_t SourceCapacity>
@@ -825,17 +799,23 @@ class ProcessingPipeline final {
         const ProcessedMetric* metric = nullptr;
         if (signal == models::HazardSignal::TemperatureC) {
           metric = &processed.processed.temperature_c;
+        } else if (signal == models::HazardSignal::Mq7AdcMillivolts) {
+          metric = &processed.processed.mq7_mv;
+        } else if (signal == models::HazardSignal::Mq8AdcMillivolts) {
+          metric = &processed.processed.mq8_mv;
         }
         auto& hazard = hazard_inputs.values[hazard_inputs.count++];
         hazard.signal = signal;
         hazard.value = metric == nullptr ? 0.0F : metric->value;
-        hazard.state = metric != nullptr && metric->available
-                           ? safety::HazardInputState::Ready
-                           : safety::HazardInputState::Missing;
+        hazard.state = metric == nullptr
+                           ? safety::HazardInputState::Missing
+                           : to_hazard_input_state(*metric);
       }
     }
-    const auto safety_result =
-        safety_evaluator.evaluate(safety_profile, hazard_inputs);
+    const auto safety_result = safety_profile != nullptr
+                                    ? safety_evaluator.evaluate(
+                                          safety_profile, hazard_inputs)
+                                    : safety::SafetyResult{};
     output = Result{processed, fuzzy_result, safety_result};
     return ProcessStatus::Produced;
   }

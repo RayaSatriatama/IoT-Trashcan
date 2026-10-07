@@ -60,6 +60,9 @@ bool profile_target_from_text(const FixedText<64U>& text,
       {"ds18b20_b3", acquisition::ProfileTarget::Ds18b20B3},
       {"sht31_44", acquisition::ProfileTarget::Sht31_44},
       {"sht31_45", acquisition::ProfileTarget::Sht31_45},
+      {"capacity_organic", acquisition::ProfileTarget::Hx711Organic},
+      {"capacity_inorganic", acquisition::ProfileTarget::Hx711Inorganic},
+      {"capacity_b3", acquisition::ProfileTarget::Hx711B3},
   };
   for (const Entry& entry : entries) {
     if (text_equals(text, entry.name)) {
@@ -79,9 +82,16 @@ bool profile_key_from_text(const FixedText<64U>& text,
                                       ? value.size() : separator))) return false;
   if (!profile_target_from_text(base, key.target)) return false;
   key.kind = acquisition::default_profile_kind(key.target);
+  if (text_equals(base, "capacity_organic") ||
+      text_equals(base, "capacity_inorganic") ||
+      text_equals(base, "capacity_b3")) {
+    key.kind = acquisition::ProfileKind::Capacity;
+  }
   if (separator != std::string_view::npos) {
     if (value.substr(separator + 1U) == "heater") {
       key.kind = acquisition::ProfileKind::Heater;
+    } else if (value.substr(separator + 1U) == "capacity") {
+      key.kind = acquisition::ProfileKind::Capacity;
     } else if (value.substr(separator + 1U) != "adc") {
       return false;
     }

@@ -451,6 +451,20 @@ bool ProfileCodec::encode(const Sht31Profile& profile,
   return true;
 }
 
+bool ProfileCodec::encode(const OperationalCapacityProfile& profile,
+                          EncodedProfile& output) const noexcept {
+  Writer writer(output.bytes);
+  if (!begin_payload(profile.manifest, ProfileTarget::Unknown,
+                     ProfileKind::Capacity, output, writer) ||
+      !writer.u8(static_cast<uint8_t>(profile.stream)) ||
+      !writer.f32(profile.operational_capacity_kg) ||
+      !writer.provenance(profile.manifest.provenance)) {
+    return false;
+  }
+  finish_encoded(output, writer.offset());
+  return true;
+}
+
 bool ProfileCodec::decode(const EncodedProfile& encoded,
                           Hx711Profile& output) const noexcept {
   ParsedHeader h{};
@@ -541,6 +555,29 @@ bool ProfileCodec::decode(const EncodedProfile& encoded,
          reader.offset() == h.payload_length;
 }
 
+bool ProfileCodec::decode(const EncodedProfile& encoded,
+                          OperationalCapacityProfile& output) const noexcept {
+  ParsedHeader h{};
+  if (!decode_header(encoded, ProfileTarget::Unknown, h, output) ||
+      h.kind != ProfileKind::Capacity ||
+      h.target < ProfileTarget::Hx711Organic ||
+      h.target > ProfileTarget::Hx711B3) {
+    return false;
+  }
+  Reader reader(encoded.bytes.data() + h.payload_offset, h.payload_length);
+  uint8_t stream{0U};
+  if (!reader.u8(stream) || stream > static_cast<uint8_t>(StreamId::B3) ||
+      !reader.f32(output.operational_capacity_kg) ||
+      !read_optional_provenance(reader, output.manifest.provenance) ||
+      reader.offset() != h.payload_length) {
+    return false;
+  }
+  output.stream = static_cast<StreamId>(stream);
+  output.present = h.validity == ProfileValidity::Valid ||
+                   h.validity == ProfileValidity::TestOnly;
+  return true;
+}
+
 bool ProfileCodec::validate(const EncodedProfile& encoded,
                             ProfileKey expected) const noexcept {
   ParsedHeader header{};
@@ -587,6 +624,21 @@ bool ProfileCodec::validate(const EncodedProfile& encoded,
       if (header.target != ProfileTarget::Mq7) return false;
       Mq7HeaterProfile profile{};
       return decode(encoded, profile) && profile.valid();
+    }
+    case ProfileKind::Capacity: {
+      if (header.target < ProfileTarget::Hx711Organic ||
+          header.target > ProfileTarget::Hx711B3) {
+        return false;
+      }
+      OperationalCapacityProfile profile{};
+      const auto expected_stream =
+          header.target == ProfileTarget::Hx711Organic
+              ? StreamId::Organic
+              : header.target == ProfileTarget::Hx711Inorganic
+                    ? StreamId::Inorganic
+                    : StreamId::B3;
+      return decode(encoded, profile) && profile.valid_for_normalization() &&
+             profile.stream == expected_stream;
     }
     default:
       return false;
@@ -753,7 +805,8 @@ constexpr const char* kProfileNamespace{"sigap_profile"};
 void profile_key(char* output, std::size_t capacity, ProfileKey key,
                  ProfileSlot slot) noexcept {
   const char family = key.kind == ProfileKind::Adc ? 'a' :
-                      key.kind == ProfileKind::Heater ? 'h' : 'c';
+                      key.kind == ProfileKind::Heater ? 'h' :
+                      key.kind == ProfileKind::Capacity ? 'p' : 'c';
   std::snprintf(output, capacity, "%c_%c%02u",
                 slot == ProfileSlot::A ? 'a' : 'b', family,
                 static_cast<unsigned>(key.target));
@@ -762,7 +815,8 @@ void profile_key(char* output, std::size_t capacity, ProfileKey key,
 void metadata_key(char* output, std::size_t capacity, ProfileKey key,
                   std::size_t copy) noexcept {
   const char family = key.kind == ProfileKind::Adc ? 'a' :
-                      key.kind == ProfileKind::Heater ? 'h' : 'c';
+                      key.kind == ProfileKind::Heater ? 'h' :
+                      key.kind == ProfileKind::Capacity ? 'p' : 'c';
   std::snprintf(output, capacity, "m_%c%02u_%u", family,
                 static_cast<unsigned>(key.target),
                 static_cast<unsigned>(copy));
@@ -1014,6 +1068,8 @@ std::size_t MemoryProfileStore::key_index(ProfileKey key) noexcept {
     return 9U + target - 7U;
   } else if (key.kind == ProfileKind::Heater && key.target == ProfileTarget::Mq7) {
     return 13U;
+  } else if (key.kind == ProfileKind::Capacity && target >= 1U && target <= 3U) {
+    return 14U + target - 1U;
   }
   return 0U;
 }
