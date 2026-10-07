@@ -53,6 +53,23 @@ void test_batch_bytes_and_hash_are_immutable_after_prepare() {
   TEST_ASSERT_EQUAL_INT(0, std::memcmp(batch.id().data(), "batch-1", 7U));
 }
 
+void test_batch_store_rejects_body_mutation_with_stale_hash() {
+  auto batch = make_batch();
+  batch.body[0U] ^= 0x01U;
+  MemoryImmutableBatchStore<2U> store(64U * 1024U);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(BatchStoreStatus::Invalid),
+                        static_cast<int>(store.append(batch)));
+  TEST_ASSERT_EQUAL_UINT32(0U, store.pending_bytes());
+}
+
+void test_batch_prepare_rejects_record_count_above_contract_limit() {
+  ImmutableBatch batch{};
+  constexpr std::array<uint8_t, 1U> body{{0x7FU}};
+  TEST_ASSERT_FALSE(batch.prepare("too-many", body.data(), body.size(),
+                                  static_cast<uint16_t>(kMaxBatchRecords + 1U)));
+  TEST_ASSERT_FALSE(batch.attempted);
+}
+
 void test_only_valid_ack_advances_and_checkpoint_allows_reclaim() {
   auto batch = make_batch();
   AckJournal<2U> journal{};
@@ -83,6 +100,20 @@ void test_ack_conflict_timeout_and_hash_mismatch_do_not_advance() {
   TEST_ASSERT_FALSE(journal.apply_ack(ack));
   ack.status = AckStatus::Timeout;
   TEST_ASSERT_FALSE(journal.apply_ack(ack));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(JournalState::Pending),
+                        static_cast<int>(journal.at(0U)->state));
+}
+
+void test_ack_count_mismatch_does_not_advance_delivery_state() {
+  auto batch = make_batch();
+  MemoryAckJournalStore<2U> journal{};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AckPersistStatus::Durable),
+                        static_cast<int>(journal.append_pending(batch)));
+  auto ack = valid_ack(batch);
+  ack.stored_count = static_cast<uint16_t>(batch.record_count - 1U);
+  ack.deduplicated_count = 0U;
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AckPersistStatus::Invalid),
+                        static_cast<int>(journal.apply_ack(ack)));
   TEST_ASSERT_EQUAL_INT(static_cast<int>(JournalState::Pending),
                         static_cast<int>(journal.at(0U)->state));
 }
@@ -135,8 +166,11 @@ void test_persistent_ack_boundary_requires_checkpoint_before_reclaim() {
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_batch_bytes_and_hash_are_immutable_after_prepare);
+  RUN_TEST(test_batch_store_rejects_body_mutation_with_stale_hash);
+  RUN_TEST(test_batch_prepare_rejects_record_count_above_contract_limit);
   RUN_TEST(test_only_valid_ack_advances_and_checkpoint_allows_reclaim);
   RUN_TEST(test_ack_conflict_timeout_and_hash_mismatch_do_not_advance);
+  RUN_TEST(test_ack_count_mismatch_does_not_advance_delivery_state);
   RUN_TEST(test_batch_bytes_are_durable_and_duplicate_identity_is_not_rewritten);
   RUN_TEST(test_persistent_ack_boundary_requires_checkpoint_before_reclaim);
   return UNITY_END();
