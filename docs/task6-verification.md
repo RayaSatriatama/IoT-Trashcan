@@ -41,14 +41,15 @@ sensor, heater, or network test was performed.
 
 ## Fresh native evidence
 
-The integrated native suite passed 262/262 tests, including archive storage,
+The integrated native suite passed 263/263 tests, including archive storage,
 archive runtime, immutable batch, ACK, failover, corrupt-tail, quota, and
 producer-to-archive retry tests. The existing telemetry contract tests also
 passed their frozen canonical record and exact-body hash fixtures.
 
 The final native suite was rerun after target adapter compilation was forced
 through `archive_runtime.h`. The sanitizer copy passed 262/262 tests with
-AddressSanitizer and UndefinedBehaviorSanitizer and produced no diagnostics.
+AddressSanitizer and UndefinedBehaviorSanitizer and produced no diagnostics;
+a final focused sanitizer run passed 22/22 archive, batch, and migration tests.
 Cppcheck reported `No defects found`.
 
 Target compilation passed for `sigap_n16r8`, `sigap_n16r8_sd`, and
