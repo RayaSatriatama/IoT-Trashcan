@@ -38,25 +38,28 @@ records and forwards every observed sample to the downstream logger observer.
 Capacity profiles use the existing typed ProfileManager and pointer-last store;
 no load-cell rating is used as an operational default.
 
-## Verification record at dcb471f
+## Fresh verification record at 300d09e
 
-The implementation agent reported fresh verification on source commit
-`dcb471fe557d919c4417a2e9df62b3ee2d4367a5` as follows:
+The reviewer follow-up was synchronized and verified from source commit
+`300d09ec9d2a7723af453e2a8631432155a80723`:
 
-- Native PlatformIO tests: **239/239 passed**.
-- Native ASan/UBSan PlatformIO copy: **239/239 passed**.
+- Native PlatformIO tests: **241/241 passed**, including both retained-cache
+  freshness regressions.
+- Native ASan/UBSan copy: **241/241 passed** with no sanitizer diagnostics.
 - Cppcheck: **No defects found** with `--fail-on-defect=low`.
 - Target builds: `sigap_n16r8`, `sigap_n16r8_sd`, and `sigap_bench` all passed.
+  Each measured 77,680 B RAM / 400,509 B flash.
 - Go 1.27.1 isolated toolchain: telemetry tests, full `go test ./...`, and
   `go vet ./...` passed.
 - Schema conformance: all 14 Draft 2020-12 schemas compiled; 24 valid fixtures
   passed schema validation and 36 invalid fixtures retained expected Go
-  rejection codes. Frozen record and exact-body hash tests passed.
+  rejection codes. Canonical record and exact-body golden hashes passed.
+- `git diff --check`: clean.
 - Physical HIL: not required and not performed; no sensor/output wiring exists.
 
 ## Resource notes
 
-Final target footprint is **77,680 B RAM / 400,517 B flash** for each of the
+Final target footprint is **77,680 B RAM / 400,509 B flash** for each of the
 three profiles. Native measured sizes are: `ProcessingRuntime` 16,728 B,
 `ProcessingSnapshot` 1,944 B, `ProcessedValues` 96 B, result envelope 2,968 B,
 `ModelProfileLifecycle` 11,952 B, `ProfileManager` 10,120 B,
@@ -66,9 +69,10 @@ bounded (`SampleRecord` 256 B, `AcquisitionFoundation` 8,888 B,
 `TargetAcquisitionGraph` 4,408 B); model, sample, and result handoffs reject
 full pushes without overwriting older entries.
 
-The remediation adds 11 native regression cases over the previous checkpoint
-and retains the fixed 13-channel processing budget. No target heap high-water
-or sensor timing claim is made because no sensors or outputs are connected.
+The reviewer follow-up adds two freshness regressions over the prior 239-case
+checkpoint and retains the fixed 13-channel processing budget. No target heap
+high-water or sensor timing claim is made because no sensors or outputs are
+connected.
 
 
 ## Independent review follow-up: retained channel freshness
@@ -87,8 +91,6 @@ A newer failed attempt still supersedes a retained READY attempt.
   using GCC C++17 with ASan/UBSan (LeakSanitizer disabled in the review environment).
 - Production change adds no fields or dynamic allocation. Native ProcessingRuntime
   footprint remains 16,728 bytes.
-- Review environment has no PlatformIO, cppcheck, or Go executable. Full native
-  PlatformIO, target builds, static analysis, and repository-required checks must
-  be rerun on the updated branch before merging; the baseline results above are
-  not claimed as fresh results for this follow-up.
+- The reviewer-only 89-test ASan result is historical for diagnosis; the full
+  241-case PlatformIO ASan/UBSan run above is the merge-gate evidence.
 - No hardware upload, reboot, unplug, SD access, sensor, or actuator HIL performed.
