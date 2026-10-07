@@ -15,6 +15,7 @@ backend archive code, or migration 005.
 | target archive identity cache | `LittleFsArchiveStore`, entries | 128 hot identities; full archive remains file-backed and scans cache misses | firmware build; rebuilt on restart |
 | target batch index | `FsImmutableBatchStore`, entries | 64 hot batch identities | firmware build; rebuilt on restart |
 | migration work budget | `ArchiveMediaMigration` / `ArchiveRuntime`, records per loop | one bounded record step | instance-owned; retryable until verify, checkpoint, and reclaim succeed |
+| storage worker queue | `storage/storage_worker.h`, entries | fixed metadata queue; high-water and overflow observable | instance-owned; retryable until durable, terminal gap on invalid input |
 | ACK journal frame | `FsAckJournalStore`, bytes | fixed little-endian frame with CRC and generation-bound checkpoint | protocol constant; target recovery validates before state transition |
 
 Calibration coefficients, capacity, and scientific model parameters remain
@@ -48,3 +49,10 @@ delivered state; reclaim requires an explicit checkpoint.
 Native tests use memory stores, a filesystem test double that exercises the
 store migration adapters, and fault injection.
 They are not physical SD, power-cut, wear, throughput, or HIL evidence.
+
+Audit events use the same ownership rule as samples and results: the producer
+ring remains queued until the archive append is durable. A short write keeps
+the event identity, sequence, provenance, and encoded bytes for retry. The
+current application composition uses the bounded cooperative drain boundary;
+the tested `StorageWorker` is the isolated ownership seam for a future task
+split and does not itself imply filesystem or network delivery.

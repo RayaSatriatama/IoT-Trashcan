@@ -38,31 +38,41 @@ sensor, heater, or network test was performed.
   checkpoint, and source reclaim only after a durable receipt. The application
   loop exposes one bounded migration step through `ArchiveRuntime` without
   performing filesystem work in acquisition callbacks.
+- Audit events remain at the front of their producer ring until the encoded
+  event append is durable. The encoded bytes and shared sequence are frozen
+  across retry, and terminal invalid events are accounted as gaps.
+- `StorageWorker` provides an instance-owned bounded retry queue with
+  backpressure, high-water, terminal-gap, and slow-backend counters. Its
+  worker API is covered natively; the existing sample/result drain remains
+  the compatibility boundary for the current application composition.
 
 ## Fresh native evidence
 
-The integrated native suite passed 272/272 tests, including archive storage,
+The integrated native suite passed 284/284 tests, including archive storage,
 archive runtime, immutable batch, ACK, failover, corrupt-tail, quota, 129-entry
 cache overflow, 4,680-record workload, migration adapter, gap reserve failover, and
 producer-to-archive retry tests. The existing telemetry contract tests also
 passed their frozen canonical record and exact-body hash fixtures.
 
-The same 272-test suite was rerun with AddressSanitizer and UndefinedBehavior-
-Sanitizer enabled through a temporary native PlatformIO configuration. It
-completed without sanitizer diagnostics.
+The changed archive/runtime, batch, storage-worker, and migration tests were
+rerun with AddressSanitizer and UndefinedBehaviorSanitizer through a temporary
+native PlatformIO configuration: 9 + 19 + 4 + 3 = 35 tests, with no sanitizer
+diagnostics. A full sanitizer run is not represented as a single suite because
+the repository's alternate PlatformIO project configuration cannot map every
+native test environment at once.
 Cppcheck reported `No defects found`.
 
 Target compilation passed for `sigap_n16r8`, `sigap_n16r8_sd`, and
-`sigap_bench`. Final usage was 205,912 B RAM and 455,357 B flash for
-`sigap_n16r8`, 206,196 B RAM and 505,493 B flash for `sigap_n16r8_sd`, and
-205,912 B RAM and 455,357 B flash for `sigap_bench`. These are compilation
+`sigap_bench`. Final usage was 222,528 B RAM and 456,145 B flash for
+`sigap_n16r8`, 222,812 B RAM and 506,325 B flash for `sigap_n16r8_sd`, and
+222,528 B RAM and 456,145 B flash for `sigap_bench`. These are compilation
 evidence only, not physical N16R8 or SD I/O validation.
 
 Native size probes continue to treat record/batch byte arrays and journal
 capacity as explicit bounded ownership. `SampleRing<16>` is 4,656 B after
 adding first/last dropped identities for queue gap evidence. The large native
 fault-injection stores are not instantiated in the target composition.
-`ArchiveRuntime` is 19,480 B, including one instance-owned 16,488 B record
+`ArchiveRuntime` is 35,976 B, including two instance-owned 16,488 B record
 codec buffer; no equivalent 16 KiB automatic buffer remains on the application
 loop stack. `ImmutableRecordBytes` is 16,488 B, `ImmutableBatch` is 32,936 B,
 `GapTracker<32>` is 2,840 B, and the native `MemoryAckJournalStore<2>` is
@@ -96,8 +106,10 @@ The full archive-reader to telemetry-v3 JSON batch-builder to immutable batch
 store to ACK-application producer chain is not yet runtime-wired. The batch
 and ACK stores remain bounded, validated persistence boundaries with native
 coverage; no unconnected producer hook is presented as delivery evidence.
-Network transport and its producer scheduling are deferred to the next
-transport slice.
+Likewise, `StorageWorker` is currently a tested bounded ownership seam rather
+than a second FreeRTOS task in `SigapApp`; acquisition and processing drains
+retain their existing compatibility behavior. Network transport and its
+producer scheduling are deferred to the next transport slice.
 
 ## Deferred
 
