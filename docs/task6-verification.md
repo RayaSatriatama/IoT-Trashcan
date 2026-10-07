@@ -82,11 +82,13 @@ remain instance-owned.
 
 ## Budget measurement
 
-The native serialized workload test appends 4,680 bounded sample/result frames,
-matching 75 sample frames/s plus 3 processing results/s for 60 seconds. It
-recreates the file-backed store and reconciles every identity and hash against
-the 6 MiB quota without overwriting pending data. This is a serialized native
-capacity measurement, not a claim of physical flash or SD endurance.
+The native serialized workload test appends and reconstructs 4,680 bounded
+sample frames against the 6 MiB quota. It verifies every identity and hash
+after restart without overwriting pending data. It is not a mixed
+75-sample-plus-3-result workload: result/event/metadata payload sizes and their
+combined 60-second capacity remain an acceptance gap rather than evidence.
+This is a serialized native capacity measurement, not a claim of physical
+flash or SD endurance.
 
 The archive runtime regression also verifies that a result containing FIS and
 Safety evidence serializes differently from the same result without that
