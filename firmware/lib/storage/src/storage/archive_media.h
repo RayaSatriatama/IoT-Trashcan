@@ -92,7 +92,8 @@ class LittleFsArchiveStore : public IArchiveStore {
 
   AppendStatus append_gap(const GapRange& range) noexcept override {
 #ifdef ARDUINO
-    if (filesystem_ == nullptr || !range.present || range.record_count == 0U) {
+    if (filesystem_ == nullptr || gap_repair_pending_ || !range.present ||
+        range.record_count == 0U) {
       return AppendStatus::Invalid;
     }
     if (gap_bytes_ > kGapReserveBytes ||
@@ -159,11 +160,19 @@ class LittleFsArchiveStore : public IArchiveStore {
     recovery_ready_ = false;
     pending_bytes_ = 0U;
     gap_bytes_ = 0U;
+    gap_repair_pending_ = false;
     File gap_file = filesystem_->open(gap_path_, FILE_READ);
     bool gap_valid = true;
     if (gap_file) {
       gap_valid = validate_gap_file(gap_file, gap_bytes_);
       gap_file.close();
+      if (!gap_valid && !repair_gap_prefix(gap_bytes_)) {
+        // Keep the corrupt source in place for forensic recovery.  Archive
+        // records remain recoverable, but the reserve path is degraded until
+        // the gap journal can be repaired.
+        gap_bytes_ = 0U;
+        gap_repair_pending_ = true;
+      }
     }
     index_count_ = 0U;
     File file = filesystem_->open(path_, FILE_READ);
@@ -253,6 +262,18 @@ class LittleFsArchiveStore : public IArchiveStore {
       valid_bytes += record.size;
     }
     file.close();
+    char quarantine[64]{};
+    std::size_t quarantine_bytes = 0U;
+    if (find_longer_quarantine(valid_bytes, quarantine, sizeof(quarantine),
+                               quarantine_bytes)) {
+      if (!copy_valid_prefix(quarantine, path_, quarantine_bytes)) {
+        health_ = ArchiveHealth::Degraded;
+        return false;
+      }
+      // Keep the quarantine until the rebuilt file has been scanned and
+      // indexed successfully on the next recovery pass.
+      return recover();
+    }
     if (tail_corrupt && !quarantine_tail(valid_bytes)) {
       health_ = ArchiveHealth::Degraded;
       return false;
@@ -378,6 +399,7 @@ class LittleFsArchiveStore : public IArchiveStore {
   uint64_t quota_bytes_{0U};
   uint64_t pending_bytes_{0U};
   uint64_t gap_bytes_{0U};
+  bool gap_repair_pending_{false};
 
  private:
 #ifdef ARDUINO
@@ -554,6 +576,82 @@ class LittleFsArchiveStore : public IArchiveStore {
     }
     return false;
   }
+  bool measure_valid_prefix(const char* source_path,
+                            std::size_t& valid_bytes) noexcept {
+    valid_bytes = 0U;
+    if (filesystem_ == nullptr || source_path == nullptr ||
+        !filesystem_->exists(source_path)) {
+      return false;
+    }
+    File source = filesystem_->open(source_path, FILE_READ);
+    if (!source) return false;
+    while (source.available()) {
+      if (!read_record(source, lookup_record_)) break;
+      valid_bytes += lookup_record_.size;
+    }
+    source.close();
+    return true;
+  }
+  bool find_longer_quarantine(std::size_t current_bytes,
+                              char* output,
+                              std::size_t output_size,
+                              std::size_t& output_bytes) noexcept {
+    output_bytes = 0U;
+    if (filesystem_ == nullptr || output == nullptr || output_size == 0U) {
+      return false;
+    }
+    bool found = false;
+    for (unsigned suffix = 0U; suffix < 4U; ++suffix) {
+      char candidate[64]{};
+      const int written = std::snprintf(candidate, sizeof(candidate),
+                                        "%s.tail%u", path_, suffix);
+      if (written <= 0 || static_cast<std::size_t>(written) >= sizeof(candidate)) {
+        continue;
+      }
+      std::size_t candidate_bytes = 0U;
+      if (!measure_valid_prefix(candidate, candidate_bytes) ||
+          candidate_bytes <= current_bytes || candidate_bytes <= output_bytes) {
+        continue;
+      }
+      if (std::strlen(candidate) + 1U > output_size) continue;
+      std::strcpy(output, candidate);
+      output_bytes = candidate_bytes;
+      found = true;
+    }
+    return found;
+  }
+  bool repair_gap_prefix(std::size_t valid_bytes) noexcept {
+    if (filesystem_ == nullptr || gap_path_ == nullptr ||
+        valid_bytes > kGapReserveBytes) return false;
+    char temporary[96]{};
+    if (std::snprintf(temporary, sizeof(temporary), "%s.repair", gap_path_) <= 0 ||
+        filesystem_->exists(temporary) ||
+        !copy_valid_prefix(gap_path_, temporary, valid_bytes)) {
+      return false;
+    }
+    char backup[96]{};
+    bool backup_available = false;
+    for (unsigned suffix = 0U; suffix < 4U; ++suffix) {
+      const int written = std::snprintf(backup, sizeof(backup), "%s.bak%u",
+                                        gap_path_, suffix);
+      if (written > 0 && static_cast<std::size_t>(written) < sizeof(backup) &&
+          !filesystem_->exists(backup)) {
+        backup_available = true;
+        break;
+      }
+    }
+    if (!backup_available || !filesystem_->rename(gap_path_, backup) ||
+        !filesystem_->rename(temporary, gap_path_)) {
+      if (filesystem_->exists(temporary)) (void)filesystem_->remove(temporary);
+      if (!filesystem_->exists(gap_path_) && filesystem_->exists(backup)) {
+        (void)filesystem_->rename(backup, gap_path_);
+      }
+      return false;
+    }
+    // Do not delete the backup until a later recovery has validated the new
+    // prefix.  This leaves a bounded forensic copy after a short write.
+    return true;
+  }
   bool restore_from_quarantine() noexcept {
     if (filesystem_ == nullptr) return true;
     for (unsigned suffix = 0U; suffix < 4U; ++suffix) {
@@ -608,9 +706,10 @@ class LittleFsArchiveStore : public IArchiveStore {
       remaining -= chunk;
     }
     destination.flush();
+    const bool size_matches = destination.size() == valid_bytes;
     source.close();
     destination.close();
-    return copied && remaining == 0U;
+    return copied && size_matches && remaining == 0U;
   }
   static uint64_t read_u64(const uint8_t* bytes) noexcept {
     uint64_t value{0U};
