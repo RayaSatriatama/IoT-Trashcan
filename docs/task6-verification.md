@@ -20,7 +20,9 @@ sensor, heater, or network test was performed.
   failed primary state while routing new writes to the fallback.
 - Immutable batch bytes and body hash cannot be replaced after preparation.
 - ACK status, batch identity, body hash, record count, and counts must match;
-  checkpoint precedes reclaim.
+  checkpoint precedes reclaim in the bounded journal seam. The current
+  `AckJournal` is an in-memory/native boundary; persistent ACK journal
+  integration with a network worker is intentionally not present in Task 6.
 - Gap ranges and unlogged counters are bounded and observable.
 
 ## Fresh native evidence
@@ -57,7 +59,10 @@ measurement, not a claim of 60 seconds of physical flash or SD endurance.
 
 ## Deferred
 
-Physical SD mount/read/write, crash/power-cut tail loss, wear, migration under
-media removal, HTTPS transport, backend ACK integration, and durable event or
-metadata producers remain deferred to later integration/HIL work. Network
-workers, backend archive, migration 005, and actuator output are out of scope.
+Physical SD mount/read/write, crash/power-cut tail loss, wear, copy-verify-
+checkpoint-reclaim migration, HTTPS transport, backend ACK integration, and
+durable event or metadata producers remain deferred to later integration/HIL
+work. Network workers, backend archive, migration 005, and actuator output are
+out of scope. The current target archive path is record-durable after a
+complete frame flush; batch ACK persistence and media migration still require
+the next integration slice.
