@@ -277,6 +277,30 @@ void test_media_failover_keeps_primary_pending_and_uses_littlefs_fallback() {
                         static_cast<int>(router.health()));
 }
 
+void test_media_failover_persists_gap_to_reserve_fallback() {
+  MemoryArchiveStore<4U> sd(64U * 1024U);
+  MemoryArchiveStore<4U> littlefs(64U * 1024U);
+  MediaFailoverStore router(sd, littlefs);
+  sd.set_fault(StoreFault::MediaFailure);
+  const auto evidence = sample(81U);
+  GapRange gap{};
+  gap.first_sequence = evidence.header.sequence;
+  gap.last_sequence = evidence.header.sequence;
+  gap.device_id = evidence.header.device_id;
+  gap.boot_id = evidence.header.boot_id;
+  gap.sensor = evidence.header.sensor;
+  gap.stream = evidence.header.stream;
+  gap.first_monotonic_us = evidence.header.monotonic_us;
+  gap.last_monotonic_us = evidence.header.monotonic_us;
+  gap.record_count = 1U;
+  gap.reason = GapReason::MediaFailure;
+  gap.present = true;
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AppendStatus::Durable),
+                        static_cast<int>(router.append_gap(gap)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ArchiveHealth::Degraded),
+                        static_cast<int>(router.health()));
+}
+
 void test_filesystem_double_recovers_tail_and_rebuilds_index() {
   ArchiveFileSystemDouble<8U, 64U * 1024U> filesystem{};
   NativeArchiveFileStore<8U, 64U * 1024U> first_store(filesystem);
@@ -441,6 +465,7 @@ int main() {
   RUN_TEST(test_gap_tracker_coalesces_and_counts_overflow);
   RUN_TEST(test_serialized_mixed_workload_budget_is_bounded);
   RUN_TEST(test_media_failover_keeps_primary_pending_and_uses_littlefs_fallback);
+  RUN_TEST(test_media_failover_persists_gap_to_reserve_fallback);
   RUN_TEST(test_filesystem_double_recovers_tail_and_rebuilds_index);
   RUN_TEST(test_filesystem_double_distinguishes_missing_from_open_error);
   RUN_TEST(test_filesystem_archive_pages_beyond_index_cache_and_restarts);
