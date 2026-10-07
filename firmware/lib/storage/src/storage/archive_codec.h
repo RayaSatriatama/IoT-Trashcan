@@ -174,8 +174,11 @@ class RecordCodec final {
                     ImmutableRecordBytes& output,
                     PayloadWriter& writer) noexcept {
     if (!identity.device_id.present || !identity.boot_id.present) return false;
-    output = ImmutableRecordBytes{};
+    output.bytes.fill(0U);
+    output.size = 0U;
     output.identity = identity;
+    output.hash.fill(0U);
+    output.committed = false;
     writer = PayloadWriter(output.bytes.data() + kArchiveHeaderBytes,
                            output.bytes.size() - kArchiveHeaderBytes - kArchiveTrailerBytes);
     return true;
