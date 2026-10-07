@@ -135,6 +135,77 @@ ImmutableRecordBytes encoded_kind(uint64_t sequence, ArchiveRecordKind kind) {
   return value;
 }
 
+ImmutableRecordBytes encoded_result_fixture(uint64_t sequence) {
+  ImmutableRecordBytes value{};
+  const ArchiveIdentity identity{device(), boot(), sequence, ArchiveRecordKind::Result};
+  PayloadWriter unused{nullptr, 0U};
+  if (!RecordCodec::begin(identity, value, unused)) return value;
+  PayloadWriter writer{value.bytes.data() + kArchiveHeaderBytes,
+                       value.bytes.size() - kArchiveHeaderBytes - kArchiveTrailerBytes};
+  std::array<uint8_t, 32U> hash{};
+  hash[0U] = 0xA5U;
+  if (!writer.u8(static_cast<uint8_t>(StreamId::B3)) ||
+      !writer.u64(123456U) || !writer.u8(1U) || !writer.i64(1700000) ||
+      !writer.u8(static_cast<uint8_t>(TimeQuality::Synchronized)) ||
+      !writer.u32(1U) || !writer.u64(9U) || !writer.u8(1U) ||
+      !writer.bytes(hash.data(), hash.size()) || !writer.u16(0U) ||
+      !writer.u16(0U)) {
+    return ImmutableRecordBytes{};
+  }
+  for (std::size_t index = 0U; index < 8U; ++index) {
+    if (!writer.u8(index == 0U ? 1U : 0U) || !writer.f32(42.0F) ||
+        !writer.u8(static_cast<uint8_t>(SampleQuality::Ready)) ||
+        !writer.u8(static_cast<uint8_t>(SampleReason::DataReady))) {
+      return ImmutableRecordBytes{};
+    }
+  }
+  if (!writer.u8(1U) || !writer.u8(0U) || !writer.u8(1U) ||
+      !writer.u8(1U) || !writer.f32(32.5F) || !writer.u8(1U)) {
+    return ImmutableRecordBytes{};
+  }
+  std::array<uint8_t, 16U> model_id{};
+  model_id[0U] = 'n';
+  if (!writer.bytes(model_id.data(), model_id.size()) || !writer.u8(1U) ||
+      !writer.u32(3U) || !writer.bytes(hash.data(), hash.size()) ||
+      !writer.u16(0U) || !writer.u16(0U) || !writer.u8(1U) ||
+      !writer.bytes(model_id.data(), model_id.size()) || !writer.f32(1.0F) ||
+      !writer.u8(1U) || !writer.f32(32.5F) ||
+      !writer.u8(2U) || !writer.u8(0U) || !writer.u8(1U) ||
+      !writer.u8(0U) ||
+      !writer.u8(static_cast<uint8_t>(ProfileKind::Safety)) ||
+      !writer.u32(1U) || !writer.u32(2U) || !writer.u32(3U) ||
+      !writer.bytes(hash.data(), hash.size()) ||
+      !writer.u8(0U) || !writer.u8(0U) || !writer.u8(0U) ||
+      !writer.u8(0U)) {
+    return ImmutableRecordBytes{};
+  }
+  return RecordCodec::finish(value, writer) ? value : ImmutableRecordBytes{};
+}
+
+ImmutableRecordBytes encoded_event_fixture(uint64_t sequence) {
+  ImmutableRecordBytes value{};
+  const ArchiveIdentity identity{device(), boot(), sequence, ArchiveRecordKind::Event};
+  PayloadWriter unused{nullptr, 0U};
+  if (!RecordCodec::begin(identity, value, unused)) return value;
+  PayloadWriter writer{value.bytes.data() + kArchiveHeaderBytes,
+                       value.bytes.size() - kArchiveHeaderBytes - kArchiveTrailerBytes};
+  std::array<uint8_t, 32U> hash{};
+  hash[0U] = 0xA5U;
+  const auto write_ref = [&writer, &hash](bool present) {
+    return writer.u8(present ? 1U : 0U) &&
+           writer.u8(static_cast<uint8_t>(ProfileKind::Calibration)) &&
+           writer.u32(1U) && writer.u32(2U) && writer.u32(3U) &&
+           writer.bytes(hash.data(), hash.size());
+  };
+  if (!writer.u8(7U) || !writer.u64(888U) || !writer.u8(1U) ||
+      !writer.u32(1U) || !writer.u64(9U) ||
+      !writer.bytes(hash.data(), hash.size()) || !writer.u8(1U) ||
+      !write_ref(true) || !write_ref(false)) {
+    return ImmutableRecordBytes{};
+  }
+  return RecordCodec::finish(value, writer) ? value : ImmutableRecordBytes{};
+}
+
 void test_framing_rejects_corrupt_and_partial_tail() {
   const auto full = encoded(1U);
   TEST_ASSERT_TRUE(RecordCodec::valid(full));
@@ -178,6 +249,37 @@ void test_typed_views_reject_wrong_archive_kinds() {
   TEST_ASSERT_TRUE(RecordCodec::decode_event_view(event, view));
   TEST_ASSERT_TRUE(RecordCodec::decode_metadata_view(metadata, view));
   TEST_ASSERT_FALSE(RecordCodec::decode_result_view(metadata, view));
+}
+
+void test_typed_result_and_event_decoders_round_trip_evidence() {
+  const auto result = encoded_result_fixture(43U);
+  DecodedResultPayload decoded_result{};
+  const auto result_status = RecordCodec::decode_result(result, decoded_result);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(TypedDecodeStatus::Decoded),
+                        static_cast<int>(result_status));
+  TEST_ASSERT_EQUAL_UINT64(123456U, decoded_result.computed_monotonic_us);
+  TEST_ASSERT_TRUE(decoded_result.recorded_at_available);
+  TEST_ASSERT_EQUAL_UINT32(1U, decoded_result.config_ref.schema_version);
+  TEST_ASSERT_EQUAL_UINT8(1U, decoded_result.fis.score_present);
+  TEST_ASSERT_FLOAT_WITHIN(0.01F, 32.5F, decoded_result.fis.score);
+  TEST_ASSERT_TRUE(decoded_result.fis.trace_present);
+  TEST_ASSERT_TRUE(decoded_result.fis.aggregate_present);
+  TEST_ASSERT_TRUE(decoded_result.fis.centroid_present);
+
+  const auto event = encoded_event_fixture(44U);
+  DecodedEventPayload decoded_event{};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(TypedDecodeStatus::Decoded),
+                        static_cast<int>(RecordCodec::decode_event(event, decoded_event)));
+  TEST_ASSERT_EQUAL_UINT8(7U, decoded_event.event_kind);
+  TEST_ASSERT_TRUE(decoded_event.config_ref.present);
+  TEST_ASSERT_TRUE(decoded_event.pending_activation);
+  TEST_ASSERT_TRUE(decoded_event.previous.present);
+  TEST_ASSERT_FALSE(decoded_event.current.present);
+
+  TypedArchiveRecordView metadata_view{};
+  const auto metadata = encoded_kind(45U, ArchiveRecordKind::Metadata);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(TypedDecodeStatus::UnsupportedKind),
+                        static_cast<int>(RecordCodec::decode_metadata(metadata, metadata_view)));
 }
 
 void test_store_deduplicates_and_recovers_corrupt_tail() {
@@ -484,6 +586,7 @@ int main() {
   RUN_TEST(test_framing_rejects_corrupt_and_partial_tail);
   RUN_TEST(test_codec_reader_round_trips_identity_and_payload);
   RUN_TEST(test_typed_views_reject_wrong_archive_kinds);
+  RUN_TEST(test_typed_result_and_event_decoders_round_trip_evidence);
   RUN_TEST(test_store_deduplicates_and_recovers_corrupt_tail);
   RUN_TEST(test_store_faults_are_observable_and_quota_does_not_overwrite);
   RUN_TEST(test_same_identity_with_changed_content_is_conflict);

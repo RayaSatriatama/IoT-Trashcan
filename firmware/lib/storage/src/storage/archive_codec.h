@@ -56,6 +56,132 @@ struct ArchiveRecordView final {
 // PayloadReader without copying a 16 KiB frame.
 using TypedArchiveRecordView = ArchiveRecordView;
 
+inline constexpr std::size_t kArchiveMaxProfileRefs{16U};
+inline constexpr std::size_t kArchiveMaxSourceIds{128U};
+inline constexpr std::size_t kArchiveMaxFisMemberships{32U};
+inline constexpr std::size_t kArchiveMaxFisRules{32U};
+inline constexpr std::size_t kArchiveMaxSafetyEvidence{8U};
+inline constexpr std::size_t kArchiveModelIdBytes{16U};
+
+enum class TypedDecodeStatus : uint8_t {
+  Decoded,
+  InvalidFrame,
+  WrongKind,
+  MalformedPayload,
+  BoundsExceeded,
+  UnsupportedKind,
+};
+
+struct DecodedConfigRef final {
+  uint32_t schema_version{0U};
+  uint64_t config_version{0U};
+  config::ConfigHash hash{};
+  bool present{false};
+};
+
+struct DecodedProfileRef final {
+  uint8_t kind{0U};
+  uint32_t schema_version{0U};
+  uint32_t profile_version{0U};
+  uint32_t target_id{0U};
+  config::ConfigHash hash{};
+  bool present{false};
+};
+
+struct DecodedSourceId final {
+  acquisition::DeviceId device_id{};
+  acquisition::BootId boot_id{};
+  uint64_t sequence{0U};
+};
+
+struct DecodedMetric final {
+  bool available{false};
+  float value{0.0F};
+  uint8_t quality{0U};
+  uint8_t reason{0U};
+};
+
+struct DecodedFisMembership final {
+  uint8_t input{0U};
+  std::array<char, kArchiveModelIdBytes> set_id{};
+  float value{0.0F};
+};
+
+struct DecodedFisRule final {
+  uint16_t id{0U};
+  float strength{0.0F};
+  std::array<char, kArchiveModelIdBytes> output_id{};
+};
+
+struct DecodedFisTrace final {
+  uint32_t model_version{0U};
+  config::ConfigHash model_hash{};
+  std::array<DecodedFisMembership, kArchiveMaxFisMemberships> memberships{};
+  std::array<DecodedFisRule, kArchiveMaxFisRules> rules{};
+  std::array<char, kArchiveModelIdBytes> label{};
+  std::array<char, kArchiveModelIdBytes> aggregate_output_id{};
+  uint16_t membership_count{0U};
+  uint16_t rule_count{0U};
+  uint8_t state{0U};
+  uint8_t reason{0U};
+  uint8_t model_state{0U};
+  bool score_present{false};
+  float score{0.0F};
+  bool label_present{false};
+  bool trace_present{false};
+  bool aggregate_present{false};
+  float aggregate_area{0.0F};
+  bool centroid_present{false};
+  float aggregate_centroid{0.0F};
+};
+
+struct DecodedSafetyEvidence final {
+  uint8_t signal{0U};
+  uint8_t input_state{0U};
+  float value{0.0F};
+  float alert_at_or_above{0.0F};
+  float clear_below{0.0F};
+  bool threshold_exceeded{false};
+  bool clear_condition_met{false};
+};
+
+struct DecodedSafetyTrace final {
+  DecodedProfileRef model_ref{};
+  std::array<DecodedSafetyEvidence, kArchiveMaxSafetyEvidence> evidence{};
+  uint8_t evidence_count{0U};
+  uint8_t clear_streak{0U};
+  bool alert_latched_before{false};
+  bool alert_latched_after{false};
+};
+
+struct DecodedResultPayload final {
+  uint8_t stream{0U};
+  uint64_t computed_monotonic_us{0U};
+  bool recorded_at_available{false};
+  int64_t recorded_at_epoch_ms{0};
+  uint8_t time_quality{0U};
+  DecodedConfigRef config_ref{};
+  std::array<DecodedProfileRef, kArchiveMaxProfileRefs> profile_refs{};
+  std::array<DecodedSourceId, kArchiveMaxSourceIds> source_sample_ids{};
+  std::array<DecodedMetric, 8U> metrics{};
+  uint16_t profile_ref_count{0U};
+  uint16_t source_sample_id_count{0U};
+  DecodedFisTrace fis{};
+  uint8_t safety_state{0U};
+  uint8_t safety_reason{0U};
+  uint8_t safety_model_state{0U};
+  DecodedSafetyTrace safety_trace{};
+};
+
+struct DecodedEventPayload final {
+  uint8_t event_kind{0U};
+  uint64_t monotonic_us{0U};
+  DecodedConfigRef config_ref{};
+  bool pending_activation{false};
+  DecodedProfileRef previous{};
+  DecodedProfileRef current{};
+};
+
 class PayloadWriter final {
  public:
   PayloadWriter(uint8_t* data, std::size_t capacity) noexcept
@@ -278,6 +404,169 @@ class RecordCodec final {
     return read(record, view) && view.identity.kind == ArchiveRecordKind::Metadata;
   }
 
+  // Result and event payloads are decoded into bounded value objects. Metadata
+  // has no producer-defined wire schema yet, so it is explicitly rejected
+  // instead of being treated as delivered merely because its frame is valid.
+  static TypedDecodeStatus decode_result(const ImmutableRecordBytes& record,
+                                         DecodedResultPayload& output) noexcept {
+    output = DecodedResultPayload{};
+    ArchiveRecordView view{};
+    if (!read(record, view)) return TypedDecodeStatus::InvalidFrame;
+    if (view.identity.kind != ArchiveRecordKind::Result) {
+      return TypedDecodeStatus::WrongKind;
+    }
+    PayloadReader reader{view.payload, view.payload_size};
+    uint8_t flag{0U};
+    if (!reader.u8(output.stream) || !reader.u64(output.computed_monotonic_us) ||
+        !reader.u8(flag) || !reader.i64(output.recorded_at_epoch_ms) ||
+        !reader.u8(output.time_quality) || !read_config_ref(reader, output.config_ref)) {
+      return TypedDecodeStatus::MalformedPayload;
+    }
+    output.recorded_at_available = flag != 0U;
+    uint16_t count{0U};
+    if (!reader.u16(count)) return TypedDecodeStatus::MalformedPayload;
+    if (count > kArchiveMaxProfileRefs) return TypedDecodeStatus::BoundsExceeded;
+    output.profile_ref_count = count;
+    for (uint16_t index = 0U; index < count; ++index) {
+      if (!read_profile_ref(reader, output.profile_refs[index])) {
+        return TypedDecodeStatus::MalformedPayload;
+      }
+    }
+    if (!reader.u16(count)) return TypedDecodeStatus::MalformedPayload;
+    if (count > kArchiveMaxSourceIds) return TypedDecodeStatus::BoundsExceeded;
+    output.source_sample_id_count = count;
+    for (uint16_t index = 0U; index < count; ++index) {
+      auto& source = output.source_sample_ids[index];
+      if (!reader.bytes(source.device_id.bytes.data(), source.device_id.bytes.size()) ||
+          !reader.bytes(source.boot_id.bytes.data(), source.boot_id.bytes.size()) ||
+          !reader.u64(source.sequence)) {
+        return TypedDecodeStatus::MalformedPayload;
+      }
+      source.device_id.present = true;
+      source.boot_id.present = true;
+    }
+    for (auto& metric : output.metrics) {
+      if (!reader.u8(flag) || !reader.f32(metric.value) ||
+          !reader.u8(metric.quality) || !reader.u8(metric.reason)) {
+        return TypedDecodeStatus::MalformedPayload;
+      }
+      metric.available = flag != 0U;
+    }
+    auto& fis = output.fis;
+    uint8_t score_flag{0U};
+    uint8_t label_flag{0U};
+    uint8_t trace_present_flag{0U};
+    if (!reader.u8(fis.state) || !reader.u8(fis.reason) ||
+        !reader.u8(fis.model_state) || !reader.u8(score_flag) ||
+        !reader.f32(fis.score) || !reader.u8(label_flag)) {
+      return TypedDecodeStatus::MalformedPayload;
+    }
+    fis.score_present = score_flag != 0U;
+    if (!reader.bytes(reinterpret_cast<uint8_t*>(fis.label.data()),
+                      fis.label.size()) ||
+        !reader.u8(trace_present_flag) ||
+        !reader.u32(fis.model_version) ||
+        !reader.bytes(fis.model_hash.data(), fis.model_hash.size()) ||
+        !reader.u16(fis.membership_count)) {
+      return TypedDecodeStatus::MalformedPayload;
+    }
+    fis.label_present = label_flag != 0U;
+    fis.trace_present = trace_present_flag != 0U;
+    if (fis.membership_count > kArchiveMaxFisMemberships) {
+      return TypedDecodeStatus::BoundsExceeded;
+    }
+    for (uint16_t index = 0U; index < fis.membership_count; ++index) {
+      auto& membership = fis.memberships[index];
+      if (!reader.u8(membership.input) ||
+          !reader.bytes(reinterpret_cast<uint8_t*>(membership.set_id.data()),
+                        membership.set_id.size()) ||
+          !reader.f32(membership.value)) {
+        return TypedDecodeStatus::MalformedPayload;
+      }
+    }
+    if (!reader.u16(fis.rule_count)) return TypedDecodeStatus::MalformedPayload;
+    if (fis.rule_count > kArchiveMaxFisRules) return TypedDecodeStatus::BoundsExceeded;
+    for (uint16_t index = 0U; index < fis.rule_count; ++index) {
+      auto& rule = fis.rules[index];
+      if (!reader.u16(rule.id) || !reader.f32(rule.strength) ||
+          !reader.bytes(reinterpret_cast<uint8_t*>(rule.output_id.data()),
+                        rule.output_id.size())) {
+        return TypedDecodeStatus::MalformedPayload;
+      }
+    }
+    uint8_t aggregate_flag{0U};
+    uint8_t centroid_flag{0U};
+    if (!reader.u8(aggregate_flag) ||
+        !reader.bytes(reinterpret_cast<uint8_t*>(fis.aggregate_output_id.data()),
+                      fis.aggregate_output_id.size()) ||
+        !reader.f32(fis.aggregate_area) || !reader.u8(centroid_flag) ||
+        !reader.f32(fis.aggregate_centroid)) {
+      return TypedDecodeStatus::MalformedPayload;
+    }
+    fis.aggregate_present = aggregate_flag != 0U;
+    fis.centroid_present = centroid_flag != 0U;
+    if (!reader.u8(output.safety_state) || !reader.u8(output.safety_reason) ||
+        !reader.u8(output.safety_model_state) ||
+        !read_profile_ref(reader, output.safety_trace.model_ref) ||
+        !reader.u8(output.safety_trace.evidence_count) ||
+        !reader.u8(output.safety_trace.clear_streak) ||
+        !reader.u8(flag)) {
+      return TypedDecodeStatus::MalformedPayload;
+    }
+    output.safety_trace.alert_latched_before = flag != 0U;
+    if (!reader.u8(flag)) return TypedDecodeStatus::MalformedPayload;
+    output.safety_trace.alert_latched_after = flag != 0U;
+    if (output.safety_trace.evidence_count > kArchiveMaxSafetyEvidence) {
+      return TypedDecodeStatus::BoundsExceeded;
+    }
+    for (uint8_t index = 0U; index < output.safety_trace.evidence_count; ++index) {
+      auto& evidence = output.safety_trace.evidence[index];
+      if (!reader.u8(evidence.signal) || !reader.u8(evidence.input_state) ||
+          !reader.f32(evidence.value) || !reader.f32(evidence.alert_at_or_above) ||
+          !reader.f32(evidence.clear_below) || !reader.u8(flag)) {
+        return TypedDecodeStatus::MalformedPayload;
+      }
+      evidence.threshold_exceeded = flag != 0U;
+      if (!reader.u8(flag)) return TypedDecodeStatus::MalformedPayload;
+      evidence.clear_condition_met = flag != 0U;
+    }
+    return reader.finished() ? TypedDecodeStatus::Decoded
+                             : TypedDecodeStatus::MalformedPayload;
+  }
+
+  static TypedDecodeStatus decode_event(const ImmutableRecordBytes& record,
+                                        DecodedEventPayload& output) noexcept {
+    output = DecodedEventPayload{};
+    ArchiveRecordView view{};
+    if (!read(record, view)) return TypedDecodeStatus::InvalidFrame;
+    if (view.identity.kind != ArchiveRecordKind::Event) {
+      return TypedDecodeStatus::WrongKind;
+    }
+    PayloadReader reader{view.payload, view.payload_size};
+    uint8_t config_flag{0U};
+    uint8_t pending_flag{0U};
+    if (!reader.u8(output.event_kind) || !reader.u64(output.monotonic_us) ||
+        !reader.u8(config_flag) || !reader.u32(output.config_ref.schema_version) ||
+        !reader.u64(output.config_ref.config_version) ||
+        !reader.bytes(output.config_ref.hash.data(), output.config_ref.hash.size()) ||
+        !reader.u8(pending_flag) || !read_profile_ref(reader, output.previous) ||
+        !read_profile_ref(reader, output.current)) {
+      return TypedDecodeStatus::MalformedPayload;
+    }
+    output.config_ref.present = config_flag != 0U;
+    output.pending_activation = pending_flag != 0U;
+    return reader.finished() ? TypedDecodeStatus::Decoded
+                             : TypedDecodeStatus::MalformedPayload;
+  }
+
+  static TypedDecodeStatus decode_metadata(const ImmutableRecordBytes& record,
+                                           TypedArchiveRecordView& view) noexcept {
+    if (!decode_metadata_view(record, view)) {
+      return TypedDecodeStatus::InvalidFrame;
+    }
+    return TypedDecodeStatus::UnsupportedKind;
+  }
+
   static bool encode_sample(const acquisition::SampleRecord& sample,
                             ImmutableRecordBytes& output) noexcept {
     const ArchiveIdentity identity{sample.header.device_id, sample.header.boot_id,
@@ -418,6 +707,32 @@ class RecordCodec final {
   }
 
  private:
+  static bool read_config_ref(PayloadReader& reader,
+                              DecodedConfigRef& output) noexcept {
+    uint8_t flag{0U};
+    if (!reader.u32(output.schema_version) ||
+        !reader.u64(output.config_version) || !reader.u8(flag) ||
+        !reader.bytes(output.hash.data(), output.hash.size())) {
+      return false;
+    }
+    output.present = flag != 0U;
+    return true;
+  }
+
+  static bool read_profile_ref(PayloadReader& reader,
+                               DecodedProfileRef& output) noexcept {
+    uint8_t flag{0U};
+    if (!reader.u8(flag) || !reader.u8(output.kind) ||
+        !reader.u32(output.schema_version) ||
+        !reader.u32(output.profile_version) ||
+        !reader.u32(output.target_id) ||
+        !reader.bytes(output.hash.data(), output.hash.size())) {
+      return false;
+    }
+    output.present = flag != 0U;
+    return true;
+  }
+
   static void put_u16(uint8_t* out, uint16_t value) noexcept {
     out[0U] = static_cast<uint8_t>(value); out[1U] = static_cast<uint8_t>(value >> 8U);
   }
