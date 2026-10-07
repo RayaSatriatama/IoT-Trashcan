@@ -93,6 +93,9 @@ SampleRecord sample(uint64_t sequence) {
   value.reason = SampleReason::DataReady;
   value.raw.present = true;
   value.raw.adc_counts = 1234U;
+  value.raw.temperature_crc_valid = true;
+  value.raw.humidity_crc_valid = false;
+  value.raw.heater_ready = true;
   return value;
 }
 
@@ -144,6 +147,9 @@ void test_codec_reader_round_trips_identity_and_payload() {
   TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(SampleQuality::Ready),
                           static_cast<uint8_t>(decoded.quality));
   TEST_ASSERT_EQUAL_UINT16(1234U, decoded.raw.adc_counts);
+  TEST_ASSERT_TRUE(decoded.raw.temperature_crc_valid);
+  TEST_ASSERT_FALSE(decoded.raw.humidity_crc_valid);
+  TEST_ASSERT_TRUE(decoded.raw.heater_ready);
 }
 
 void test_store_deduplicates_and_recovers_corrupt_tail() {

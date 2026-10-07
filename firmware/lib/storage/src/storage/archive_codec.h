@@ -279,6 +279,9 @@ class RecordCodec final {
         !writer.u8(sample.raw.crc_valid ? 1U : 0U) ||
         !writer.u8(sample.raw.conversion_complete ? 1U : 0U) ||
         !writer.u8(sample.raw.identity_valid ? 1U : 0U) ||
+        !writer.u8(sample.raw.temperature_crc_valid ? 1U : 0U) ||
+        !writer.u8(sample.raw.humidity_crc_valid ? 1U : 0U) ||
+        !writer.u8(sample.raw.heater_ready ? 1U : 0U) ||
         !writer.i64(sample.raw.signed_counts) || !writer.u16(sample.raw.adc_counts) ||
         !writer.u32(sample.raw.distance_us) || !writer.i32(sample.raw.temperature_centi_c) ||
         !writer.i32(sample.raw.humidity_centi_pct) ||
@@ -351,6 +354,12 @@ class RecordCodec final {
     output.raw.conversion_complete = flag != 0U;
     if (!reader.u8(flag)) return false;
     output.raw.identity_valid = flag != 0U;
+    if (!reader.u8(flag)) return false;
+    output.raw.temperature_crc_valid = flag != 0U;
+    if (!reader.u8(flag)) return false;
+    output.raw.humidity_crc_valid = flag != 0U;
+    if (!reader.u8(flag)) return false;
+    output.raw.heater_ready = flag != 0U;
     if (!reader.i64(output.raw.signed_counts) ||
         !reader.u16(output.raw.adc_counts) ||
         !reader.u32(output.raw.distance_us) ||

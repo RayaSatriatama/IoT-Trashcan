@@ -22,6 +22,11 @@ inline constexpr uint8_t kAckOpPending{1U};
 inline constexpr uint8_t kAckOpServerAcked{2U};
 inline constexpr uint8_t kAckOpReclaimed{3U};
 inline constexpr uint32_t kAckJournalMarker{0xACCE551U};
+inline constexpr std::size_t kAckCheckpointBytes{12U};
+inline constexpr std::size_t kAckCheckpointChecksumOffset{8U};
+static_assert(kAckCheckpointChecksumOffset + sizeof(uint32_t) ==
+                  kAckCheckpointBytes,
+              "ACK checkpoint layout must remain exact");
 inline constexpr std::size_t kAckJournalIdBytes{96U};
 inline constexpr std::size_t kAckJournalDeviceIdBytes{16U};
 inline constexpr std::size_t kAckJournalFrameBytes{4U + 1U + 1U + 2U +
@@ -170,14 +175,7 @@ class FsAckJournalStore final {
   AckPersistStatus apply_ack(const Ack& ack) noexcept {
     AckJournalEntry* entry = find(ack);
     if (entry == nullptr) return AckPersistStatus::NotFound;
-    ImmutableBatch batch{};
-    std::memcpy(batch.batch_id.data(), entry->batch_id.data(), entry->batch_id_size);
-    batch.batch_id_size = entry->batch_id_size;
-    batch.body_hash = entry->body_hash;
-    batch.record_count = entry->record_count;
-    batch.device_id = entry->device_id;
-    batch.attempted = true;
-    if (!ack_matches(batch, ack)) return AckPersistStatus::Invalid;
+    if (!ack_matches_entry(*entry, ack)) return AckPersistStatus::Invalid;
     const auto status = append_frame(kAckOpServerAcked, *entry);
     if (status == AckPersistStatus::Durable) {
       entry->state = JournalState::ServerAcked;
@@ -191,9 +189,11 @@ class FsAckJournalStore final {
     if (filesystem_ == nullptr) return false;
     File marker = filesystem_->open(checkpoint_path_, FILE_WRITE);
     if (!marker) return false;
-    std::array<uint8_t, 8U> bytes{};
+    std::array<uint8_t, kAckCheckpointBytes> bytes{};
     write_u32(bytes.data(), kAckJournalMarker);
     write_u32(bytes.data() + 4U, generation_);
+    write_u32(bytes.data() + kAckCheckpointChecksumOffset,
+              ack_crc32(bytes.data(), kAckCheckpointChecksumOffset));
     const bool written = marker.write(bytes.data(), bytes.size()) == bytes.size();
     marker.flush();
     marker.close();
@@ -314,7 +314,22 @@ class FsAckJournalStore final {
            left.device_id.bytes == right.device_id.bytes &&
            std::equal(left.batch_id.begin(),
                       left.batch_id.begin() + left.batch_id_size,
-                      right.batch_id.begin());
+                    right.batch_id.begin());
+  }
+  static bool ack_matches_entry(const AckJournalEntry& entry,
+                                const Ack& ack) noexcept {
+    return ack.status == AckStatus::Durable && entry.device_id.present &&
+           ack.device_id.present &&
+           entry.device_id.bytes == ack.device_id.bytes &&
+           ack.batch_id_size == entry.batch_id_size &&
+           std::equal(entry.batch_id.begin(),
+                      entry.batch_id.begin() + entry.batch_id_size,
+                      ack.batch_id.begin()) &&
+           ack.body_hash == entry.body_hash &&
+           ack.record_count == entry.record_count &&
+           static_cast<uint32_t>(ack.stored_count) +
+                   static_cast<uint32_t>(ack.deduplicated_count) ==
+               entry.record_count;
   }
   AckJournalEntry* find(const AckJournalEntry& needle) noexcept {
     for (std::size_t i = 0U; i < count_; ++i) {
@@ -379,11 +394,13 @@ class FsAckJournalStore final {
     if (filesystem_ == nullptr) return;
     File marker = filesystem_->open(checkpoint_path_, FILE_READ);
     if (!marker) return;
-    std::array<uint8_t, 8U> bytes{};
+    std::array<uint8_t, kAckCheckpointBytes> bytes{};
     const bool read = marker.read(bytes.data(), bytes.size()) ==
                       static_cast<int>(bytes.size());
     marker.close();
-    if (read && read_u32(bytes.data()) == kAckJournalMarker) {
+    if (read && read_u32(bytes.data()) == kAckJournalMarker &&
+        read_u32(bytes.data() + kAckCheckpointChecksumOffset) ==
+            ack_crc32(bytes.data(), kAckCheckpointChecksumOffset)) {
       checkpoint_generation_ = read_u32(bytes.data() + 4U);
       checkpointed_ = checkpoint_generation_ == generation_;
     }
