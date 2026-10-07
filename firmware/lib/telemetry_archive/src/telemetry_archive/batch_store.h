@@ -43,7 +43,9 @@ class MemoryImmutableBatchStore final : public IImmutableBatchStore {
       : quota_bytes_(quota_bytes) {}
 
   BatchStoreStatus append(const ImmutableBatch& batch) noexcept override {
-    if (!batch.attempted || !batch.device_id.present) return BatchStoreStatus::Invalid;
+    if (!batch.attempted || !batch.device_id.present ||
+        batch.record_count == 0U || batch.record_count > kMaxBatchRecords ||
+        !batch.body_hash_matches()) return BatchStoreStatus::Invalid;
     if (fault_ == BatchStoreFault::ShortWrite) return BatchStoreStatus::Retryable;
     if (pending_bytes_ > quota_bytes_ ||
         batch.body_size > quota_bytes_ - pending_bytes_ || count_ == Capacity) {
@@ -121,7 +123,9 @@ class FsImmutableBatchStore final : public IImmutableBatchStore {
   BatchStoreStatus append(const ImmutableBatch& batch) noexcept override {
 #ifdef ARDUINO
     if (filesystem_ == nullptr || !batch.attempted || !batch.device_id.present ||
-        batch.batch_id_size == 0U || batch.batch_id_size >= kMaxBatchIdBytes) {
+        batch.record_count == 0U || batch.record_count > kMaxBatchRecords ||
+        batch.batch_id_size == 0U || batch.batch_id_size >= kMaxBatchIdBytes ||
+        !batch.body_hash_matches()) {
       return BatchStoreStatus::Invalid;
     }
     const auto* existing = find_index(batch);
@@ -206,7 +210,12 @@ class FsImmutableBatchStore final : public IImmutableBatchStore {
     pending_bytes_ = 0U;
     index_count_ = 0U;
     File file = filesystem_->open(path_, FILE_READ);
-    if (!file) return !filesystem_->exists(path_);
+    if (!file) {
+      if (filesystem_->exists(path_)) return false;
+      if (!restore_from_quarantine()) return false;
+      file = filesystem_->open(path_, FILE_READ);
+      if (!file) return !filesystem_->exists(path_);
+    }
     std::size_t valid_bytes = 0U;
     bool clean = true;
     while (file.available()) {
@@ -219,7 +228,9 @@ class FsImmutableBatchStore final : public IImmutableBatchStore {
       }
       const std::size_t id_size = read_u16(header.data() + 6U);
       const std::size_t body_size = read_u32(header.data() + 10U);
+      const std::size_t record_count = read_u16(header.data() + 8U);
       if (id_size == 0U || id_size >= kMaxBatchIdBytes ||
+          record_count == 0U || record_count > kMaxBatchRecords ||
           body_size == 0U || body_size > kMaxBatchBytes) {
         clean = false;
         break;
@@ -435,7 +446,7 @@ class FsImmutableBatchStore final : public IImmutableBatchStore {
     if (written <= 0 || static_cast<std::size_t>(written) >= sizeof(quarantine)) {
       return false;
     }
-    (void)filesystem_->remove(quarantine);
+    if (filesystem_->exists(quarantine)) return false;
     if (!filesystem_->rename(path_, quarantine)) return false;
     File source = filesystem_->open(quarantine, FILE_READ);
     File destination = filesystem_->open(path_, FILE_WRITE);
@@ -459,7 +470,37 @@ class FsImmutableBatchStore final : public IImmutableBatchStore {
     destination.flush();
     source.close();
     destination.close();
-    (void)filesystem_->remove(quarantine);
+    return copied && remaining == 0U;
+  }
+  bool restore_from_quarantine() noexcept {
+    if (filesystem_ == nullptr) return false;
+    char quarantine[64]{};
+    const int written = std::snprintf(quarantine, sizeof(quarantine),
+                                      "%s.tail", path_);
+    if (written <= 0 || static_cast<std::size_t>(written) >= sizeof(quarantine) ||
+        !filesystem_->exists(quarantine)) return true;
+    File source = filesystem_->open(quarantine, FILE_READ);
+    File destination = filesystem_->open(path_, FILE_WRITE);
+    if (!source || !destination) {
+      if (source) source.close();
+      if (destination) destination.close();
+      return false;
+    }
+    std::array<uint8_t, 256U> buffer{};
+    std::size_t remaining = source.size();
+    bool copied = true;
+    while (remaining != 0U) {
+      const std::size_t chunk = remaining < buffer.size() ? remaining : buffer.size();
+      if (source.read(buffer.data(), chunk) != static_cast<int>(chunk) ||
+          destination.write(buffer.data(), chunk) != chunk) {
+        copied = false;
+        break;
+      }
+      remaining -= chunk;
+    }
+    destination.flush();
+    source.close();
+    destination.close();
     return copied && remaining == 0U;
   }
   fs::FS* filesystem_{nullptr};

@@ -14,6 +14,7 @@ namespace sigap::telemetry_archive {
 
 inline constexpr std::size_t kMaxBatchBytes{32U * 1024U};
 inline constexpr std::size_t kMaxBatchIdBytes{96U};
+inline constexpr uint16_t kMaxBatchRecords{128U};
 
 enum class AckStatus : uint8_t { Durable, Invalid, Conflict, Timeout, SummaryV2 };
 
@@ -30,7 +31,8 @@ struct ImmutableBatch final {
   bool prepare(std::string_view id, const uint8_t* bytes, std::size_t size,
                uint16_t count) noexcept {
     if (attempted || id.empty() || id.size() >= batch_id.size() || bytes == nullptr ||
-        size == 0U || size > body.size() || count == 0U) return false;
+        size == 0U || size > body.size() || count == 0U ||
+        count > kMaxBatchRecords) return false;
     std::copy(id.begin(), id.end(), batch_id.begin());
     batch_id_size = id.size();
     std::copy(bytes, bytes + size, body.begin());
@@ -44,6 +46,10 @@ struct ImmutableBatch final {
   std::string_view id() const noexcept { return std::string_view(batch_id.data(), batch_id_size); }
   std::string_view exact_body() const noexcept {
     return std::string_view(reinterpret_cast<const char*>(body.data()), body_size);
+  }
+  bool body_hash_matches() const noexcept {
+    if (!attempted || body_size == 0U || body_size > body.size()) return false;
+    return telemetry_contract::sha256(exact_body()) == body_hash;
   }
   void set_device_id(const acquisition::DeviceId& device) noexcept {
     device_id = device;

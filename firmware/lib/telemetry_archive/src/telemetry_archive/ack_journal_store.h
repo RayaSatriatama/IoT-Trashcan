@@ -8,6 +8,7 @@
 #include <cstdio>
 
 #include "immutable_batch.h"
+#include "storage/archive_codec.h"
 
 #ifdef ARDUINO
 #include <FS.h>
@@ -25,8 +26,10 @@ inline constexpr std::size_t kAckJournalIdBytes{96U};
 inline constexpr std::size_t kAckJournalDeviceIdBytes{16U};
 inline constexpr std::size_t kAckJournalFrameBytes{4U + 1U + 1U + 2U +
                                                     kAckJournalIdBytes + kAckJournalDeviceIdBytes + 32U +
-                                                    2U + 4U};
-static_assert(8U + kAckJournalIdBytes + kAckJournalDeviceIdBytes + 32U + 2U + 4U ==
+                                                    2U + 4U + 4U};
+inline constexpr std::size_t kAckJournalChecksumOffset{kAckJournalFrameBytes - 8U};
+inline constexpr std::size_t kAckJournalMarkerOffset{kAckJournalFrameBytes - 4U};
+static_assert(8U + kAckJournalIdBytes + kAckJournalDeviceIdBytes + 32U + 2U + 4U + 4U ==
                   kAckJournalFrameBytes,
               "ACK journal layout must remain exact");
 
@@ -146,7 +149,22 @@ class FsAckJournalStore final {
   AckPersistStatus append_pending(const ImmutableBatch& batch) noexcept {
     AckJournalEntry entry{};
     if (!make_entry(batch, entry)) return AckPersistStatus::Invalid;
-    return append_frame(kAckOpPending, entry);
+    for (std::size_t i = 0U; i < count_; ++i) {
+      if (same_identity(entries_[i], entry)) {
+        return entries_[i].body_hash == entry.body_hash &&
+                       entries_[i].record_count == entry.record_count
+                   ? AckPersistStatus::Durable
+                   : AckPersistStatus::Invalid;
+      }
+    }
+    if (count_ == entries_.size()) return AckPersistStatus::Retryable;
+    const auto status = append_frame(kAckOpPending, entry);
+    if (status == AckPersistStatus::Durable) {
+      entries_[count_++] = entry;
+      ++generation_;
+      checkpointed_ = false;
+    }
+    return status;
   }
 
   AckPersistStatus apply_ack(const Ack& ack) noexcept {
@@ -161,7 +179,11 @@ class FsAckJournalStore final {
     batch.attempted = true;
     if (!ack_matches(batch, ack)) return AckPersistStatus::Invalid;
     const auto status = append_frame(kAckOpServerAcked, *entry);
-    if (status == AckPersistStatus::Durable) entry->state = JournalState::ServerAcked;
+    if (status == AckPersistStatus::Durable) {
+      entry->state = JournalState::ServerAcked;
+      ++generation_;
+      checkpointed_ = false;
+    }
     return status;
   }
 
@@ -169,24 +191,28 @@ class FsAckJournalStore final {
     if (filesystem_ == nullptr) return false;
     File marker = filesystem_->open(checkpoint_path_, FILE_WRITE);
     if (!marker) return false;
-    const uint32_t value = kAckJournalMarker;
-    const bool written = marker.write(
-        reinterpret_cast<const uint8_t*>(&value), sizeof(value)) == sizeof(value);
+    std::array<uint8_t, 8U> bytes{};
+    write_u32(bytes.data(), kAckJournalMarker);
+    write_u32(bytes.data() + 4U, generation_);
+    const bool written = marker.write(bytes.data(), bytes.size()) == bytes.size();
     marker.flush();
     marker.close();
     checkpointed_ = written;
-    return written;
+    if (checkpointed_) checkpoint_generation_ = generation_;
+    return checkpointed_;
   }
 
   std::size_t reclaim() noexcept {
-    if (filesystem_ == nullptr || !checkpointed_) return 0U;
+    if (filesystem_ == nullptr || !checkpointed_ ||
+        checkpoint_generation_ != generation_) return 0U;
     std::size_t reclaimed{0U};
     for (std::size_t i = 0U; i < count_; ++i) {
-      if (entries_[i].state == JournalState::ServerAcked) {
-        if (append_frame(kAckOpReclaimed, entries_[i]) == AckPersistStatus::Durable) {
-          entries_[i].state = JournalState::Pending;
-          ++reclaimed;
-        }
+      if (entries_[i].state == JournalState::ServerAcked &&
+          append_frame(kAckOpReclaimed, entries_[i]) == AckPersistStatus::Durable) {
+        remove(&entries_[i]);
+        --i;
+        ++reclaimed;
+        ++generation_;
       }
     }
     checkpointed_ = false;
@@ -196,8 +222,16 @@ class FsAckJournalStore final {
   bool recover() noexcept {
     if (filesystem_ == nullptr) return false;
     count_ = 0U;
+    generation_ = 0U;
+    checkpointed_ = false;
+    checkpoint_generation_ = 0U;
     File file = filesystem_->open(path_, FILE_READ);
-    if (!file) return !filesystem_->exists(path_);
+    if (!file) {
+      if (filesystem_->exists(path_)) return false;
+      if (!restore_from_quarantine()) return false;
+      file = filesystem_->open(path_, FILE_READ);
+      if (!file) return !filesystem_->exists(path_);
+    }
     std::array<uint8_t, kAckJournalFrameBytes> frame{};
     std::size_t valid_bytes = 0U;
     bool clean = true;
@@ -205,7 +239,15 @@ class FsAckJournalStore final {
       if (file.read(frame.data(), frame.size()) != static_cast<int>(frame.size()) ||
           read_u32(frame.data()) != kAckJournalMagic ||
           frame[4U] != kAckJournalVersion ||
-          read_u32(frame.data() + frame.size() - 4U) != kAckJournalMarker) {
+          read_u32(frame.data() + kAckJournalMarkerOffset) != kAckJournalMarker ||
+          read_u32(frame.data() + kAckJournalChecksumOffset) !=
+              ack_crc32(frame.data(), kAckJournalChecksumOffset)) {
+        clean = false;
+        break;
+      }
+      const uint8_t op = frame[5U];
+      if (op != kAckOpPending && op != kAckOpServerAcked &&
+          op != kAckOpReclaimed) {
         clean = false;
         break;
       }
@@ -224,7 +266,6 @@ class FsAckJournalStore final {
                   entry.body_hash.size());
       entry.record_count = read_u16(frame.data() + 8U + kAckJournalIdBytes +
                                     kAckJournalDeviceIdBytes + 32U);
-      const uint8_t op = frame[5U];
       AckJournalEntry* current = find(entry);
       if (op == kAckOpReclaimed) {
         if (current != nullptr) remove(current);
@@ -232,12 +273,17 @@ class FsAckJournalStore final {
         entry.state = op == kAckOpServerAcked ? JournalState::ServerAcked
                                               : JournalState::Pending;
         entries_[count_++] = entry;
+      } else if (current == nullptr) {
+        clean = false;
+        break;
       } else if (current != nullptr && op == kAckOpServerAcked) {
         current->state = JournalState::ServerAcked;
       }
+      ++generation_;
       valid_bytes += frame.size();
     }
     file.close();
+    if (clean) read_checkpoint();
     return clean || quarantine_tail(valid_bytes);
   }
 
@@ -252,14 +298,23 @@ class FsAckJournalStore final {
            (static_cast<uint32_t>(p[3U]) << 24U);
   }
   bool make_entry(const ImmutableBatch& batch, AckJournalEntry& entry) noexcept {
-    if (!batch.attempted || batch.batch_id_size == 0U ||
-        batch.batch_id_size >= kAckJournalIdBytes) return false;
+    if (!batch.attempted || !batch.device_id.present || batch.batch_id_size == 0U ||
+        batch.batch_id_size >= kAckJournalIdBytes ||
+        !batch.body_hash_matches()) return false;
     std::memcpy(entry.batch_id.data(), batch.batch_id.data(), batch.batch_id_size);
     entry.batch_id_size = batch.batch_id_size;
     entry.body_hash = batch.body_hash;
     entry.record_count = batch.record_count;
     entry.device_id = batch.device_id;
     return true;
+  }
+  static bool same_identity(const AckJournalEntry& left,
+                            const AckJournalEntry& right) noexcept {
+    return left.batch_id_size == right.batch_id_size &&
+           left.device_id.bytes == right.device_id.bytes &&
+           std::equal(left.batch_id.begin(),
+                      left.batch_id.begin() + left.batch_id_size,
+                      right.batch_id.begin());
   }
   AckJournalEntry* find(const AckJournalEntry& needle) noexcept {
     for (std::size_t i = 0U; i < count_; ++i) {
@@ -272,6 +327,9 @@ class FsAckJournalStore final {
     return nullptr;
   }
   AckJournalEntry* find(const Ack& ack) noexcept {
+    if (ack.batch_id_size == 0U || ack.batch_id_size >= kAckJournalIdBytes) {
+      return nullptr;
+    }
     AckJournalEntry needle{};
     needle.batch_id_size = ack.batch_id_size;
     std::memcpy(needle.batch_id.data(), ack.batch_id.data(), ack.batch_id_size);
@@ -307,16 +365,37 @@ class FsAckJournalStore final {
         static_cast<uint8_t>(entry.record_count);
     frame[8U + kAckJournalIdBytes + kAckJournalDeviceIdBytes + 33U] =
         static_cast<uint8_t>(entry.record_count >> 8U);
-    const std::size_t marker = frame.size() - 4U;
-    frame[marker] = static_cast<uint8_t>(kAckJournalMarker);
-    frame[marker + 1U] = static_cast<uint8_t>(kAckJournalMarker >> 8U);
-    frame[marker + 2U] = static_cast<uint8_t>(kAckJournalMarker >> 16U);
-    frame[marker + 3U] = static_cast<uint8_t>(kAckJournalMarker >> 24U);
+    const uint32_t checksum = ack_crc32(frame.data(), kAckJournalChecksumOffset);
+    write_u32(frame.data() + kAckJournalChecksumOffset, checksum);
+    write_u32(frame.data() + kAckJournalMarkerOffset, kAckJournalMarker);
     const bool written = file.write(frame.data(), frame.size()) == frame.size();
     file.flush();
     file.close();
     if (!written) return AckPersistStatus::Retryable;
     return AckPersistStatus::Durable;
+  }
+  void read_checkpoint() noexcept {
+    checkpointed_ = false;
+    if (filesystem_ == nullptr) return;
+    File marker = filesystem_->open(checkpoint_path_, FILE_READ);
+    if (!marker) return;
+    std::array<uint8_t, 8U> bytes{};
+    const bool read = marker.read(bytes.data(), bytes.size()) ==
+                      static_cast<int>(bytes.size());
+    marker.close();
+    if (read && read_u32(bytes.data()) == kAckJournalMarker) {
+      checkpoint_generation_ = read_u32(bytes.data() + 4U);
+      checkpointed_ = checkpoint_generation_ == generation_;
+    }
+  }
+  static void write_u32(uint8_t* p, uint32_t value) noexcept {
+    p[0U] = static_cast<uint8_t>(value);
+    p[1U] = static_cast<uint8_t>(value >> 8U);
+    p[2U] = static_cast<uint8_t>(value >> 16U);
+    p[3U] = static_cast<uint8_t>(value >> 24U);
+  }
+  static uint32_t ack_crc32(const uint8_t* data, std::size_t size) noexcept {
+    return sigap::storage::archive_crc32(data, size);
   }
   bool quarantine_tail(std::size_t valid_bytes) noexcept {
     if (filesystem_ == nullptr) return false;
@@ -324,7 +403,7 @@ class FsAckJournalStore final {
     const int written = std::snprintf(quarantine, sizeof(quarantine),
                                       "%s.tail", path_);
     if (written <= 0 || static_cast<std::size_t>(written) >= sizeof(quarantine)) return false;
-    (void)filesystem_->remove(quarantine);
+    if (filesystem_->exists(quarantine)) return false;
     if (!filesystem_->rename(path_, quarantine)) return false;
     File source = filesystem_->open(quarantine, FILE_READ);
     File destination = filesystem_->open(path_, FILE_WRITE);
@@ -348,7 +427,37 @@ class FsAckJournalStore final {
     destination.flush();
     source.close();
     destination.close();
-    (void)filesystem_->remove(quarantine);
+    return copied && remaining == 0U;
+  }
+  bool restore_from_quarantine() noexcept {
+    if (filesystem_ == nullptr) return false;
+    char quarantine[64]{};
+    const int written = std::snprintf(quarantine, sizeof(quarantine),
+                                      "%s.tail", path_);
+    if (written <= 0 || static_cast<std::size_t>(written) >= sizeof(quarantine) ||
+        !filesystem_->exists(quarantine)) return true;
+    File source = filesystem_->open(quarantine, FILE_READ);
+    File destination = filesystem_->open(path_, FILE_WRITE);
+    if (!source || !destination) {
+      if (source) source.close();
+      if (destination) destination.close();
+      return false;
+    }
+    std::array<uint8_t, 256U> buffer{};
+    std::size_t remaining = source.size();
+    bool copied = true;
+    while (remaining != 0U) {
+      const std::size_t chunk = remaining < buffer.size() ? remaining : buffer.size();
+      if (source.read(buffer.data(), chunk) != static_cast<int>(chunk) ||
+          destination.write(buffer.data(), chunk) != chunk) {
+        copied = false;
+        break;
+      }
+      remaining -= chunk;
+    }
+    destination.flush();
+    source.close();
+    destination.close();
     return copied && remaining == 0U;
   }
   fs::FS* filesystem_{nullptr};
@@ -357,6 +466,8 @@ class FsAckJournalStore final {
   std::array<AckJournalEntry, 16U> entries_{};
   std::size_t count_{0U};
   bool checkpointed_{false};
+  uint32_t generation_{0U};
+  uint32_t checkpoint_generation_{0U};
 };
 #endif
 

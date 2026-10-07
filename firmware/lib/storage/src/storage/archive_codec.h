@@ -94,6 +94,63 @@ class PayloadWriter final {
   std::size_t offset_{0U};
 };
 
+class PayloadReader final {
+ public:
+  PayloadReader(const uint8_t* data, std::size_t size) noexcept
+      : data_(data), size_(size) {}
+
+  bool u8(uint8_t& value) noexcept { return get(&value, sizeof(value)); }
+  bool u16(uint16_t& value) noexcept { return integer(value); }
+  bool u32(uint32_t& value) noexcept { return integer(value); }
+  bool u64(uint64_t& value) noexcept { return integer(value); }
+  bool i32(int32_t& value) noexcept {
+    uint32_t raw{0U};
+    if (!u32(raw)) return false;
+    value = static_cast<int32_t>(raw);
+    return true;
+  }
+  bool i64(int64_t& value) noexcept {
+    uint64_t raw{0U};
+    if (!u64(raw)) return false;
+    value = static_cast<int64_t>(raw);
+    return true;
+  }
+  bool f32(float& value) noexcept {
+    uint32_t bits{0U};
+    if (!u32(bits)) return false;
+    std::memcpy(&value, &bits, sizeof(value));
+    return true;
+  }
+  bool bytes(uint8_t* value, std::size_t size) noexcept {
+    return value != nullptr && get(value, size);
+  }
+  bool finished() const noexcept { return offset_ == size_; }
+
+ private:
+  template <typename T>
+  bool integer(T& value) noexcept {
+    if (offset_ > size_ || sizeof(T) > size_ - offset_) return false;
+    value = 0U;
+    for (std::size_t i = 0U; i < sizeof(T); ++i) {
+      value |= static_cast<T>(data_[offset_ + i]) << (i * 8U);
+    }
+    offset_ += sizeof(T);
+    return true;
+  }
+  bool get(uint8_t* value, std::size_t size) noexcept {
+    if (data_ == nullptr || value == nullptr ||
+        offset_ > size_ || size > size_ - offset_) {
+      return false;
+    }
+    std::memcpy(value, data_ + offset_, size);
+    offset_ += size;
+    return true;
+  }
+  const uint8_t* data_{nullptr};
+  std::size_t size_{0U};
+  std::size_t offset_{0U};
+};
+
 inline uint32_t archive_crc32(const uint8_t* data, std::size_t size) noexcept {
   uint32_t crc{0xFFFFFFFFU};
   for (std::size_t i = 0U; i < size; ++i) {
@@ -208,6 +265,7 @@ class RecordCodec final {
     if (!writer.u8(static_cast<uint8_t>(sample.header.sensor)) ||
         !writer.u8(static_cast<uint8_t>(sample.header.stream)) ||
         !writer.u8(static_cast<uint8_t>(sample.header.kind)) ||
+        !writer.u64(sample.header.monotonic_us) ||
         !writer.u8(static_cast<uint8_t>(sample.quality)) ||
         !writer.u8(static_cast<uint8_t>(sample.reason)) ||
         !writer.u8(sample.header.recorded_at.available ? 1U : 0U) ||
@@ -238,6 +296,92 @@ class RecordCodec final {
         !writer.bytes(sample.header.profile_ref.hash.data(), sample.header.profile_ref.hash.size()) ||
         !writer.u8(sample.gas_ppm_available ? 1U : 0U)) return false;
     return finish(output, writer);
+  }
+
+  static bool decode_sample(const ImmutableRecordBytes& record,
+                            acquisition::SampleRecord& sample) noexcept {
+    ArchiveRecordView view{};
+    if (!read(record, view) ||
+        view.identity.kind != ArchiveRecordKind::Sample) {
+      return false;
+    }
+    acquisition::SampleRecord output{};
+    output.header.device_id = view.identity.device_id;
+    output.header.boot_id = view.identity.boot_id;
+    output.header.sequence = view.identity.sequence;
+    PayloadReader reader{view.payload, view.payload_size};
+    uint8_t sensor{0U};
+    uint8_t stream{0U};
+    uint8_t kind{0U};
+    uint8_t quality{0U};
+    uint8_t reason{0U};
+    uint8_t flag{0U};
+    uint8_t time_quality{0U};
+    uint8_t primary_kind{0U};
+    uint8_t secondary_kind{0U};
+    uint8_t profile_kind{0U};
+    if (!reader.u8(sensor) || !reader.u8(stream) || !reader.u8(kind) ||
+        !reader.u64(output.header.monotonic_us) ||
+        !reader.u8(quality) || !reader.u8(reason) ||
+        !reader.u8(flag) || !reader.i64(output.header.recorded_at.epoch_ms)) {
+      return false;
+    }
+    output.header.recorded_at.available = flag != 0U;
+    if (!reader.u8(time_quality) ||
+        !reader.u32(output.header.config_ref.schema_version) ||
+        !reader.u64(output.header.config_ref.config_version) ||
+        !reader.u8(flag) ||
+        !reader.bytes(output.header.config_ref.hash.data(),
+                      output.header.config_ref.hash.size())) {
+      return false;
+    }
+    output.header.sensor = static_cast<acquisition::SensorId>(sensor);
+    output.header.stream = static_cast<acquisition::StreamId>(stream);
+    output.header.kind = static_cast<acquisition::SampleKind>(kind);
+    output.quality = static_cast<acquisition::SampleQuality>(quality);
+    output.reason = static_cast<acquisition::SampleReason>(reason);
+    output.header.time_quality =
+        static_cast<acquisition::TimeQuality>(time_quality);
+    output.header.config_ref.present = flag != 0U;
+    if (!reader.u8(flag)) return false;
+    output.raw.present = flag != 0U;
+    if (!reader.u8(flag)) return false;
+    output.raw.crc_valid = flag != 0U;
+    if (!reader.u8(flag)) return false;
+    output.raw.conversion_complete = flag != 0U;
+    if (!reader.u8(flag)) return false;
+    output.raw.identity_valid = flag != 0U;
+    if (!reader.i64(output.raw.signed_counts) ||
+        !reader.u16(output.raw.adc_counts) ||
+        !reader.u32(output.raw.distance_us) ||
+        !reader.i32(output.raw.temperature_centi_c) ||
+        !reader.i32(output.raw.humidity_centi_pct) ||
+        !reader.u8(flag)) return false;
+    output.converted.primary_available = flag != 0U;
+    if (!reader.f32(output.converted.primary_value) ||
+        !reader.u8(primary_kind) || !reader.u8(flag)) return false;
+    output.converted.primary_kind =
+        static_cast<acquisition::ConvertedKind>(primary_kind);
+    output.converted.secondary_available = flag != 0U;
+    if (!reader.f32(output.converted.secondary_value) ||
+        !reader.u8(secondary_kind) || !reader.u8(flag)) return false;
+    output.converted.secondary_kind =
+        static_cast<acquisition::ConvertedKind>(secondary_kind);
+    output.header.profile_ref.present = flag != 0U;
+    if (!reader.u8(profile_kind) ||
+        !reader.u32(output.header.profile_ref.schema_version) ||
+        !reader.u32(output.header.profile_ref.profile_version) ||
+        !reader.u32(output.header.profile_ref.target_id) ||
+        !reader.bytes(output.header.profile_ref.hash.data(),
+                      output.header.profile_ref.hash.size()) ||
+        !reader.u8(flag) || !reader.finished()) {
+      return false;
+    }
+    output.header.profile_ref.kind =
+        static_cast<acquisition::ProfileKind>(profile_kind);
+    output.gas_ppm_available = flag != 0U;
+    sample = output;
+    return true;
   }
 
  private:

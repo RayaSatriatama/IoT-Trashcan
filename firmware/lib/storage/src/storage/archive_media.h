@@ -3,6 +3,7 @@
 #include <array>
 #include <cstring>
 #include <cstdio>
+#include <algorithm>
 #include <string_view>
 
 #include "archive_store.h"
@@ -40,17 +41,37 @@ class LittleFsArchiveStore : public IArchiveStore {
     if (filesystem_ == nullptr || !RecordCodec::valid(record)) {
       return AppendStatus::Retryable;
     }
+    const auto* existing = find_index(record.identity);
+    if (existing != nullptr) {
+      return *existing == record.hash ? AppendStatus::Durable
+                                      : AppendStatus::Invalid;
+    }
+    if (index_count_ == index_.size()) {
+      health_ = ArchiveHealth::Blocked;
+      return AppendStatus::LoggingBlocked;
+    }
     if (pending_bytes_ > quota_bytes_ ||
         record.size > quota_bytes_ - pending_bytes_) {
+      health_ = ArchiveHealth::Blocked;
       return AppendStatus::LoggingBlocked;
     }
     File file = filesystem_->open(path_, FILE_APPEND);
-    if (!file) return AppendStatus::Retryable;
+    if (!file) {
+      health_ = ArchiveHealth::Degraded;
+      return AppendStatus::Retryable;
+    }
     const std::size_t written = file.write(record.bytes.data(), record.size);
     file.flush();
     file.close();
-    if (written != record.size) return AppendStatus::Retryable;
+    if (written != record.size) {
+      health_ = ArchiveHealth::Degraded;
+      return AppendStatus::Retryable;
+    }
+    index_[index_count_] = record.identity;
+    hashes_[index_count_] = record.hash;
+    ++index_count_;
     pending_bytes_ += record.size;
+    health_ = ArchiveHealth::Healthy;
     return AppendStatus::Durable;
 #else
     (void)record;
@@ -78,8 +99,13 @@ class LittleFsArchiveStore : public IArchiveStore {
 #ifdef ARDUINO
     if (filesystem_ == nullptr) return false;
     pending_bytes_ = 0U;
+    index_count_ = 0U;
     File file = filesystem_->open(path_, FILE_READ);
-    if (!file) return !filesystem_->exists(path_);
+    if (!file) {
+      if (!filesystem_->exists(path_)) return restore_from_quarantine();
+      health_ = ArchiveHealth::Degraded;
+      return false;
+    }
     std::size_t valid_bytes = 0U;
     bool clean = true;
     while (file.available()) {
@@ -107,11 +133,39 @@ class LittleFsArchiveStore : public IArchiveStore {
         clean = false;
         break;
       }
+      record.identity.kind = static_cast<ArchiveRecordKind>(
+          record.bytes[kArchiveKindOffset]);
+      record.identity.sequence = read_u64(record.bytes.data() +
+                                          kArchiveSequenceOffset);
+      record.identity.device_id.present = true;
+      record.identity.boot_id.present = true;
+      std::memcpy(record.identity.device_id.bytes.data(),
+                  record.bytes.data() + kArchiveDeviceIdOffset,
+                  record.identity.device_id.bytes.size());
+      std::memcpy(record.identity.boot_id.bytes.data(),
+                  record.bytes.data() + kArchiveBootIdOffset,
+                  record.identity.boot_id.bytes.size());
+      record.hash = telemetry_contract::sha256(std::string_view(
+          reinterpret_cast<const char*>(record.bytes.data()), record.size));
+      if (const auto* existing = find_index(record.identity);
+          existing != nullptr) {
+        clean = *existing == record.hash;
+        break;
+      }
+      if (index_count_ == index_.size()) {
+        clean = false;
+        break;
+      }
+      index_[index_count_] = record.identity;
+      hashes_[index_count_] = record.hash;
+      ++index_count_;
       pending_bytes_ += record.size;
       valid_bytes += record.size;
     }
     file.close();
-    return clean || quarantine_tail(valid_bytes);
+    const bool ok = clean || quarantine_tail(valid_bytes);
+    health_ = ok ? ArchiveHealth::Healthy : ArchiveHealth::Degraded;
+    return ok;
 #else
     return false;
 #endif
@@ -121,8 +175,7 @@ class LittleFsArchiveStore : public IArchiveStore {
   uint64_t pending_quota_bytes() const noexcept override { return quota_bytes_; }
   ArchiveHealth health() const noexcept override {
 #ifdef ARDUINO
-    return filesystem_ == nullptr ? ArchiveHealth::Degraded
-                                   : ArchiveHealth::Healthy;
+    return filesystem_ == nullptr ? ArchiveHealth::Degraded : health_;
 #else
     return ArchiveHealth::Degraded;
 #endif
@@ -139,30 +192,73 @@ class LittleFsArchiveStore : public IArchiveStore {
 
  private:
 #ifdef ARDUINO
+  const config::ConfigHash* find_index(const ArchiveIdentity& identity) const noexcept {
+    for (std::size_t i = 0U; i < index_count_; ++i) {
+      if (index_[i].kind == identity.kind &&
+          index_[i].sequence == identity.sequence &&
+          index_[i].device_id.bytes == identity.device_id.bytes &&
+          index_[i].boot_id.bytes == identity.boot_id.bytes) {
+        return &hashes_[i];
+      }
+    }
+    return nullptr;
+  }
+  bool make_quarantine_path(char* output, std::size_t size) noexcept {
+    if (filesystem_ == nullptr || output == nullptr) return false;
+    for (unsigned suffix = 0U; suffix < 4U; ++suffix) {
+      const int written = std::snprintf(output, size, "%s.tail%u",
+                                        path_, suffix);
+      if (written <= 0 || static_cast<std::size_t>(written) >= size) {
+        return false;
+      }
+      if (!filesystem_->exists(output)) return true;
+    }
+    return false;
+  }
+  bool restore_from_quarantine() noexcept {
+    if (filesystem_ == nullptr) return true;
+    for (unsigned suffix = 0U; suffix < 4U; ++suffix) {
+      char quarantine[64]{};
+      const int written = std::snprintf(quarantine, sizeof(quarantine),
+                                        "%s.tail%u", path_, suffix);
+      if (written <= 0 ||
+          static_cast<std::size_t>(written) >= sizeof(quarantine) ||
+          !filesystem_->exists(quarantine)) {
+        continue;
+      }
+      if (!copy_valid_prefix(quarantine, path_, SIZE_MAX)) {
+        health_ = ArchiveHealth::Degraded;
+        return false;
+      }
+      return recover();
+    }
+    return true;
+  }
   bool quarantine_tail(std::size_t valid_bytes) noexcept {
     if (filesystem_ == nullptr) return false;
     char quarantine[64]{};
-    const int written = std::snprintf(quarantine, sizeof(quarantine),
-                                      "%s.tail", path_);
-    if (written <= 0 || static_cast<std::size_t>(written) >= sizeof(quarantine)) {
-      return false;
-    }
-    (void)filesystem_->remove(quarantine);
+    if (!make_quarantine_path(quarantine, sizeof(quarantine))) return false;
     if (!filesystem_->rename(path_, quarantine)) return false;
-    File source = filesystem_->open(quarantine, FILE_READ);
-    File destination = filesystem_->open(path_, FILE_WRITE);
+    return copy_valid_prefix(quarantine, path_, valid_bytes);
+  }
+  bool copy_valid_prefix(const char* source_path,
+                         const char* destination_path,
+                         std::size_t valid_bytes) noexcept {
+    File source = filesystem_->open(source_path, FILE_READ);
+    File destination = filesystem_->open(destination_path, FILE_WRITE);
     if (!source || !destination) {
       if (source) source.close();
       if (destination) destination.close();
       return false;
     }
-    std::array<uint8_t, 256U> buffer{};
+    if (valid_bytes == SIZE_MAX) valid_bytes = source.size();
     std::size_t remaining = valid_bytes;
     bool copied = true;
     while (remaining != 0U) {
-      const std::size_t chunk = remaining < buffer.size() ? remaining : buffer.size();
-      if (source.read(buffer.data(), chunk) != static_cast<int>(chunk) ||
-          destination.write(buffer.data(), chunk) != chunk) {
+      const std::size_t chunk =
+          remaining < copy_buffer_.size() ? remaining : copy_buffer_.size();
+      if (source.read(copy_buffer_.data(), chunk) != static_cast<int>(chunk) ||
+          destination.write(copy_buffer_.data(), chunk) != chunk) {
         copied = false;
         break;
       }
@@ -171,8 +267,14 @@ class LittleFsArchiveStore : public IArchiveStore {
     destination.flush();
     source.close();
     destination.close();
-    (void)filesystem_->remove(quarantine);
     return copied && remaining == 0U;
+  }
+  static uint64_t read_u64(const uint8_t* bytes) noexcept {
+    uint64_t value{0U};
+    for (std::size_t i = 0U; i < 8U; ++i) {
+      value |= static_cast<uint64_t>(bytes[i]) << (i * 8U);
+    }
+    return value;
   }
   static uint32_t read_u32(const uint8_t* bytes) noexcept {
     return static_cast<uint32_t>(bytes[0U]) |
@@ -180,6 +282,11 @@ class LittleFsArchiveStore : public IArchiveStore {
            (static_cast<uint32_t>(bytes[2U]) << 16U) |
            (static_cast<uint32_t>(bytes[3U]) << 24U);
   }
+  std::array<ArchiveIdentity, 128U> index_{};
+  std::array<config::ConfigHash, 128U> hashes_{};
+  std::array<uint8_t, 256U> copy_buffer_{};
+  std::size_t index_count_{0U};
+  ArchiveHealth health_{ArchiveHealth::Healthy};
 #endif
 };
 
@@ -254,7 +361,7 @@ class ArchiveFileSystemDouble final {
     return true;
   }
   bool truncate(std::size_t size) noexcept {
-    if (size > size_) return false;
+    if (flush_failure_ || size > size_) return false;
     size_ = size;
     return true;
   }
@@ -300,12 +407,14 @@ class NativeArchiveFileStore final : public IArchiveStore {
       return AppendStatus::LoggingBlocked;
     }
     if (!fs_.append(record.bytes.data(), record.size) || !fs_.flush()) {
+      health_ = ArchiveHealth::Degraded;
       return AppendStatus::Retryable;
     }
     index_[count_] = record.identity;
     hashes_[count_] = record.hash;
     ++count_;
     pending_bytes_ += record.size;
+    health_ = ArchiveHealth::Healthy;
     return AppendStatus::Durable;
   }
 
@@ -314,7 +423,10 @@ class NativeArchiveFileStore final : public IArchiveStore {
   bool recover() noexcept override {
     count_ = 0U;
     pending_bytes_ = 0U;
-    if (fs_.open_failed()) return false;
+    if (fs_.open_failed()) {
+      health_ = ArchiveHealth::Blocked;
+      return false;
+    }
     if (!fs_.exists()) return true;
     std::size_t offset = 0U;
     std::array<uint8_t, kArchiveHeaderBytes> header{};
@@ -362,15 +474,22 @@ class NativeArchiveFileStore final : public IArchiveStore {
       pending_bytes_ += total;
       offset += total;
     }
-    if (!clean && !fs_.truncate(offset)) return false;
+    if (!clean && !fs_.truncate(offset)) {
+      health_ = ArchiveHealth::Degraded;
+      return false;
+    }
+    health_ = ArchiveHealth::Healthy;
     return true;
   }
 
   uint64_t pending_bytes() const noexcept override { return pending_bytes_; }
   uint64_t pending_quota_bytes() const noexcept override { return quota_bytes_; }
-  ArchiveHealth health() const noexcept override { return ArchiveHealth::Healthy; }
+  ArchiveHealth health() const noexcept override { return health_; }
   void set_quota(uint64_t quota) noexcept { quota_bytes_ = quota; }
   std::size_t size() const noexcept { return count_; }
+  const config::ConfigHash* hash_at(std::size_t index) const noexcept {
+    return index < count_ ? &hashes_[index] : nullptr;
+  }
 
  private:
   static bool same_identity(const ArchiveIdentity& left,
@@ -396,6 +515,7 @@ class NativeArchiveFileStore final : public IArchiveStore {
   uint64_t quota_bytes_{Bytes};
   uint64_t pending_bytes_{0U};
   std::size_t count_{0U};
+  ArchiveHealth health_{ArchiveHealth::Healthy};
 };
 #endif
 

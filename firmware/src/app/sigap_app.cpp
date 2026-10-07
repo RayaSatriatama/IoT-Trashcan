@@ -177,6 +177,7 @@ void SigapApp::loop() noexcept {
   (void)archive_runtime_.drain_samples(acquisition_.handoff());
   processing_runtime_.poll(now_us);
   (void)archive_runtime_.drain_results(processing_runtime_.handoff());
+  (void)archive_runtime_.poll_media_migration();
   maintenance_service_.poll(now_us);
 #ifdef ARDUINO
   if (reboot_controller_.consume_request()) {

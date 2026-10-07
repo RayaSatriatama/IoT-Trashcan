@@ -12,6 +12,8 @@ backend archive code, or migration 005.
 | batch maximum | immutable batch, bytes | 32 KiB contract bound | compile-time contract |
 | journal/gap capacity | instance-owned rings | bounded static capacity | firmware build; no mutable global |
 | target batch index | `FsImmutableBatchStore`, entries | 64 committed batch identities | firmware build; rebuilt on restart |
+| migration work budget | `ArchiveMediaMigration` / `ArchiveRuntime`, records per loop | one bounded record step | instance-owned; retryable until verify, checkpoint, and reclaim succeed |
+| ACK journal frame | `FsAckJournalStore`, bytes | fixed little-endian frame with CRC and generation-bound checkpoint | protocol constant; target recovery validates before state transition |
 
 Calibration coefficients, capacity, and scientific model parameters remain
 typed versioned profiles. GPIO and bus mapping remain board/build constants.

@@ -22,6 +22,7 @@ struct GapRange final {
   acquisition::StreamId stream{acquisition::StreamId::Organic};
   uint64_t first_monotonic_us{0U};
   uint64_t last_monotonic_us{0U};
+  uint64_t record_count{0U};
   GapReason reason{GapReason::QueueFull};
   bool present{false};
 };
@@ -35,6 +36,7 @@ class GapTracker final {
         ranges_[count_ - 1U].last_sequence != UINT64_MAX &&
         ranges_[count_ - 1U].last_sequence + 1U == sequence) {
       ranges_[count_ - 1U].last_sequence = sequence;
+      ++ranges_[count_ - 1U].record_count;
       return true;
     }
     if (count_ == Capacity) {
@@ -44,6 +46,7 @@ class GapTracker final {
     GapRange range{};
     range.first_sequence = sequence;
     range.last_sequence = sequence;
+    range.record_count = 1U;
     range.reason = reason;
     range.present = true;
     ranges_[count_++] = range;
@@ -61,6 +64,7 @@ class GapTracker final {
           current.last_sequence + 1U == sample.header.sequence) {
         current.last_sequence = sample.header.sequence;
         current.last_monotonic_us = sample.header.monotonic_us;
+        ++current.record_count;
         return true;
       }
     }
@@ -77,6 +81,32 @@ class GapTracker final {
     range.stream = sample.header.stream;
     range.first_monotonic_us = sample.header.monotonic_us;
     range.last_monotonic_us = sample.header.monotonic_us;
+    range.record_count = 1U;
+    range.reason = reason;
+    range.present = true;
+    ranges_[count_++] = range;
+    return true;
+  }
+  bool record_loss(const acquisition::SampleRecord& first,
+                   const acquisition::SampleRecord& last,
+                   uint64_t lost_count,
+                   GapReason reason) noexcept {
+    if (lost_count == 0U) return true;
+    unlogged_records_ += lost_count;
+    if (count_ == Capacity) {
+      overflow_count_ += lost_count;
+      return false;
+    }
+    GapRange range{};
+    range.first_sequence = first.header.sequence;
+    range.last_sequence = last.header.sequence;
+    range.device_id = first.header.device_id;
+    range.boot_id = first.header.boot_id;
+    range.sensor = first.header.sensor;
+    range.stream = first.header.stream;
+    range.first_monotonic_us = first.header.monotonic_us;
+    range.last_monotonic_us = last.header.monotonic_us;
+    range.record_count = lost_count;
     range.reason = reason;
     range.present = true;
     ranges_[count_++] = range;
@@ -124,7 +154,10 @@ class MemoryArchiveStore final : public IArchiveStore {
       return AppendStatus::LoggingBlocked;
     }
     for (std::size_t i = 0U; i < count_; ++i) {
-      if (same_identity(records_[i].identity, record.identity)) return AppendStatus::Durable;
+      if (same_identity(records_[i].identity, record.identity)) {
+        return records_[i].hash == record.hash ? AppendStatus::Durable
+                                               : AppendStatus::Invalid;
+      }
     }
     records_[count_++] = record;
     pending_bytes_ += record.size;

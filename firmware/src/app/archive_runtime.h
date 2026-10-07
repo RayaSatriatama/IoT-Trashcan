@@ -7,12 +7,14 @@
 #include "acquisition/record.h"
 #include "processing_runtime.h"
 #include "storage/archive_store.h"
+#include "storage/media_migration.h"
 #include "telemetry_archive/batch_store.h"
 
 namespace sigap {
 
 class ArchiveRuntime final {
  public:
+  static constexpr std::size_t kDrainBudget{4U};
   using ResultEnvelope = ProcessingRuntime::ResultEnvelope;
   using ResultHandoff = ProcessingRuntime::Handoff;
   using SampleHandoff = acquisition::SampleRing<16U>;
@@ -22,6 +24,13 @@ class ArchiveRuntime final {
 
   void set_store(storage::IArchiveStore* store) noexcept {
     store_ = store;
+  }
+  void set_media_migration(storage::ArchiveMediaMigration* migration) noexcept {
+    migration_ = migration;
+  }
+  storage::MigrationStatus poll_media_migration() noexcept {
+    return migration_ == nullptr ? storage::MigrationStatus::Idle
+                                  : migration_->migrate_one();
   }
   storage::AppendStatus append_sample(
       const acquisition::SampleRecord& sample) noexcept {
@@ -37,21 +46,22 @@ class ArchiveRuntime final {
     bool progressed{false};
     acquisition::SampleRecord sample{};
     if (const auto* dropped = handoff.first_dropped(); dropped != nullptr) {
-      gaps_.record(*dropped, storage::GapReason::QueueFull);
       const auto* last_dropped = handoff.last_dropped();
-      if (last_dropped != nullptr &&
-          last_dropped->header.sequence != dropped->header.sequence) {
-        gaps_.record(*last_dropped, storage::GapReason::QueueFull);
-      }
+      gaps_.record_loss(*dropped, last_dropped == nullptr ? *dropped : *last_dropped,
+                        handoff.dropped_pending_count(),
+                        storage::GapReason::QueueFull);
       handoff.clear_last_dropped();
       progressed = true;
     }
-    while (handoff.try_peek(sample) == acquisition::HandoffStatus::Dequeued) {
+    std::size_t drained{0U};
+    while (drained < kDrainBudget &&
+           handoff.try_peek(sample) == acquisition::HandoffStatus::Dequeued) {
       const auto status = append_sample(sample);
       if (status == storage::AppendStatus::Durable ||
           status == storage::AppendStatus::Invalid) {
         handoff.discard_front();
         progressed = true;
+        ++drained;
         continue;
       }
       break;
@@ -67,17 +77,21 @@ class ArchiveRuntime final {
   bool drain_results(ResultHandoff& handoff) noexcept {
     bool progressed{false};
     ResultEnvelope envelope{};
-    while (handoff.try_peek(envelope) == processing::ResultHandoffStatus::Dequeued) {
+    std::size_t drained{0U};
+    while (drained < kDrainBudget &&
+           handoff.try_peek(envelope) == processing::ResultHandoffStatus::Dequeued) {
       if (!encode_result(envelope, scratch_)) {
         ++encode_failures_;
         handoff.discard_front();
         gaps_.record(envelope.header.sequence, storage::GapReason::InvalidRecord);
         progressed = true;
+        ++drained;
         continue;
       }
       if (append(scratch_) != storage::AppendStatus::Durable) break;
       handoff.discard_front();
       progressed = true;
+      ++drained;
     }
     return progressed;
   }
@@ -240,6 +254,7 @@ class ArchiveRuntime final {
   }
 
   storage::IArchiveStore* store_{nullptr};
+  storage::ArchiveMediaMigration* migration_{nullptr};
   // The cooperative runtime encodes one record at a time. Keeping this
   // bounded buffer in the instance avoids a 16 KiB automatic loop-stack
   // allocation and keeps filesystem work outside acquisition callbacks.

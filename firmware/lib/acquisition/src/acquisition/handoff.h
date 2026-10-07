@@ -17,6 +17,7 @@ class SampleRing final {
   HandoffStatus try_push(const SampleRecord& record) noexcept {
     if (size_ == Capacity) {
       ++dropped_records_;
+      ++dropped_pending_count_;
       if (!has_dropped_) first_dropped_ = record;
       last_dropped_ = record;
       has_dropped_ = true;
@@ -56,7 +57,13 @@ class SampleRing final {
   const SampleRecord* first_dropped() const noexcept {
     return has_dropped_ ? &first_dropped_ : nullptr;
   }
-  void clear_last_dropped() noexcept { has_dropped_ = false; }
+  uint64_t dropped_pending_count() const noexcept {
+    return has_dropped_ ? dropped_pending_count_ : 0U;
+  }
+  void clear_last_dropped() noexcept {
+    has_dropped_ = false;
+    dropped_pending_count_ = 0U;
+  }
   std::size_t size() const noexcept { return size_; }
 
  private:
@@ -65,6 +72,7 @@ class SampleRing final {
   std::size_t tail_{0};
   std::size_t size_{0};
   uint64_t dropped_records_{0};
+  uint64_t dropped_pending_count_{0};
   SampleRecord last_dropped_{};
   SampleRecord first_dropped_{};
   bool has_dropped_{false};

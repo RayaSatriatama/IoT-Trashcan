@@ -150,6 +150,29 @@ void test_result_codec_persists_fis_and_safety_evidence() {
                                        base_record.size));
 }
 
+void test_queue_loss_counts_every_dropped_attempt() {
+  storage::MemoryArchiveStore<32U> store(64U * 1024U);
+  ArchiveRuntime runtime(&store);
+  ArchiveRuntime::SampleHandoff handoff{};
+  for (uint64_t sequence = 0U; sequence < 16U; ++sequence) {
+    auto value = sample();
+    value.header.sequence = sequence;
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(HandoffStatus::Enqueued),
+                          static_cast<int>(handoff.try_push(value)));
+  }
+  for (uint64_t sequence = 16U; sequence < 21U; ++sequence) {
+    auto value = sample();
+    value.header.sequence = sequence;
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(HandoffStatus::Full),
+                          static_cast<int>(handoff.try_push(value)));
+  }
+  TEST_ASSERT_TRUE(runtime.drain_samples(handoff));
+  TEST_ASSERT_EQUAL_UINT64(5U, runtime.gaps().unlogged_records());
+  TEST_ASSERT_EQUAL_UINT64(5U, runtime.gaps().at(0U).record_count);
+  TEST_ASSERT_EQUAL_UINT64(16U, runtime.gaps().at(0U).first_sequence);
+  TEST_ASSERT_EQUAL_UINT64(20U, runtime.gaps().at(0U).last_sequence);
+}
+
 }  // namespace
 
 int main() {
@@ -158,5 +181,6 @@ int main() {
   RUN_TEST(test_failed_sample_append_keeps_acquisition_handoff_for_retry);
   RUN_TEST(test_failed_result_append_keeps_handoff_for_retry);
   RUN_TEST(test_result_codec_persists_fis_and_safety_evidence);
+  RUN_TEST(test_queue_loss_counts_every_dropped_attempt);
   return UNITY_END();
 }

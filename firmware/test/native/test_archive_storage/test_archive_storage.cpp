@@ -7,12 +7,61 @@
 #include "storage/archive_codec.h"
 #include "storage/archive_media.h"
 #include "storage/archive_store.h"
+#include "storage/media_migration.h"
 
 namespace {
 
 using namespace sigap;
 using namespace sigap::acquisition;
 using namespace sigap::storage;
+
+class MigrationSource final : public IMigrationSource {
+ public:
+  explicit MigrationSource(const ImmutableRecordBytes& value) noexcept
+      : record_(value) {}
+  bool peek(ImmutableRecordBytes& output) noexcept override {
+    if (reclaimed_) return false;
+    output = record_;
+    return true;
+  }
+  bool reclaim(const MigrationReceipt& receipt) noexcept override {
+    if (!receipt.durable || receipt.identity.sequence != record_.identity.sequence ||
+        receipt.hash != record_.hash) return false;
+    reclaimed_ = true;
+    return true;
+  }
+  bool reclaimed() const noexcept { return reclaimed_; }
+
+ private:
+  ImmutableRecordBytes record_{};
+  bool reclaimed_{false};
+};
+
+class MigrationDestination final : public IMigrationDestination {
+ public:
+  AppendStatus append(const ImmutableRecordBytes& record) noexcept override {
+    if (fail_append_) return AppendStatus::Retryable;
+    record_ = record;
+    return AppendStatus::Durable;
+  }
+  bool verify(const ArchiveIdentity& identity,
+              const std::array<uint8_t, 32U>& hash) noexcept override {
+    return record_.identity.sequence == identity.sequence && record_.hash == hash;
+  }
+  bool checkpoint(uint64_t& generation) noexcept override {
+    if (fail_checkpoint_) return false;
+    generation = ++generation_;
+    return true;
+  }
+  void set_fail_append(bool value) noexcept { fail_append_ = value; }
+  void set_fail_checkpoint(bool value) noexcept { fail_checkpoint_ = value; }
+
+ private:
+  ImmutableRecordBytes record_{};
+  uint64_t generation_{0U};
+  bool fail_append_{false};
+  bool fail_checkpoint_{false};
+};
 
 DeviceId device() {
   DeviceId value{};
@@ -89,6 +138,12 @@ void test_codec_reader_round_trips_identity_and_payload() {
       static_cast<uint32_t>(record.size - kArchiveHeaderBytes - kArchiveTrailerBytes),
       static_cast<uint32_t>(view.payload_size));
   TEST_ASSERT_EQUAL_UINT8(record.bytes[kArchiveHeaderBytes], view.payload[0]);
+  SampleRecord decoded{};
+  TEST_ASSERT_TRUE(RecordCodec::decode_sample(record, decoded));
+  TEST_ASSERT_EQUAL_UINT64(12000U, decoded.header.monotonic_us);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(SampleQuality::Ready),
+                          static_cast<uint8_t>(decoded.quality));
+  TEST_ASSERT_EQUAL_UINT16(1234U, decoded.raw.adc_counts);
 }
 
 void test_store_deduplicates_and_recovers_corrupt_tail() {
@@ -123,6 +178,19 @@ void test_store_faults_are_observable_and_quota_does_not_overwrite() {
                         static_cast<int>(fault_store.append(first)));
   TEST_ASSERT_EQUAL_INT(static_cast<int>(ArchiveHealth::Degraded),
                         static_cast<int>(fault_store.health()));
+}
+
+void test_same_identity_with_changed_content_is_conflict() {
+  MemoryArchiveStore<4U> store(64U * 1024U);
+  const auto first = encoded(6U);
+  auto changed_sample = sample(6U);
+  changed_sample.raw.adc_counts = 4321U;
+  ImmutableRecordBytes changed{};
+  TEST_ASSERT_TRUE(RecordCodec::encode_sample(changed_sample, changed));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AppendStatus::Durable),
+                        static_cast<int>(store.append(first)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AppendStatus::Invalid),
+                        static_cast<int>(store.append(changed)));
 }
 
 void test_gap_tracker_coalesces_and_counts_overflow() {
@@ -208,6 +276,27 @@ void test_filesystem_double_distinguishes_missing_from_open_error() {
   TEST_ASSERT_FALSE(missing_store.recover());
 }
 
+void test_media_migration_requires_verify_checkpoint_before_reclaim() {
+  const auto record = encoded(100U);
+  MigrationSource source(record);
+  MigrationDestination destination;
+  ArchiveMediaMigration migration(source, destination);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(MigrationStatus::Durable),
+                        static_cast<int>(migration.migrate_one()));
+  TEST_ASSERT_TRUE(source.reclaimed());
+}
+
+void test_media_migration_keeps_source_on_checkpoint_failure() {
+  const auto record = encoded(101U);
+  MigrationSource source(record);
+  MigrationDestination destination;
+  destination.set_fail_checkpoint(true);
+  ArchiveMediaMigration migration(source, destination);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(MigrationStatus::Retryable),
+                        static_cast<int>(migration.migrate_one()));
+  TEST_ASSERT_FALSE(source.reclaimed());
+}
+
 }  // namespace
 
 int main() {
@@ -216,10 +305,13 @@ int main() {
   RUN_TEST(test_codec_reader_round_trips_identity_and_payload);
   RUN_TEST(test_store_deduplicates_and_recovers_corrupt_tail);
   RUN_TEST(test_store_faults_are_observable_and_quota_does_not_overwrite);
+  RUN_TEST(test_same_identity_with_changed_content_is_conflict);
   RUN_TEST(test_gap_tracker_coalesces_and_counts_overflow);
   RUN_TEST(test_serialized_mixed_workload_budget_is_bounded);
   RUN_TEST(test_media_failover_keeps_primary_pending_and_uses_littlefs_fallback);
   RUN_TEST(test_filesystem_double_recovers_tail_and_rebuilds_index);
   RUN_TEST(test_filesystem_double_distinguishes_missing_from_open_error);
+  RUN_TEST(test_media_migration_requires_verify_checkpoint_before_reclaim);
+  RUN_TEST(test_media_migration_keeps_source_on_checkpoint_failure);
   return UNITY_END();
 }
