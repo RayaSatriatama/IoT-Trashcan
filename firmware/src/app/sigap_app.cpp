@@ -24,15 +24,51 @@ SigapApp::SigapApp() noexcept
                        &audit_ring_),
       acquisition_(config_manager_, record_factory_, board::kN16R8Pins,
                    profiles_),
+      model_lifecycle_(model_persistence_,
+                       models::ModelProfilePersistence::default_codec()),
+      model_router_(model_lifecycle_,
+                    models::ModelProfilePersistence::default_codec()),
       maintenance_router_(config_manager_, secret_store_, &profile_manager_,
                           &evidence_cache_, &reboot_controller_, &audit_ring_,
-                          &boot_identity_.boot_id),
+                          &boot_identity_.boot_id, &model_router_),
       maintenance_service_(maintenance_transport_, maintenance_router_) {
   profile_manager_.bind_runtime_profiles(profiles_);
   evidence_cache_.set_profiles(&profiles_);
   processing_runtime_.set_downstream_observer(&evidence_cache_);
   acquisition_.set_sample_observer(&processing_runtime_);
   acquisition_.set_calibration_state_provider(&maintenance_router_);
+}
+
+void SigapApp::refresh_model_profiles() noexcept {
+  const std::array<models::ModelProfileKey, 3U> fis_keys{{
+      {acquisition::ProfileKind::Fis, models::ModelTarget::FisOrganic},
+      {acquisition::ProfileKind::Fis, models::ModelTarget::FisInorganic},
+      {acquisition::ProfileKind::Fis, models::ModelTarget::FisB3}}};
+  const models::ModelProfileKey safety_key{
+      acquisition::ProfileKind::Safety, models::ModelTarget::SafetyB3};
+  models::ModelProfileSnapshot snapshot{};
+  fis_model_present_ = false;
+  safety_model_present_ = false;
+  std::array<models::FisModelProfile*, 3U> fis_models{{
+      &fis_model_, &fis_model_inorganic_, &fis_model_b3_}};
+  std::array<const models::FisModelProfile*, 3U> fis_refs{};
+  for (std::size_t index = 0U; index < fis_keys.size(); ++index) {
+    snapshot = models::ModelProfileSnapshot{};
+    if (model_lifecycle_.snapshot(fis_keys[index], snapshot) && snapshot.present &&
+        models::ModelProfilePersistence::default_codec().decode(
+            snapshot.encoded, *fis_models[index])) {
+      fis_refs[index] = fis_models[index];
+      fis_model_present_ = true;
+    }
+  }
+  snapshot = models::ModelProfileSnapshot{};
+  if (model_lifecycle_.snapshot(safety_key, snapshot) && snapshot.present) {
+    safety_model_present_ = models::ModelProfilePersistence::default_codec().decode(
+        snapshot.encoded, safety_model_);
+  }
+  processing_runtime_.set_model_profiles(
+      fis_refs,
+      safety_model_present_ ? &safety_model_ : nullptr);
 }
 
 // cppcheck-suppress unusedFunction
@@ -49,6 +85,15 @@ void SigapApp::setup() noexcept {
   }
   (void)profile_manager_.load(acquisition::ProfileKey{
       acquisition::ProfileKind::Heater, acquisition::ProfileTarget::Mq7});
+  (void)model_lifecycle_.load(models::ModelProfileKey{
+      acquisition::ProfileKind::Fis, models::ModelTarget::FisOrganic});
+  (void)model_lifecycle_.load(models::ModelProfileKey{
+      acquisition::ProfileKind::Fis, models::ModelTarget::FisInorganic});
+  (void)model_lifecycle_.load(models::ModelProfileKey{
+      acquisition::ProfileKind::Fis, models::ModelTarget::FisB3});
+  (void)model_lifecycle_.load(models::ModelProfileKey{
+      acquisition::ProfileKind::Safety, models::ModelTarget::SafetyB3});
+  refresh_model_profiles();
   profile_generation_ = profile_manager_.generation();
   maintenance_router_.refresh_mode();
   if (!config_manager_.runtime_ready()) {
@@ -89,6 +134,7 @@ void SigapApp::loop() noexcept {
   const acquisition::ArduinoMonotonicClock clock{};
   const uint64_t now_us = clock.now_us();
   maintenance_service_.poll(now_us);
+  refresh_model_profiles();
   if (profile_generation_ != profile_manager_.generation()) {
     profile_generation_ = profile_manager_.generation();
     // Apply profile objects at the channel boundary without rebuilding the

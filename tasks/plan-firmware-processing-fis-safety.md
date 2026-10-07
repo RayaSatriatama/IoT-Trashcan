@@ -61,8 +61,26 @@
 ### Phase 3: Documentation and publication
 
 - [x] Document customization parameters, defaults, units, ranges, authority, and apply policy in `docs/`.
-- [ ] Add traceability/evidence report and update PR description.
-- [ ] Push branch and open Task 5 PR without merging.
+- [x] Add traceability/evidence report and update PR description.
+- [x] Push branch and open Task 5 PR without merging.
+
+## Remediation checkpoint
+
+- ProcessingRuntime is application-owned and polls bounded cycles without
+  consuming the acquisition handoff used by future logging.
+- Model profiles use independent typed keys with target NVS A/B persistence,
+  pointer-last activation, rollback, and explicit USB staging/validation/
+  preview/commit. TEST_ONLY remains a native fixture state.
+- The newest matching HX711 attempt gates operational readiness, including
+  CALIBRATING, timeout, and disconnected attempts.
+- SafetyEvaluator is instance-owned by the runtime. B3 alerts remain latched
+  until validated consecutive clear cycles and cannot be cleared by model
+  replacement or invalid input.
+- Cycle snapshots copy config, calibration, and model identities. Source IDs
+  are checked against the result device/boot context, and conflicting profile
+  identities are rejected.
+- MQ7/MQ8 model inputs consume only valid ADC millivolt evidence with matching
+  profile provenance. No ppm, R0, OGI, or production threshold is inferred.
 
 ## Integration decisions
 

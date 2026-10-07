@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <array>
 #include <cstdint>
 #include <limits>
 
@@ -63,6 +64,8 @@ class ProcessingRuntime final : public acquisition::ISampleObserver {
     record_context_ = processing::ResultRecordContext{};
     sequence_ = nullptr;
     profiles_ = nullptr;
+    fis_profiles_.fill(nullptr);
+    safety_profile_ = nullptr;
     period_us_ = 0U;
     next_due_us_ = 0U;
     window_ = processing::SampleWindow<kWindowCapacity>{};
@@ -82,7 +85,14 @@ class ProcessingRuntime final : public acquisition::ISampleObserver {
   // UNCONFIGURED, not a synthetic model.
   void set_model_profiles(const models::FisModelProfile* fis,
                           const models::SafetyModelProfile* safety) noexcept {
-    fis_profile_ = fis;
+    fis_profiles_.fill(fis);
+    safety_profile_ = safety;
+  }
+
+  void set_model_profiles(
+      const std::array<const models::FisModelProfile*, 3U>& fis,
+      const models::SafetyModelProfile* safety) noexcept {
+    fis_profiles_ = fis;
     safety_profile_ = safety;
   }
 
@@ -179,24 +189,18 @@ class ProcessingRuntime final : public acquisition::ISampleObserver {
       profiles.sht31_present = true;
       profiles.temperature_source = processing::TemperatureSource::Sht31_45;
     }
+    for (std::size_t mq_index = 0U; mq_index < source.mq_adc.size();
+         ++mq_index) {
+      if (source.mq_adc[mq_index] != nullptr) {
+        profiles.mq_adc[mq_index] = *source.mq_adc[mq_index];
+        profiles.mq_adc_present[mq_index] = true;
+      }
+    }
     return profiles;
   }
 
   void evaluate_cycle(uint64_t cycle_started_us) noexcept {
     if (window_.empty()) return;
-
-    models::FisModelProfile fis_snapshot{};
-    models::SafetyModelProfile safety_snapshot{};
-    const models::FisModelProfile* fis = nullptr;
-    const models::SafetyModelProfile* safety = nullptr;
-    if (fis_profile_ != nullptr) {
-      fis_snapshot = *fis_profile_;
-      fis = &fis_snapshot;
-    }
-    if (safety_profile_ != nullptr) {
-      safety_snapshot = *safety_profile_;
-      safety = &safety_snapshot;
-    }
 
     for (const auto stream : {acquisition::StreamId::Organic,
                               acquisition::StreamId::Inorganic,
@@ -208,6 +212,23 @@ class ProcessingRuntime final : public acquisition::ISampleObserver {
       if (snapshot_status != processing::ProcessingSnapshotStatus::Captured) {
         ++result_failures_;
         continue;
+      }
+
+      models::FisModelProfile fis_snapshot{};
+      models::SafetyModelProfile safety_snapshot{};
+      const models::FisModelProfile* fis = nullptr;
+      const models::SafetyModelProfile* safety = nullptr;
+      const std::size_t stream_slot = stream_index(stream);
+      const auto* cycle_fis = stream_slot < fis_profiles_.size()
+                                  ? fis_profiles_[stream_slot]
+                                  : nullptr;
+      if (cycle_fis != nullptr) {
+        fis_snapshot = *cycle_fis;
+        fis = &fis_snapshot;
+      }
+      if (safety_profile_ != nullptr && stream == acquisition::StreamId::B3) {
+        safety_snapshot = *safety_profile_;
+        safety = &safety_snapshot;
       }
 
       Result result{};
@@ -253,7 +274,7 @@ class ProcessingRuntime final : public acquisition::ISampleObserver {
   acquisition::SequenceAllocator* sequence_{nullptr};
   const acquisition::TargetProfileSet* profiles_{nullptr};
   acquisition::ISampleObserver* downstream_observer_{nullptr};
-  const models::FisModelProfile* fis_profile_{nullptr};
+  std::array<const models::FisModelProfile*, 3U> fis_profiles_{};
   const models::SafetyModelProfile* safety_profile_{nullptr};
   processing::SampleWindow<kWindowCapacity> window_{};
   safety::SafetyEvaluator safety_evaluator_{};

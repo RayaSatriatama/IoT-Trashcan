@@ -12,6 +12,8 @@
 #include "calibration/calibration_session.h"
 #include "sigap/board/board_pins.h"
 #include "processing_runtime.h"
+#include "models/model_lifecycle.h"
+#include "maintenance/model_runtime.h"
 
 namespace sigap {
 
@@ -49,6 +51,15 @@ class SigapApp final {
   acquisition::ProfileManager profile_manager_;
   acquisition::AcquisitionFoundation acquisition_;
   ProcessingRuntime processing_runtime_{};
+  models::NvsModelProfilePersistence model_persistence_{};
+  models::ModelProfileLifecycle model_lifecycle_;
+  maintenance::ModelMaintenanceRouter model_router_;
+  models::FisModelProfile fis_model_{};
+  models::FisModelProfile fis_model_inorganic_{};
+  models::FisModelProfile fis_model_b3_{};
+  models::SafetyModelProfile safety_model_{};
+  bool fis_model_present_{false};
+  bool safety_model_present_{false};
 #ifdef ARDUINO
   maintenance::ArduinoUsbTransport maintenance_transport_{};
   maintenance::ArduinoRebootController reboot_controller_{};
@@ -59,6 +70,8 @@ class SigapApp final {
   maintenance::CommandRouter maintenance_router_;
   maintenance::MaintenanceService maintenance_service_;
   uint32_t profile_generation_{0U};
+
+  void refresh_model_profiles() noexcept;
 };
 
 }  // namespace sigap

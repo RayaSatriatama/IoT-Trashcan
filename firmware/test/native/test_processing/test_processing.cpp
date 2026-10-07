@@ -392,6 +392,38 @@ void test_sht31_temperature_uses_crc_identity_and_profile_offset() {
       static_cast<int>(result.processed.temperature_c.disposition.reason));
 }
 
+void test_mq_adc_model_input_uses_valid_millivolt_evidence() {
+  ProcessingProfiles profiles{};
+  profiles.mq_adc_present[2] = true;
+  profiles.mq_adc[2].manifest =
+      manifest(ProfileKind::Adc, ProfileTarget::Mq7, 2U, 0x41U);
+  profiles.mq_adc[2].reference_mv = 3300U;
+  profiles.mq_adc[2].full_scale_counts = 4095U;
+  profiles.mq_adc[2].divider_numerator = 1U;
+  profiles.mq_adc[2].divider_denominator = 1U;
+  const auto profile_ref = profiles.mq_adc[2].ref();
+  auto value = sample(SensorId::Mq7, StreamId::B3, 55U, 900U,
+                      SampleQuality::Ready, profile_ref);
+  value.raw.present = true;
+  value.converted.primary_available = true;
+  value.converted.primary_kind = ConvertedKind::AdcMillivolts;
+  value.converted.primary_value = 1234.0F;
+  SampleWindow<4U> window{};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(WindowStatus::Added),
+                        static_cast<int>(window.try_add(value)));
+  ProcessingSnapshot snapshot{};
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(ProcessingSnapshotStatus::Captured),
+      static_cast<int>(ProcessingSnapshot::capture(
+          1000U, 200U, StreamId::B3, config_ref(4U), profiles, snapshot)));
+  ProcessedResult<4U> result{};
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(ProcessStatus::Produced),
+      static_cast<int>(SlotProcessor<4U, 4U>::process(window, snapshot, result)));
+  TEST_ASSERT_TRUE(result.processed.mq7_mv.available);
+  TEST_ASSERT_FLOAT_WITHIN(0.001F, 1234.0F, result.processed.mq7_mv.value);
+}
+
 struct FuzzyFixture final {
   uint8_t state{0U};
   float score{0.0F};
@@ -461,6 +493,30 @@ void test_result_factory_consumes_shared_sequence_and_preserves_provenance() {
                            envelope.result.processing.computed_monotonic_us);
 }
 
+void test_result_factory_rejects_source_from_other_boot_context() {
+  SequenceAllocator sequence{};
+  ResultRecordContext context{};
+  context.device_id = device_id();
+  context.boot_id = boot_id();
+  context.config_ref = config_ref(4U);
+  ResultRecordFactory factory(sequence, context);
+  ProcessedResult<2U> processed{};
+  processed.computed_monotonic_us = 10U;
+  processed.config_ref = context.config_ref;
+  DeviceId other_device = device_id();
+  other_device.bytes[0] = 0x52U;
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(CollectionStatus::Added),
+      static_cast<int>(processed.source_sample_ids.try_add(
+          SourceSampleId{other_device, boot_id(), 1U})));
+  EvaluatedResult<FuzzyFixture, SafetyFixture, 2U> evaluated{
+      processed, FuzzyFixture{1U, 1.0F}, SafetyFixture{1U}};
+  ResultEnvelope<FuzzyFixture, SafetyFixture, 2U> envelope{};
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(ResultFactoryStatus::ProvenanceMismatch),
+      static_cast<int>(factory.make(20U, evaluated, envelope)));
+}
+
 }  // namespace
 
 int main(int, char**) {
@@ -475,8 +531,10 @@ int main(int, char**) {
   RUN_TEST(test_cycle_snapshot_is_immutable_after_profiles_change);
   RUN_TEST(test_invalid_capacity_suppresses_only_utilization);
   RUN_TEST(test_sht31_temperature_uses_crc_identity_and_profile_offset);
+  RUN_TEST(test_mq_adc_model_input_uses_valid_millivolt_evidence);
   RUN_TEST(test_result_handoff_is_bounded_and_keeps_fuzzy_safety_distinct);
   RUN_TEST(
       test_result_factory_consumes_shared_sequence_and_preserves_provenance);
+  RUN_TEST(test_result_factory_rejects_source_from_other_boot_context);
   return UNITY_END();
 }

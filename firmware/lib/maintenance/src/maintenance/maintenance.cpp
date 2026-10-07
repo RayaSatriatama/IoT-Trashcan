@@ -101,6 +101,16 @@ const char* command_name(CommandKind command) noexcept {
     case CommandKind::ProfileCommit: return "profile.commit";
     case CommandKind::ProfileRollback: return "profile.rollback";
     case CommandKind::ProfileReset: return "profile.reset";
+    case CommandKind::ModelStatus: return "model.status";
+    case CommandKind::ModelExport: return "model.export";
+    case CommandKind::ModelImportBegin: return "model.import.begin";
+    case CommandKind::ModelImportChunk: return "model.import.chunk";
+    case CommandKind::ModelImportFinish: return "model.import.finish";
+    case CommandKind::ModelValidate: return "model.validate";
+    case CommandKind::ModelPreview: return "model.preview";
+    case CommandKind::ModelCommit: return "model.commit";
+    case CommandKind::ModelCancel: return "model.cancel";
+    case CommandKind::ModelRollback: return "model.rollback";
     case CommandKind::Reboot: return "reboot";
     case CommandKind::Unknown: break;
   }
@@ -216,6 +226,52 @@ bool MaintenanceParser::emit_line(ParseEvent& event) noexcept {
               copy_token(line_.data(), tokens[3], command.value);
       numeric = numeric_field(command.field);
       numeric_token = tokens[3];
+    } else {
+      valid = false;
+    }
+  } else if (equals(line_.data(), tokens[0], "model")) {
+    if (count == 3U && equals(line_.data(), tokens[1], "status")) {
+      command.kind = CommandKind::ModelStatus;
+      valid = copy_token(line_.data(), tokens[2], command.target);
+    } else if (count == 3U && equals(line_.data(), tokens[1], "export")) {
+      command.kind = CommandKind::ModelExport;
+      valid = copy_token(line_.data(), tokens[2], command.target);
+    } else if (count == 6U && equals(line_.data(), tokens[1], "import") &&
+               equals(line_.data(), tokens[2], "begin")) {
+      command.kind = CommandKind::ModelImportBegin;
+      valid = copy_token(line_.data(), tokens[3], command.target) &&
+              copy_token(line_.data(), tokens[5], command.value);
+      numeric = true;
+      numeric_token = tokens[4];
+    } else if (count == 4U && equals(line_.data(), tokens[1], "import") &&
+               equals(line_.data(), tokens[2], "chunk")) {
+      command.kind = CommandKind::ModelImportChunk;
+      valid = copy_token(line_.data(), tokens[3], command.value);
+    } else if (count == 5U && equals(line_.data(), tokens[1], "import") &&
+               equals(line_.data(), tokens[2], "chunk")) {
+      command.kind = CommandKind::ModelImportChunk;
+      valid = copy_token(line_.data(), tokens[4], command.value);
+      numeric = true;
+      numeric_token = tokens[3];
+    } else if (count == 4U && equals(line_.data(), tokens[1], "import") &&
+               equals(line_.data(), tokens[2], "finish")) {
+      command.kind = CommandKind::ModelImportFinish;
+      valid = copy_token(line_.data(), tokens[3], command.target);
+    } else if (count == 3U && equals(line_.data(), tokens[1], "validate")) {
+      command.kind = CommandKind::ModelValidate;
+      valid = copy_token(line_.data(), tokens[2], command.target);
+    } else if (count == 3U && equals(line_.data(), tokens[1], "preview")) {
+      command.kind = CommandKind::ModelPreview;
+      valid = copy_token(line_.data(), tokens[2], command.target);
+    } else if (count == 3U && equals(line_.data(), tokens[1], "commit")) {
+      command.kind = CommandKind::ModelCommit;
+      valid = copy_token(line_.data(), tokens[2], command.target);
+    } else if (count == 3U && equals(line_.data(), tokens[1], "cancel")) {
+      command.kind = CommandKind::ModelCancel;
+      valid = copy_token(line_.data(), tokens[2], command.target);
+    } else if (count == 3U && equals(line_.data(), tokens[1], "rollback")) {
+      command.kind = CommandKind::ModelRollback;
+      valid = copy_token(line_.data(), tokens[2], command.target);
     } else {
       valid = false;
     }

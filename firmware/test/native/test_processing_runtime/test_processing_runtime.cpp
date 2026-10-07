@@ -1,9 +1,11 @@
 #include <cstdint>
+#include <cstdio>
 
 #include <unity.h>
 
 #include "../../../src/app/processing_runtime.h"
 #include "acquisition/handoff.h"
+#include "models/model_lifecycle.h"
 #include "sigap/config/config_defaults.h"
 
 namespace {
@@ -141,6 +143,17 @@ void test_runtime_full_result_handoff_is_observable_and_preserves_old_result() {
                            result.result.processing.source_sample_ids.at(0U)->sequence);
 }
 
+void test_processing_resource_footprint_is_bounded() {
+  std::printf("memory ProcessingRuntime=%zu ProcessingSnapshot=%zu "
+              "ProcessedValues=%zu ResultEnvelope=%zu ModelLifecycle=%zu\\n",
+              sizeof(ProcessingRuntime), sizeof(processing::ProcessingSnapshot),
+              sizeof(processing::ProcessedValues),
+              sizeof(ProcessingRuntime::ResultEnvelope),
+              sizeof(models::ModelProfileLifecycle));
+  TEST_ASSERT_TRUE(sizeof(ProcessingRuntime) < 20000U);
+  TEST_ASSERT_TRUE(sizeof(ProcessingRuntime::Handoff) < 20000U);
+}
+
 }  // namespace
 
 int main(int, char**) {
@@ -148,5 +161,6 @@ int main(int, char**) {
   RUN_TEST(test_runtime_observes_sample_without_consuming_acquisition_handoff);
   RUN_TEST(test_runtime_cycle_emits_unconfigured_result_with_shared_provenance);
   RUN_TEST(test_runtime_full_result_handoff_is_observable_and_preserves_old_result);
+  RUN_TEST(test_processing_resource_footprint_is_bounded);
   return UNITY_END();
 }

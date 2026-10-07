@@ -348,6 +348,7 @@ void CommandRouter::poll(uint64_t now_us) noexcept {
       now_us - transfer_last_activity_us_ > kTransferTimeoutUs) {
     cancel_profile_transfer();
   }
+  if (models_ != nullptr) models_->poll_model(now_us);
 }
 
 void CommandRouter::transport_lost() noexcept {
@@ -355,6 +356,7 @@ void CommandRouter::transport_lost() noexcept {
   criteria_set_ = false;
   evidence_sequence_ = 0U;
   cancel_profile_transfer();
+  if (models_ != nullptr) models_->cancel_model();
   refresh_mode();
 }
 
@@ -840,10 +842,24 @@ CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
       }
       return CommandStatus::Rejected;
     }
+    case CommandKind::ModelStatus:
+    case CommandKind::ModelExport:
+    case CommandKind::ModelImportBegin:
+    case CommandKind::ModelImportChunk:
+    case CommandKind::ModelImportFinish:
+    case CommandKind::ModelValidate:
+    case CommandKind::ModelPreview:
+    case CommandKind::ModelCommit:
+    case CommandKind::ModelCancel:
+    case CommandKind::ModelRollback:
+      return models_ == nullptr
+                 ? CommandStatus::Rejected
+                 : models_->execute_model(command, now_us, response);
     case CommandKind::Reboot:
       calibration_.abort();
       criteria_set_ = false;
       cancel_profile_transfer();
+      if (models_ != nullptr) models_->cancel_model();
       mode_ = DeviceMode::RebootRequired;
       reboot_requested_ = true;
       if (reboot_ != nullptr) reboot_->request_reboot();

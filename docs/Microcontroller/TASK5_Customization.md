@@ -35,6 +35,34 @@ The only factory AppConfig definition is
 typed model. A draft is not visible to runtime consumers. No production model
 threshold or sensor reading is supplied by Task 5.
 
+## Model maintenance workflow
+
+Model envelopes use independent typed keys (`fis_organic`, `fis_inorganic`,
+`fis_b3`, and `safety_b3`) and the bounded commands:
+
+```text
+model import begin <key> <size> <sha256>
+model import chunk [<offset>] <hex>
+model import finish <key>
+model validate <key>
+model preview <key>
+model commit <key>
+model cancel <key>
+model rollback <key>
+```
+
+Import finish only stages a draft. The active model identity remains unchanged
+until explicit validate, preview, and commit succeed. The target adapter uses
+two bounded slots and pointer-last activation metadata; failed readback,
+integrity, or activation leaves the previous committed generation authoritative.
+Rollback is per typed key. A TEST_ONLY model is accepted only in explicit
+native fixtures and is not installed by target composition as PRODUCTION.
+
+At a processing boundary, the runtime copies the selected FIS model and the
+B3 safety model into an immutable cycle snapshot. A profile update therefore
+cannot alter an in-flight result. Safety latch state is instance-owned and is
+not recreated for each cycle.
+
 ## TEST_ONLY model fixtures
 
 Native tests may create explicitly marked TEST_ONLY FIS and Safety profiles to

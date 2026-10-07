@@ -16,6 +16,7 @@ enum class CollectionStatus : uint8_t {
   Full,
   Invalid,
   Duplicate,
+  Conflict,
 };
 
 enum class InputQuality : uint8_t {
@@ -134,7 +135,13 @@ class ProfileRefSet final {
     }
     for (std::size_t index = 0U; index < size_; ++index) {
       if (same_profile_key(values_[index], value)) {
-        return CollectionStatus::Duplicate;
+        const auto& existing = values_[index];
+        const bool same_identity =
+            existing.schema_version == value.schema_version &&
+            existing.profile_version == value.profile_version &&
+            existing.hash == value.hash;
+        return same_identity ? CollectionStatus::Duplicate
+                             : CollectionStatus::Conflict;
       }
     }
     if (size_ == values_.size()) {

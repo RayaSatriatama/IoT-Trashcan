@@ -605,6 +605,11 @@ ModelCommitResult FaultInjectableModelPersistence::commit(
   return persistence_.commit(key, candidate);
 }
 
+ModelLoadStatus FaultInjectableModelPersistence::rollback(
+    ModelProfileKey key) noexcept {
+  return persistence_.rollback(key);
+}
+
 void FaultInjectableModelPersistence::fail_next(
     ModelPersistenceFault fault) noexcept {
   switch (fault) {
@@ -728,6 +733,13 @@ bool ModelProfileLifecycle::cancel(ModelProfileKey key) noexcept {
   entry.state = entry.active_present ? ModelLifecycleState::Active
                                      : ModelLifecycleState::Unloaded;
   return true;
+}
+
+bool ModelProfileLifecycle::rollback(ModelProfileKey key) noexcept {
+  if (persistence_.rollback(key) != ModelLoadStatus::Found) {
+    return false;
+  }
+  return load(key);
 }
 
 bool ModelProfileLifecycle::snapshot(

@@ -7,7 +7,6 @@
 #include <cstdint>
 #include <limits>
 #include <type_traits>
-
 #include "acquisition/profiles.h"
 #include "acquisition/record.h"
 #include "fuzzy/fis.h"
@@ -27,11 +26,9 @@ inline bool same_record_identity(const acquisition::SampleRecord& left,
          left.header.boot_id.present == right.header.boot_id.present &&
          left.header.boot_id.bytes == right.header.boot_id.bytes;
 }
-
 template <std::size_t Capacity>
 class SampleWindow final {
   static_assert(Capacity > 0U, "sample window capacity must be nonzero");
-
  public:
   WindowStatus try_add(const acquisition::SampleRecord& sample) noexcept {
     if (!sample.header.device_id.present || !sample.header.boot_id.present) {
@@ -50,16 +47,13 @@ class SampleWindow final {
     ++size_;
     return WindowStatus::Added;
   }
-
   constexpr std::size_t size() const noexcept { return size_; }
   constexpr bool empty() const noexcept { return size_ == 0U; }
   constexpr bool overflowed() const noexcept { return overflowed_; }
   static constexpr std::size_t capacity() noexcept { return Capacity; }
-
   const acquisition::SampleRecord* at(std::size_t index) const noexcept {
     return index < size_ ? &samples_[index] : nullptr;
   }
-
  private:
   std::array<acquisition::SampleRecord, Capacity> samples_{};
   std::size_t size_{0U};
@@ -71,7 +65,6 @@ enum class CapacityTarget : uint32_t {
   Inorganic = 2U,
   B3 = 3U,
 };
-
 inline constexpr CapacityTarget capacity_target(
     acquisition::StreamId stream) noexcept {
   switch (stream) {
@@ -91,7 +84,6 @@ struct SlotCapacityProfile final {
   acquisition::StreamId stream{acquisition::StreamId::Organic};
   float operational_capacity_kg{0.0F};
   bool present{false};
-
   bool valid_for_normalization() const noexcept {
     return present && ref.present &&
            ref.kind == acquisition::ProfileKind::Capacity &&
@@ -108,9 +100,6 @@ enum class TemperatureSource : uint8_t {
   Sht31_44,
   Sht31_45,
 };
-
-// All values are copied into ProcessingSnapshot at the cycle boundary. This
-// structure contains no pointer to a mutable active profile.
 struct ProcessingProfiles final {
   bool hx711_present{false};
   acquisition::Hx711Profile hx711{};
@@ -120,6 +109,8 @@ struct ProcessingProfiles final {
   acquisition::Ds18b20Profile ds18b20{};
   bool sht31_present{false};
   acquisition::Sht31Profile sht31{};
+  std::array<acquisition::MqAdcProfile, 4U> mq_adc{};
+  std::array<bool, 4U> mq_adc_present{};
   SlotCapacityProfile capacity{};
   TemperatureSource temperature_source{TemperatureSource::None};
 };
@@ -130,7 +121,6 @@ enum class ProcessingSnapshotStatus : uint8_t {
   InvalidStream,
   InvalidWindow,
 };
-
 class ProcessingSnapshot final {
  public:
   static ProcessingSnapshotStatus capture(
@@ -158,7 +148,6 @@ class ProcessingSnapshot final {
     output = candidate;
     return ProcessingSnapshotStatus::Captured;
   }
-
   constexpr bool present() const noexcept { return present_; }
   constexpr uint64_t started_monotonic_us() const noexcept {
     return started_monotonic_us_;
@@ -173,7 +162,6 @@ class ProcessingSnapshot final {
   constexpr const ProcessingProfiles& profiles() const noexcept {
     return profiles_;
   }
-
  private:
   bool present_{false};
   uint64_t started_monotonic_us_{0U};
@@ -196,6 +184,8 @@ struct ProcessedValues final {
   ProcessedMetric ogi{};
   ProcessedMetric accumulation_hours{};
   ProcessedMetric temperature_c{};
+  ProcessedMetric mq7_mv{};
+  ProcessedMetric mq8_mv{};
 };
 
 template <std::size_t SourceCapacity>
@@ -207,7 +197,6 @@ struct ProcessedResult final {
   SourceSampleIds<SourceCapacity> source_sample_ids{};
   ProcessedValues processed{};
 };
-
 enum class ProcessStatus : uint8_t {
   Produced,
   InvalidSnapshot,
@@ -310,9 +299,6 @@ inline bool add_profile(const acquisition::ProfileRef& ref,
   for (std::size_t index = 0U; index < profiles.size(); ++index) {
     const auto* existing = profiles.at(index);
     if (existing != nullptr && same_profile_key(*existing, ref)) {
-      // Same profile key is a duplicate only when it names exactly the same
-      // immutable identity. A different version or hash is conflicting cycle
-      // provenance, never an alias for the active profile.
       return same_profile_ref(*existing, ref);
     }
   }
@@ -320,7 +306,6 @@ inline bool add_profile(const acquisition::ProfileRef& ref,
   return status == CollectionStatus::Added ||
          status == CollectionStatus::Duplicate;
 }
-
 template <std::size_t WindowCapacity, std::size_t SourceCapacity>
 class SlotProcessor final {
  public:
@@ -331,16 +316,15 @@ class SlotProcessor final {
     output = ProcessedResult<SourceCapacity>{};
     if (!snapshot.present()) return ProcessStatus::InvalidSnapshot;
     if (window.overflowed()) return ProcessStatus::WindowOverflow;
-
     ProcessedResult<SourceCapacity> candidate{};
     candidate.stream = snapshot.stream();
     candidate.computed_monotonic_us = snapshot.started_monotonic_us();
     candidate.config_ref = snapshot.config_ref();
     initialize_unavailable(candidate.processed);
-
     if (!collect_weight(window, snapshot, candidate) ||
         !collect_fill(window, snapshot, candidate) ||
-        !collect_temperature(window, snapshot, candidate)) {
+        !collect_temperature(window, snapshot, candidate) ||
+        !collect_mq(window, snapshot, candidate)) {
       return ProcessStatus::SourceCapacityExceeded;
     }
     if (!collect_profile_refs(snapshot, candidate.profile_refs)) {
@@ -348,11 +332,9 @@ class SlotProcessor final {
     }
     normalize_weight(snapshot, candidate.processed);
     if (candidate.source_sample_ids.empty()) return ProcessStatus::NoSources;
-
     output = candidate;
     return ProcessStatus::Produced;
   }
-
  private:
   static void initialize_unavailable(ProcessedValues& values) noexcept {
     values.fill_pct.disposition = {InputQuality::Missing,
@@ -367,22 +349,23 @@ class SlotProcessor final {
         InputQuality::Missing, ProcessingReason::InputMissing};
     values.temperature_c.disposition = {InputQuality::Missing,
                                         ProcessingReason::InputMissing};
+    values.mq7_mv.disposition = {InputQuality::Missing,
+                                 ProcessingReason::InputMissing};
+    values.mq8_mv.disposition = {InputQuality::Missing,
+                                 ProcessingReason::InputMissing};
   }
-
   static bool sample_is_fresh(const acquisition::SampleRecord& sample,
                               const ProcessingSnapshot& snapshot) noexcept {
     return sample.header.monotonic_us <= snapshot.started_monotonic_us() &&
            snapshot.started_monotonic_us() - sample.header.monotonic_us <=
                snapshot.maximum_sample_age_us();
   }
-
   static bool sample_matches_cycle(
       const acquisition::SampleRecord& sample,
       const ProcessingSnapshot& snapshot) noexcept {
     return sample.header.stream == snapshot.stream() &&
            same_config_ref(sample.header.config_ref, snapshot.config_ref());
   }
-
   static bool collect_weight(
       const SampleWindow<WindowCapacity>& window,
       const ProcessingSnapshot& snapshot,
@@ -392,7 +375,6 @@ class SlotProcessor final {
     const acquisition::SampleRecord* latest{nullptr};
     double kilograms_sum{0.0};
     std::size_t valid_count{0U};
-
     for (std::size_t index = 0U; index < window.size(); ++index) {
       const auto* sample = window.at(index);
       if (sample == nullptr || sample->header.sensor != sensor ||
@@ -406,12 +388,6 @@ class SlotProcessor final {
         latest = sample;
       }
     }
-
-    // Freshness determines whether this attempt belongs to the processing
-    // window. Readiness is determined by the newest matching attempt, not by
-    // an older successful conversion. A target being calibrated, timing out,
-    // or disconnected cannot be represented as a new operational weight by
-    // averaging earlier READY samples.
     if (latest != nullptr &&
         (!sample_is_fresh(*latest, snapshot) ||
          !sample_matches_cycle(*latest, snapshot) ||
@@ -429,7 +405,6 @@ class SlotProcessor final {
                                  : acquisition::ProfileRef{});
       return true;
     }
-
     for (std::size_t index = 0U; index < window.size(); ++index) {
       const auto* sample = window.at(index);
       if (sample == nullptr || sample->header.sensor != sensor ||
@@ -456,7 +431,6 @@ class SlotProcessor final {
       kilograms_sum += kilograms;
       ++valid_count;
     }
-
     if (valid_count > 0U) {
       const double average = kilograms_sum / static_cast<double>(valid_count);
       if (finite_float(average)) {
@@ -466,7 +440,6 @@ class SlotProcessor final {
         return true;
       }
     }
-
     if (latest != nullptr) {
       if (!add_source(*latest, result.source_sample_ids)) return false;
       result.processed.weight_kg.disposition =
@@ -481,7 +454,6 @@ class SlotProcessor final {
     }
     return true;
   }
-
   static bool collect_fill(
       const SampleWindow<WindowCapacity>& window,
       const ProcessingSnapshot& snapshot,
@@ -521,7 +493,6 @@ class SlotProcessor final {
                                       : acquisition::ProfileRef{});
       return true;
     }
-
     const double distance_mm =
         static_cast<double>(latest->raw.distance_us) *
         static_cast<double>(profiles.ultrasonic.echo_mm_per_us);
@@ -548,7 +519,6 @@ class SlotProcessor final {
         {InputQuality::Ready, ProcessingReason::Ready}};
     return true;
   }
-
   static bool collect_temperature(
       const SampleWindow<WindowCapacity>& window,
       const ProcessingSnapshot& snapshot,
@@ -573,7 +543,6 @@ class SlotProcessor final {
     }
     if (latest == nullptr) return true;
     if (!add_source(*latest, result.source_sample_ids)) return false;
-
     const bool is_ds = source == TemperatureSource::Ds18b20B3;
     const bool profile_present = is_ds ? snapshot.profiles().ds18b20_present
                                        : snapshot.profiles().sht31_present;
@@ -621,7 +590,54 @@ class SlotProcessor final {
         {InputQuality::Ready, ProcessingReason::Ready}};
     return true;
   }
-
+  static bool collect_mq(
+      const SampleWindow<WindowCapacity>& window,
+      const ProcessingSnapshot& snapshot,
+      ProcessedResult<SourceCapacity>& result) noexcept {
+    const std::array<acquisition::SensorId, 2U> sensors{
+        acquisition::SensorId::Mq7, acquisition::SensorId::Mq8};
+    for (const auto sensor : sensors) {
+      const std::size_t slot = sensor == acquisition::SensorId::Mq7 ? 2U : 3U;
+      const auto input = sensor == acquisition::SensorId::Mq7
+                             ? models::ModelInput::Mq7AdcMillivolts
+                             : models::ModelInput::Mq8AdcMillivolts;
+      const acquisition::SampleRecord* latest{nullptr};
+      for (std::size_t index = 0U; index < window.size(); ++index) {
+        const auto* sample = window.at(index);
+        if (sample != nullptr && sample->header.sensor == sensor &&
+            sample->header.stream == snapshot.stream() &&
+            (latest == nullptr || sample->header.monotonic_us >
+                                      latest->header.monotonic_us)) {
+          latest = sample;
+        }
+      }
+      ProcessedMetric* metric = input == models::ModelInput::Mq7AdcMillivolts
+                                    ? &result.processed.mq7_mv
+                                    : &result.processed.mq8_mv;
+      if (latest == nullptr) continue;
+      if (!add_source(*latest, result.source_sample_ids)) return false;
+      const bool profile_present = slot < snapshot.profiles().mq_adc_present.size() &&
+                                   snapshot.profiles().mq_adc_present[slot];
+      const auto& profile = snapshot.profiles().mq_adc[slot];
+      const bool valid = sample_is_fresh(*latest, snapshot) &&
+                         sample_matches_cycle(*latest, snapshot) &&
+                         latest->quality == acquisition::SampleQuality::Ready &&
+                         latest->raw.present && latest->converted.primary_available &&
+                         latest->converted.primary_kind == acquisition::ConvertedKind::AdcMillivolts &&
+                         profile_present && profile.valid_for_conversion() &&
+                         acquisition::profile_matches(profile.manifest, sensor) &&
+                         same_profile_ref(latest->header.profile_ref, profile.ref());
+      if (valid) {
+        *metric = {true, latest->converted.primary_value,
+                   {InputQuality::Ready, ProcessingReason::Ready}};
+      } else {
+        metric->disposition = unavailable_disposition(
+            *latest, snapshot, profile_present, profile.valid_for_conversion(),
+            profile_present ? profile.ref() : acquisition::ProfileRef{});
+      }
+    }
+    return true;
+  }
   static InputDisposition unavailable_disposition(
       const acquisition::SampleRecord& sample,
       const ProcessingSnapshot& snapshot, bool profile_present,
@@ -642,7 +658,6 @@ class SlotProcessor final {
     }
     return {InputQuality::OutOfRange, ProcessingReason::ConversionFailed};
   }
-
   static void normalize_weight(const ProcessingSnapshot& snapshot,
                                ProcessedValues& values) noexcept {
     if (!values.weight_kg.available) {
@@ -674,7 +689,6 @@ class SlotProcessor final {
         true, static_cast<float>(utilization),
         {InputQuality::Ready, ProcessingReason::Ready}};
   }
-
   static bool collect_profile_refs(const ProcessingSnapshot& snapshot,
                                    ProfileRefSet& refs) noexcept {
     const auto& profiles = snapshot.profiles();
@@ -694,10 +708,15 @@ class SlotProcessor final {
         !add_profile(profiles.sht31.ref(), refs)) {
       return false;
     }
+    for (std::size_t index = 0U; index < profiles.mq_adc.size(); ++index) {
+      if (profiles.mq_adc_present[index] &&
+          !add_profile(profiles.mq_adc[index].ref(), refs)) {
+        return false;
+      }
+    }
     return add_profile(profiles.capacity.ref, refs);
   }
 };
-
 inline fuzzy::FisInputState to_fis_input_state(
     const ProcessedMetric& metric) noexcept {
   if (metric.available) return fuzzy::FisInputState::Ready;
@@ -710,7 +729,6 @@ inline fuzzy::FisInputState to_fis_input_state(
     default: return fuzzy::FisInputState::Invalid;
   }
 }
-
 inline const ProcessedMetric* metric_for_input(
     const ProcessedValues& values, models::ModelInput input) noexcept {
   switch (input) {
@@ -718,24 +736,20 @@ inline const ProcessedMetric* metric_for_input(
     case models::ModelInput::WeightUtilizationPercent:
       return &values.weight_utilization_pct;
     case models::ModelInput::TemperatureC: return &values.temperature_c;
-    case models::ModelInput::Mq7AdcMillivolts:
-    case models::ModelInput::Mq8AdcMillivolts:
-      return nullptr;
+    case models::ModelInput::Mq7AdcMillivolts: return &values.mq7_mv;
+    case models::ModelInput::Mq8AdcMillivolts: return &values.mq8_mv;
   }
   return nullptr;
 }
-
 template <typename FuzzyResult, typename SafetyResult,
           std::size_t SourceCapacity>
 struct EvaluatedResult;
-
 template <std::size_t WindowCapacity, std::size_t SourceCapacity>
 class ProcessingPipeline final {
  public:
   using FuzzyResult = fuzzy::FisResult;
   using SafetyResult = safety::SafetyResult;
   using Result = EvaluatedResult<FuzzyResult, SafetyResult, SourceCapacity>;
-
   static ProcessStatus evaluate(
       const SampleWindow<WindowCapacity>& window,
       const ProcessingSnapshot& snapshot,
@@ -751,20 +765,35 @@ class ProcessingPipeline final {
       output = Result{};
       return process_status;
     }
-
     if (fis_profile != nullptr) {
+      const auto expected = snapshot.stream() == acquisition::StreamId::Organic
+                                ? models::ModelTarget::FisOrganic
+                                : snapshot.stream() == acquisition::StreamId::Inorganic
+                                      ? models::ModelTarget::FisInorganic
+                                      : models::ModelTarget::FisB3;
+      if (fis_profile->manifest.kind != acquisition::ProfileKind::Fis ||
+          fis_profile->manifest.target_id != static_cast<uint32_t>(expected)) {
+        output = Result{};
+        return ProcessStatus::InvalidSnapshot;
+      }
       if (!add_profile(fis_profile->ref(), processed.profile_refs)) {
         output = Result{};
         return ProcessStatus::ProfileCapacityExceeded;
       }
     }
     if (safety_profile != nullptr) {
+      if (snapshot.stream() != acquisition::StreamId::B3 ||
+          safety_profile->manifest.kind != acquisition::ProfileKind::Safety ||
+          safety_profile->manifest.target_id !=
+              static_cast<uint32_t>(models::ModelTarget::SafetyB3)) {
+        output = Result{};
+        return ProcessStatus::InvalidSnapshot;
+      }
       if (!add_profile(safety_profile->ref(), processed.profile_refs)) {
         output = Result{};
         return ProcessStatus::ProfileCapacityExceeded;
       }
     }
-
     fuzzy::FisInputs fis_inputs{};
     if (fis_profile != nullptr) {
       fis_inputs.count = fis_profile->input_count;
@@ -784,7 +813,6 @@ class ProcessingPipeline final {
     const models::FisModelProfile empty_fis{};
     const auto& fis = fis_profile != nullptr ? *fis_profile : empty_fis;
     const auto fuzzy_result = fuzzy::MamdaniEvaluator::evaluate(fis, fis_inputs);
-
     safety::HazardInputFrame hazard_inputs{};
     if (safety_profile != nullptr) {
       if (safety_profile->channel_count > hazard_inputs.values.size()) {
@@ -812,7 +840,6 @@ class ProcessingPipeline final {
     return ProcessStatus::Produced;
   }
 };
-
 template <typename FuzzyResult, typename SafetyResult,
           std::size_t SourceCapacity>
 struct EvaluatedResult final {
@@ -820,12 +847,10 @@ struct EvaluatedResult final {
                 "FIS result must have bounded value semantics");
   static_assert(std::is_trivially_copyable<SafetyResult>::value,
                 "Safety result must have bounded value semantics");
-
   ProcessedResult<SourceCapacity> processing{};
   FuzzyResultAdapterSlot<FuzzyResult, sizeof(FuzzyResult)> fuzzy{FuzzyResult{}};
   SafetyResultAdapterSlot<SafetyResult, sizeof(SafetyResult)> safety{
       SafetyResult{}};
-
   constexpr EvaluatedResult() noexcept = default;
   constexpr EvaluatedResult(const ProcessedResult<SourceCapacity>& processed,
                             const FuzzyResult& fuzzy_result,
@@ -834,14 +859,12 @@ struct EvaluatedResult final {
         fuzzy(fuzzy_result),
         safety(safety_result) {}
 };
-
 struct ResultRecordContext final {
   acquisition::DeviceId device_id{};
   acquisition::BootId boot_id{};
   acquisition::ConfigRef config_ref{};
   acquisition::IUtcSource* utc_source{nullptr};
 };
-
 struct ResultRecordHeader final {
   acquisition::DeviceId device_id{};
   acquisition::BootId boot_id{};
@@ -851,14 +874,12 @@ struct ResultRecordHeader final {
   acquisition::TimeQuality time_quality{acquisition::TimeQuality::Unsynced};
   acquisition::ConfigRef config_ref{};
 };
-
 template <typename FuzzyResult, typename SafetyResult,
           std::size_t SourceCapacity>
 struct ResultEnvelope final {
   ResultRecordHeader header{};
   EvaluatedResult<FuzzyResult, SafetyResult, SourceCapacity> result{};
 };
-
 enum class ResultFactoryStatus : uint8_t {
   Produced,
   InvalidContext,
@@ -866,16 +887,11 @@ enum class ResultFactoryStatus : uint8_t {
   ProvenanceMismatch,
   SequenceExhausted,
 };
-
-// The allocator is injected so sample, result, event, and metadata producers
-// can consume one boot-local sequence domain. This factory does not own or
-// reset the allocator.
 class ResultRecordFactory final {
  public:
   ResultRecordFactory(acquisition::SequenceAllocator& sequence,
                       const ResultRecordContext& context) noexcept
       : sequence_(sequence), context_(context) {}
-
   template <typename FuzzyResult, typename SafetyResult,
             std::size_t SourceCapacity>
   ResultFactoryStatus make(
@@ -897,12 +913,18 @@ class ResultRecordFactory final {
                          context_.config_ref)) {
       return ResultFactoryStatus::ProvenanceMismatch;
     }
-
+    for (std::size_t index = 0U;
+         index < result.processing.source_sample_ids.size(); ++index) {
+      const auto* source = result.processing.source_sample_ids.at(index);
+      if (source == nullptr || source->device_id.bytes != context_.device_id.bytes ||
+          source->boot_id.bytes != context_.boot_id.bytes) {
+        return ResultFactoryStatus::ProvenanceMismatch;
+      }
+    }
     uint64_t sequence{0U};
     if (!sequence_.allocate(sequence)) {
       return ResultFactoryStatus::SequenceExhausted;
     }
-
     ResultEnvelope<FuzzyResult, SafetyResult, SourceCapacity> candidate{};
     candidate.header.device_id = context_.device_id;
     candidate.header.boot_id = context_.boot_id;
@@ -923,18 +945,14 @@ class ResultRecordFactory final {
     output = candidate;
     return ResultFactoryStatus::Produced;
   }
-
  private:
   acquisition::SequenceAllocator& sequence_;
   ResultRecordContext context_{};
 };
-
 enum class ResultHandoffStatus : uint8_t { Enqueued, Dequeued, Empty, Full };
-
 template <typename Result, std::size_t Capacity>
 class EvaluatedResultRing final {
   static_assert(Capacity > 0U, "result handoff capacity must be nonzero");
-
  public:
   ResultHandoffStatus try_push(const Result& result) noexcept {
     if (size_ == Capacity) {
@@ -946,7 +964,6 @@ class EvaluatedResultRing final {
     ++size_;
     return ResultHandoffStatus::Enqueued;
   }
-
   ResultHandoffStatus try_pop(Result& result) noexcept {
     if (size_ == 0U) return ResultHandoffStatus::Empty;
     result = results_[head_];
@@ -954,12 +971,10 @@ class EvaluatedResultRing final {
     --size_;
     return ResultHandoffStatus::Dequeued;
   }
-
   constexpr std::size_t size() const noexcept { return size_; }
   constexpr uint64_t dropped_results() const noexcept {
     return dropped_results_;
   }
-
  private:
   std::array<Result, Capacity> results_{};
   std::size_t head_{0U};
@@ -967,5 +982,4 @@ class EvaluatedResultRing final {
   std::size_t size_{0U};
   uint64_t dropped_results_{0U};
 };
-
 }  // namespace sigap::processing

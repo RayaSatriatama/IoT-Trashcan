@@ -89,6 +89,9 @@ class IModelProfilePersistence {
                                EncodedModelProfile& output) const noexcept = 0;
   virtual ModelCommitResult commit(
       ModelProfileKey key, const EncodedModelProfile& candidate) noexcept = 0;
+  virtual ModelLoadStatus rollback(ModelProfileKey) noexcept {
+    return ModelLoadStatus::Error;
+  }
 };
 
 class ModelProfilePersistence final : public IModelProfilePersistence {
@@ -102,7 +105,7 @@ class ModelProfilePersistence final : public IModelProfilePersistence {
                        EncodedModelProfile& output) const noexcept override;
   ModelCommitResult commit(
       ModelProfileKey key, const EncodedModelProfile& candidate) noexcept override;
-  ModelLoadStatus rollback(ModelProfileKey key) noexcept;
+  ModelLoadStatus rollback(ModelProfileKey key) noexcept override;
 
   static const ModelProfileCodec& default_codec() noexcept;
 
@@ -184,7 +187,7 @@ class NvsModelProfilePersistence final : public IModelProfilePersistence {
       ModelProfileKey key, const EncodedModelProfile& candidate) noexcept override {
     return persistence_.commit(key, candidate);
   }
-  ModelLoadStatus rollback(ModelProfileKey key) noexcept {
+  ModelLoadStatus rollback(ModelProfileKey key) noexcept override {
     return persistence_.rollback(key);
   }
 
@@ -214,6 +217,7 @@ class FaultInjectableModelPersistence final : public IModelProfilePersistence {
   ModelCommitResult commit(
       ModelProfileKey key,
       const EncodedModelProfile& candidate) noexcept override;
+  ModelLoadStatus rollback(ModelProfileKey key) noexcept override;
   void fail_next(ModelPersistenceFault fault) noexcept;
   void corrupt_active(ModelProfileKey key) noexcept;
   void corrupt_activation(ModelProfileKey key) noexcept;
@@ -253,6 +257,7 @@ class ModelProfileLifecycle final {
   bool validate(ModelProfileKey key) noexcept;
   bool preview(ModelProfileKey key) noexcept;
   bool commit(ModelProfileKey key) noexcept;
+  bool rollback(ModelProfileKey key) noexcept;
   bool cancel(ModelProfileKey key) noexcept;
   bool snapshot(ModelProfileKey key,
                 ModelProfileSnapshot& output) const noexcept;
