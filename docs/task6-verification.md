@@ -92,6 +92,13 @@ including source retention on checkpoint failure. Physical replay and
 copy-verify-checkpoint-reclaim remain unverified because physical SD I/O is
 prohibited in this batch.
 
+The full archive-reader to telemetry-v3 JSON batch-builder to immutable batch
+store to ACK-application producer chain is not yet runtime-wired. The batch
+and ACK stores remain bounded, validated persistence boundaries with native
+coverage; no unconnected producer hook is presented as delivery evidence.
+Network transport and its producer scheduling are deferred to the next
+transport slice.
+
 ## Deferred
 
 Physical SD mount/read/write, crash/power-cut tail loss, wear, and physical
