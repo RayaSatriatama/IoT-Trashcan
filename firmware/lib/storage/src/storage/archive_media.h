@@ -160,17 +160,21 @@ class LittleFsArchiveStore : public IArchiveStore {
     pending_bytes_ = 0U;
     gap_bytes_ = 0U;
     File gap_file = filesystem_->open(gap_path_, FILE_READ);
+    bool gap_valid = true;
     if (gap_file) {
-      gap_bytes_ = gap_file.size();
+      gap_valid = validate_gap_file(gap_file, gap_bytes_);
       gap_file.close();
-      if (gap_bytes_ > kGapReserveBytes ||
-          (gap_bytes_ % kGapFrameBytes) != 0U) {
-        health_ = ArchiveHealth::Degraded;
-        return false;
-      }
     }
     index_count_ = 0U;
     File file = filesystem_->open(path_, FILE_READ);
+    if (file && file.size() == 0U && has_quarantine()) {
+      file.close();
+      if (!restore_from_quarantine()) {
+        health_ = ArchiveHealth::Degraded;
+        return false;
+      }
+      return recover();
+    }
     if (!file) {
       if (!filesystem_->exists(path_)) {
         char backup[96]{};
@@ -222,7 +226,6 @@ class LittleFsArchiveStore : public IArchiveStore {
       const auto* existing = find_index(record.identity);
       if (existing != nullptr) {
         if (*existing != record.hash) conflict_seen = true;
-        pending_bytes_ += record.size;
         valid_bytes += record.size;
         continue;
       }
@@ -230,7 +233,6 @@ class LittleFsArchiveStore : public IArchiveStore {
       config::ConfigHash prior_hash{};
       if (find_on_disk(record.identity, valid_bytes, prior_hash, prior_read_ok)) {
         if (prior_hash != record.hash) conflict_seen = true;
-        pending_bytes_ += record.size;
         valid_bytes += record.size;
         continue;
       }
@@ -252,7 +254,8 @@ class LittleFsArchiveStore : public IArchiveStore {
       return false;
     }
     recovery_ready_ = true;
-    health_ = conflict_seen ? ArchiveHealth::Degraded : ArchiveHealth::Healthy;
+    health_ = (conflict_seen || !gap_valid) ? ArchiveHealth::Degraded
+                                             : ArchiveHealth::Healthy;
     return true;
 #else
     return false;
@@ -378,6 +381,31 @@ class LittleFsArchiveStore : public IArchiveStore {
   static constexpr uint8_t kGapVersion{1U};
   static constexpr uint32_t kGapMarker{0x47415021U};
 
+  bool validate_gap_file(File& file, uint64_t& valid_bytes) noexcept {
+    const std::size_t size = file.size();
+    valid_bytes = 0U;
+    if (size > kGapReserveBytes || (size % kGapFrameBytes) != 0U) {
+      return false;
+    }
+    std::array<uint8_t, kGapFrameBytes> frame{};
+    while (valid_bytes < size) {
+      if (file.read(frame.data(), frame.size()) !=
+          static_cast<int>(frame.size())) {
+        return false;
+      }
+      if (read_u32(frame.data()) != kGapMagic ||
+          frame[4U] != kGapVersion ||
+          read_u32(frame.data() + 80U) != archive_crc32(frame.data(), 80U) ||
+          read_u32(frame.data() + 84U) != kGapMarker ||
+          read_u64(frame.data() + 40U) == 0U ||
+          read_u64(frame.data() + 16U) < read_u64(frame.data() + 8U)) {
+        return false;
+      }
+      valid_bytes += frame.size();
+    }
+    return true;
+  }
+
   static bool same_identity(const ArchiveIdentity& left,
                             const ArchiveIdentity& right) noexcept {
     return left.kind == right.kind && left.sequence == right.sequence &&
@@ -498,6 +526,19 @@ class LittleFsArchiveStore : public IArchiveStore {
         return false;
       }
       if (!filesystem_->exists(output)) return true;
+    }
+    return false;
+  }
+  bool has_quarantine() const noexcept {
+    if (filesystem_ == nullptr || path_ == nullptr) return false;
+    for (unsigned suffix = 0U; suffix < 4U; ++suffix) {
+      char quarantine[64]{};
+      const int written = std::snprintf(quarantine, sizeof(quarantine),
+                                        "%s.tail%u", path_, suffix);
+      if (written > 0 && static_cast<std::size_t>(written) < sizeof(quarantine) &&
+          filesystem_->exists(quarantine)) {
+        return true;
+      }
     }
     return false;
   }
@@ -795,7 +836,7 @@ class NativeArchiveFileStore final : public IArchiveStore {
           reinterpret_cast<const char*>(record.bytes.data()), record.size));
       if (const auto* existing = find_cached(record.identity);
           existing != nullptr) {
-        pending_bytes_ += total;
+        if (*existing != record.hash) health_ = ArchiveHealth::Degraded;
         offset += total;
         continue;
       }
@@ -803,7 +844,7 @@ class NativeArchiveFileStore final : public IArchiveStore {
         bool read_ok = true;
         config::ConfigHash existing_hash{};
         if (find_on_disk(record.identity, existing_hash, read_ok, offset)) {
-          pending_bytes_ += total;
+          if (existing_hash != record.hash) health_ = ArchiveHealth::Degraded;
           offset += total;
           continue;
         }

@@ -378,12 +378,37 @@ void test_filesystem_duplicate_frame_is_deduplicated_across_restart() {
   TEST_ASSERT_TRUE(filesystem.append(first.bytes.data(), first.size));
   TEST_ASSERT_EQUAL_INT(static_cast<int>(AppendStatus::Durable),
                         static_cast<int>(store.append(second)));
+  const uint64_t logical_bytes = store.pending_bytes();
   TEST_ASSERT_TRUE(store.recover());
   TEST_ASSERT_EQUAL_UINT32(2U, store.size());
+  TEST_ASSERT_EQUAL_UINT64(logical_bytes, store.pending_bytes());
   NativeArchiveFileStore<8U, 64U * 1024U> restarted(filesystem);
   TEST_ASSERT_TRUE(restarted.recover());
   TEST_ASSERT_EQUAL_UINT32(2U, restarted.size());
-  TEST_ASSERT_EQUAL_UINT64(store.pending_bytes(), restarted.pending_bytes());
+  TEST_ASSERT_EQUAL_UINT64(logical_bytes, restarted.pending_bytes());
+}
+
+void test_filesystem_conflict_keeps_valid_records_and_marks_degraded() {
+  ArchiveFileSystemDouble<8U, 64U * 1024U> filesystem{};
+  NativeArchiveFileStore<8U, 64U * 1024U> store(filesystem);
+  const auto first = encoded(133U);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AppendStatus::Durable),
+                        static_cast<int>(store.append(first)));
+  auto conflict_sample = sample(133U);
+  conflict_sample.raw.adc_counts = 4321U;
+  ImmutableRecordBytes conflict{};
+  TEST_ASSERT_TRUE(RecordCodec::encode_sample(conflict_sample, conflict));
+  TEST_ASSERT_TRUE(filesystem.append(conflict.bytes.data(), conflict.size));
+  const auto following = encoded(134U);
+  TEST_ASSERT_TRUE(filesystem.append(following.bytes.data(), following.size));
+
+  NativeArchiveFileStore<8U, 64U * 1024U> restarted(filesystem);
+  TEST_ASSERT_TRUE(restarted.recover());
+  TEST_ASSERT_EQUAL_UINT32(2U, restarted.size());
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ArchiveHealth::Degraded),
+                        static_cast<int>(restarted.health()));
+  TEST_ASSERT_TRUE(restarted.contains(first.identity, first.hash));
+  TEST_ASSERT_TRUE(restarted.contains(following.identity, following.hash));
 }
 
 void test_serialized_sixty_second_workload_reconciles_all_identities() {
@@ -470,6 +495,7 @@ int main() {
   RUN_TEST(test_filesystem_double_distinguishes_missing_from_open_error);
   RUN_TEST(test_filesystem_archive_pages_beyond_index_cache_and_restarts);
   RUN_TEST(test_filesystem_duplicate_frame_is_deduplicated_across_restart);
+  RUN_TEST(test_filesystem_conflict_keeps_valid_records_and_marks_degraded);
   RUN_TEST(test_serialized_sixty_second_workload_reconciles_all_identities);
   RUN_TEST(test_media_migration_requires_verify_checkpoint_before_reclaim);
   RUN_TEST(test_media_migration_keeps_source_on_checkpoint_failure);
