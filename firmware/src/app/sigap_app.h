@@ -11,6 +11,7 @@
 #include "provisioning/secret_store.h"
 #include "calibration/calibration_session.h"
 #include "sigap/board/board_pins.h"
+#include "processing_runtime.h"
 
 namespace sigap {
 
@@ -47,6 +48,7 @@ class SigapApp final {
   acquisition::ProfilePersistence profile_persistence_;
   acquisition::ProfileManager profile_manager_;
   acquisition::AcquisitionFoundation acquisition_;
+  ProcessingRuntime processing_runtime_{};
 #ifdef ARDUINO
   maintenance::ArduinoUsbTransport maintenance_transport_{};
   maintenance::ArduinoRebootController reboot_controller_{};

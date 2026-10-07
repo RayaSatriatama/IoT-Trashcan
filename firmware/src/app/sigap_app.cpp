@@ -60,6 +60,7 @@ void SigapApp::setup() noexcept {
     acquisition_.disable();
     return;
   }
+  (void)processing_runtime_.begin(ref);
 #ifdef ARDUINO
   const acquisition::ArduinoMonotonicClock clock{};
   (void)acquisition_.begin(config_manager_.active(), ref, clock.now_us());
