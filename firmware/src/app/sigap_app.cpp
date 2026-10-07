@@ -14,12 +14,25 @@ namespace sigap {
 SigapApp::SigapApp() noexcept
     : config_manager_(config_store_,
                       config::ValidationContext{
-                          build::kPreMountLittlefsValidationBytes, 0}),
+                      build::kPreMountLittlefsValidationBytes, 0}),
       record_context_{boot_identity_.boot_id, acquisition::DeviceId{},
                       acquisition::ConfigRef{}, nullptr},
       record_factory_(boot_identity_.sequence, record_context_),
+      profile_persistence_(profile_store_),
+      profile_manager_(profile_persistence_,
+                       acquisition::ProfilePersistence::default_codec(),
+                       &audit_ring_),
       acquisition_(config_manager_, record_factory_, board::kN16R8Pins,
-                   profiles_) {}
+                   profiles_),
+      maintenance_router_(config_manager_, secret_store_, &profile_manager_,
+                          &evidence_cache_, &reboot_controller_, &audit_ring_,
+                          &boot_identity_.boot_id),
+      maintenance_service_(maintenance_transport_, maintenance_router_) {
+  profile_manager_.bind_runtime_profiles(profiles_);
+  evidence_cache_.set_profiles(&profiles_);
+  acquisition_.set_sample_observer(&evidence_cache_);
+  acquisition_.set_calibration_state_provider(&maintenance_router_);
+}
 
 // cppcheck-suppress unusedFunction
 void SigapApp::setup() noexcept {
@@ -29,6 +42,14 @@ void SigapApp::setup() noexcept {
 #endif
   const config::ConfigBootResult boot_result = config_manager_.begin();
   (void)boot_result;
+  for (uint32_t target = 1U; target <= 13U; ++target) {
+    (void)profile_manager_.load(
+        static_cast<acquisition::ProfileTarget>(target));
+  }
+  (void)profile_manager_.load(acquisition::ProfileKey{
+      acquisition::ProfileKind::Heater, acquisition::ProfileTarget::Mq7});
+  profile_generation_ = profile_manager_.generation();
+  maintenance_router_.refresh_mode();
   if (!config_manager_.runtime_ready()) {
     acquisition_.disable();
     return;
@@ -51,7 +72,21 @@ void SigapApp::setup() noexcept {
 void SigapApp::loop() noexcept {
 #ifdef ARDUINO
   const acquisition::ArduinoMonotonicClock clock{};
-  acquisition_.poll(clock.now_us());
+  const uint64_t now_us = clock.now_us();
+  maintenance_service_.poll(now_us);
+  if (profile_generation_ != profile_manager_.generation()) {
+    profile_generation_ = profile_manager_.generation();
+    // Apply profile objects at the channel boundary without rebuilding the
+    // scheduler or restarting unrelated sensors.
+    (void)acquisition_.refresh_profiles(now_us);
+  }
+  acquisition_.poll(now_us);
+  maintenance_service_.poll(now_us);
+#ifdef ARDUINO
+  if (reboot_controller_.consume_request()) {
+    ESP.restart();
+  }
+#endif
 #endif
 }
 

@@ -14,6 +14,18 @@ enum class SensorId : uint8_t {
   Ds18b20B3, Sht31_44, Sht31_45,
 };
 
+// Profile families are part of persisted identity. A target alone is
+// insufficient for channels such as MQ-7, which has independent ADC and
+// heater profiles.
+enum class ProfileKind : uint8_t {
+  Calibration = 1,
+  Adc = 2,
+  Fis = 3,
+  Safety = 4,
+  Heater = 5,
+  Capacity = 6,
+};
+
 enum class StreamId : uint8_t { Organic, Inorganic, B3, Ambient };
 enum class SampleKind : uint8_t { MqAdc, Hx711Counts, UltrasonicEcho, Ds18b20, Sht31 };
 enum class SampleQuality : uint8_t {
@@ -36,6 +48,7 @@ struct ConfigRef {
 };
 
 struct ProfileRef {
+  ProfileKind kind{ProfileKind::Calibration};
   uint32_t schema_version{0};
   uint32_t profile_version{0};
   uint32_t target_id{0};
@@ -60,6 +73,12 @@ struct RecordedAt {
 
 struct RawObservation {
   bool present{false};
+  bool crc_valid{false};
+  bool conversion_complete{false};
+  bool identity_valid{false};
+  bool temperature_crc_valid{false};
+  bool humidity_crc_valid{false};
+  bool heater_ready{false};
   int64_t signed_counts{0};
   uint16_t adc_counts{0};
   uint32_t distance_us{0};

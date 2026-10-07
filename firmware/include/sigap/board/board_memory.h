@@ -17,7 +17,15 @@ enum class BoardMemoryStatus : uint8_t {
 struct BoardMemoryReading {
   uint64_t flash_bytes{0};
   bool psram_present{false};
-  uint64_t psram_bytes{0};
+  // Physical chip capacity used for N16R8 identity acceptance. This must not
+  // be replaced with an allocator metric: heap reservations and allocations
+  // can make the available PSRAM smaller than the attached chip.
+  uint64_t psram_physical_bytes{0};
+  // Runtime allocator diagnostics. These are intentionally not used by
+  // evaluate_board_memory().
+  uint64_t psram_heap_total_bytes{0};
+  uint64_t psram_heap_free_bytes{0};
+  uint64_t psram_heap_largest_free_block_bytes{0};
 };
 
 constexpr BoardMemoryStatus evaluate_board_memory(
@@ -28,7 +36,7 @@ constexpr BoardMemoryStatus evaluate_board_memory(
   if (!reading.psram_present) {
     return BoardMemoryStatus::PsramMissing;
   }
-  if (reading.psram_bytes != kExpectedPsramBytes) {
+  if (reading.psram_physical_bytes != kExpectedPsramBytes) {
     return BoardMemoryStatus::PsramSizeMismatch;
   }
   return BoardMemoryStatus::Match;

@@ -316,6 +316,7 @@ void test_ds18b20_conversion_is_split_and_verified_85c_is_valid() {
   source.result.present = true;
   source.result.crc_valid = true;
   source.result.conversion_complete = true;
+  source.result.identity_valid = true;
   source.result.temperature_centi_c = 8500;
   Ds18b20Profile profile{};
   profile.manifest.validity = ProfileValidity::Valid;
@@ -398,7 +399,7 @@ void test_ds18b20_crc_failure_is_not_a_temperature() {
   SequenceAllocator allocator;
   RecordFactory factory(allocator, record_context());
   DsFake source{};
-  source.result = {true, false, true, 8500};
+  source.result = {true, false, true, 8500, true, true};
   Ds18b20Profile profile{};
   profile.manifest.validity = ProfileValidity::Valid;
   profile.manifest.target_id = static_cast<uint32_t>(ProfileTarget::Ds18b20B3);
@@ -411,6 +412,27 @@ void test_ds18b20_crc_failure_is_not_a_temperature() {
   TEST_ASSERT_EQUAL_INT(static_cast<int>(DriverPollStatus::Produced),
                         static_cast<int>(acquirer.poll(1U, record)));
   TEST_ASSERT_EQUAL_INT(static_cast<int>(SampleQuality::CrcError),
+                        static_cast<int>(record.quality));
+  TEST_ASSERT_FALSE(record.converted.primary_available);
+}
+
+void test_ds18b20_identity_mismatch_is_not_a_temperature() {
+  SequenceAllocator allocator;
+  RecordFactory factory(allocator, record_context());
+  DsFake source{};
+  source.result = {true, true, true, 2500, true, false};
+  Ds18b20Profile profile{};
+  profile.manifest.validity = ProfileValidity::Valid;
+  profile.manifest.target_id = static_cast<uint32_t>(ProfileTarget::Ds18b20B3);
+  profile.has_rom = true;
+  profile.rom[0] = 0x28U;
+  Ds18b20Acquirer acquirer(source, factory, &profile, 1U);
+  SampleRecord record{};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(DriverPollStatus::NoAttempt),
+                        static_cast<int>(acquirer.poll(0U, record)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(DriverPollStatus::Produced),
+                        static_cast<int>(acquirer.poll(1U, record)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(SampleQuality::Uncalibrated),
                         static_cast<int>(record.quality));
   TEST_ASSERT_FALSE(record.converted.primary_available);
 }
@@ -538,6 +560,7 @@ void setup() {
   RUN_TEST(test_hx711_not_ready_produces_typed_attempt_without_raw_evidence);
   RUN_TEST(test_sensor_failures_are_typed_and_raw_evidence_is_not_fabricated);
   RUN_TEST(test_ds18b20_crc_failure_is_not_a_temperature);
+  RUN_TEST(test_ds18b20_identity_mismatch_is_not_a_temperature);
   RUN_TEST(test_ds18b20_missing_device_produces_disconnected_attempt);
   RUN_TEST(test_sht31_crc_failure_preserves_failure_reason);
   RUN_TEST(test_acquisition_memory_footprint_is_bounded);

@@ -60,10 +60,25 @@ void test_factory_defaults_are_valid() {
           .ok);
 }
 
+void test_maintenance_field_allowlist_is_draft_only() {
+  MemoryConfigStore store{};
+  sigap::config::ConfigManager manager(store, validation_context());
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ConfigBootResult::BootstrapDefaults),
+                        static_cast<int>(manager.begin()));
+  const AppConfig active_before = manager.active();
+  TEST_ASSERT_TRUE(manager.set_draft_field(
+      sigap::config::ConfigField::MqPeriodMs, 250U));
+  TEST_ASSERT_EQUAL_UINT32(active_before.sampling.mq_period_ms,
+                           manager.active().sampling.mq_period_ms);
+  TEST_ASSERT_EQUAL_UINT32(250U, manager.draft().sampling.mq_period_ms);
+  TEST_ASSERT_FALSE(manager.set_draft_field(
+      sigap::config::ConfigField::MaxRecordsPerBatch, 70000U));
+}
+
 void test_n16r8_board_memory_matches_expected_identity() {
   const BoardMemoryReading reading{
       sigap::board::kExpectedFlashBytes, true,
-      sigap::board::kExpectedPsramBytes};
+      sigap::board::kExpectedPsramBytes, 7000000U, 6000000U, 5000000U};
   TEST_ASSERT_EQUAL_INT(
       static_cast<int>(BoardMemoryStatus::Match),
       static_cast<int>(sigap::board::evaluate_board_memory(reading)));
@@ -71,14 +86,16 @@ void test_n16r8_board_memory_matches_expected_identity() {
 
 void test_eight_megabyte_flash_is_rejected() {
   const BoardMemoryReading reading{8ULL * 1024ULL * 1024ULL, true,
-                                   sigap::board::kExpectedPsramBytes};
+                                   sigap::board::kExpectedPsramBytes, 7000000U,
+                                   6000000U, 5000000U};
   TEST_ASSERT_EQUAL_INT(
       static_cast<int>(BoardMemoryStatus::FlashSizeMismatch),
       static_cast<int>(sigap::board::evaluate_board_memory(reading)));
 }
 
 void test_missing_psram_is_rejected() {
-  const BoardMemoryReading reading{sigap::board::kExpectedFlashBytes, false, 0};
+  const BoardMemoryReading reading{sigap::board::kExpectedFlashBytes, false, 0,
+                                  0, 0, 0};
   TEST_ASSERT_EQUAL_INT(
       static_cast<int>(BoardMemoryStatus::PsramMissing),
       static_cast<int>(sigap::board::evaluate_board_memory(reading)));
@@ -86,7 +103,34 @@ void test_missing_psram_is_rejected() {
 
 void test_wrong_psram_size_is_rejected() {
   const BoardMemoryReading reading{sigap::board::kExpectedFlashBytes, true,
-                                   2ULL * 1024ULL * 1024ULL};
+                                   2ULL * 1024ULL * 1024ULL, 8ULL * 1024ULL * 1024ULL,
+                                   7ULL * 1024ULL * 1024ULL, 6ULL * 1024ULL * 1024ULL};
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(BoardMemoryStatus::PsramSizeMismatch),
+      static_cast<int>(sigap::board::evaluate_board_memory(reading)));
+}
+
+void test_psram_identity_uses_physical_capacity_not_heap_metrics() {
+  const BoardMemoryReading reading{
+      sigap::board::kExpectedFlashBytes,
+      true,
+      sigap::board::kExpectedPsramBytes,
+      8386295ULL,
+      4000000ULL,
+      1000000ULL};
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(BoardMemoryStatus::Match),
+      static_cast<int>(sigap::board::evaluate_board_memory(reading)));
+}
+
+void test_wrong_physical_psram_is_rejected_even_with_matching_heap_total() {
+  const BoardMemoryReading reading{
+      sigap::board::kExpectedFlashBytes,
+      true,
+      8386295ULL,
+      sigap::board::kExpectedPsramBytes,
+      7000000ULL,
+      5000000ULL};
   TEST_ASSERT_EQUAL_INT(
       static_cast<int>(BoardMemoryStatus::PsramSizeMismatch),
       static_cast<int>(sigap::board::evaluate_board_memory(reading)));
@@ -726,10 +770,13 @@ void tearDown() {}
 void setup() {
   UNITY_BEGIN();
   RUN_TEST(test_factory_defaults_are_valid);
+  RUN_TEST(test_maintenance_field_allowlist_is_draft_only);
   RUN_TEST(test_n16r8_board_memory_matches_expected_identity);
   RUN_TEST(test_eight_megabyte_flash_is_rejected);
   RUN_TEST(test_missing_psram_is_rejected);
   RUN_TEST(test_wrong_psram_size_is_rejected);
+  RUN_TEST(test_psram_identity_uses_physical_capacity_not_heap_metrics);
+  RUN_TEST(test_wrong_physical_psram_is_rejected_even_with_matching_heap_total);
   RUN_TEST(test_unsupported_schema_is_rejected);
   RUN_TEST(test_zero_or_invalid_period_is_rejected);
   RUN_TEST(test_summary_period_range_is_rejected);

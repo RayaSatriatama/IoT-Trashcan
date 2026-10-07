@@ -52,7 +52,7 @@ struct DsFake final : IDs18b20Reader {
     return true;
   }
   Ds18b20ReadResult read_conversion() noexcept override {
-    return Ds18b20ReadResult{true, true, true, 2500};
+    return Ds18b20ReadResult{true, true, true, 2500, true, true};
   }
 };
 

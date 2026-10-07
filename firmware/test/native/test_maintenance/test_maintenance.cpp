@@ -1,0 +1,624 @@
+#include <cstdint>
+#include <cstdio>
+#include <algorithm>
+#include <string>
+#include <string_view>
+
+#include <unity.h>
+
+#include "maintenance/maintenance.h"
+#include "maintenance/runtime.h"
+#include "acquisition/profile_manager.h"
+#include "acquisition/profile_store.h"
+#include "config/config_store.h"
+#include "config/config_validator.h"
+#include "provisioning/secret_store.h"
+
+namespace {
+
+using namespace sigap::maintenance;
+
+constexpr sigap::config::ValidationContext kValidationContext{
+    8ULL * 1024ULL * 1024ULL, 0U};
+
+sigap::acquisition::Hx711Profile make_profile(uint32_t version,
+                                               float counts_per_kg) {
+  sigap::acquisition::Hx711Profile profile{};
+  profile.manifest.schema_version = 1U;
+  profile.manifest.profile_version = version;
+  profile.manifest.target_id = static_cast<uint32_t>(
+      sigap::acquisition::ProfileTarget::Hx711Organic);
+  profile.manifest.validity = sigap::acquisition::ProfileValidity::Valid;
+  profile.tare_offset_counts = 1000;
+  profile.counts_per_kg = counts_per_kg;
+  return profile;
+}
+
+sigap::acquisition::Sht31Profile make_sht_profile(
+    uint32_t version, uint8_t address,
+    sigap::acquisition::ProfileTarget target) {
+  sigap::acquisition::Sht31Profile profile{};
+  profile.manifest.schema_version = 1U;
+  profile.manifest.profile_version = version;
+  profile.manifest.target_id = static_cast<uint32_t>(target);
+  profile.manifest.validity = sigap::acquisition::ProfileValidity::Valid;
+  profile.address = address;
+  profile.temperature_offset_centi_c = 25;
+  profile.humidity_offset_centi_pct = -10;
+  return profile;
+}
+
+std::string hex(const sigap::acquisition::EncodedProfile& encoded) {
+  static constexpr char digits[] = "0123456789abcdef";
+  std::string output;
+  output.reserve(encoded.size * 2U);
+  for (std::size_t i = 0U; i < encoded.size; ++i) {
+    output.push_back(digits[encoded.bytes[i] >> 4U]);
+    output.push_back(digits[encoded.bytes[i] & 0x0fU]);
+  }
+  return output;
+}
+
+std::string hash_hex(const sigap::acquisition::EncodedProfile& encoded) {
+  static constexpr char digits[] = "0123456789abcdef";
+  const auto hash = encoded.hash();
+  std::string output;
+  output.reserve(hash.size() * 2U);
+  for (const uint8_t byte : hash) {
+    output.push_back(digits[byte >> 4U]);
+    output.push_back(digits[byte & 0x0fU]);
+  }
+  return output;
+}
+
+struct FakeTransport final : IMaintenanceTransport {
+  std::string input;
+  std::string output;
+  std::size_t offset{0};
+  bool link{true};
+
+  bool available() noexcept override { return offset < input.size(); }
+
+  int read() noexcept override {
+    if (!available()) return -1;
+    return static_cast<unsigned char>(input[offset++]);
+  }
+
+  bool write(std::string_view value) noexcept override {
+    output.append(value.data(), value.size());
+    return true;
+  }
+
+  bool connected() noexcept override { return link; }
+};
+
+struct FakeSink final : IMaintenanceCommandSink {
+  std::size_t calls{0};
+  std::size_t poll_calls{0};
+  std::size_t transport_lost_calls{0};
+  MaintenanceCommand last{};
+
+  CommandStatus execute(const MaintenanceCommand& command, uint64_t,
+                        MaintenanceResponse& response) noexcept override {
+    ++calls;
+    last = command;
+    response.append("OK ");
+    response.append(command_name(command.kind));
+    response.append("\n");
+    return CommandStatus::Accepted;
+  }
+
+  void poll(uint64_t) noexcept override { ++poll_calls; }
+
+  void transport_lost() noexcept override { ++transport_lost_calls; }
+};
+
+void drain(MaintenanceService& service, FakeTransport& transport,
+           uint64_t now_us = 100U) {
+  while (transport.available()) service.poll(now_us);
+}
+
+void test_profile_lifecycle_commands_parse_as_explicit_steps() {
+  FakeTransport transport{};
+  transport.input = "profile validate hx711_organic\n"
+                    "profile preview hx711_organic\n"
+                    "profile commit hx711_organic\n";
+  FakeSink sink{};
+  MaintenanceService service(transport, sink);
+
+  while (transport.available()) service.poll(0U);
+
+  TEST_ASSERT_EQUAL_UINT32(3U, sink.calls);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandKind::ProfileCommit),
+                        static_cast<int>(sink.last.kind));
+  TEST_ASSERT_EQUAL_STRING("hx711_organic", sink.last.target.c_str());
+}
+
+void test_service_polls_without_input_and_reports_disconnect_once() {
+  FakeTransport transport{};
+  FakeSink sink{};
+  MaintenanceService service(transport, sink);
+
+  service.poll(10U);
+  TEST_ASSERT_TRUE(sink.poll_calls >= 1U);
+  TEST_ASSERT_EQUAL_UINT32(0U, sink.transport_lost_calls);
+
+  transport.link = false;
+  service.poll(20U);
+  TEST_ASSERT_EQUAL_UINT32(1U, sink.transport_lost_calls);
+  service.poll(30U);
+  TEST_ASSERT_EQUAL_UINT32(1U, sink.transport_lost_calls);
+}
+
+void test_disconnect_discards_partial_parser_line() {
+  FakeTransport transport{};
+  transport.input = "status";
+  FakeSink sink{};
+  MaintenanceService service(transport, sink);
+  service.poll(10U);
+  TEST_ASSERT_EQUAL_UINT32(0U, sink.calls);
+
+  transport.link = false;
+  service.poll(20U);
+  transport.link = true;
+  transport.input += "\n";
+  drain(service, transport, 30U);
+  TEST_ASSERT_EQUAL_UINT32(0U, sink.calls);
+}
+
+void test_profile_import_round_trip_uses_real_router_and_explicit_activation() {
+  using namespace sigap::acquisition;
+  sigap::config::MemoryConfigStore config_store{};
+  sigap::config::ConfigManager config_manager(config_store, kValidationContext);
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(sigap::config::ConfigBootResult::BootstrapDefaults),
+      static_cast<int>(config_manager.begin()));
+  sigap::provisioning::MemorySecretBlobStore secret_backend{};
+  sigap::provisioning::PersistentSecretStore secrets(secret_backend);
+  MemoryProfileStore profile_store{};
+  ProfilePersistence persistence(profile_store);
+  ProfileCodec codec{};
+  EncodedProfile v1{};
+  EncodedProfile v2{};
+  TEST_ASSERT_TRUE(codec.encode(make_profile(1U, 500.0F), v1));
+  TEST_ASSERT_TRUE(codec.encode(make_profile(2U, 600.0F), v2));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileCommitResult::Committed),
+                        static_cast<int>(persistence.commit(
+                            ProfileTarget::Hx711Organic, v1)));
+  ProfileManager manager(persistence, codec);
+  TEST_ASSERT_TRUE(manager.load(ProfileTarget::Hx711Organic));
+
+  CommandRouter router(config_manager, secrets, &manager);
+  FakeTransport transport{};
+  MaintenanceService service(transport, router);
+  const std::string encoded = hex(v2);
+  const std::string digest = hash_hex(v2);
+  transport.input = "profile import begin hx711_organic " +
+                    std::to_string(v2.size) + " hash=" + digest + "\n";
+  for (std::size_t offset = 0U; offset < encoded.size(); offset += 48U) {
+    const std::size_t count = std::min<std::size_t>(48U, encoded.size() - offset);
+    transport.input += "profile import chunk " +
+                       std::to_string(offset / 2U) + " " +
+                       encoded.substr(offset, count) + "\n";
+  }
+  transport.input += "profile import finish hx711_organic\n";
+  drain(service, transport);
+
+  ActiveProfileSnapshot snapshot{};
+  TEST_ASSERT_TRUE(manager.snapshot(ProfileTarget::Hx711Organic, snapshot));
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(v1.hash().data(), snapshot.ref.hash.data(),
+                                v1.hash().size());
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileManagerState::Draft),
+                        static_cast<int>(manager.state(ProfileTarget::Hx711Organic)));
+
+  transport.offset = 0U;
+  transport.input = "profile validate hx711_organic\n"
+                    "profile preview hx711_organic\n"
+                    "profile commit hx711_organic\n";
+  drain(service, transport);
+  TEST_ASSERT_TRUE(manager.snapshot(ProfileTarget::Hx711Organic, snapshot));
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(v2.hash().data(), snapshot.ref.hash.data(),
+                                v2.hash().size());
+
+  ProfileManager reloaded(persistence, codec);
+  TEST_ASSERT_TRUE(reloaded.load(ProfileTarget::Hx711Organic));
+  ActiveProfileSnapshot persisted{};
+  TEST_ASSERT_TRUE(reloaded.snapshot(ProfileTarget::Hx711Organic, persisted));
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(v2.hash().data(), persisted.ref.hash.data(),
+                                v2.hash().size());
+}
+
+void test_profile_import_round_trip_covers_both_sht31_addresses() {
+  using namespace sigap::acquisition;
+  sigap::config::MemoryConfigStore config_store{};
+  sigap::config::ConfigManager config_manager(config_store, kValidationContext);
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(sigap::config::ConfigBootResult::BootstrapDefaults),
+      static_cast<int>(config_manager.begin()));
+  sigap::provisioning::MemorySecretBlobStore secret_backend{};
+  sigap::provisioning::PersistentSecretStore secrets(secret_backend);
+  MemoryProfileStore profile_store{};
+  ProfilePersistence persistence(profile_store);
+  ProfileCodec codec{};
+  ProfileManager manager(persistence, codec);
+  CommandRouter router(config_manager, secrets, &manager);
+  FakeTransport transport{};
+  MaintenanceService service(transport, router);
+
+  struct Fixture {
+    const char* key;
+    ProfileTarget target;
+    uint8_t address;
+  };
+  constexpr Fixture fixtures[] = {
+      {"sht31_44", ProfileTarget::Sht31_44, 0x44U},
+      {"sht31_45", ProfileTarget::Sht31_45, 0x45U},
+  };
+
+  for (const auto& fixture : fixtures) {
+    Sht31Profile v1_profile =
+        make_sht_profile(1U, fixture.address, fixture.target);
+    Sht31Profile v2_profile =
+        make_sht_profile(2U, fixture.address, fixture.target);
+    v2_profile.temperature_offset_centi_c = 40;
+    EncodedProfile v1{};
+    EncodedProfile v2{};
+    TEST_ASSERT_TRUE(codec.encode(v1_profile, v1));
+    TEST_ASSERT_TRUE(codec.encode(v2_profile, v2));
+    TEST_ASSERT_EQUAL_INT(
+        static_cast<int>(ProfileCommitResult::Committed),
+        static_cast<int>(persistence.commit(fixture.target, v1)));
+    TEST_ASSERT_TRUE(manager.load(fixture.target));
+
+    const std::string encoded = hex(v2);
+    transport.output.clear();
+    transport.offset = 0U;
+    transport.input = "profile import begin " + std::string(fixture.key) +
+                      " " + std::to_string(v2.size) + " hash=" +
+                      hash_hex(v2) + "\n";
+    for (std::size_t offset = 0U; offset < encoded.size(); offset += 48U) {
+      const std::size_t count =
+          std::min<std::size_t>(48U, encoded.size() - offset);
+      transport.input += "profile import chunk " +
+                         std::to_string(offset / 2U) + " " +
+                         encoded.substr(offset, count) + "\n";
+    }
+    transport.input += "profile import finish " + std::string(fixture.key) +
+                       "\n";
+    drain(service, transport);
+
+    ActiveProfileSnapshot snapshot{};
+    TEST_ASSERT_TRUE(manager.snapshot(fixture.target, snapshot));
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(v1.hash().data(), snapshot.ref.hash.data(),
+                                  v1.hash().size());
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileManagerState::Draft),
+                          static_cast<int>(manager.state(fixture.target)));
+
+    transport.output.clear();
+    transport.offset = 0U;
+    transport.input = "profile validate " + std::string(fixture.key) +
+                      "\nprofile preview " + std::string(fixture.key) +
+                      "\nprofile commit " + std::string(fixture.key) + "\n";
+    drain(service, transport);
+    TEST_ASSERT_TRUE(manager.snapshot(fixture.target, snapshot));
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(v2.hash().data(), snapshot.ref.hash.data(),
+                                  v2.hash().size());
+
+    ProfileManager reloaded(persistence, codec);
+    TEST_ASSERT_TRUE(reloaded.load(fixture.target));
+    ActiveProfileSnapshot persisted{};
+    TEST_ASSERT_TRUE(reloaded.snapshot(fixture.target, persisted));
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(v2.hash().data(), persisted.ref.hash.data(),
+                                  v2.hash().size());
+  }
+}
+
+void test_profile_import_rejects_unbound_or_out_of_order_chunks() {
+  using namespace sigap::acquisition;
+  sigap::config::MemoryConfigStore config_store{};
+  sigap::config::ConfigManager config_manager(config_store, kValidationContext);
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(sigap::config::ConfigBootResult::BootstrapDefaults),
+      static_cast<int>(config_manager.begin()));
+  sigap::provisioning::MemorySecretBlobStore secret_backend{};
+  sigap::provisioning::PersistentSecretStore secrets(secret_backend);
+  MemoryProfileStore profile_store{};
+  ProfilePersistence persistence(profile_store);
+  ProfileCodec codec{};
+  EncodedProfile encoded{};
+  TEST_ASSERT_TRUE(codec.encode(make_profile(1U, 500.0F), encoded));
+  ProfileManager manager(persistence, codec);
+  CommandRouter router(config_manager, secrets, &manager);
+  FakeTransport transport{};
+  MaintenanceService service(transport, router);
+
+  transport.input = "profile import chunk 0 aa\n";
+  drain(service, transport);
+  TEST_ASSERT_TRUE(transport.output.find("ERR REJECTED") != std::string::npos);
+
+  transport.output.clear();
+  const std::string bytes = hex(encoded);
+  transport.offset = 0U;
+  transport.input = "profile import begin hx711_organic " +
+                    std::to_string(encoded.size) + " hash=" + hash_hex(encoded) + "\n";
+  drain(service, transport);
+  transport.offset = 0U;
+  transport.input = "profile import chunk 1 " + bytes.substr(0U, 16U) + "\n";
+  drain(service, transport);
+  TEST_ASSERT_TRUE(transport.output.find("ERR INVALID_SYNTAX") != std::string::npos);
+}
+
+void test_profile_import_timeout_and_disconnect_discard_draft() {
+  using namespace sigap::acquisition;
+  sigap::config::MemoryConfigStore config_store{};
+  sigap::config::ConfigManager config_manager(config_store, kValidationContext);
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(sigap::config::ConfigBootResult::BootstrapDefaults),
+      static_cast<int>(config_manager.begin()));
+  sigap::provisioning::MemorySecretBlobStore secret_backend{};
+  sigap::provisioning::PersistentSecretStore secrets(secret_backend);
+  MemoryProfileStore profile_store{};
+  ProfilePersistence persistence(profile_store);
+  ProfileCodec codec{};
+  EncodedProfile encoded{};
+  TEST_ASSERT_TRUE(codec.encode(make_profile(1U, 500.0F), encoded));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileCommitResult::Committed),
+                        static_cast<int>(persistence.commit(
+                            ProfileTarget::Hx711Organic, encoded)));
+  ProfileManager manager(persistence, codec);
+  TEST_ASSERT_TRUE(manager.load(ProfileTarget::Hx711Organic));
+  CommandRouter router(config_manager, secrets, &manager);
+
+  MaintenanceCommand begin{};
+  begin.kind = CommandKind::ProfileImportBegin;
+  TEST_ASSERT_TRUE(begin.target.assign("hx711_organic"));
+  begin.has_numeric = true;
+  begin.numeric_value = static_cast<int64_t>(encoded.size);
+  TEST_ASSERT_TRUE(begin.value.assign("hash=" + hash_hex(encoded)));
+  MaintenanceResponse response{};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),
+                        static_cast<int>(router.execute(begin, 100U, response)));
+  router.poll(100U + CommandRouter::kTransferTimeoutUs + 1U);
+
+  MaintenanceCommand chunk{};
+  chunk.kind = CommandKind::ProfileImportChunk;
+  chunk.has_numeric = true;
+  chunk.numeric_value = 0;
+  TEST_ASSERT_TRUE(chunk.value.assign(hex(encoded).substr(0U, 16U)));
+  response = MaintenanceResponse{};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Rejected),
+                        static_cast<int>(router.execute(chunk, 500U, response)));
+
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),
+                        static_cast<int>(router.execute(begin, 1000U, response)));
+  const std::string bytes = hex(encoded);
+  for (std::size_t offset = 0U; offset < bytes.size(); offset += 48U) {
+    const std::size_t count = std::min<std::size_t>(48U, bytes.size() - offset);
+    MaintenanceCommand part{};
+    part.kind = CommandKind::ProfileImportChunk;
+    part.has_numeric = true;
+    part.numeric_value = static_cast<int64_t>(offset / 2U);
+    TEST_ASSERT_TRUE(part.value.assign(bytes.substr(offset, count)));
+    response = MaintenanceResponse{};
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),
+                          static_cast<int>(router.execute(part, 1001U, response)));
+  }
+  MaintenanceCommand finish{};
+  finish.kind = CommandKind::ProfileImportFinish;
+  TEST_ASSERT_TRUE(finish.target.assign("hx711_organic"));
+  response = MaintenanceResponse{};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),
+                        static_cast<int>(router.execute(finish, 1002U, response)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileManagerState::Draft),
+                        static_cast<int>(manager.state(ProfileTarget::Hx711Organic)));
+  router.transport_lost();
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileManagerState::Active),
+                        static_cast<int>(manager.state(ProfileTarget::Hx711Organic)));
+}
+
+void test_calibration_start_binds_target_timeout_and_cancel_before_criteria() {
+  sigap::config::MemoryConfigStore config_store{};
+  sigap::config::ConfigManager config_manager(config_store, kValidationContext);
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(sigap::config::ConfigBootResult::BootstrapDefaults),
+      static_cast<int>(config_manager.begin()));
+  sigap::provisioning::MemorySecretBlobStore secret_backend{};
+  sigap::provisioning::PersistentSecretStore secrets(secret_backend);
+  CommandRouter router(config_manager, secrets);
+  MaintenanceCommand start{};
+  start.kind = CommandKind::CalibrationStart;
+  TEST_ASSERT_TRUE(start.target.assign("ds18b20_b3"));
+  MaintenanceResponse response{};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),
+                        static_cast<int>(router.execute(start, 100U, response)));
+  TEST_ASSERT_TRUE(router.is_calibrating(sigap::acquisition::SensorId::Ds18b20B3));
+  TEST_ASSERT_FALSE(router.is_calibrating(sigap::acquisition::SensorId::Hx711Organic));
+
+  MaintenanceCommand repeated = start;
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Rejected),
+                        static_cast<int>(router.execute(repeated, 200U, response)));
+  router.poll(100U + sigap::calibration::CalibrationSession::kSessionTimeoutUs + 1U);
+  TEST_ASSERT_FALSE(router.is_calibrating(sigap::acquisition::SensorId::Ds18b20B3));
+
+  CommandRouter second(config_manager, secrets);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),
+                        static_cast<int>(second.execute(start, 0U, response)));
+  MaintenanceCommand cancel{};
+  cancel.kind = CommandKind::CalibrationCancel;
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),
+                        static_cast<int>(second.execute(cancel, 1U, response)));
+  TEST_ASSERT_FALSE(second.is_calibrating(sigap::acquisition::SensorId::Ds18b20B3));
+}
+
+void test_fragmented_input_is_buffered_until_line_end() {
+  FakeTransport transport{};
+  transport.input = "status";
+  FakeSink sink{};
+  MaintenanceService service(transport, sink);
+
+  TEST_ASSERT_EQUAL_UINT32(6U, service.poll(10U).bytes_read);
+  TEST_ASSERT_EQUAL_UINT32(0U, sink.calls);
+
+  transport.input += "\n";
+  const auto stats = service.poll(20U);
+  TEST_ASSERT_EQUAL_UINT32(1U, sink.calls);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandKind::Status),
+                        static_cast<int>(sink.last.kind));
+  TEST_ASSERT_EQUAL_UINT32(1U, stats.commands_dispatched);
+  TEST_ASSERT_TRUE(transport.output.find("OK status") != std::string::npos);
+}
+
+void test_multiple_commands_are_processed_with_poll_budget() {
+  FakeTransport transport{};
+  transport.input = "status\nmaintenance enter\nstatus\n";
+  FakeSink sink{};
+  MaintenanceService service(transport, sink);
+
+  const auto first = service.poll(0U);
+  TEST_ASSERT_EQUAL_UINT32(kMaxBytesPerPoll, first.bytes_read);
+  TEST_ASSERT_TRUE(sink.calls >= 1U);
+
+  while (transport.available()) service.poll(1U);
+  TEST_ASSERT_EQUAL_UINT32(3U, sink.calls);
+  TEST_ASSERT_EQUAL_UINT32(3U, service.commands_dispatched());
+}
+
+void test_oversized_command_is_rejected_and_parser_recovers() {
+  FakeTransport transport{};
+  transport.input = std::string(kMaxCommandLineBytes + 8U, 'x') +
+                    "\nstatus\n";
+  FakeSink sink{};
+  MaintenanceService service(transport, sink);
+
+  while (transport.available()) service.poll(0U);
+  TEST_ASSERT_EQUAL_UINT32(1U, sink.calls);
+  TEST_ASSERT_TRUE(transport.output.find("ERR OVERSIZED") != std::string::npos);
+  TEST_ASSERT_TRUE(transport.output.find("OK status") != std::string::npos);
+}
+
+void test_unknown_empty_and_invalid_numeric_commands_are_explicit() {
+  FakeTransport transport{};
+  transport.input = "\nnot-a-command\ncalibration capture organic nope\n";
+  FakeSink sink{};
+  MaintenanceService service(transport, sink);
+
+  while (transport.available()) service.poll(0U);
+  TEST_ASSERT_EQUAL_UINT32(0U, sink.calls);
+  TEST_ASSERT_TRUE(transport.output.find("ERR EMPTY") != std::string::npos);
+  TEST_ASSERT_TRUE(transport.output.find("ERR UNKNOWN_COMMAND") !=
+                  std::string::npos);
+  TEST_ASSERT_TRUE(transport.output.find("ERR INVALID_NUMERIC") !=
+                  std::string::npos);
+}
+
+void test_config_numeric_and_calibration_arguments_are_typed() {
+  FakeTransport transport{};
+  transport.input = "config set sampling.mq_period_ms 100\n"
+                    "calibration capture organic -42\n";
+  FakeSink sink{};
+  MaintenanceService service(transport, sink);
+  while (transport.available()) service.poll(0U);
+
+  TEST_ASSERT_EQUAL_UINT32(2U, sink.calls);
+  TEST_ASSERT_TRUE(sink.last.has_numeric);
+  TEST_ASSERT_EQUAL_INT64(-42, sink.last.numeric_value);
+  TEST_ASSERT_EQUAL_STRING("organic", sink.last.target.c_str());
+}
+
+void test_response_redacts_secret_and_stays_bounded() {
+  MaintenanceResponse response;
+  TEST_ASSERT_TRUE(response.append_secret("token", "super-secret"));
+  TEST_ASSERT_TRUE(response.append_presence("wifi", true));
+  TEST_ASSERT_TRUE(response.size() < kMaxResponseBytes);
+  TEST_ASSERT_NOT_EQUAL(nullptr, response.c_str());
+  TEST_ASSERT_NOT_EQUAL(std::string::npos,
+                        std::string(response.view()).find("[REDACTED]"));
+  TEST_ASSERT_EQUAL(std::string::npos,
+                    std::string(response.view()).find("super-secret"));
+}
+
+void test_parser_failure_does_not_stop_later_commands() {
+  FakeTransport transport{};
+  transport.input = "config set sampling.mq_period_ms bad\nstatus\n";
+  FakeSink sink{};
+  MaintenanceService service(transport, sink);
+  while (transport.available()) service.poll(0U);
+  TEST_ASSERT_EQUAL_UINT32(1U, sink.calls);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandKind::Status),
+                        static_cast<int>(sink.last.kind));
+}
+
+void test_command_router_keeps_draft_isolated_and_redacts_status() {
+  sigap::config::MemoryConfigStore config_store{};
+  sigap::config::ConfigManager config_manager(config_store, kValidationContext);
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(sigap::config::ConfigBootResult::BootstrapDefaults),
+      static_cast<int>(config_manager.begin()));
+  sigap::provisioning::MemorySecretBlobStore secret_backend{};
+  sigap::provisioning::PersistentSecretStore secrets(secret_backend);
+  CommandRouter router(config_manager, secrets);
+  MaintenanceCommand start{};
+  start.kind = CommandKind::ConfigDraftStart;
+  MaintenanceResponse response{};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),
+                        static_cast<int>(router.execute(start, 0U, response)));
+  MaintenanceCommand set{};
+  set.kind = CommandKind::ConfigSet;
+  TEST_ASSERT_TRUE(set.field.assign("sampling.mq_period_ms"));
+  set.has_numeric = true;
+  set.numeric_value = 250;
+  response = MaintenanceResponse{};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),
+                        static_cast<int>(router.execute(set, 0U, response)));
+  TEST_ASSERT_EQUAL_UINT32(100U,
+                           config_manager.active().sampling.mq_period_ms);
+  TEST_ASSERT_EQUAL_UINT32(250U,
+                           config_manager.draft().sampling.mq_period_ms);
+  MaintenanceCommand status{};
+  status.kind = CommandKind::Status;
+  response = MaintenanceResponse{};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),
+                        static_cast<int>(router.execute(status, 0U, response)));
+  TEST_ASSERT_TRUE(response.view().find("config_hash=") != std::string_view::npos);
+}
+
+void test_maintenance_memory_footprint_is_bounded() {
+  std::printf("memory MaintenanceParser=%zu MaintenanceResponse=%zu "
+              "CommandRouter=%zu MaintenanceService=%zu\n",
+              sizeof(MaintenanceParser), sizeof(MaintenanceResponse),
+              sizeof(CommandRouter), sizeof(MaintenanceService));
+  TEST_ASSERT_TRUE(sizeof(MaintenanceResponse) <= 256U);
+  TEST_ASSERT_TRUE(sizeof(MaintenanceService) <= 512U);
+}
+
+void setUp() {}
+void tearDown() {}
+
+}  // namespace
+
+void setup() {
+  UNITY_BEGIN();
+  RUN_TEST(test_fragmented_input_is_buffered_until_line_end);
+  RUN_TEST(test_profile_lifecycle_commands_parse_as_explicit_steps);
+  RUN_TEST(test_service_polls_without_input_and_reports_disconnect_once);
+  RUN_TEST(test_disconnect_discards_partial_parser_line);
+  RUN_TEST(test_profile_import_round_trip_uses_real_router_and_explicit_activation);
+  RUN_TEST(test_profile_import_round_trip_covers_both_sht31_addresses);
+  RUN_TEST(test_profile_import_rejects_unbound_or_out_of_order_chunks);
+  RUN_TEST(test_profile_import_timeout_and_disconnect_discard_draft);
+  RUN_TEST(test_calibration_start_binds_target_timeout_and_cancel_before_criteria);
+  RUN_TEST(test_multiple_commands_are_processed_with_poll_budget);
+  RUN_TEST(test_oversized_command_is_rejected_and_parser_recovers);
+  RUN_TEST(test_unknown_empty_and_invalid_numeric_commands_are_explicit);
+  RUN_TEST(test_config_numeric_and_calibration_arguments_are_typed);
+  RUN_TEST(test_response_redacts_secret_and_stays_bounded);
+  RUN_TEST(test_parser_failure_does_not_stop_later_commands);
+  RUN_TEST(test_command_router_keeps_draft_isolated_and_redacts_status);
+  RUN_TEST(test_maintenance_memory_footprint_is_bounded);
+  UNITY_END();
+}
+
+int main() {
+  setup();
+  return 0;
+}

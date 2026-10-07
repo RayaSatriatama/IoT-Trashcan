@@ -40,6 +40,10 @@ class UltrasonicTriggerGate final {
     has_trigger_ = true;
   }
 
+  void set_minimum_gap(uint32_t minimum_gap_us) noexcept {
+    minimum_gap_us_ = minimum_gap_us;
+  }
+
  private:
   uint32_t minimum_gap_us_;
   uint64_t last_trigger_us_{0};
@@ -90,9 +94,10 @@ class UltrasonicAcquirer final {
   UltrasonicAcquirer(StreamId stream, IUltrasonicReader& source, RecordFactory& factory,
                      const UltrasonicProfile* profile,
                      UltrasonicAcquisitionParams params,
-                     UltrasonicTriggerGate& gate) noexcept
+                     UltrasonicTriggerGate& gate,
+                     const ICalibrationStateProvider* calibration = nullptr) noexcept
       : stream_(stream), source_(source), factory_(factory), profile_(profile),
-        params_(params), gate_(&gate) {}
+        params_(params), gate_(&gate), calibration_(calibration) {}
 
   // Starts one physical measurement. The trigger cadence is owned by the
   // scheduler, while service() must be called frequently until the echo is
@@ -108,6 +113,17 @@ class UltrasonicAcquirer final {
          now_us - last_trigger_us_ < params_.inter_sensor_gap_us)) {
       waiting_for_gate_ = true;
       return DriverPollStatus::NoAttempt;
+    }
+    attempt_profile_present_ = profile_ != nullptr;
+    if (attempt_profile_present_) {
+      attempt_profile_ = *profile_;
+      attempt_profile_ref_ =
+          attempt_profile_.valid_for_acquisition() &&
+                  profile_matches(attempt_profile_.manifest, sensor_id())
+              ? attempt_profile_.ref()
+              : ProfileRef{};
+    } else {
+      attempt_profile_ref_ = ProfileRef{};
     }
     if (!source_.trigger(now_us)) {
       trigger_us_ = now_us;
@@ -135,7 +151,7 @@ class UltrasonicAcquirer final {
       ConvertedObservation converted{};
       return factory_.make(now_us, sensor_id(), stream_, SampleKind::UltrasonicEcho,
                            SampleQuality::Disconnected, SampleReason::Disconnected,
-                           raw, converted, profile_ref(), out);
+                           raw, converted, attempt_profile_ref_, out);
     }
 
     const uint64_t elapsed_us = now_us >= trigger_us_ ? now_us - trigger_us_ : 0U;
@@ -147,7 +163,9 @@ class UltrasonicAcquirer final {
       return factory_.make(now_us, sensor_id(), stream_,
                            SampleKind::UltrasonicEcho,
                            SampleQuality::Timeout, SampleReason::Timeout,
-                           raw, converted, profile_ref(), out);
+                           raw, converted,
+                           attempt_profile_ref_.present ? attempt_profile_ref_ : profile_ref(),
+                           out);
     }
 
     UltrasonicEchoResult result = source_.poll(now_us);
@@ -159,16 +177,23 @@ class UltrasonicAcquirer final {
     SampleQuality quality{SampleQuality::Timeout};
     SampleReason reason{SampleReason::Timeout};
     const SensorId sensor = sensor_id();
+    const UltrasonicProfile* active_profile =
+        attempt_profile_present_ ? &attempt_profile_ : profile_;
     if (result.status == UltrasonicEchoStatus::Ready) {
       raw.present = true;
+      raw.identity_valid = true;
       raw.distance_us = result.echo_us;
-      if (profile_ != nullptr && !profile_matches(profile_->manifest, sensor)) {
+      if (active_profile != nullptr &&
+          !profile_matches(active_profile->manifest, sensor)) {
         quality = SampleQuality::Uncalibrated;
         reason = SampleReason::InvalidProfile;
-      } else if (profile_ != nullptr && profile_->valid_for_conversion()) {
-        const float distance_mm = static_cast<float>(result.echo_us) * profile_->echo_mm_per_us;
-        const float minimum_allowed = profile_->d_full_mm - profile_->overshoot_tolerance_mm;
-        const float maximum_allowed = profile_->d_empty_mm + profile_->overshoot_tolerance_mm;
+      } else if (calibration_ != nullptr && calibration_->is_calibrating(sensor)) {
+        quality = SampleQuality::Calibrating;
+        reason = SampleReason::InvalidProfile;
+      } else if (active_profile != nullptr && active_profile->valid_for_conversion()) {
+        const float distance_mm = static_cast<float>(result.echo_us) * active_profile->echo_mm_per_us;
+        const float minimum_allowed = active_profile->d_full_mm - active_profile->overshoot_tolerance_mm;
+        const float maximum_allowed = active_profile->d_empty_mm + active_profile->overshoot_tolerance_mm;
         if (distance_mm < minimum_allowed || distance_mm > maximum_allowed) {
           quality = SampleQuality::OutOfRange;
           reason = SampleReason::OutOfRange;
@@ -177,8 +202,8 @@ class UltrasonicAcquirer final {
           reason = SampleReason::DataReady;
           converted.primary_available = true;
           converted.primary_kind = ConvertedKind::FillPercent;
-          const float ratio = (profile_->d_empty_mm - distance_mm) /
-                              (profile_->d_empty_mm - profile_->d_full_mm);
+          const float ratio = (active_profile->d_empty_mm - distance_mm) /
+                              (active_profile->d_empty_mm - active_profile->d_full_mm);
           converted.primary_value = std::clamp(ratio * 100.0F, 0.0F, 100.0F);
         }
       } else {
@@ -195,7 +220,7 @@ class UltrasonicAcquirer final {
     phase_ = Phase::Idle;
     return factory_.make(now_us, sensor, stream_,
                          SampleKind::UltrasonicEcho, quality, reason, raw, converted,
-                         profile_ref(), out);
+                         attempt_profile_ref_.present ? attempt_profile_ref_ : profile_ref(), out);
   }
 
   // Compatibility entry point for existing scheduler seams. New composition
@@ -235,6 +260,10 @@ class UltrasonicAcquirer final {
   bool waiting_for_gate_{false};
   Phase phase_{Phase::Idle};
   UltrasonicTriggerGate* gate_{nullptr};
+  const ICalibrationStateProvider* calibration_{nullptr};
+  UltrasonicProfile attempt_profile_{};
+  ProfileRef attempt_profile_ref_{};
+  bool attempt_profile_present_{false};
 };
 
 }  // namespace sigap::acquisition

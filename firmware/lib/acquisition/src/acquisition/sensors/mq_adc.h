@@ -22,21 +22,31 @@ class IMqAdcReader {
 class MqAdcAcquirer final {
  public:
   MqAdcAcquirer(SensorId sensor, StreamId stream, IMqAdcReader& source,
-                RecordFactory& factory, const MqAdcProfile* profile) noexcept
-      : sensor_(sensor), stream_(stream), source_(source), factory_(factory), profile_(profile) {}
+                RecordFactory& factory, const MqAdcProfile* profile,
+                const ICalibrationStateProvider* calibration = nullptr) noexcept
+      : sensor_(sensor), stream_(stream), source_(source), factory_(factory),
+        profile_(profile), calibration_(calibration) {}
 
   MqAdcAcquirer(SensorId sensor, StreamId stream, IMqAdcReader& source,
                 RecordFactory& factory, const MqAdcProfile* profile,
-                const Mq7HeaterController* heater) noexcept
+                const Mq7HeaterController* heater,
+                const ICalibrationStateProvider* calibration = nullptr) noexcept
       : sensor_(sensor), stream_(stream), source_(source), factory_(factory),
-        profile_(profile), heater_(heater) {}
+        profile_(profile), heater_(heater), calibration_(calibration) {}
 
   DriverPollStatus poll(uint64_t now_us, SampleRecord& out) noexcept {
+    MqAdcProfile attempt_profile{};
+    const MqAdcProfile* active_profile = nullptr;
+    if (profile_ != nullptr) {
+      attempt_profile = *profile_;
+      active_profile = &attempt_profile;
+    }
     const MqAdcReadResult result = source_.read();
     RawObservation raw{};
     // Preserve ADC counts only as raw evidence when a conversion actually
     // succeeded. A disconnected result must not masquerade as a measurement.
     raw.present = result.ok;
+    raw.identity_valid = result.ok;
     raw.adc_counts = result.counts;
     ConvertedObservation converted{};
     SampleQuality quality = SampleQuality::Timeout;
@@ -47,17 +57,20 @@ class MqAdcAcquirer final {
     } else if (!result.ok) {
       if (reason == SampleReason::None) reason = SampleReason::Timeout;
       quality = SampleQuality::Timeout;
-    } else if (profile_ != nullptr && !profile_matches(profile_->manifest, sensor_)) {
+    } else if (active_profile != nullptr && !profile_matches(active_profile->manifest, sensor_)) {
       quality = SampleQuality::Uncalibrated;
       reason = SampleReason::InvalidProfile;
     } else if (sensor_ == SensorId::Mq7 &&
                (heater_ == nullptr || !heater_->operational_ready())) {
       quality = SampleQuality::HeaterPhase;
       reason = SampleReason::HeaterPhase;
-    } else if (profile_ != nullptr && profile_->manifest.validity == ProfileValidity::Calibrating) {
+    } else if (calibration_ != nullptr && calibration_->is_calibrating(sensor_)) {
       quality = SampleQuality::Calibrating;
       reason = SampleReason::InvalidProfile;
-    } else if (profile_ == nullptr || !profile_->valid_for_conversion()) {
+    } else if (active_profile != nullptr && active_profile->manifest.validity == ProfileValidity::Calibrating) {
+      quality = SampleQuality::Calibrating;
+      reason = SampleReason::InvalidProfile;
+    } else if (active_profile == nullptr || !active_profile->valid_for_conversion()) {
       quality = SampleQuality::Uncalibrated;
       reason = SampleReason::InvalidProfile;
     } else {
@@ -66,14 +79,16 @@ class MqAdcAcquirer final {
       converted.primary_available = true;
       converted.primary_kind = ConvertedKind::AdcMillivolts;
       const float pin_mv = static_cast<float>(result.counts) *
-                           static_cast<float>(profile_->reference_mv) /
-                           static_cast<float>(profile_->full_scale_counts);
-      converted.primary_value = pin_mv * static_cast<float>(profile_->divider_denominator) /
-                                static_cast<float>(profile_->divider_numerator);
+                           static_cast<float>(active_profile->reference_mv) /
+                           static_cast<float>(active_profile->full_scale_counts);
+      converted.primary_value = pin_mv * static_cast<float>(active_profile->divider_denominator) /
+                                static_cast<float>(active_profile->divider_numerator);
     }
+    raw.heater_ready = sensor_ != SensorId::Mq7 ||
+                       (heater_ != nullptr && heater_->operational_ready());
     return factory_.make(now_us, sensor_, stream_, SampleKind::MqAdc,
                          quality, reason, raw, converted,
-                         profile_ == nullptr ? ProfileRef{} : profile_->ref(), out);
+                         active_profile == nullptr ? ProfileRef{} : active_profile->ref(), out);
   }
 
  private:
@@ -83,6 +98,7 @@ class MqAdcAcquirer final {
   RecordFactory& factory_;
   const MqAdcProfile* profile_;
   const Mq7HeaterController* heater_{nullptr};
+  const ICalibrationStateProvider* calibration_{nullptr};
 };
 
 }  // namespace sigap::acquisition

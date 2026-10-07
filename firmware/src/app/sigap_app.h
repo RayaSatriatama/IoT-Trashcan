@@ -5,6 +5,11 @@
 #include "acquisition/boot_identity.h"
 #include "acquisition/record.h"
 #include "acquisition/runtime.h"
+#include "acquisition/profile_manager.h"
+#include "acquisition/profile_store.h"
+#include "maintenance/runtime.h"
+#include "provisioning/secret_store.h"
+#include "calibration/calibration_session.h"
 #include "sigap/board/board_pins.h"
 
 namespace sigap {
@@ -24,14 +29,34 @@ class SigapApp final {
     return acquisition_;
   }
 
+  const maintenance::CommandRouter& maintenance_router() const noexcept {
+    return maintenance_router_;
+  }
+
  private:
   config::NvsConfigStore config_store_{};
   config::ConfigManager config_manager_;
+  provisioning::NvsSecretStore secret_store_{};
   acquisition::BootRuntimeIdentity boot_identity_{};
   acquisition::RecordContext record_context_{};
   acquisition::RecordFactory record_factory_;
+  calibration::CalibrationEvidenceCache evidence_cache_{};
   acquisition::TargetProfileSet profiles_{};
+  acquisition::ProfileAuditRing<16U> audit_ring_{};
+  acquisition::NvsProfileStore profile_store_{};
+  acquisition::ProfilePersistence profile_persistence_;
+  acquisition::ProfileManager profile_manager_;
   acquisition::AcquisitionFoundation acquisition_;
+#ifdef ARDUINO
+  maintenance::ArduinoUsbTransport maintenance_transport_{};
+  maintenance::ArduinoRebootController reboot_controller_{};
+#else
+  maintenance::NullTransport maintenance_transport_{};
+  maintenance::NullRebootController reboot_controller_{};
+#endif
+  maintenance::CommandRouter maintenance_router_;
+  maintenance::MaintenanceService maintenance_service_;
+  uint32_t profile_generation_{0U};
 };
 
 }  // namespace sigap

@@ -64,4 +64,16 @@ class RecordFactory final {
   RecordContext context_;
 };
 
+class ISampleObserver {
+ public:
+  virtual ~ISampleObserver() = default;
+  virtual void observe(const SampleRecord& sample) noexcept = 0;
+};
+
+class ICalibrationStateProvider {
+ public:
+  virtual ~ICalibrationStateProvider() = default;
+  virtual bool is_calibrating(SensorId sensor) const noexcept = 0;
+};
+
 }  // namespace sigap::acquisition

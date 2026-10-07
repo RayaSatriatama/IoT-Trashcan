@@ -57,6 +57,7 @@ ConfigBootResult ConfigManager::begin() noexcept {
   has_activation_metadata_ = false;
   last_committed_version_ = 0;
   activation_metadata_ = ActivationMetadata{};
+  pending_identity_ = ConfigIdentity{};
   state_ = ConfigState::Booting;
 
   const StoreReadStatus metadata_status =
@@ -146,9 +147,81 @@ bool ConfigManager::start_draft() noexcept {
   return true;
 }
 
+bool ConfigManager::start_factory_draft() noexcept {
+  if (state_ != ConfigState::ConfigRequired) return false;
+  draft_ = kFactoryDefaults;
+  has_draft_ = true;
+  state_ = ConfigState::Draft;
+  return true;
+}
+
+bool ConfigManager::reset_draft() noexcept {
+  if (!has_draft_ || state_ == ConfigState::RebootRequired) return false;
+  draft_ = kFactoryDefaults;
+  state_ = ConfigState::Draft;
+  return true;
+}
+
+bool ConfigManager::cancel_draft() noexcept {
+  if (!has_draft_ || state_ == ConfigState::RebootRequired) return false;
+  has_draft_ = false;
+  draft_ = active_;
+  state_ = has_active_slot_ ? ConfigState::Active : ConfigState::ConfigRequired;
+  return true;
+}
+
 bool ConfigManager::set_draft(const AppConfig& draft) noexcept {
   if (!has_draft_ || state_ == ConfigState::RebootRequired) return false;
   draft_ = draft;
+  state_ = ConfigState::Draft;
+  return true;
+}
+
+bool ConfigManager::set_draft_field(ConfigField field, uint64_t value) noexcept {
+  if (!has_draft_ || state_ == ConfigState::RebootRequired) return false;
+
+  const auto as_u32 = [value](uint32_t& destination) noexcept {
+    if (value > std::numeric_limits<uint32_t>::max()) return false;
+    destination = static_cast<uint32_t>(value);
+    return true;
+  };
+
+  switch (field) {
+    case ConfigField::Hx711PeriodMs:
+      if (!as_u32(draft_.sampling.hx711_period_ms)) return false;
+      break;
+    case ConfigField::MqPeriodMs:
+      if (!as_u32(draft_.sampling.mq_period_ms)) return false;
+      break;
+    case ConfigField::UltrasonicPeriodMs:
+      if (!as_u32(draft_.sampling.ultrasonic_period_ms)) return false;
+      break;
+    case ConfigField::Ds18b20PeriodMs:
+      if (!as_u32(draft_.sampling.ds18b20_period_ms)) return false;
+      break;
+    case ConfigField::Sht31PeriodMs:
+      if (!as_u32(draft_.sampling.sht31_period_ms)) return false;
+      break;
+    case ConfigField::SummaryPeriodMs:
+      if (!as_u32(draft_.telemetry.summary_period_ms)) return false;
+      break;
+    case ConfigField::RetryMinMs:
+      if (!as_u32(draft_.telemetry.retry_min_ms)) return false;
+      break;
+    case ConfigField::RetryMaxMs:
+      if (!as_u32(draft_.telemetry.retry_max_ms)) return false;
+      break;
+    case ConfigField::MaxRecordsPerBatch:
+      if (value > std::numeric_limits<uint16_t>::max()) return false;
+      draft_.telemetry.max_records_per_batch = static_cast<uint16_t>(value);
+      break;
+    case ConfigField::FlashPendingQuota:
+      draft_.storage.flash_pending_quota_bytes = value;
+      break;
+    case ConfigField::SdPendingQuota:
+      draft_.storage.sd_pending_quota_bytes = value;
+      break;
+  }
   state_ = ConfigState::Draft;
   return true;
 }
@@ -239,6 +312,11 @@ bool ConfigManager::commit_draft() noexcept {
     return false;
   }
 
+  pending_identity_.slot = next_slot;
+  pending_identity_.schema_version = candidate.schema_version;
+  pending_identity_.config_version = candidate.config_version;
+  pending_identity_.hash = encoded_scratch_.hash();
+  pending_identity_.has_slot = true;
   draft_ = candidate;
   state_ = ConfigState::RebootRequired;
   return true;
