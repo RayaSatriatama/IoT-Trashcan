@@ -19,6 +19,9 @@ namespace sigap::storage {
 // frames and ignores a partial/corrupt tail.
 class LittleFsArchiveStore : public IArchiveStore {
  public:
+  static constexpr std::size_t kGapFrameBytes{88U};
+  static constexpr std::size_t kGapReserveBytes{4096U};
+
   explicit LittleFsArchiveStore(const char* path = "/sigap/archive.bin") noexcept
       : path_(path) {}
 
@@ -38,7 +41,7 @@ class LittleFsArchiveStore : public IArchiveStore {
 
   AppendStatus append(const ImmutableRecordBytes& record) noexcept override {
 #ifdef ARDUINO
-    if (filesystem_ == nullptr || !RecordCodec::valid(record)) {
+    if (filesystem_ == nullptr || !recovery_ready_ || !RecordCodec::valid(record)) {
       return AppendStatus::Retryable;
     }
     const auto* existing = find_index(record.identity);
@@ -46,9 +49,15 @@ class LittleFsArchiveStore : public IArchiveStore {
       return *existing == record.hash ? AppendStatus::Durable
                                       : AppendStatus::Invalid;
     }
-    if (index_count_ == index_.size()) {
-      health_ = ArchiveHealth::Blocked;
-      return AppendStatus::LoggingBlocked;
+    bool disk_read_ok = true;
+    config::ConfigHash disk_hash{};
+    if (find_on_disk(record.identity, SIZE_MAX, disk_hash, disk_read_ok)) {
+      return disk_hash == record.hash ? AppendStatus::Durable
+                                      : AppendStatus::Invalid;
+    }
+    if (!disk_read_ok) {
+      health_ = ArchiveHealth::Degraded;
+      return AppendStatus::Retryable;
     }
     if (pending_bytes_ > quota_bytes_ ||
         record.size > quota_bytes_ - pending_bytes_) {
@@ -67,14 +76,63 @@ class LittleFsArchiveStore : public IArchiveStore {
       health_ = ArchiveHealth::Degraded;
       return AppendStatus::Retryable;
     }
-    index_[index_count_] = record.identity;
-    hashes_[index_count_] = record.hash;
-    ++index_count_;
+    if (index_count_ < index_.size()) {
+      index_[index_count_] = record.identity;
+      hashes_[index_count_] = record.hash;
+      ++index_count_;
+    }
     pending_bytes_ += record.size;
     health_ = ArchiveHealth::Healthy;
     return AppendStatus::Durable;
 #else
     (void)record;
+    return AppendStatus::Retryable;
+#endif
+  }
+
+  AppendStatus append_gap(const GapRange& range) noexcept override {
+#ifdef ARDUINO
+    if (filesystem_ == nullptr || !range.present || range.record_count == 0U) {
+      return AppendStatus::Invalid;
+    }
+    if (gap_bytes_ > kGapReserveBytes ||
+        kGapFrameBytes > kGapReserveBytes - gap_bytes_) {
+      health_ = ArchiveHealth::Blocked;
+      return AppendStatus::LoggingBlocked;
+    }
+    File file = filesystem_->open(gap_path_, FILE_APPEND);
+    if (!file) {
+      health_ = ArchiveHealth::Degraded;
+      return AppendStatus::Retryable;
+    }
+    std::array<uint8_t, kGapFrameBytes> frame{};
+    write_u32(frame.data(), kGapMagic);
+    frame[4U] = kGapVersion;
+    frame[5U] = static_cast<uint8_t>(range.reason);
+    frame[6U] = static_cast<uint8_t>(range.sensor);
+    frame[7U] = static_cast<uint8_t>(range.stream);
+    write_u64(frame.data() + 8U, range.first_sequence);
+    write_u64(frame.data() + 16U, range.last_sequence);
+    write_u64(frame.data() + 24U, range.first_monotonic_us);
+    write_u64(frame.data() + 32U, range.last_monotonic_us);
+    write_u64(frame.data() + 40U, range.record_count);
+    std::memcpy(frame.data() + 48U, range.device_id.bytes.data(),
+                range.device_id.bytes.size());
+    std::memcpy(frame.data() + 64U, range.boot_id.bytes.data(),
+                range.boot_id.bytes.size());
+    write_u32(frame.data() + 80U, archive_crc32(frame.data(), 80U));
+    write_u32(frame.data() + 84U, kGapMarker);
+    const bool written = file.write(frame.data(), frame.size()) == frame.size();
+    file.flush();
+    file.close();
+    if (!written) {
+      health_ = ArchiveHealth::Degraded;
+      return AppendStatus::Retryable;
+    }
+    gap_bytes_ += frame.size();
+    return AppendStatus::Durable;
+#else
+    (void)range;
     return AppendStatus::Retryable;
 #endif
   }
@@ -98,74 +156,104 @@ class LittleFsArchiveStore : public IArchiveStore {
   bool recover() noexcept override {
 #ifdef ARDUINO
     if (filesystem_ == nullptr) return false;
+    recovery_ready_ = false;
     pending_bytes_ = 0U;
+    gap_bytes_ = 0U;
+    File gap_file = filesystem_->open(gap_path_, FILE_READ);
+    if (gap_file) {
+      gap_bytes_ = gap_file.size();
+      gap_file.close();
+      if (gap_bytes_ > kGapReserveBytes ||
+          (gap_bytes_ % kGapFrameBytes) != 0U) {
+        health_ = ArchiveHealth::Degraded;
+        return false;
+      }
+    }
     index_count_ = 0U;
     File file = filesystem_->open(path_, FILE_READ);
     if (!file) {
-      if (!filesystem_->exists(path_)) return restore_from_quarantine();
+      if (!filesystem_->exists(path_)) {
+        char backup[96]{};
+        if (make_related_path(backup, sizeof(backup), ".migrate.bak") &&
+            filesystem_->exists(backup)) {
+          if (!copy_valid_prefix(backup, path_, SIZE_MAX)) {
+            health_ = ArchiveHealth::Degraded;
+            return false;
+          }
+          return recover();
+        }
+        return restore_from_quarantine();
+      }
       health_ = ArchiveHealth::Degraded;
       return false;
     }
     std::size_t valid_bytes = 0U;
-    bool clean = true;
+    bool tail_corrupt = false;
+    bool conflict_seen = false;
     while (file.available()) {
-      ImmutableRecordBytes record{};
+      ImmutableRecordBytes& record = scan_record_;
+      record = ImmutableRecordBytes{};
       if (file.read(record.bytes.data(), kArchiveHeaderBytes) !=
           static_cast<int>(kArchiveHeaderBytes)) {
-        clean = false;
+        tail_corrupt = true;
         break;
       }
       const uint32_t payload_size = read_u32(record.bytes.data() + 8U);
       if (payload_size > kArchiveMaxRecordBytes - kArchiveHeaderBytes -
                              kArchiveTrailerBytes) {
-        clean = false;
+        tail_corrupt = true;
         break;
       }
       record.size = kArchiveHeaderBytes + payload_size + kArchiveTrailerBytes;
       const std::size_t remaining = record.size - kArchiveHeaderBytes;
       if (file.read(record.bytes.data() + kArchiveHeaderBytes, remaining) !=
           static_cast<int>(remaining)) {
-        clean = false;
+        tail_corrupt = true;
         break;
       }
       record.committed = true;
       if (!RecordCodec::valid(record)) {
-        clean = false;
+        tail_corrupt = true;
         break;
       }
-      record.identity.kind = static_cast<ArchiveRecordKind>(
-          record.bytes[kArchiveKindOffset]);
-      record.identity.sequence = read_u64(record.bytes.data() +
-                                          kArchiveSequenceOffset);
-      record.identity.device_id.present = true;
-      record.identity.boot_id.present = true;
-      std::memcpy(record.identity.device_id.bytes.data(),
-                  record.bytes.data() + kArchiveDeviceIdOffset,
-                  record.identity.device_id.bytes.size());
-      std::memcpy(record.identity.boot_id.bytes.data(),
-                  record.bytes.data() + kArchiveBootIdOffset,
-                  record.identity.boot_id.bytes.size());
+      decode_identity(record);
       record.hash = telemetry_contract::sha256(std::string_view(
           reinterpret_cast<const char*>(record.bytes.data()), record.size));
-      if (const auto* existing = find_index(record.identity);
-          existing != nullptr) {
-        clean = *existing == record.hash;
+      const auto* existing = find_index(record.identity);
+      if (existing != nullptr) {
+        if (*existing != record.hash) conflict_seen = true;
+        pending_bytes_ += record.size;
+        valid_bytes += record.size;
+        continue;
+      }
+      bool prior_read_ok = true;
+      config::ConfigHash prior_hash{};
+      if (find_on_disk(record.identity, valid_bytes, prior_hash, prior_read_ok)) {
+        if (prior_hash != record.hash) conflict_seen = true;
+        pending_bytes_ += record.size;
+        valid_bytes += record.size;
+        continue;
+      }
+      if (!prior_read_ok) {
+        tail_corrupt = true;
         break;
       }
-      if (index_count_ == index_.size()) {
-        clean = false;
-        break;
+      if (index_count_ < index_.size()) {
+        index_[index_count_] = record.identity;
+        hashes_[index_count_] = record.hash;
+        ++index_count_;
       }
-      index_[index_count_] = record.identity;
-      hashes_[index_count_] = record.hash;
-      ++index_count_;
       pending_bytes_ += record.size;
       valid_bytes += record.size;
     }
     file.close();
-    const bool ok = clean || quarantine_tail(valid_bytes);
-    health_ = ok ? ArchiveHealth::Healthy : ArchiveHealth::Degraded;
-    return ok;
+    if (tail_corrupt && !quarantine_tail(valid_bytes)) {
+      health_ = ArchiveHealth::Degraded;
+      return false;
+    }
+    recovery_ready_ = true;
+    health_ = conflict_seen ? ArchiveHealth::Degraded : ArchiveHealth::Healthy;
+    return true;
 #else
     return false;
 #endif
@@ -181,6 +269,99 @@ class LittleFsArchiveStore : public IArchiveStore {
 #endif
   }
 
+  bool peek_pending(ImmutableRecordBytes& output) noexcept override {
+#ifdef ARDUINO
+    if (filesystem_ == nullptr || !recovery_ready_) return false;
+    File file = filesystem_->open(path_, FILE_READ);
+    if (!file) return false;
+    const bool ok = read_record(file, output);
+    file.close();
+    return ok;
+#else
+    (void)output;
+    return false;
+#endif
+  }
+
+  bool reclaim_pending(const ArchiveIdentity& identity,
+                       const config::ConfigHash& hash) noexcept override {
+#ifdef ARDUINO
+    if (filesystem_ == nullptr || !recovery_ready_) return false;
+    File source = filesystem_->open(path_, FILE_READ);
+    if (!source || !read_record(source, scan_record_) ||
+        !same_identity(scan_record_.identity, identity) ||
+        scan_record_.hash != hash) {
+      if (source) source.close();
+      return false;
+    }
+    char temporary[96]{};
+    char backup[96]{};
+    if (!make_related_path(temporary, sizeof(temporary), ".migrate") ||
+        !make_related_path(backup, sizeof(backup), ".migrate.bak")) {
+      source.close();
+      return false;
+    }
+    if (filesystem_->exists(temporary)) (void)filesystem_->remove(temporary);
+    File destination = filesystem_->open(temporary, FILE_WRITE);
+    if (!destination || !source.seek(scan_record_.size, SeekSet)) {
+      if (destination) destination.close();
+      source.close();
+      return false;
+    }
+    bool copied = true;
+    while (source.available()) {
+      const int read_count = source.read(copy_buffer_.data(), copy_buffer_.size());
+      if (read_count <= 0 ||
+          destination.write(copy_buffer_.data(), static_cast<std::size_t>(read_count)) !=
+              static_cast<std::size_t>(read_count)) {
+        copied = false;
+        break;
+      }
+    }
+    destination.flush();
+    destination.close();
+    source.close();
+    if (!copied || !filesystem_->rename(path_, backup) ||
+        !filesystem_->rename(temporary, path_)) {
+      if (filesystem_->exists(temporary)) (void)filesystem_->remove(temporary);
+      if (!filesystem_->exists(path_) && filesystem_->exists(backup)) {
+        (void)filesystem_->rename(backup, path_);
+      }
+      health_ = ArchiveHealth::Degraded;
+      return false;
+    }
+    (void)filesystem_->remove(backup);
+    return recover();
+#else
+    (void)identity;
+    (void)hash;
+    return false;
+#endif
+  }
+
+  bool contains(const ArchiveIdentity& identity,
+                const config::ConfigHash& hash) noexcept override {
+#ifdef ARDUINO
+    if (filesystem_ == nullptr || !recovery_ready_) return false;
+    File file = filesystem_->open(path_, FILE_READ);
+    if (!file) return false;
+    bool found = false;
+    while (file.available()) {
+      if (!read_record(file, lookup_record_)) break;
+      if (same_identity(lookup_record_.identity, identity)) {
+        found = lookup_record_.hash == hash;
+        break;
+      }
+    }
+    file.close();
+    return found;
+#else
+    (void)identity;
+    (void)hash;
+    return false;
+#endif
+  }
+
  protected:
 #ifdef ARDUINO
   fs::FS* filesystem_{nullptr};
@@ -189,19 +370,124 @@ class LittleFsArchiveStore : public IArchiveStore {
   const char* checkpoint_path_{"/sigap/archive.ckp"};
   uint64_t quota_bytes_{0U};
   uint64_t pending_bytes_{0U};
+  uint64_t gap_bytes_{0U};
 
  private:
 #ifdef ARDUINO
+  static constexpr uint32_t kGapMagic{0x53474150U};
+  static constexpr uint8_t kGapVersion{1U};
+  static constexpr uint32_t kGapMarker{0x47415021U};
+
+  static bool same_identity(const ArchiveIdentity& left,
+                            const ArchiveIdentity& right) noexcept {
+    return left.kind == right.kind && left.sequence == right.sequence &&
+           left.device_id.bytes == right.device_id.bytes &&
+           left.boot_id.bytes == right.boot_id.bytes;
+  }
+  bool make_related_path(char* output, std::size_t size,
+                         const char* suffix) const noexcept {
+    if (output == nullptr || suffix == nullptr || path_ == nullptr) return false;
+    const int written = std::snprintf(output, size, "%s%s", path_, suffix);
+    return written > 0 && static_cast<std::size_t>(written) < size;
+  }
+  static bool read_record(File& file, ImmutableRecordBytes& record) noexcept {
+    record = ImmutableRecordBytes{};
+    if (file.read(record.bytes.data(), kArchiveHeaderBytes) !=
+        static_cast<int>(kArchiveHeaderBytes)) return false;
+    const uint32_t payload_size = read_u32(record.bytes.data() +
+                                           kArchivePayloadSizeOffset);
+    if (payload_size > kArchiveMaxRecordBytes - kArchiveHeaderBytes -
+                           kArchiveTrailerBytes) return false;
+    record.size = kArchiveHeaderBytes + payload_size + kArchiveTrailerBytes;
+    if (file.read(record.bytes.data() + kArchiveHeaderBytes,
+                  record.size - kArchiveHeaderBytes) !=
+        static_cast<int>(record.size - kArchiveHeaderBytes)) return false;
+    record.committed = true;
+    if (!RecordCodec::valid(record)) return false;
+    decode_identity(record);
+    record.hash = telemetry_contract::sha256(std::string_view(
+        reinterpret_cast<const char*>(record.bytes.data()), record.size));
+    return true;
+  }
+  static void decode_identity(ImmutableRecordBytes& record) noexcept {
+    record.identity.kind = static_cast<ArchiveRecordKind>(
+        record.bytes[kArchiveKindOffset]);
+    record.identity.sequence = read_u64(record.bytes.data() +
+                                        kArchiveSequenceOffset);
+    record.identity.device_id.present = true;
+    record.identity.boot_id.present = true;
+    std::memcpy(record.identity.device_id.bytes.data(),
+                record.bytes.data() + kArchiveDeviceIdOffset,
+                record.identity.device_id.bytes.size());
+    std::memcpy(record.identity.boot_id.bytes.data(),
+                record.bytes.data() + kArchiveBootIdOffset,
+                record.identity.boot_id.bytes.size());
+  }
   const config::ConfigHash* find_index(const ArchiveIdentity& identity) const noexcept {
     for (std::size_t i = 0U; i < index_count_; ++i) {
-      if (index_[i].kind == identity.kind &&
-          index_[i].sequence == identity.sequence &&
-          index_[i].device_id.bytes == identity.device_id.bytes &&
-          index_[i].boot_id.bytes == identity.boot_id.bytes) {
+      if (same_identity(index_[i], identity)) {
         return &hashes_[i];
       }
     }
     return nullptr;
+  }
+  bool find_on_disk(const ArchiveIdentity& identity,
+                    std::size_t limit_bytes,
+                    config::ConfigHash& hash,
+                    bool& read_ok) noexcept {
+    read_ok = true;
+    if (filesystem_ == nullptr) {
+      read_ok = false;
+      return false;
+    }
+    if (!filesystem_->exists(path_)) return false;
+    File file = filesystem_->open(path_, FILE_READ);
+    if (!file) {
+      read_ok = false;
+      return false;
+    }
+    std::size_t offset = 0U;
+    while (file.available() && offset < limit_bytes) {
+      ImmutableRecordBytes& record = lookup_record_;
+      record = ImmutableRecordBytes{};
+      if (limit_bytes - offset < kArchiveHeaderBytes ||
+          file.read(record.bytes.data(), kArchiveHeaderBytes) !=
+              static_cast<int>(kArchiveHeaderBytes)) {
+        read_ok = false;
+        break;
+      }
+      const uint32_t payload_size = read_u32(
+          record.bytes.data() + kArchivePayloadSizeOffset);
+      if (payload_size > kArchiveMaxRecordBytes - kArchiveHeaderBytes -
+                             kArchiveTrailerBytes) {
+        read_ok = false;
+        break;
+      }
+      record.size = kArchiveHeaderBytes + payload_size + kArchiveTrailerBytes;
+      if (record.size > limit_bytes - offset ||
+          file.read(record.bytes.data() + kArchiveHeaderBytes,
+                    record.size - kArchiveHeaderBytes) !=
+              static_cast<int>(record.size - kArchiveHeaderBytes)) {
+        read_ok = false;
+        break;
+      }
+      record.committed = true;
+      if (!RecordCodec::valid(record)) {
+        read_ok = false;
+        break;
+      }
+      decode_identity(record);
+      record.hash = telemetry_contract::sha256(std::string_view(
+          reinterpret_cast<const char*>(record.bytes.data()), record.size));
+      if (same_identity(record.identity, identity)) {
+        hash = record.hash;
+        file.close();
+        return true;
+      }
+      offset += record.size;
+    }
+    file.close();
+    return false;
   }
   bool make_quarantine_path(char* output, std::size_t size) noexcept {
     if (filesystem_ == nullptr || output == nullptr) return false;
@@ -232,6 +518,8 @@ class LittleFsArchiveStore : public IArchiveStore {
       }
       return recover();
     }
+    recovery_ready_ = true;
+    health_ = ArchiveHealth::Healthy;
     return true;
   }
   bool quarantine_tail(std::size_t valid_bytes) noexcept {
@@ -282,12 +570,27 @@ class LittleFsArchiveStore : public IArchiveStore {
            (static_cast<uint32_t>(bytes[2U]) << 16U) |
            (static_cast<uint32_t>(bytes[3U]) << 24U);
   }
+  static void write_u32(uint8_t* bytes, uint32_t value) noexcept {
+    bytes[0U] = static_cast<uint8_t>(value);
+    bytes[1U] = static_cast<uint8_t>(value >> 8U);
+    bytes[2U] = static_cast<uint8_t>(value >> 16U);
+    bytes[3U] = static_cast<uint8_t>(value >> 24U);
+  }
+  static void write_u64(uint8_t* bytes, uint64_t value) noexcept {
+    for (std::size_t index = 0U; index < 8U; ++index) {
+      bytes[index] = static_cast<uint8_t>(value >> (index * 8U));
+    }
+  }
   std::array<ArchiveIdentity, 128U> index_{};
   std::array<config::ConfigHash, 128U> hashes_{};
   std::array<uint8_t, 256U> copy_buffer_{};
   std::size_t index_count_{0U};
+  bool recovery_ready_{false};
+  ImmutableRecordBytes scan_record_{};
+  ImmutableRecordBytes lookup_record_{};
   ArchiveHealth health_{ArchiveHealth::Healthy};
 #endif
+  const char* gap_path_{"/sigap/gaps.bin"};
 };
 
 class SdArchiveStore final : public LittleFsArchiveStore {
@@ -307,6 +610,15 @@ class MediaFailoverStore final : public IArchiveStore {
     if (fallback_status == AppendStatus::Durable) return fallback_status;
     return fallback_status == AppendStatus::Invalid ? primary_status
                                                       : fallback_status;
+  }
+
+  AppendStatus append_gap(const GapRange& range) noexcept override {
+    const auto primary_status = primary_.append_gap(range);
+    if (primary_status == AppendStatus::Durable) return primary_status;
+    const auto fallback_status = fallback_.append_gap(range);
+    if (fallback_status == AppendStatus::Durable) return fallback_status;
+    return fallback_status == AppendStatus::Invalid ? primary_status
+                                                     : fallback_status;
   }
 
   bool checkpoint() noexcept override {
@@ -378,6 +690,12 @@ class ArchiveFileSystemDouble final {
   void append_partial_byte(uint8_t value) noexcept {
     if (size_ < Bytes) bytes_[size_++] = value;
   }
+  bool remove_prefix(std::size_t prefix) noexcept {
+    if (prefix > size_) return false;
+    std::memmove(bytes_.data(), bytes_.data() + prefix, size_ - prefix);
+    size_ -= prefix;
+    return true;
+  }
 
  private:
   std::array<uint8_t, Bytes> bytes_{};
@@ -396,23 +714,37 @@ class NativeArchiveFileStore final : public IArchiveStore {
 
   AppendStatus append(const ImmutableRecordBytes& record) noexcept override {
     if (!RecordCodec::valid(record)) return AppendStatus::Invalid;
-    for (std::size_t i = 0U; i < count_; ++i) {
-      if (same_identity(index_[i], record)) {
-        return hashes_[i] == record.hash ? AppendStatus::Durable
-                                         : AppendStatus::Invalid;
+    if (const auto* existing = find_cached(record.identity);
+        existing != nullptr) {
+      return *existing == record.hash ? AppendStatus::Durable
+                                      : AppendStatus::Invalid;
+    }
+    if (cache_count_ == Capacity) {
+      bool read_ok = true;
+      config::ConfigHash disk_hash{};
+      if (find_on_disk(record.identity, disk_hash, read_ok)) {
+        return disk_hash == record.hash ? AppendStatus::Durable
+                                        : AppendStatus::Invalid;
+      }
+      if (!read_ok) {
+        health_ = ArchiveHealth::Degraded;
+        return AppendStatus::Retryable;
       }
     }
     if (pending_bytes_ > quota_bytes_ ||
-        record.size > quota_bytes_ - pending_bytes_ || count_ == Capacity) {
+        record.size > quota_bytes_ - pending_bytes_) {
       return AppendStatus::LoggingBlocked;
     }
     if (!fs_.append(record.bytes.data(), record.size) || !fs_.flush()) {
       health_ = ArchiveHealth::Degraded;
       return AppendStatus::Retryable;
     }
-    index_[count_] = record.identity;
-    hashes_[count_] = record.hash;
-    ++count_;
+    if (cache_count_ < Capacity) {
+      index_[cache_count_] = record.identity;
+      hashes_[cache_count_] = record.hash;
+      ++cache_count_;
+    }
+    ++record_count_;
     pending_bytes_ += record.size;
     health_ = ArchiveHealth::Healthy;
     return AppendStatus::Durable;
@@ -421,7 +753,8 @@ class NativeArchiveFileStore final : public IArchiveStore {
   bool checkpoint() noexcept override { return fs_.flush(); }
 
   bool recover() noexcept override {
-    count_ = 0U;
+    cache_count_ = 0U;
+    record_count_ = 0U;
     pending_bytes_ = 0U;
     if (fs_.open_failed()) {
       health_ = ArchiveHealth::Blocked;
@@ -441,11 +774,12 @@ class NativeArchiveFileStore final : public IArchiveStore {
       const std::size_t total = kArchiveHeaderBytes + payload_size + kArchiveTrailerBytes;
       if (payload_size > kArchiveMaxRecordBytes - kArchiveHeaderBytes -
                              kArchiveTrailerBytes ||
-          total > fs_.size() - offset || count_ == Capacity) {
+          total > fs_.size() - offset) {
         clean = false;
         break;
       }
-      ImmutableRecordBytes record{};
+      ImmutableRecordBytes& record = scan_record_;
+      record = ImmutableRecordBytes{};
       record.size = total;
       if (!fs_.read(offset, record.bytes.data(), total)) {
         clean = false;
@@ -456,21 +790,34 @@ class NativeArchiveFileStore final : public IArchiveStore {
         clean = false;
         break;
       }
-      record.identity.kind = static_cast<ArchiveRecordKind>(record.bytes[kArchiveKindOffset]);
-      record.identity.sequence = read_u64(record.bytes.data() + kArchiveSequenceOffset);
-      record.identity.device_id.present = true;
-      record.identity.boot_id.present = true;
-      std::memcpy(record.identity.device_id.bytes.data(),
-                  record.bytes.data() + kArchiveDeviceIdOffset,
-                  record.identity.device_id.bytes.size());
-      std::memcpy(record.identity.boot_id.bytes.data(),
-                  record.bytes.data() + kArchiveBootIdOffset,
-                  record.identity.boot_id.bytes.size());
+      decode_identity(record);
       record.hash = telemetry_contract::sha256(std::string_view(
           reinterpret_cast<const char*>(record.bytes.data()), record.size));
-      index_[count_] = record.identity;
-      hashes_[count_] = record.hash;
-      ++count_;
+      if (const auto* existing = find_cached(record.identity);
+          existing != nullptr) {
+        pending_bytes_ += total;
+        offset += total;
+        continue;
+      }
+      if (cache_count_ == Capacity) {
+        bool read_ok = true;
+        config::ConfigHash existing_hash{};
+        if (find_on_disk(record.identity, existing_hash, read_ok, offset)) {
+          pending_bytes_ += total;
+          offset += total;
+          continue;
+        }
+        if (!read_ok) {
+          clean = false;
+          break;
+        }
+      }
+      if (cache_count_ < Capacity) {
+        index_[cache_count_] = record.identity;
+        hashes_[cache_count_] = record.hash;
+        ++cache_count_;
+      }
+      ++record_count_;
       pending_bytes_ += total;
       offset += total;
     }
@@ -486,17 +833,117 @@ class NativeArchiveFileStore final : public IArchiveStore {
   uint64_t pending_quota_bytes() const noexcept override { return quota_bytes_; }
   ArchiveHealth health() const noexcept override { return health_; }
   void set_quota(uint64_t quota) noexcept { quota_bytes_ = quota; }
-  std::size_t size() const noexcept { return count_; }
+  std::size_t size() const noexcept { return record_count_; }
   const config::ConfigHash* hash_at(std::size_t index) const noexcept {
-    return index < count_ ? &hashes_[index] : nullptr;
+    return index < cache_count_ ? &hashes_[index] : nullptr;
+  }
+  bool peek_pending(ImmutableRecordBytes& output) noexcept override {
+    if (!fs_.exists() || fs_.size() < kArchiveHeaderBytes) return false;
+    if (!read_record_at(0U, output)) return false;
+    return true;
+  }
+  bool reclaim_pending(const ArchiveIdentity& identity,
+                       const config::ConfigHash& hash) noexcept override {
+    ImmutableRecordBytes record{};
+    if (!read_record_at(0U, record) || !same_identity(record.identity, identity) ||
+        record.hash != hash || !fs_.remove_prefix(record.size)) {
+      return false;
+    }
+    return recover();
+  }
+  bool contains(const ArchiveIdentity& identity,
+                const config::ConfigHash& hash) noexcept override {
+    bool read_ok = true;
+    config::ConfigHash existing{};
+    return find_on_disk(identity, existing, read_ok) && existing == hash;
   }
 
  private:
   static bool same_identity(const ArchiveIdentity& left,
+                            const ArchiveIdentity& right) noexcept {
+    return left.kind == right.kind && left.sequence == right.sequence &&
+           left.device_id.bytes == right.device_id.bytes &&
+           left.boot_id.bytes == right.boot_id.bytes;
+  }
+  static bool same_identity(const ArchiveIdentity& left,
                             const ImmutableRecordBytes& right) noexcept {
-    return left.kind == right.identity.kind && left.sequence == right.identity.sequence &&
-           left.device_id.bytes == right.identity.device_id.bytes &&
-           left.boot_id.bytes == right.identity.boot_id.bytes;
+    return same_identity(left, right.identity);
+  }
+  static void decode_identity(ImmutableRecordBytes& record) noexcept {
+    record.identity.kind = static_cast<ArchiveRecordKind>(record.bytes[kArchiveKindOffset]);
+    record.identity.sequence = read_u64(record.bytes.data() + kArchiveSequenceOffset);
+    record.identity.device_id.present = true;
+    record.identity.boot_id.present = true;
+    std::memcpy(record.identity.device_id.bytes.data(),
+                record.bytes.data() + kArchiveDeviceIdOffset,
+                record.identity.device_id.bytes.size());
+    std::memcpy(record.identity.boot_id.bytes.data(),
+                record.bytes.data() + kArchiveBootIdOffset,
+                record.identity.boot_id.bytes.size());
+  }
+  const config::ConfigHash* find_cached(const ArchiveIdentity& identity) const noexcept {
+    for (std::size_t i = 0U; i < cache_count_; ++i) {
+      if (same_identity(index_[i], identity)) return &hashes_[i];
+    }
+    return nullptr;
+  }
+  bool find_on_disk(const ArchiveIdentity& identity,
+                    config::ConfigHash& hash,
+                    bool& read_ok,
+                    std::size_t limit = SIZE_MAX) noexcept {
+    read_ok = true;
+    std::size_t offset = 0U;
+    while (offset < fs_.size() && offset < limit) {
+      if (limit - offset < kArchiveHeaderBytes ||
+          fs_.size() - offset < kArchiveHeaderBytes ||
+          !fs_.read(offset, header_.data(), header_.size())) {
+        read_ok = false;
+        return false;
+      }
+      const std::size_t payload_size = read_u32(header_.data() + kArchivePayloadSizeOffset);
+      const std::size_t total = kArchiveHeaderBytes + payload_size + kArchiveTrailerBytes;
+      if (payload_size > kArchiveMaxRecordBytes - kArchiveHeaderBytes - kArchiveTrailerBytes ||
+          total > fs_.size() - offset || total > limit - offset ||
+          !fs_.read(offset, lookup_record_.bytes.data(), total)) {
+        read_ok = false;
+        return false;
+      }
+      lookup_record_.size = total;
+      lookup_record_.committed = true;
+      if (!RecordCodec::valid(lookup_record_)) {
+        read_ok = false;
+        return false;
+      }
+      decode_identity(lookup_record_);
+      lookup_record_.hash = telemetry_contract::sha256(std::string_view(
+          reinterpret_cast<const char*>(lookup_record_.bytes.data()), total));
+      if (same_identity(lookup_record_.identity, identity)) {
+        hash = lookup_record_.hash;
+        return true;
+      }
+      offset += total;
+    }
+    return false;
+  }
+  bool read_record_at(std::size_t offset,
+                      ImmutableRecordBytes& record) noexcept {
+    if (offset > fs_.size() || fs_.size() - offset < kArchiveHeaderBytes ||
+        !fs_.read(offset, header_.data(), header_.size())) return false;
+    const std::size_t payload_size =
+        read_u32(header_.data() + kArchivePayloadSizeOffset);
+    const std::size_t total = kArchiveHeaderBytes + payload_size +
+                              kArchiveTrailerBytes;
+    if (payload_size > kArchiveMaxRecordBytes - kArchiveHeaderBytes -
+                           kArchiveTrailerBytes ||
+        total > fs_.size() - offset ||
+        !fs_.read(offset, record.bytes.data(), total)) return false;
+    record.size = total;
+    record.committed = true;
+    if (!RecordCodec::valid(record)) return false;
+    decode_identity(record);
+    record.hash = telemetry_contract::sha256(std::string_view(
+        reinterpret_cast<const char*>(record.bytes.data()), total));
+    return true;
   }
   static uint32_t read_u32(const uint8_t* bytes) noexcept {
     return static_cast<uint32_t>(bytes[0U]) |
@@ -512,9 +959,13 @@ class NativeArchiveFileStore final : public IArchiveStore {
   ArchiveFileSystemDouble<Capacity, Bytes>& fs_;
   std::array<ArchiveIdentity, Capacity> index_{};
   std::array<config::ConfigHash, Capacity> hashes_{};
+  std::array<uint8_t, kArchiveHeaderBytes> header_{};
+  ImmutableRecordBytes scan_record_{};
+  ImmutableRecordBytes lookup_record_{};
   uint64_t quota_bytes_{Bytes};
   uint64_t pending_bytes_{0U};
-  std::size_t count_{0U};
+  std::size_t cache_count_{0U};
+  std::size_t record_count_{0U};
   ArchiveHealth health_{ArchiveHealth::Healthy};
 };
 #endif

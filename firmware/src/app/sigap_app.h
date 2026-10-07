@@ -57,6 +57,9 @@ class SigapApp final {
   storage::LittleFsArchiveStore littlefs_store_{};
   storage::SdArchiveStore sd_store_{};
   storage::MediaFailoverStore archive_store_;
+  storage::ArchiveStoreMigrationSource migration_source_;
+  storage::ArchiveStoreMigrationDestination migration_destination_;
+  storage::ArchiveMediaMigration media_migration_;
   ArchiveRuntime archive_runtime_{};
 #ifdef ARDUINO
   telemetry_archive::FsAckJournalStore ack_journal_{};

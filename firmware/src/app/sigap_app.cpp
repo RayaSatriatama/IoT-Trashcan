@@ -30,6 +30,11 @@ SigapApp::SigapApp() noexcept
       acquisition_(config_manager_, record_factory_, board::kN16R8Pins,
                    profiles_),
       archive_store_(sd_store_, littlefs_store_),
+      migration_source_(littlefs_store_, storage::ArchiveMedia::LittleFs),
+      migration_destination_(&sd_store_, storage::ArchiveMedia::Sd),
+      media_migration_(migration_source_, migration_destination_,
+                       storage::ArchiveMedia::LittleFs,
+                       storage::ArchiveMedia::Sd),
       model_lifecycle_(model_persistence_,
                        models::ModelProfilePersistence::default_codec()),
       model_router_(model_lifecycle_,
@@ -41,6 +46,11 @@ SigapApp::SigapApp() noexcept
   profile_manager_.bind_runtime_profiles(profiles_);
   evidence_cache_.set_profiles(&profiles_);
   archive_runtime_.set_store(&archive_store_);
+  archive_runtime_.set_media_migration(&media_migration_);
+  archive_runtime_.set_sequence_allocator(&boot_identity_.sequence);
+  archive_runtime_.set_event_context(record_context_.device_id,
+                                     record_context_.boot_id,
+                                     record_context_.config_ref);
   processing_runtime_.set_downstream_observer(&evidence_cache_);
   acquisition_.set_sample_observer(&processing_runtime_);
   acquisition_.set_calibration_state_provider(&maintenance_router_);
@@ -119,6 +129,8 @@ void SigapApp::setup() noexcept {
     return;
   }
   record_context_.config_ref = ref;
+  archive_runtime_.set_event_context(record_context_.device_id,
+                                     record_context_.boot_id, ref);
 #ifdef ARDUINO
   if (LittleFS.begin(false)) {
     (void)littlefs_store_.begin(
@@ -166,6 +178,11 @@ void SigapApp::loop() noexcept {
   const acquisition::ArduinoMonotonicClock clock{};
   const uint64_t now_us = clock.now_us();
   maintenance_service_.poll(now_us);
+  acquisition::AuditEvent audit_event{};
+  std::size_t audit_budget{2U};
+  while (audit_budget-- != 0U && audit_ring_.try_pop(audit_event)) {
+    (void)archive_runtime_.append_audit_event(audit_event);
+  }
   refresh_model_profiles();
   if (profile_generation_ != profile_manager_.generation()) {
     profile_generation_ = profile_manager_.generation();

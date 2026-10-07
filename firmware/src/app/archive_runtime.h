@@ -4,6 +4,7 @@
 #include <cstdint>
 
 #include "acquisition/handoff.h"
+#include "acquisition/profile_manager.h"
 #include "acquisition/record.h"
 #include "processing_runtime.h"
 #include "storage/archive_store.h"
@@ -28,6 +29,16 @@ class ArchiveRuntime final {
   void set_media_migration(storage::ArchiveMediaMigration* migration) noexcept {
     migration_ = migration;
   }
+  void set_sequence_allocator(acquisition::SequenceAllocator* sequence) noexcept {
+    sequence_ = sequence;
+  }
+  void set_event_context(const acquisition::DeviceId& device,
+                         const acquisition::BootId& boot,
+                         const acquisition::ConfigRef& config) noexcept {
+    event_device_ = device;
+    event_boot_ = boot;
+    event_config_ = config;
+  }
   storage::MigrationStatus poll_media_migration() noexcept {
     return migration_ == nullptr ? storage::MigrationStatus::Idle
                                   : migration_->migrate_one();
@@ -47,9 +58,10 @@ class ArchiveRuntime final {
     acquisition::SampleRecord sample{};
     if (const auto* dropped = handoff.first_dropped(); dropped != nullptr) {
       const auto* last_dropped = handoff.last_dropped();
-      gaps_.record_loss(*dropped, last_dropped == nullptr ? *dropped : *last_dropped,
-                        handoff.dropped_pending_count(),
-                        storage::GapReason::QueueFull);
+      record_gap_loss(*dropped,
+                      last_dropped == nullptr ? *dropped : *last_dropped,
+                      handoff.dropped_pending_count(),
+                      storage::GapReason::QueueFull);
       handoff.clear_last_dropped();
       progressed = true;
     }
@@ -74,6 +86,39 @@ class ArchiveRuntime final {
     return append(record);
   }
 
+  storage::AppendStatus append_audit_event(
+      const acquisition::AuditEvent& event) noexcept {
+    if (sequence_ == nullptr || !event_device_.present || !event_boot_.present) {
+      return storage::AppendStatus::Retryable;
+    }
+    uint64_t sequence{0U};
+    if (!sequence_->allocate(sequence)) return storage::AppendStatus::Invalid;
+    const storage::ArchiveIdentity identity{
+        event_device_, event_boot_, sequence, storage::ArchiveRecordKind::Event};
+    storage::PayloadWriter writer{nullptr, 0U};
+    if (!storage::RecordCodec::begin(identity, scratch_, writer)) {
+      return storage::AppendStatus::Invalid;
+    }
+    writer = storage::PayloadWriter(
+        scratch_.bytes.data() + storage::kArchiveHeaderBytes,
+        scratch_.bytes.size() - storage::kArchiveHeaderBytes -
+            storage::kArchiveTrailerBytes);
+    const auto& config = event.config_ref.present ? event.config_ref : event_config_;
+    if (!writer.u8(static_cast<uint8_t>(event.kind)) ||
+        !writer.u64(event.monotonic_us) ||
+        !writer.u8(config.present ? 1U : 0U) ||
+        !writer.u32(config.schema_version) ||
+        !writer.u64(config.config_version) ||
+        !writer.bytes(config.hash.data(), config.hash.size()) ||
+        !writer.u8(event.pending_activation ? 1U : 0U) ||
+        !write_profile_ref(event.previous, writer) ||
+        !write_profile_ref(event.current, writer) ||
+        !storage::RecordCodec::finish(scratch_, writer)) {
+      return storage::AppendStatus::Invalid;
+    }
+    return append(scratch_);
+  }
+
   bool drain_results(ResultHandoff& handoff) noexcept {
     bool progressed{false};
     ResultEnvelope envelope{};
@@ -83,12 +128,13 @@ class ArchiveRuntime final {
       if (!encode_result(envelope, scratch_)) {
         ++encode_failures_;
         handoff.discard_front();
-        gaps_.record(envelope.header.sequence, storage::GapReason::InvalidRecord);
+        record_gap(envelope.header.sequence, storage::GapReason::InvalidRecord);
         progressed = true;
         ++drained;
         continue;
       }
-      if (append(scratch_) != storage::AppendStatus::Durable) break;
+      const auto status = append(scratch_);
+      if (status != storage::AppendStatus::Durable) break;
       handoff.discard_front();
       progressed = true;
       ++drained;
@@ -98,6 +144,12 @@ class ArchiveRuntime final {
 
   uint64_t durable_records() const noexcept { return durable_records_; }
   uint64_t encode_failures() const noexcept { return encode_failures_; }
+  uint64_t gap_persistence_failures() const noexcept {
+    return gap_persistence_failures_;
+  }
+  uint64_t gap_persisted_ranges() const noexcept {
+    return gap_persisted_ranges_;
+  }
   const storage::GapTracker<32U>& gaps() const noexcept { return gaps_; }
   storage::ArchiveHealth health() const noexcept {
     return store_ == nullptr ? storage::ArchiveHealth::Degraded : store_->health();
@@ -106,15 +158,56 @@ class ArchiveRuntime final {
  private:
   storage::AppendStatus append(const storage::ImmutableRecordBytes& record) noexcept {
     if (store_ == nullptr) {
-      gaps_.record(record.identity.sequence, storage::GapReason::MediaFailure);
+      record_gap(record.identity.sequence, storage::GapReason::MediaFailure);
       return storage::AppendStatus::Retryable;
     }
     const auto status = store_->append(record);
     if (status == storage::AppendStatus::Durable) ++durable_records_;
     else if (status == storage::AppendStatus::Invalid) {
-      gaps_.record(record.identity.sequence, storage::GapReason::InvalidRecord);
+      record_gap(record.identity.sequence, storage::GapReason::InvalidRecord);
     }
     return status;
+  }
+
+  void record_gap(uint64_t sequence, storage::GapReason reason) noexcept {
+    if (!gaps_.record(sequence, reason)) {
+      ++gap_persistence_failures_;
+      return;
+    }
+    persist_latest_gap();
+  }
+
+  void record_gap(const acquisition::SampleRecord& sample,
+                  storage::GapReason reason) noexcept {
+    if (!gaps_.record(sample, reason)) {
+      ++gap_persistence_failures_;
+      return;
+    }
+    persist_latest_gap();
+  }
+
+  void record_gap_loss(const acquisition::SampleRecord& first,
+                       const acquisition::SampleRecord& last,
+                       uint64_t count,
+                       storage::GapReason reason) noexcept {
+    if (!gaps_.record_loss(first, last, count, reason)) {
+      ++gap_persistence_failures_;
+      return;
+    }
+    persist_latest_gap();
+  }
+
+  void persist_latest_gap() noexcept {
+    if (store_ == nullptr || gaps_.size() == 0U) {
+      ++gap_persistence_failures_;
+      return;
+    }
+    const auto status = store_->append_gap(gaps_.at(gaps_.size() - 1U));
+    if (status == storage::AppendStatus::Durable) {
+      ++gap_persisted_ranges_;
+    } else {
+      ++gap_persistence_failures_;
+    }
   }
 
   bool encode_result(const ResultEnvelope& envelope,
@@ -255,6 +348,10 @@ class ArchiveRuntime final {
 
   storage::IArchiveStore* store_{nullptr};
   storage::ArchiveMediaMigration* migration_{nullptr};
+  acquisition::SequenceAllocator* sequence_{nullptr};
+  acquisition::DeviceId event_device_{};
+  acquisition::BootId event_boot_{};
+  acquisition::ConfigRef event_config_{};
   // The cooperative runtime encodes one record at a time. Keeping this
   // bounded buffer in the instance avoids a 16 KiB automatic loop-stack
   // allocation and keeps filesystem work outside acquisition callbacks.
@@ -262,6 +359,8 @@ class ArchiveRuntime final {
   storage::GapTracker<32U> gaps_{};
   uint64_t durable_records_{0U};
   uint64_t encode_failures_{0U};
+  uint64_t gap_persistence_failures_{0U};
+  uint64_t gap_persisted_ranges_{0U};
 };
 
 }  // namespace sigap

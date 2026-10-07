@@ -11,7 +11,9 @@ backend archive code, or migration 005.
 | record maximum | archive codec, bytes | 16 KiB contract bound | compile-time contract |
 | batch maximum | immutable batch, bytes | 32 KiB contract bound | compile-time contract |
 | journal/gap capacity | instance-owned rings | bounded static capacity | firmware build; no mutable global |
-| target batch index | `FsImmutableBatchStore`, entries | 64 committed batch identities | firmware build; rebuilt on restart |
+| gap reserve journal | `LittleFsArchiveStore` / `MediaFailoverStore`, bytes | 4 KiB outside pending-record quota | append after terminal gap decision; target recovery rejects malformed frame |
+| target archive identity cache | `LittleFsArchiveStore`, entries | 128 hot identities; full archive remains file-backed and scans cache misses | firmware build; rebuilt on restart |
+| target batch index | `FsImmutableBatchStore`, entries | 64 hot batch identities | firmware build; rebuilt on restart |
 | migration work budget | `ArchiveMediaMigration` / `ArchiveRuntime`, records per loop | one bounded record step | instance-owned; retryable until verify, checkpoint, and reclaim succeed |
 | ACK journal frame | `FsAckJournalStore`, bytes | fixed little-endian frame with CRC and generation-bound checkpoint | protocol constant; target recovery validates before state transition |
 
@@ -28,8 +30,12 @@ a partial or corrupt tail is ignored and never exposed as a committed record.
 
 SD is the primary adapter when mounted by the target composition. LittleFS is
 the fallback. Neither adapter formats media. A fallback append does not delete
-or reclaim pending data on the failed primary. Migration, if later needed,
-must use copy, verify, checkpoint, and reclaim.
+or reclaim pending data on the failed primary. The target composition binds
+`ArchiveStoreMigrationSource` to LittleFS and
+`ArchiveStoreMigrationDestination` to SD. Migration uses copy, identity/hash
+verification, checkpoint, and source reclaim; the receipt binds source media,
+destination media, identity, hash, and checkpoint generation. A destination
+copy remains pending until a valid server ACK in a later task.
 
 `ImmutableBatch` freezes the exact request body and SHA-256 before the first
 attempt. `FsImmutableBatchStore` stores device identity, record count, body
@@ -39,5 +45,6 @@ matching durable server ACK including device identity, body hash, and counts.
 Timeout, conflict, invalid ACK, and summary-v2 ACK do not advance the
 delivered state; reclaim requires an explicit checkpoint.
 
-Native tests use memory stores, a filesystem test double, and fault injection.
+Native tests use memory stores, a filesystem test double that exercises the
+store migration adapters, and fault injection.
 They are not physical SD, power-cut, wear, throughput, or HIL evidence.

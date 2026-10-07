@@ -41,39 +41,42 @@ sensor, heater, or network test was performed.
 
 ## Fresh native evidence
 
-The integrated native suite passed 263/263 tests, including archive storage,
-archive runtime, immutable batch, ACK, failover, corrupt-tail, quota, and
+The integrated native suite passed 271/271 tests, including archive storage,
+archive runtime, immutable batch, ACK, failover, corrupt-tail, quota, 129-entry
+cache overflow, 4,680-record workload, migration adapter, gap reserve, and
 producer-to-archive retry tests. The existing telemetry contract tests also
 passed their frozen canonical record and exact-body hash fixtures.
 
-The final native suite was rerun after target adapter compilation was forced
-through `archive_runtime.h`. The sanitizer copy passed 262/262 tests with
-AddressSanitizer and UndefinedBehaviorSanitizer and produced no diagnostics;
-a final focused sanitizer run passed 22/22 archive, batch, and migration tests.
+The same 271-test suite was rerun with AddressSanitizer and UndefinedBehavior-
+Sanitizer enabled through a temporary native PlatformIO configuration. It
+completed without sanitizer diagnostics.
 Cppcheck reported `No defects found`.
 
 Target compilation passed for `sigap_n16r8`, `sigap_n16r8_sd`, and
-`sigap_bench`. Final usage was 123,192 B RAM and 450,681 B flash for
-`sigap_n16r8` and `sigap_bench`, and 123,476 B RAM and 500,829 B flash for
-`sigap_n16r8_sd`. These are compilation evidence only, not physical N16R8 or
-SD I/O validation.
+`sigap_bench`. Final usage was 205,912 B RAM and 455,357 B flash for
+`sigap_n16r8`, 206,196 B RAM and 505,493 B flash for `sigap_n16r8_sd`, and
+205,912 B RAM and 455,357 B flash for `sigap_bench`. These are compilation
+evidence only, not physical N16R8 or SD I/O validation.
 
 Native size probes continue to treat record/batch byte arrays and journal
 capacity as explicit bounded ownership. `SampleRing<16>` is 4,656 B after
 adding first/last dropped identities for queue gap evidence. The large native
 fault-injection stores are not instantiated in the target composition.
-`ArchiveRuntime` is 19,104 B, including one instance-owned 16,488 B record
+`ArchiveRuntime` is 19,480 B, including one instance-owned 16,488 B record
 codec buffer; no equivalent 16 KiB automatic buffer remains on the application
-loop stack. `ImmutableBatch` is 32,936 B, `GapTracker<32>` is 2,584 B, and
-the native `MemoryAckJournalStore<2>` is 65,896 B.
+loop stack. `ImmutableRecordBytes` is 16,488 B, `ImmutableBatch` is 32,936 B,
+`GapTracker<32>` is 2,840 B, and the native `MemoryAckJournalStore<2>` is
+336 B. `FsAckJournalStore` is target-only and is therefore not represented by
+the native layout measurement; its bounded target entries and frame scratch
+remain instance-owned.
 
 ## Budget measurement
 
-The native serialized workload test appends 80 bounded frames: 75 sample
-frames, 3 representative result frames, 1 event frame, and 1 metadata frame.
-This approximates the TSD initial 75 sample frames/s plus 3 processing results/s
-and verifies bounded quota accounting and no overwrite. This is a serialized workload
-measurement, not a claim of 60 seconds of physical flash or SD endurance.
+The native serialized workload test appends 4,680 bounded sample/result frames,
+matching 75 sample frames/s plus 3 processing results/s for 60 seconds. It
+recreates the file-backed store and reconciles every identity and hash against
+the 6 MiB quota without overwriting pending data. This is a serialized native
+capacity measurement, not a claim of physical flash or SD endurance.
 
 The archive runtime regression also verifies that a result containing FIS and
 Safety evidence serializes differently from the same result without that
@@ -81,16 +84,22 @@ evidence. The native filesystem double verifies restart reconstruction after a
 partial/corrupt tail, append-boundary recovery, and identity/hash index rebuild.
 
 The target batch adapter provides bounded exact-byte replay after runtime
-recreation and writes a durable checkpoint marker. Native migration regressions
-cover verify/checkpoint ordering and source retention on checkpoint failure.
-Physical replay and copy-verify-checkpoint-reclaim migration remain unverified
-because physical SD I/O is prohibited in this batch. The application loop has a
-bounded migration hook; target source/destination wiring remains a follow-up.
+recreation and writes a durable checkpoint marker. `SigapApp` now owns and
+wires the LittleFS source, SD destination, and `ArchiveMediaMigration` into
+`ArchiveRuntime`; each poll performs at most one copy/verify/checkpoint/reclaim
+step. Native filesystem-double regressions cover the same adapter boundary,
+including source retention on checkpoint failure. Physical replay and
+copy-verify-checkpoint-reclaim remain unverified because physical SD I/O is
+prohibited in this batch.
 
 ## Deferred
 
 Physical SD mount/read/write, crash/power-cut tail loss, wear, and physical
 copy-verify-checkpoint-reclaim migration remain deferred. The target ACK
-journal and record archive boundaries are compiled but not exercised against
-physical media. HTTPS transport, backend ACK integration, network workers,
-backend archive, migration 005, and actuator output are out of scope.
+journal and record archive boundaries are compiled and wired, but are not
+exercised against physical media. The cooperative application loop keeps
+filesystem work outside acquisition callbacks and bounds migration to one
+record per poll; dedicated RTOS storage-worker timing and physical endurance
+evidence are deferred to hardware validation. HTTPS transport, backend ACK
+integration, network workers, backend archive, migration 005, and actuator
+output are out of scope.

@@ -179,19 +179,68 @@ void test_gap_reserve_failure_is_observable_without_dropping_record_retry() {
   storage::MemoryArchiveStore<4U> store(64U * 1024U);
   ArchiveRuntime runtime(&store);
   ArchiveRuntime::SampleHandoff handoff{};
-  auto value = sample();
-  value.header.sequence = 1U;
-  TEST_ASSERT_EQUAL_INT(static_cast<int>(HandoffStatus::Enqueued),
-                        static_cast<int>(handoff.try_push(value)));
+  for (uint64_t sequence = 0U; sequence < 16U; ++sequence) {
+    auto value = sample();
+    value.header.sequence = sequence;
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(HandoffStatus::Enqueued),
+                          static_cast<int>(handoff.try_push(value)));
+  }
+  auto dropped = sample();
+  dropped.header.sequence = 16U;
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(HandoffStatus::Full),
+                        static_cast<int>(handoff.try_push(dropped)));
   store.set_fault(storage::StoreFault::MediaFailure);
   TEST_ASSERT_TRUE(runtime.drain_samples(handoff));
   TEST_ASSERT_EQUAL_UINT64(1U, runtime.gaps().unlogged_records());
   TEST_ASSERT_TRUE(runtime.gap_persistence_failures() > 0U);
   TEST_ASSERT_EQUAL_UINT32(0U, store.gap_size());
   store.set_fault(storage::StoreFault::None);
-  TEST_ASSERT_EQUAL_UINT32(1U, handoff.size());
+  TEST_ASSERT_EQUAL_UINT32(16U, handoff.size());
   TEST_ASSERT_TRUE(runtime.drain_samples(handoff));
+  TEST_ASSERT_EQUAL_UINT32(4U, store.size());
+}
+
+void test_runtime_wires_bounded_media_migration_source_and_destination() {
+  storage::MemoryArchiveStore<4U> source_store(64U * 1024U);
+  storage::MemoryArchiveStore<4U> destination_store(64U * 1024U);
+  storage::ArchiveStoreMigrationSource source(source_store);
+  storage::ArchiveStoreMigrationDestination destination(&destination_store);
+  storage::ArchiveMediaMigration migration(source, destination);
+  ArchiveRuntime runtime(&source_store);
+  runtime.set_media_migration(&migration);
+
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(storage::AppendStatus::Durable),
+      static_cast<int>(runtime.append_sample(sample())));
+  TEST_ASSERT_EQUAL_UINT32(1U, source_store.size());
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(storage::MigrationStatus::Durable),
+      static_cast<int>(runtime.poll_media_migration()));
+  TEST_ASSERT_EQUAL_UINT32(1U, destination_store.size());
+  TEST_ASSERT_EQUAL_UINT32(0U, source_store.size());
+
+  // A second poll is an explicit idle state, not an unbound/null hook.
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(storage::MigrationStatus::Idle),
+      static_cast<int>(runtime.poll_media_migration()));
+}
+
+void test_audit_event_uses_shared_sequence_and_is_archived() {
+  storage::MemoryArchiveStore<4U> store(64U * 1024U);
+  ArchiveRuntime runtime(&store);
+  SequenceAllocator sequence{};
+  runtime.set_sequence_allocator(&sequence);
+  runtime.set_event_context(device(), boot(), config_ref());
+  acquisition::AuditEvent event{};
+  event.kind = acquisition::AuditEventKind::ProfileActivated;
+  event.monotonic_us = 1234U;
+  event.config_ref = config_ref();
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(storage::AppendStatus::Durable),
+                        static_cast<int>(runtime.append_audit_event(event)));
   TEST_ASSERT_EQUAL_UINT32(1U, store.size());
+  storage::TypedArchiveRecordView view{};
+  TEST_ASSERT_TRUE(storage::RecordCodec::decode_event_view(store.at(0U), view));
+  TEST_ASSERT_EQUAL_UINT64(0U, view.identity.sequence);
 }
 
 }  // namespace
@@ -204,5 +253,7 @@ int main() {
   RUN_TEST(test_result_codec_persists_fis_and_safety_evidence);
   RUN_TEST(test_queue_loss_counts_every_dropped_attempt);
   RUN_TEST(test_gap_reserve_failure_is_observable_without_dropping_record_retry);
+  RUN_TEST(test_runtime_wires_bounded_media_migration_source_and_destination);
+  RUN_TEST(test_audit_event_uses_shared_sequence_and_is_archived);
   return UNITY_END();
 }

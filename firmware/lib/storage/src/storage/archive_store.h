@@ -139,6 +139,17 @@ class IArchiveStore {
   virtual uint64_t pending_bytes() const noexcept = 0;
   virtual uint64_t pending_quota_bytes() const noexcept = 0;
   virtual ArchiveHealth health() const noexcept = 0;
+  // Optional media-migration seam. A store that owns pending records may
+  // expose one record at a time and reclaim it only after a verified receipt.
+  virtual bool peek_pending(ImmutableRecordBytes&) noexcept { return false; }
+  virtual bool reclaim_pending(const ArchiveIdentity&,
+                               const config::ConfigHash&) noexcept {
+    return false;
+  }
+  virtual bool contains(const ArchiveIdentity&,
+                        const config::ConfigHash&) noexcept {
+    return false;
+  }
 };
 
 enum class StoreFault : uint8_t { None, ShortWrite, FlushFailure, CorruptTail, MediaFailure };
@@ -219,6 +230,34 @@ class MemoryArchiveStore final : public IArchiveStore {
   uint64_t pending_bytes() const noexcept override { return pending_bytes_; }
   uint64_t pending_quota_bytes() const noexcept override { return quota_bytes_; }
   ArchiveHealth health() const noexcept override { return health_; }
+  bool peek_pending(ImmutableRecordBytes& output) noexcept override {
+    if (count_ == 0U) return false;
+    output = records_[0U];
+    return true;
+  }
+  bool reclaim_pending(const ArchiveIdentity& identity,
+                       const config::ConfigHash& hash) noexcept override {
+    if (count_ == 0U || !same_identity(records_[0U].identity, identity) ||
+        records_[0U].hash != hash) {
+      return false;
+    }
+    pending_bytes_ -= records_[0U].size;
+    for (std::size_t index = 1U; index < count_; ++index) {
+      records_[index - 1U] = records_[index];
+    }
+    records_[count_ - 1U] = ImmutableRecordBytes{};
+    --count_;
+    return true;
+  }
+  bool contains(const ArchiveIdentity& identity,
+                const config::ConfigHash& hash) noexcept override {
+    for (std::size_t index = 0U; index < count_; ++index) {
+      if (same_identity(records_[index].identity, identity)) {
+        return records_[index].hash == hash;
+      }
+    }
+    return false;
+  }
   void set_fault(StoreFault fault) noexcept { fault_ = fault; }
   std::size_t size() const noexcept { return count_; }
   bool checkpointed() const noexcept { return checkpointed_; }

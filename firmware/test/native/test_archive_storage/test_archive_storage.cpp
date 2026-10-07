@@ -77,6 +77,15 @@ BootId boot() {
   return value;
 }
 
+ConfigRef config_ref() {
+  ConfigRef value{};
+  value.present = true;
+  value.schema_version = 1U;
+  value.config_version = 3U;
+  value.hash[0] = 0x44U;
+  return value;
+}
+
 SampleRecord sample(uint64_t sequence) {
   SampleRecord value{};
   value.header.device_id = device();
@@ -113,8 +122,15 @@ ImmutableRecordBytes encoded_kind(uint64_t sequence, ArchiveRecordKind kind) {
   writer = PayloadWriter(value.bytes.data() + kArchiveHeaderBytes,
                          value.bytes.size() - kArchiveHeaderBytes -
                              kArchiveTrailerBytes);
+  const auto cfg = config_ref();
   if (!writer.u8(static_cast<uint8_t>(kind)) ||
-      !writer.u32(static_cast<uint32_t>(sequence)) ||
+      !writer.u64(sequence) ||
+      !writer.u64(sequence * 1000U) ||
+      !writer.bytes(device().bytes.data(), device().bytes.size()) ||
+      !writer.bytes(boot().bytes.data(), boot().bytes.size()) ||
+      !writer.u32(cfg.schema_version) ||
+      !writer.u64(cfg.config_version) ||
+      !writer.bytes(cfg.hash.data(), cfg.hash.size()) ||
       !RecordCodec::finish(value, writer)) return ImmutableRecordBytes{};
   return value;
 }
@@ -150,6 +166,18 @@ void test_codec_reader_round_trips_identity_and_payload() {
   TEST_ASSERT_TRUE(decoded.raw.temperature_crc_valid);
   TEST_ASSERT_FALSE(decoded.raw.humidity_crc_valid);
   TEST_ASSERT_TRUE(decoded.raw.heater_ready);
+}
+
+void test_typed_views_reject_wrong_archive_kinds() {
+  const auto result = encoded_kind(40U, ArchiveRecordKind::Result);
+  const auto event = encoded_kind(41U, ArchiveRecordKind::Event);
+  const auto metadata = encoded_kind(42U, ArchiveRecordKind::Metadata);
+  TypedArchiveRecordView view{};
+  TEST_ASSERT_TRUE(RecordCodec::decode_result_view(result, view));
+  TEST_ASSERT_FALSE(RecordCodec::decode_event_view(result, view));
+  TEST_ASSERT_TRUE(RecordCodec::decode_event_view(event, view));
+  TEST_ASSERT_TRUE(RecordCodec::decode_metadata_view(metadata, view));
+  TEST_ASSERT_FALSE(RecordCodec::decode_result_view(metadata, view));
 }
 
 void test_store_deduplicates_and_recovers_corrupt_tail() {
@@ -282,6 +310,80 @@ void test_filesystem_double_distinguishes_missing_from_open_error() {
   TEST_ASSERT_FALSE(missing_store.recover());
 }
 
+void test_filesystem_archive_pages_beyond_index_cache_and_restarts() {
+  // The target adapter keeps only a bounded identity cache.  Durable archive
+  // capacity is governed by quota/media bytes, not by that cache size.
+  ArchiveFileSystemDouble<128U, 2U * 1024U * 1024U> filesystem{};
+  NativeArchiveFileStore<128U, 2U * 1024U * 1024U> first_store(filesystem);
+  TEST_ASSERT_TRUE(first_store.recover());
+  for (uint64_t sequence = 0U; sequence < 129U; ++sequence) {
+    TEST_ASSERT_EQUAL_INT(
+        static_cast<int>(AppendStatus::Durable),
+        static_cast<int>(first_store.append(encoded(sequence + 200U))));
+  }
+  TEST_ASSERT_EQUAL_UINT32(129U, first_store.size());
+
+  NativeArchiveFileStore<128U, 2U * 1024U * 1024U> restarted(filesystem);
+  TEST_ASSERT_TRUE(restarted.recover());
+  TEST_ASSERT_EQUAL_UINT32(129U, restarted.size());
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(AppendStatus::Durable),
+      static_cast<int>(restarted.append(encoded(328U))));
+  TEST_ASSERT_EQUAL_UINT32(129U, restarted.size());
+
+  const auto next = encoded(329U);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AppendStatus::Durable),
+                        static_cast<int>(restarted.append(next)));
+  TEST_ASSERT_EQUAL_UINT32(130U, restarted.size());
+
+  NativeArchiveFileStore<128U, 2U * 1024U * 1024U> reconstructed(filesystem);
+  TEST_ASSERT_TRUE(reconstructed.recover());
+  TEST_ASSERT_EQUAL_UINT32(130U, reconstructed.size());
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AppendStatus::Durable),
+                        static_cast<int>(reconstructed.append(next)));
+  TEST_ASSERT_EQUAL_UINT32(130U, reconstructed.size());
+}
+
+void test_filesystem_duplicate_frame_is_deduplicated_across_restart() {
+  ArchiveFileSystemDouble<8U, 64U * 1024U> filesystem{};
+  NativeArchiveFileStore<8U, 64U * 1024U> store(filesystem);
+  const auto first = encoded(131U);
+  const auto second = encoded(132U);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AppendStatus::Durable),
+                        static_cast<int>(store.append(first)));
+  TEST_ASSERT_TRUE(filesystem.append(first.bytes.data(), first.size));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AppendStatus::Durable),
+                        static_cast<int>(store.append(second)));
+  TEST_ASSERT_TRUE(store.recover());
+  TEST_ASSERT_EQUAL_UINT32(2U, store.size());
+  NativeArchiveFileStore<8U, 64U * 1024U> restarted(filesystem);
+  TEST_ASSERT_TRUE(restarted.recover());
+  TEST_ASSERT_EQUAL_UINT32(2U, restarted.size());
+  TEST_ASSERT_EQUAL_UINT64(store.pending_bytes(), restarted.pending_bytes());
+}
+
+void test_serialized_sixty_second_workload_reconciles_all_identities() {
+  constexpr std::size_t kRecords = 4680U;
+  constexpr std::size_t kBytes = 6U * 1024U * 1024U;
+  static ArchiveFileSystemDouble<5000U, kBytes> filesystem{};
+  static NativeArchiveFileStore<5000U, kBytes> store(filesystem);
+  TEST_ASSERT_TRUE(store.recover());
+  for (uint64_t sequence = 0U; sequence < kRecords; ++sequence) {
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(AppendStatus::Durable),
+                          static_cast<int>(store.append(encoded(sequence))));
+  }
+  TEST_ASSERT_EQUAL_UINT32(kRecords, store.size());
+  TEST_ASSERT_TRUE(store.pending_bytes() < store.pending_quota_bytes());
+
+  NativeArchiveFileStore<5000U, kBytes> restarted(filesystem);
+  TEST_ASSERT_TRUE(restarted.recover());
+  TEST_ASSERT_EQUAL_UINT32(kRecords, restarted.size());
+  TEST_ASSERT_EQUAL_UINT64(store.pending_bytes(), restarted.pending_bytes());
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AppendStatus::Durable),
+                        static_cast<int>(restarted.append(encoded(4679U))));
+  TEST_ASSERT_EQUAL_UINT32(kRecords, restarted.size());
+}
+
 void test_media_migration_requires_verify_checkpoint_before_reclaim() {
   const auto record = encoded(100U);
   MigrationSource source(record);
@@ -303,12 +405,36 @@ void test_media_migration_keeps_source_on_checkpoint_failure() {
   TEST_ASSERT_FALSE(source.reclaimed());
 }
 
+void test_store_migration_adapters_copy_verify_checkpoint_and_reclaim() {
+  ArchiveFileSystemDouble<8U, 64U * 1024U> source_fs{};
+  ArchiveFileSystemDouble<8U, 64U * 1024U> destination_fs{};
+  NativeArchiveFileStore<8U, 64U * 1024U> source_store(source_fs);
+  NativeArchiveFileStore<8U, 64U * 1024U> destination_store(destination_fs);
+  const auto record = encoded(140U);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AppendStatus::Durable),
+                        static_cast<int>(source_store.append(record)));
+  ArchiveStoreMigrationSource source(source_store, ArchiveMedia::LittleFs);
+  ArchiveStoreMigrationDestination destination(&destination_store,
+                                               ArchiveMedia::Sd);
+  ArchiveMediaMigration migration(source, destination, ArchiveMedia::LittleFs,
+                                  ArchiveMedia::Sd);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(MigrationStatus::Durable),
+                        static_cast<int>(migration.migrate_one()));
+  TEST_ASSERT_EQUAL_UINT32(0U, source_store.size());
+  TEST_ASSERT_EQUAL_UINT32(1U, destination_store.size());
+  NativeArchiveFileStore<8U, 64U * 1024U> restarted(destination_fs);
+  TEST_ASSERT_TRUE(restarted.recover());
+  TEST_ASSERT_EQUAL_UINT32(1U, restarted.size());
+  TEST_ASSERT_TRUE(restarted.contains(record.identity, record.hash));
+}
+
 }  // namespace
 
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_framing_rejects_corrupt_and_partial_tail);
   RUN_TEST(test_codec_reader_round_trips_identity_and_payload);
+  RUN_TEST(test_typed_views_reject_wrong_archive_kinds);
   RUN_TEST(test_store_deduplicates_and_recovers_corrupt_tail);
   RUN_TEST(test_store_faults_are_observable_and_quota_does_not_overwrite);
   RUN_TEST(test_same_identity_with_changed_content_is_conflict);
@@ -317,7 +443,11 @@ int main() {
   RUN_TEST(test_media_failover_keeps_primary_pending_and_uses_littlefs_fallback);
   RUN_TEST(test_filesystem_double_recovers_tail_and_rebuilds_index);
   RUN_TEST(test_filesystem_double_distinguishes_missing_from_open_error);
+  RUN_TEST(test_filesystem_archive_pages_beyond_index_cache_and_restarts);
+  RUN_TEST(test_filesystem_duplicate_frame_is_deduplicated_across_restart);
+  RUN_TEST(test_serialized_sixty_second_workload_reconciles_all_identities);
   RUN_TEST(test_media_migration_requires_verify_checkpoint_before_reclaim);
   RUN_TEST(test_media_migration_keeps_source_on_checkpoint_failure);
+  RUN_TEST(test_store_migration_adapters_copy_verify_checkpoint_and_reclaim);
   return UNITY_END();
 }

@@ -50,6 +50,12 @@ struct ArchiveRecordView final {
   std::size_t payload_size{0U};
 };
 
+// A typed view keeps the decoder bounded while allowing the batch builder to
+// reject a record kind before interpreting its payload. The payload remains
+// caller-owned immutable bytes; kind-specific decoders can consume it with
+// PayloadReader without copying a 16 KiB frame.
+using TypedArchiveRecordView = ArchiveRecordView;
+
 class PayloadWriter final {
  public:
   PayloadWriter(uint8_t* data, std::size_t capacity) noexcept
@@ -252,6 +258,21 @@ class RecordCodec final {
     view.payload = record.bytes.data() + kArchiveHeaderBytes;
     view.payload_size = get_u32(record.bytes.data() + kArchivePayloadSizeOffset);
     return true;
+  }
+
+  static bool decode_result_view(const ImmutableRecordBytes& record,
+                                 TypedArchiveRecordView& view) noexcept {
+    return read(record, view) && view.identity.kind == ArchiveRecordKind::Result;
+  }
+
+  static bool decode_event_view(const ImmutableRecordBytes& record,
+                                TypedArchiveRecordView& view) noexcept {
+    return read(record, view) && view.identity.kind == ArchiveRecordKind::Event;
+  }
+
+  static bool decode_metadata_view(const ImmutableRecordBytes& record,
+                                   TypedArchiveRecordView& view) noexcept {
+    return read(record, view) && view.identity.kind == ArchiveRecordKind::Metadata;
   }
 
   static bool encode_sample(const acquisition::SampleRecord& sample,
