@@ -28,12 +28,28 @@ enum class MigrationStatus : uint8_t {
 
 enum class ArchiveMedia : uint8_t { Unknown, LittleFs, Sd };
 
+// Migration is deliberately bounded to one record per invocation.  The
+// budget is still explicit so a caller can decline a record that would make
+// the current storage-worker slice exceed its byte budget.
+struct MigrationBudget final {
+  std::size_t max_bytes_per_poll{32U * 1024U};
+};
+
+enum class MigrationPhase : uint8_t {
+  None,
+  Copied,
+  Verified,
+  Checkpointed,
+  Reclaimed,
+};
+
 struct MigrationReceipt final {
   ArchiveIdentity identity{};
   std::array<uint8_t, 32U> hash{};
   ArchiveMedia source{ArchiveMedia::Unknown};
   ArchiveMedia destination{ArchiveMedia::Unknown};
   uint64_t checkpoint_generation{0U};
+  MigrationPhase phase{MigrationPhase::None};
   bool durable{false};
 };
 
@@ -133,13 +149,42 @@ class ArchiveMediaMigration final {
   ArchiveMediaMigration(IMigrationSource& source,
                         IMigrationDestination& destination,
                         ArchiveMedia source_media = ArchiveMedia::Unknown,
-                        ArchiveMedia destination_media = ArchiveMedia::Unknown) noexcept
+                        ArchiveMedia destination_media = ArchiveMedia::Unknown,
+                        MigrationBudget budget = {}) noexcept
       : source_(source), destination_(destination), source_media_(source_media),
-        destination_media_(destination_media) {}
+        destination_media_(destination_media), budget_(budget) {}
 
   MigrationStatus migrate_one() noexcept {
-    if (!source_.peek(scratch_)) return MigrationStatus::Idle;
+    return migrate_one(budget_.max_bytes_per_poll);
+  }
+
+  // Retry after a destination checkpoint or source reclaim failure without
+  // appending another copy.  This keeps the source record and its identity
+  // authoritative until reclaim has succeeded.
+  MigrationStatus migrate_one(std::size_t max_bytes) noexcept {
+    bytes_migrated_last_poll_ = 0U;
+    if (!source_.peek(scratch_)) {
+      return has_pending_receipt_ ? MigrationStatus::Retryable
+                                  : MigrationStatus::Idle;
+    }
     if (!RecordCodec::valid(scratch_)) return MigrationStatus::Fault;
+
+    if (scratch_.size > max_bytes) return MigrationStatus::LoggingBlocked;
+
+    if (has_pending_receipt_) {
+      if (!same_archive_identity(scratch_.identity, pending_receipt_.identity) ||
+          scratch_.hash != pending_receipt_.hash) {
+        // The source changed while a destination checkpoint was outstanding.
+        // Never reclaim a different record with the old receipt.
+        return MigrationStatus::Fault;
+      }
+      if (!source_.reclaim(pending_receipt_)) return MigrationStatus::Retryable;
+      pending_receipt_.phase = MigrationPhase::Reclaimed;
+      pending_receipt_.durable = true;
+      has_pending_receipt_ = false;
+      bytes_migrated_last_poll_ = scratch_.size;
+      return MigrationStatus::Durable;
+    }
 
     const auto append_status = destination_.append(scratch_);
     if (append_status == AppendStatus::Retryable) return MigrationStatus::Retryable;
@@ -159,9 +204,23 @@ class ArchiveMediaMigration final {
     receipt.source = source_media_;
     receipt.destination = destination_media_;
     receipt.checkpoint_generation = generation;
+    receipt.phase = MigrationPhase::Checkpointed;
     receipt.durable = true;
-    if (!source_.reclaim(receipt)) return MigrationStatus::Retryable;
+    pending_receipt_ = receipt;
+    has_pending_receipt_ = true;
+    if (!source_.reclaim(pending_receipt_)) return MigrationStatus::Retryable;
+    pending_receipt_.phase = MigrationPhase::Reclaimed;
+    has_pending_receipt_ = false;
+    bytes_migrated_last_poll_ = scratch_.size;
     return MigrationStatus::Durable;
+  }
+
+  std::size_t bytes_migrated_last_poll() const noexcept {
+    return bytes_migrated_last_poll_;
+  }
+
+  const MigrationReceipt* pending_receipt() const noexcept {
+    return has_pending_receipt_ ? &pending_receipt_ : nullptr;
   }
 
  private:
@@ -169,6 +228,10 @@ class ArchiveMediaMigration final {
   IMigrationDestination& destination_;
   ArchiveMedia source_media_{ArchiveMedia::Unknown};
   ArchiveMedia destination_media_{ArchiveMedia::Unknown};
+  MigrationBudget budget_{};
+  MigrationReceipt pending_receipt_{};
+  std::size_t bytes_migrated_last_poll_{0U};
+  bool has_pending_receipt_{false};
   // One bounded instance-owned frame avoids a 16 KiB call-stack temporary.
   ImmutableRecordBytes scratch_{};
 };
