@@ -48,10 +48,11 @@ void test_pipeline_preserves_missing_models_without_fabricating_outputs() {
 
   using Pipeline = ProcessingPipeline<4U, 4U>;
   Pipeline::Result result{};
+  safety::SafetyEvaluator safety_evaluator{};
   TEST_ASSERT_EQUAL_INT(
       static_cast<int>(ProcessStatus::Produced),
       static_cast<int>(Pipeline::evaluate(window, snapshot, nullptr, nullptr,
-                                          result)));
+                                          safety_evaluator, result)));
   TEST_ASSERT_EQUAL_INT(static_cast<int>(fuzzy::FisState::Unconfigured),
                         static_cast<int>(result.fuzzy.value().state));
   TEST_ASSERT_EQUAL_INT(static_cast<int>(safety::SafetyState::Unconfigured),
@@ -69,10 +70,11 @@ void test_pipeline_result_can_use_shared_sequence_factory() {
                               profiles, snapshot);
   using Pipeline = ProcessingPipeline<2U, 2U>;
   Pipeline::Result evaluated{};
+  safety::SafetyEvaluator safety_evaluator{};
   TEST_ASSERT_EQUAL_INT(
       static_cast<int>(ProcessStatus::Produced),
       static_cast<int>(Pipeline::evaluate(window, snapshot, nullptr, nullptr,
-                                          evaluated)));
+                                          safety_evaluator, evaluated)));
 
   SequenceAllocator sequence{};
   ResultRecordContext context{};

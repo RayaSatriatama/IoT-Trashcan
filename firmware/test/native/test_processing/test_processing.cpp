@@ -209,6 +209,41 @@ void test_stale_and_calibrating_samples_remain_unavailable() {
   TEST_ASSERT_EQUAL_UINT32(2U, result.source_sample_ids.size());
 }
 
+void test_latest_hx711_attempt_blocks_older_ready_average() {
+  const std::array<SampleQuality, 3U> blocked_qualities{
+      SampleQuality::Calibrating, SampleQuality::Timeout,
+      SampleQuality::Disconnected};
+
+  for (const auto blocked_quality : blocked_qualities) {
+    SampleWindow<4U> window{};
+    const auto profiles = organic_profiles();
+    auto ready = sample(SensorId::Hx711Organic, StreamId::Organic, 60U,
+                        900U, SampleQuality::Ready, profiles.hx711.ref());
+    ready.raw.present = true;
+    ready.raw.signed_counts = 2000;
+    auto blocked = sample(SensorId::Hx711Organic, StreamId::Organic, 61U,
+                          950U, blocked_quality, profiles.hx711.ref());
+    window.try_add(ready);
+    window.try_add(blocked);
+
+    ProcessingSnapshot snapshot{};
+    TEST_ASSERT_EQUAL_INT(
+        static_cast<int>(ProcessingSnapshotStatus::Captured),
+        static_cast<int>(ProcessingSnapshot::capture(
+            1000U, 200U, StreamId::Organic, config_ref(4U), profiles,
+            snapshot)));
+    ProcessedResult<4U> result{};
+    TEST_ASSERT_EQUAL_INT(
+        static_cast<int>(ProcessStatus::Produced),
+        static_cast<int>(SlotProcessor<4U, 4U>::process(window, snapshot,
+                                                         result)));
+    TEST_ASSERT_FALSE(result.processed.weight_kg.available);
+    TEST_ASSERT_EQUAL_INT(
+        static_cast<int>(sample_disposition(blocked_quality).quality),
+        static_cast<int>(result.processed.weight_kg.disposition.quality));
+  }
+}
+
 void test_profile_mismatch_does_not_reinterpret_raw_evidence() {
   SampleWindow<2U> window{};
   auto profiles = organic_profiles();
@@ -232,6 +267,20 @@ void test_profile_mismatch_does_not_reinterpret_raw_evidence() {
   TEST_ASSERT_EQUAL_INT(
       static_cast<int>(ProcessingReason::ProfileInvalid),
       static_cast<int>(result.processed.weight_kg.disposition.reason));
+}
+
+void test_conflicting_profile_identity_is_not_silently_deduplicated() {
+  ProfileRefSet refs{};
+  const auto first = organic_profiles().hx711.ref();
+  auto conflicting = first;
+  ++conflicting.profile_version;
+  conflicting.hash[0] ^= 0x5aU;
+
+  TEST_ASSERT_TRUE(add_profile(first, refs));
+  TEST_ASSERT_FALSE(add_profile(conflicting, refs));
+  TEST_ASSERT_EQUAL_UINT32(1U, refs.size());
+  TEST_ASSERT_EQUAL_UINT32(first.profile_version,
+                           refs.at(0U)->profile_version);
 }
 
 void test_source_capacity_overflow_rejects_whole_result() {
@@ -419,7 +468,9 @@ int main(int, char**) {
   RUN_TEST(test_window_rejects_duplicate_and_full_without_overwriting);
   RUN_TEST(test_valid_samples_are_converted_normalized_and_provenanced);
   RUN_TEST(test_stale_and_calibrating_samples_remain_unavailable);
+  RUN_TEST(test_latest_hx711_attempt_blocks_older_ready_average);
   RUN_TEST(test_profile_mismatch_does_not_reinterpret_raw_evidence);
+  RUN_TEST(test_conflicting_profile_identity_is_not_silently_deduplicated);
   RUN_TEST(test_source_capacity_overflow_rejects_whole_result);
   RUN_TEST(test_cycle_snapshot_is_immutable_after_profiles_change);
   RUN_TEST(test_invalid_capacity_suppresses_only_utilization);

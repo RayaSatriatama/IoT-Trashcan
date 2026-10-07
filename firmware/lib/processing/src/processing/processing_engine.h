@@ -307,6 +307,15 @@ bool add_source(const acquisition::SampleRecord& sample,
 inline bool add_profile(const acquisition::ProfileRef& ref,
                         ProfileRefSet& profiles) noexcept {
   if (!ref.present) return true;
+  for (std::size_t index = 0U; index < profiles.size(); ++index) {
+    const auto* existing = profiles.at(index);
+    if (existing != nullptr && same_profile_key(*existing, ref)) {
+      // Same profile key is a duplicate only when it names exactly the same
+      // immutable identity. A different version or hash is conflicting cycle
+      // provenance, never an alias for the active profile.
+      return same_profile_ref(*existing, ref);
+    }
+  }
   const auto status = profiles.try_add(ref);
   return status == CollectionStatus::Added ||
          status == CollectionStatus::Duplicate;
@@ -391,8 +400,41 @@ class SlotProcessor final {
         continue;
       }
       if (latest == nullptr ||
-          sample->header.monotonic_us > latest->header.monotonic_us) {
+          sample->header.monotonic_us > latest->header.monotonic_us ||
+          (sample->header.monotonic_us == latest->header.monotonic_us &&
+           sample->header.sequence > latest->header.sequence)) {
         latest = sample;
+      }
+    }
+
+    // Freshness determines whether this attempt belongs to the processing
+    // window. Readiness is determined by the newest matching attempt, not by
+    // an older successful conversion. A target being calibrated, timing out,
+    // or disconnected cannot be represented as a new operational weight by
+    // averaging earlier READY samples.
+    if (latest != nullptr &&
+        (!sample_is_fresh(*latest, snapshot) ||
+         !sample_matches_cycle(*latest, snapshot) ||
+         latest->quality != acquisition::SampleQuality::Ready ||
+         !latest->raw.present || !profiles.hx711_present ||
+         !profiles.hx711.valid_for_conversion() ||
+         !acquisition::profile_matches(profiles.hx711.manifest, sensor) ||
+         !same_profile_ref(latest->header.profile_ref,
+                           profiles.hx711.ref()))) {
+      if (!add_source(*latest, result.source_sample_ids)) return false;
+      result.processed.weight_kg.disposition = unavailable_disposition(
+          *latest, snapshot, profiles.hx711_present,
+          profiles.hx711.valid_for_conversion(),
+          profiles.hx711_present ? profiles.hx711.ref()
+                                 : acquisition::ProfileRef{});
+      return true;
+    }
+
+    for (std::size_t index = 0U; index < window.size(); ++index) {
+      const auto* sample = window.at(index);
+      if (sample == nullptr || sample->header.sensor != sensor ||
+          sample->header.stream != snapshot.stream()) {
+        continue;
       }
       if (!sample_is_fresh(*sample, snapshot) ||
           !sample_matches_cycle(*sample, snapshot) ||
@@ -699,17 +741,6 @@ class ProcessingPipeline final {
       const ProcessingSnapshot& snapshot,
       const models::FisModelProfile* fis_profile,
       const models::SafetyModelProfile* safety_profile,
-      Result& output) noexcept {
-    safety::SafetyEvaluator evaluator{};
-    return evaluate(window, snapshot, fis_profile, safety_profile, evaluator,
-                    output);
-  }
-
-  static ProcessStatus evaluate(
-      const SampleWindow<WindowCapacity>& window,
-      const ProcessingSnapshot& snapshot,
-      const models::FisModelProfile* fis_profile,
-      const models::SafetyModelProfile* safety_profile,
       safety::SafetyEvaluator& safety_evaluator,
       Result& output) noexcept {
     ProcessedResult<SourceCapacity> processed{};
@@ -722,18 +753,13 @@ class ProcessingPipeline final {
     }
 
     if (fis_profile != nullptr) {
-      const auto status = processed.profile_refs.try_add(fis_profile->ref());
-      if (status != CollectionStatus::Added &&
-          status != CollectionStatus::Duplicate) {
+      if (!add_profile(fis_profile->ref(), processed.profile_refs)) {
         output = Result{};
         return ProcessStatus::ProfileCapacityExceeded;
       }
     }
     if (safety_profile != nullptr) {
-      const auto status =
-          processed.profile_refs.try_add(safety_profile->ref());
-      if (status != CollectionStatus::Added &&
-          status != CollectionStatus::Duplicate) {
+      if (!add_profile(safety_profile->ref(), processed.profile_refs)) {
         output = Result{};
         return ProcessStatus::ProfileCapacityExceeded;
       }
