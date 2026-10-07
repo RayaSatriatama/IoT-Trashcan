@@ -265,6 +265,94 @@ void test_runtime_full_result_handoff_is_observable_and_preserves_old_result() {
                            result.result.processing.source_sample_ids.at(0U)->sequence);
 }
 
+SampleRecord sht31_attempt(uint64_t sequence, uint64_t monotonic_us,
+                            const Sht31Profile& profile) {
+  auto record = organic_attempt(sequence, monotonic_us);
+  record.header.sensor = SensorId::Sht31_44;
+  record.header.kind = SampleKind::Sht31;
+  record.header.profile_ref = profile.ref();
+  record.quality = SampleQuality::Ready;
+  record.reason = SampleReason::DataReady;
+  record.raw.present = true;
+  record.raw.identity_valid = true;
+  record.raw.temperature_crc_valid = true;
+  record.raw.temperature_centi_c = 2500;
+  return record;
+}
+
+void test_runtime_preserves_slow_channel_until_freshness_expires() {
+  SequenceAllocator sequence{};
+  TargetProfileSet profiles{};
+  Sht31Profile sht{};
+  sht.manifest = profile_manifest(ProfileKind::Calibration, ProfileTarget::Sht31_44);
+  sht.address = 0x44U;
+  profiles.sht31[0] = &sht;
+  CountingObserver downstream{};
+  ProcessingRuntime runtime{};
+  initialize_runtime(runtime, sequence, profiles, downstream);
+  runtime.observe(sht31_attempt(42U, 900'000U, sht));
+
+  for (const uint64_t now_us : {1'000'000ULL, 2'000'000ULL}) {
+    runtime.poll(now_us);
+    ProcessingRuntime::ResultEnvelope result{};
+    TEST_ASSERT_EQUAL_INT(
+        static_cast<int>(processing::ResultHandoffStatus::Dequeued),
+        static_cast<int>(runtime.handoff().try_pop(result)));
+    TEST_ASSERT_TRUE(result.result.processing.processed.temperature_c.available);
+    TEST_ASSERT_FLOAT_WITHIN(0.001F, 25.0F,
+                             result.result.processing.processed.temperature_c.value);
+    TEST_ASSERT_EQUAL_UINT64(42U,
+        result.result.processing.source_sample_ids.at(0U)->sequence);
+    TEST_ASSERT_EQUAL_UINT64(now_us, result.header.monotonic_us);
+  }
+
+  runtime.poll(6'000'000U);
+  ProcessingRuntime::ResultEnvelope stale{};
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(processing::ResultHandoffStatus::Dequeued),
+      static_cast<int>(runtime.handoff().try_pop(stale)));
+  TEST_ASSERT_FALSE(stale.result.processing.processed.temperature_c.available);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(processing::InputQuality::Stale),
+      static_cast<int>(stale.result.processing.processed.temperature_c.disposition.quality));
+  TEST_ASSERT_EQUAL_UINT64(42U,
+      stale.result.processing.source_sample_ids.at(0U)->sequence);
+  TEST_ASSERT_EQUAL_UINT32(1U, downstream.count);
+}
+
+void test_runtime_newest_failed_attempt_supersedes_retained_ready() {
+  SequenceAllocator sequence{};
+  TargetProfileSet profiles{};
+  Sht31Profile sht{};
+  sht.manifest = profile_manifest(ProfileKind::Calibration, ProfileTarget::Sht31_44);
+  sht.address = 0x44U;
+  profiles.sht31[0] = &sht;
+  CountingObserver downstream{};
+  ProcessingRuntime runtime{};
+  initialize_runtime(runtime, sequence, profiles, downstream);
+  runtime.observe(sht31_attempt(42U, 900'000U, sht));
+  runtime.poll(1'000'000U);
+  ProcessingRuntime::ResultEnvelope result{};
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(processing::ResultHandoffStatus::Dequeued),
+      static_cast<int>(runtime.handoff().try_pop(result)));
+  TEST_ASSERT_TRUE(result.result.processing.processed.temperature_c.available);
+
+  auto failed = sht31_attempt(43U, 1'900'000U, sht);
+  failed.quality = SampleQuality::Timeout;
+  failed.reason = SampleReason::Timeout;
+  failed.raw.present = false;
+  runtime.observe(failed);
+  runtime.poll(2'000'000U);
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(processing::ResultHandoffStatus::Dequeued),
+      static_cast<int>(runtime.handoff().try_pop(result)));
+  TEST_ASSERT_FALSE(result.result.processing.processed.temperature_c.available);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(processing::InputQuality::Timeout),
+      static_cast<int>(result.result.processing.processed.temperature_c.disposition.quality));
+  TEST_ASSERT_EQUAL_UINT64(43U,
+      result.result.processing.source_sample_ids.at(0U)->sequence);
+}
+
 void test_processing_resource_footprint_is_bounded() {
   std::printf("memory ProcessingRuntime=%zu ProcessingSnapshot=%zu "
               "ProcessedValues=%zu ResultEnvelope=%zu ModelLifecycle=%zu\\n",
@@ -287,6 +375,8 @@ int main(int, char**) {
   RUN_TEST(test_capacity_profile_is_captured_in_runtime_snapshot);
   RUN_TEST(test_runtime_cycle_emits_unconfigured_result_with_shared_provenance);
   RUN_TEST(test_runtime_full_result_handoff_is_observable_and_preserves_old_result);
+  RUN_TEST(test_runtime_preserves_slow_channel_until_freshness_expires);
+  RUN_TEST(test_runtime_newest_failed_attempt_supersedes_retained_ready);
   RUN_TEST(test_processing_resource_footprint_is_bounded);
   return UNITY_END();
 }
