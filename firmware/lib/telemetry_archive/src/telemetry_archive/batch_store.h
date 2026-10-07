@@ -135,7 +135,20 @@ class FsImmutableBatchStore final : public IImmutableBatchStore {
                  ? BatchStoreStatus::Durable
                  : BatchStoreStatus::Invalid;
     }
-    if (index_count_ == index_.size()) return BatchStoreStatus::LoggingBlocked;
+    // The RAM index is only a bounded cache. Once full, scan the committed
+    // file so a duplicate/conflict is still detected without limiting the
+    // number of durable batches to the cache size.
+    if (existing == nullptr && index_count_ == index_.size()) {
+      BatchIndexEntry scanned{};
+      bool found{false};
+      if (!scan_identity(batch, scanned, found)) return BatchStoreStatus::Retryable;
+      if (found) {
+        return scanned.body_hash == batch.body_hash &&
+                       scanned.device_id.bytes == batch.device_id.bytes
+                   ? BatchStoreStatus::Durable
+                   : BatchStoreStatus::Invalid;
+      }
+    }
     const std::size_t total = kBatchFrameHeaderBytes + batch.batch_id_size +
                               batch.body_size + kBatchFrameTrailerBytes;
     if (pending_bytes_ > quota_bytes_ || total > quota_bytes_ - pending_bytes_ ||
@@ -259,8 +272,7 @@ class FsImmutableBatchStore final : public IImmutableBatchStore {
       if (!body_read ||
           file.read(marker.data(), marker.size()) != static_cast<int>(marker.size()) ||
           read_u32(marker.data()) != kBatchFrameCommitMarker ||
-          body_hash != read_hash(header.data() + kBatchFrameHashOffset) ||
-          index_count_ == index_.size()) {
+          body_hash != read_hash(header.data() + kBatchFrameHashOffset)) {
         clean = false;
         break;
       }
@@ -320,7 +332,8 @@ class FsImmutableBatchStore final : public IImmutableBatchStore {
         return false;
       }
       const bool selected = current == index;
-      ImmutableBatch candidate{};
+      load_scratch_ = ImmutableBatch{};
+      ImmutableBatch& candidate = load_scratch_;
       if (selected) {
         std::copy(id.begin(), id.begin() + id_size, candidate.batch_id.begin());
         candidate.batch_id_size = id_size;
@@ -421,6 +434,86 @@ class FsImmutableBatchStore final : public IImmutableBatchStore {
     }
     return nullptr;
   }
+  bool scan_identity(const ImmutableBatch& batch,
+                     BatchIndexEntry& match,
+                     bool& found) const noexcept {
+    found = false;
+    if (filesystem_ == nullptr) return false;
+    File file = filesystem_->open(path_, FILE_READ);
+    if (!file) return !filesystem_->exists(path_);
+    while (file.available()) {
+      std::array<uint8_t, kBatchFrameHeaderBytes> header{};
+      if (file.read(header.data(), header.size()) !=
+              static_cast<int>(header.size()) ||
+          read_u32(header.data()) != kBatchFrameMagic ||
+          read_u16(header.data() + 4U) != kBatchFrameVersion) {
+        file.close();
+        return false;
+      }
+      const std::size_t id_size = read_u16(header.data() + 6U);
+      const std::size_t body_size = read_u32(header.data() + 10U);
+      const std::size_t record_count = read_u16(header.data() + 8U);
+      if (id_size == 0U || id_size >= kMaxBatchIdBytes ||
+          body_size == 0U || body_size > kMaxBatchBytes ||
+          record_count == 0U || record_count > kMaxBatchRecords) {
+        file.close();
+        return false;
+      }
+      std::array<char, kMaxBatchIdBytes> id{};
+      if (file.read(reinterpret_cast<uint8_t*>(id.data()), id_size) !=
+          static_cast<int>(id_size)) {
+        file.close();
+        return false;
+      }
+      telemetry_contract::Sha256 digest{};
+      std::array<uint8_t, 256U> chunk{};
+      std::size_t remaining = body_size;
+      while (remaining != 0U) {
+        const std::size_t chunk_size = remaining < chunk.size() ? remaining : chunk.size();
+        if (file.read(chunk.data(), chunk_size) != static_cast<int>(chunk_size)) {
+          file.close();
+          return false;
+        }
+        digest.update(std::string_view(reinterpret_cast<const char*>(chunk.data()),
+                                       chunk_size));
+        remaining -= chunk_size;
+      }
+      std::array<uint8_t, kBatchFrameTrailerBytes> marker{};
+      const auto body_hash = digest.final();
+      if (file.read(marker.data(), marker.size()) !=
+              static_cast<int>(marker.size()) ||
+          read_u32(marker.data()) != kBatchFrameCommitMarker ||
+          body_hash != read_hash(header.data() + kBatchFrameHashOffset)) {
+        file.close();
+        return false;
+      }
+      const bool same_id = id_size == batch.batch_id_size &&
+                           std::equal(id.begin(), id.begin() + id_size,
+                                      batch.batch_id.begin());
+      bool same_device = true;
+      for (std::size_t index = 0U; index < batch.device_id.bytes.size(); ++index) {
+        if (header[kBatchFrameDeviceIdOffset + index] !=
+            batch.device_id.bytes[index]) {
+          same_device = false;
+          break;
+        }
+      }
+      if (same_id && same_device) {
+        match.batch_id_size = id_size;
+        std::copy(id.begin(), id.begin() + id_size, match.batch_id.begin());
+        match.device_id = batch.device_id;
+        match.body_hash = body_hash;
+        match.record_count = static_cast<uint16_t>(record_count);
+        match.body_size = body_size;
+        match.present = true;
+        found = true;
+        file.close();
+        return true;
+      }
+    }
+    file.close();
+    return true;
+  }
   void add_index(const ImmutableBatch& batch) noexcept {
     if (index_count_ >= index_.size()) return;
     auto& entry = index_[index_count_++];
@@ -508,6 +601,9 @@ class FsImmutableBatchStore final : public IImmutableBatchStore {
   const char* checkpoint_path_{"/sigap/batches.ckp"};
   std::array<BatchIndexEntry, kBatchIndexCapacity> index_{};
   std::size_t index_count_{0U};
+  // Reused for target replay so load() never places a 32 KiB batch on the
+  // Arduino loop stack.
+  ImmutableBatch load_scratch_{};
 #endif
   uint64_t quota_bytes_{0U};
   uint64_t pending_bytes_{0U};
