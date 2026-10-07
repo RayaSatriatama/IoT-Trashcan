@@ -178,10 +178,8 @@ void SigapApp::loop() noexcept {
   const acquisition::ArduinoMonotonicClock clock{};
   const uint64_t now_us = clock.now_us();
   maintenance_service_.poll(now_us);
-  acquisition::AuditEvent audit_event{};
   std::size_t audit_budget{2U};
-  while (audit_budget-- != 0U && audit_ring_.try_pop(audit_event)) {
-    (void)archive_runtime_.append_audit_event(audit_event);
+  while (audit_budget-- != 0U && archive_runtime_.drain_audit_events(audit_ring_)) {
   }
   refresh_model_profiles();
   if (profile_generation_ != profile_manager_.generation()) {

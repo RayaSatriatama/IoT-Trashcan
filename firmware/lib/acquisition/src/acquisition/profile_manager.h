@@ -73,6 +73,19 @@ class ProfileAuditRing final : public IProfileAuditSink {
     return true;
   }
 
+  bool try_peek(AuditEvent& output) const noexcept {
+    if (count_ == 0U) return false;
+    output = events_[read_index_];
+    return true;
+  }
+
+  bool discard_front() noexcept {
+    if (count_ == 0U) return false;
+    read_index_ = (read_index_ + 1U) % Capacity;
+    --count_;
+    return true;
+  }
+
   std::size_t size() const noexcept { return count_; }
   uint32_t overflow_count() const noexcept { return overflow_count_; }
 

@@ -115,3 +115,12 @@ void test_budget_does_not_process_more_than_requested() {
 }
 
 }  // namespace
+
+int main() {
+  UNITY_BEGIN();
+  RUN_TEST(test_retry_keeps_frozen_item_and_durable_once);
+  RUN_TEST(test_queue_overflow_is_observable_without_overwrite);
+  RUN_TEST(test_changed_source_bytes_become_terminal_gap);
+  RUN_TEST(test_budget_does_not_process_more_than_requested);
+  return UNITY_END();
+}

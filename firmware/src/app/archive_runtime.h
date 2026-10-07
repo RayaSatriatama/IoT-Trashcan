@@ -119,6 +119,35 @@ class ArchiveRuntime final {
     return append(scratch_);
   }
 
+  bool drain_audit_events(
+      acquisition::ProfileAuditRing<16U>& audit_ring) noexcept {
+    if (!audit_encoded_) {
+      acquisition::AuditEvent event{};
+      if (!audit_ring.try_peek(event)) return false;
+      if (!encode_audit_event(event, audit_scratch_)) {
+        (void)audit_ring.discard_front();
+        record_gap(0U, storage::GapReason::InvalidRecord);
+        return true;
+      }
+      audit_encoded_ = true;
+    }
+
+    const auto status = append(audit_scratch_);
+    if (status == storage::AppendStatus::Durable) {
+      (void)audit_ring.discard_front();
+      audit_encoded_ = false;
+      return true;
+    }
+    if (status == storage::AppendStatus::Invalid) {
+      (void)audit_ring.discard_front();
+      audit_encoded_ = false;
+      record_gap(audit_scratch_.identity.sequence,
+                 storage::GapReason::InvalidRecord);
+      return true;
+    }
+    return false;
+  }
+
   bool drain_results(ResultHandoff& handoff) noexcept {
     bool progressed{false};
     ResultEnvelope envelope{};
@@ -167,6 +196,37 @@ class ArchiveRuntime final {
       record_gap(record.identity.sequence, storage::GapReason::InvalidRecord);
     }
     return status;
+  }
+
+  bool encode_audit_event(const acquisition::AuditEvent& event,
+                          storage::ImmutableRecordBytes& output) noexcept {
+    if (sequence_ == nullptr || !event_device_.present || !event_boot_.present) {
+      return false;
+    }
+    uint64_t sequence{0U};
+    if (!sequence_->allocate(sequence)) return false;
+    const storage::ArchiveIdentity identity{
+        event_device_, event_boot_, sequence, storage::ArchiveRecordKind::Event};
+    storage::PayloadWriter writer{nullptr, 0U};
+    if (!storage::RecordCodec::begin(identity, output, writer)) return false;
+    writer = storage::PayloadWriter(
+        output.bytes.data() + storage::kArchiveHeaderBytes,
+        output.bytes.size() - storage::kArchiveHeaderBytes -
+            storage::kArchiveTrailerBytes);
+    const auto& config = event.config_ref.present ? event.config_ref : event_config_;
+    if (!writer.u8(static_cast<uint8_t>(event.kind)) ||
+        !writer.u64(event.monotonic_us) ||
+        !writer.u8(config.present ? 1U : 0U) ||
+        !writer.u32(config.schema_version) ||
+        !writer.u64(config.config_version) ||
+        !writer.bytes(config.hash.data(), config.hash.size()) ||
+        !writer.u8(event.pending_activation ? 1U : 0U) ||
+        !write_profile_ref(event.previous, writer) ||
+        !write_profile_ref(event.current, writer) ||
+        !storage::RecordCodec::finish(output, writer)) {
+      return false;
+    }
+    return true;
   }
 
   void record_gap(uint64_t sequence, storage::GapReason reason) noexcept {
@@ -356,6 +416,8 @@ class ArchiveRuntime final {
   // bounded buffer in the instance avoids a 16 KiB automatic loop-stack
   // allocation and keeps filesystem work outside acquisition callbacks.
   storage::ImmutableRecordBytes scratch_{};
+  storage::ImmutableRecordBytes audit_scratch_{};
+  bool audit_encoded_{false};
   storage::GapTracker<32U> gaps_{};
   uint64_t durable_records_{0U};
   uint64_t encode_failures_{0U};

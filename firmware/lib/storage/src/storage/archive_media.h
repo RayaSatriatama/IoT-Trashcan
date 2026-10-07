@@ -560,7 +560,9 @@ class LittleFsArchiveStore : public IArchiveStore {
       return recover();
     }
     recovery_ready_ = true;
-    health_ = ArchiveHealth::Healthy;
+    if (health_ != ArchiveHealth::Degraded) {
+      health_ = ArchiveHealth::Healthy;
+    }
     return true;
   }
   bool quarantine_tail(std::size_t valid_bytes) noexcept {
@@ -866,7 +868,9 @@ class NativeArchiveFileStore final : public IArchiveStore {
       health_ = ArchiveHealth::Degraded;
       return false;
     }
-    health_ = ArchiveHealth::Healthy;
+    if (health_ != ArchiveHealth::Degraded) {
+      health_ = ArchiveHealth::Healthy;
+    }
     return true;
   }
 

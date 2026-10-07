@@ -243,6 +243,29 @@ void test_audit_event_uses_shared_sequence_and_is_archived() {
   TEST_ASSERT_EQUAL_UINT64(0U, view.identity.sequence);
 }
 
+void test_audit_event_stays_queued_across_retry_and_archives_once() {
+  storage::MemoryArchiveStore<4U> store(64U * 1024U);
+  ArchiveRuntime runtime(&store);
+  SequenceAllocator sequence{};
+  runtime.set_sequence_allocator(&sequence);
+  runtime.set_event_context(device(), boot(), config_ref());
+  ProfileAuditRing<16U> audit{};
+  audit.set_context(1234U, config_ref());
+  audit.profile_activated(ProfileRef{}, ProfileRef{});
+
+  store.set_fault(storage::StoreFault::ShortWrite);
+  TEST_ASSERT_FALSE(runtime.drain_audit_events(audit));
+  TEST_ASSERT_EQUAL_UINT32(1U, audit.size());
+  TEST_ASSERT_EQUAL_UINT32(0U, store.size());
+
+  store.set_fault(storage::StoreFault::None);
+  TEST_ASSERT_TRUE(runtime.drain_audit_events(audit));
+  TEST_ASSERT_EQUAL_UINT32(0U, audit.size());
+  TEST_ASSERT_EQUAL_UINT32(1U, store.size());
+  TEST_ASSERT_FALSE(runtime.drain_audit_events(audit));
+  TEST_ASSERT_EQUAL_UINT32(1U, store.size());
+}
+
 }  // namespace
 
 int main() {
@@ -255,5 +278,6 @@ int main() {
   RUN_TEST(test_gap_reserve_failure_is_observable_without_dropping_record_retry);
   RUN_TEST(test_runtime_wires_bounded_media_migration_source_and_destination);
   RUN_TEST(test_audit_event_uses_shared_sequence_and_is_archived);
+  RUN_TEST(test_audit_event_stays_queued_across_retry_and_archives_once);
   return UNITY_END();
 }
