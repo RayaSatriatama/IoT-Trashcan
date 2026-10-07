@@ -96,6 +96,47 @@ committed cross-language golden values remain:
 - record hash: `sha256:a3a2593618943cc7a1d5f8bc0c90216dc22eb4c3297fb874887c11b7b6ef6883`
 - exact body hash: `sha256:3620edf0548b8a15eb1638fc7d239b1995372a28982f7f1e194949160f166c7c`
 
+## Native USB attached-only verification batch
+
+This batch started from `bc061c7c45ff22a8888415bb09764e5a5bda58a9` with the
+native USB cable continuously attached. No reboot, upload, unplug, or power
+cycle was performed during the batch.
+
+Baseline captured before commands:
+
+```text
+config_version=1
+config_hash=8872dc3107056e6ec4f0c1502e078454092fda2c2cf87e1db45d571841d9e540
+profile_state=ACTIVE
+profile_version=2
+profile_hash_present=true
+```
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| Calibration target binding | PASS | `calibration start hx711_organic` returned `OK`; status became active |
+| Criteria validation | PASS | zero samples returned `ERR INVALID_NUMERIC`; unknown field returned `ERR INVALID_SYNTAX`; valid partial criteria were accepted |
+| Capture without physical evidence | PASS | `calibration capture tare` returned `ERR REJECTED` |
+| Cancel before criteria | PASS | cancel returned `OK`; status returned `calibration_active=false` |
+| Session timeout | PASS, prior fresh evidence | 305-second attached run already expired without a follow-up command; not repeated in this batch |
+| Import without active transfer | PASS | chunk returned `ERR REJECTED` |
+| Import invalid size/hash framing | PASS | invalid size and malformed hash were rejected |
+| Import out-of-order offset | PASS | offset `1` was rejected and transfer state was cleared |
+| Import malformed payload | PASS | non-hex payload was rejected |
+| Import hash mismatch/incomplete finish | PASS | finish returned `ERR REJECTED` |
+| Draft isolation | PASS | active profile remained `ACTIVE`, version `2`, after all failed transfers |
+| Parser recovery | PASS | `INVALID_NUMERIC` and `UNKNOWN_COMMAND` were followed by valid `status` and `profile status` responses |
+| Config/profile identity stability | PASS | config hash/version and active profile identity remained unchanged |
+| Physical sensor evidence | BLOCKED | no verified wiring, references, or approved sensor profiles were available |
+| Acquisition/heater continuity | BLOCKED | no sensor or heater observation channel was available |
+| Physical unplug/reconnect | DEFERRED_BY_USER | explicitly postponed; no cable action performed |
+| Independent-power disconnect semantics | DEFERRED_BY_USER | power path intentionally not tested |
+| NVS power-cut recovery | DEFERRED_BY_USER | power-cut action intentionally not tested |
+
+The test-only HX711 profile remains a fixture and is not physical calibration
+evidence. No synthetic raw sensor readings were submitted through maintenance,
+and no heater profile was changed.
+
 ## Go and schema verification
 
 The official Go 1.27.1 Linux amd64 archive was verified against SHA-256
@@ -184,20 +225,20 @@ Native maintenance HIL status:
 | Profile persistence after reboot | PASS | HX711 profile version 2 remained `ACTIVE` after controlled reboot |
 | Calibration start/cancel before criteria | PASS | `hx711_organic` bound locally; cancel returned `calibration_active=false` |
 | USB inactivity timeout | PASS | 305-second idle observation expired the session without another command |
-| Physical USB disconnect cancellation | BLOCKED | Host CDC close did not emulate cable removal; physical unplug/reconnect still required |
+| Physical USB disconnect cancellation | DEFERRED_BY_USER | Unplug/reconnect intentionally postponed; host CDC close is not physical unplug evidence |
 | Connected sensor calibration evidence | BLOCKED | No documented physical references or sensor evidence supplied |
 | CALIBRATING with unrelated channels alive | BLOCKED | Sensor evidence and acquisition observation unavailable through maintenance output |
 | Non-heater update preserves acquisition | BLOCKED | No observable connected sensor/acquisition evidence |
 | MQ7 ADC/HEATER coexistence | NOT TESTED | Heater wiring and approved timing profile not established |
-| Physical NVS power-cut recovery | NOT TESTED | No controlled power-cut fixture |
+| Physical NVS power-cut recovery | DEFERRED_BY_USER | Power-cut action intentionally postponed |
 
 The only currently observed native interface is the Espressif USB
 Serial/JTAG device and only one data cable is available. Software inspection
 cannot establish whether unplugging that cable removes board power; no
 independent documented supply path is available in the current setup. The
 host CDC close experiment is not physical unplug evidence. A same-boot
-disconnect test therefore remains `BLOCKED` until a controlled unplug/reconnect
-observation is performed. If the board reboots when unplugged, the result must
+disconnect test therefore remains `DEFERRED_BY_USER` until a controlled
+unplug/reconnect observation is explicitly requested. If the board reboots when unplugged, the result must
 be classified as reboot/power-loss recovery rather than same-boot cancellation.
 
 Sensor acceptance mapping remains explicit: HX711 requires wired load cells and
