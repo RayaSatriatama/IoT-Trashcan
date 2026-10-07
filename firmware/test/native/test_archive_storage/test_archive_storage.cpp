@@ -1,0 +1,149 @@
+#include <cstdint>
+#include <cstdio>
+
+#include <unity.h>
+
+#include "acquisition/acquisition_types.h"
+#include "storage/archive_codec.h"
+#include "storage/archive_media.h"
+#include "storage/archive_store.h"
+
+namespace {
+
+using namespace sigap;
+using namespace sigap::acquisition;
+using namespace sigap::storage;
+
+DeviceId device() {
+  DeviceId value{};
+  value.present = true;
+  value.bytes[0] = 0x11U;
+  return value;
+}
+
+BootId boot() {
+  BootId value{};
+  value.present = true;
+  value.bytes[0] = 0x22U;
+  return value;
+}
+
+SampleRecord sample(uint64_t sequence) {
+  SampleRecord value{};
+  value.header.device_id = device();
+  value.header.boot_id = boot();
+  value.header.sequence = sequence;
+  value.header.sensor = SensorId::Mq4;
+  value.header.stream = StreamId::Organic;
+  value.header.kind = SampleKind::MqAdc;
+  value.header.monotonic_us = sequence * 1000U;
+  value.header.config_ref.present = true;
+  value.header.config_ref.schema_version = 1U;
+  value.header.config_ref.config_version = 3U;
+  value.quality = SampleQuality::Ready;
+  value.reason = SampleReason::DataReady;
+  value.raw.present = true;
+  value.raw.adc_counts = 1234U;
+  return value;
+}
+
+ImmutableRecordBytes encoded(uint64_t sequence) {
+  ImmutableRecordBytes value{};
+  (void)RecordCodec::encode_sample(sample(sequence), value);
+  return value;
+}
+
+void test_framing_rejects_corrupt_and_partial_tail() {
+  const auto full = encoded(1U);
+  TEST_ASSERT_TRUE(RecordCodec::valid(full));
+  auto corrupt = full;
+  corrupt.bytes[corrupt.size - 1U] ^= 0x01U;
+  TEST_ASSERT_FALSE(RecordCodec::valid(corrupt));
+  TEST_ASSERT_FALSE(RecordCodec::valid_frame(full.bytes.data(), full.size - 1U));
+}
+
+void test_store_deduplicates_and_recovers_corrupt_tail() {
+  MemoryArchiveStore<4U> store(64U * 1024U);
+  const auto first = encoded(2U);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AppendStatus::Durable),
+                        static_cast<int>(store.append(first)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AppendStatus::Durable),
+                        static_cast<int>(store.append(first)));
+  TEST_ASSERT_EQUAL_UINT32(1U, store.size());
+  const auto second = encoded(3U);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AppendStatus::Durable),
+                        static_cast<int>(store.append(second)));
+  store.corrupt_last_byte();
+  TEST_ASSERT_TRUE(store.recover());
+  TEST_ASSERT_EQUAL_UINT32(1U, store.size());
+  TEST_ASSERT_TRUE(RecordCodec::valid(store.at(0U)));
+}
+
+void test_store_faults_are_observable_and_quota_does_not_overwrite() {
+  const auto first = encoded(4U);
+  MemoryArchiveStore<4U> quota_store(first.size);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AppendStatus::Durable),
+                        static_cast<int>(quota_store.append(first)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AppendStatus::LoggingBlocked),
+                        static_cast<int>(quota_store.append(encoded(5U))));
+  TEST_ASSERT_EQUAL_UINT32(1U, quota_store.size());
+
+  MemoryArchiveStore<4U> fault_store(64U * 1024U);
+  fault_store.set_fault(StoreFault::ShortWrite);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AppendStatus::Retryable),
+                        static_cast<int>(fault_store.append(first)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ArchiveHealth::Degraded),
+                        static_cast<int>(fault_store.health()));
+}
+
+void test_gap_tracker_coalesces_and_counts_overflow() {
+  GapTracker<1U> gaps{};
+  TEST_ASSERT_TRUE(gaps.record(10U, GapReason::MediaFailure));
+  TEST_ASSERT_TRUE(gaps.record(11U, GapReason::MediaFailure));
+  TEST_ASSERT_FALSE(gaps.record(20U, GapReason::QuotaFull));
+  TEST_ASSERT_EQUAL_UINT64(3U, gaps.unlogged_records());
+  TEST_ASSERT_EQUAL_UINT64(1U, gaps.overflow_count());
+  TEST_ASSERT_EQUAL_UINT64(10U, gaps.at(0U).first_sequence);
+  TEST_ASSERT_EQUAL_UINT64(11U, gaps.at(0U).last_sequence);
+}
+
+void test_serialized_workload_budget_is_bounded() {
+  std::printf("memory ArchiveIdentity=%zu ImmutableRecordBytes=%zu MemoryArchiveStore=%zu "
+              "GapTracker32=%zu LittleFsArchiveStore=%zu MediaFailoverStore=%zu\n",
+              sizeof(ArchiveIdentity), sizeof(ImmutableRecordBytes),
+              sizeof(MemoryArchiveStore<128U>), sizeof(GapTracker<32U>),
+              sizeof(LittleFsArchiveStore), sizeof(MediaFailoverStore));
+  MemoryArchiveStore<128U> store(2U * 1024U * 1024U);
+  for (uint64_t sequence = 0U; sequence < 78U; ++sequence) {
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(AppendStatus::Durable),
+                          static_cast<int>(store.append(encoded(sequence))));
+  }
+  TEST_ASSERT_TRUE(store.pending_bytes() < store.pending_quota_bytes());
+  TEST_ASSERT_EQUAL_UINT32(78U, store.size());
+}
+
+void test_media_failover_keeps_primary_pending_and_uses_littlefs_fallback() {
+  MemoryArchiveStore<4U> sd(64U * 1024U);
+  MemoryArchiveStore<4U> littlefs(64U * 1024U);
+  MediaFailoverStore router(sd, littlefs);
+  sd.set_fault(StoreFault::MediaFailure);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AppendStatus::Durable),
+                        static_cast<int>(router.append(encoded(80U))));
+  TEST_ASSERT_EQUAL_UINT32(0U, sd.size());
+  TEST_ASSERT_EQUAL_UINT32(1U, littlefs.size());
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ArchiveHealth::Degraded),
+                        static_cast<int>(router.health()));
+}
+
+}  // namespace
+
+int main() {
+  UNITY_BEGIN();
+  RUN_TEST(test_framing_rejects_corrupt_and_partial_tail);
+  RUN_TEST(test_store_deduplicates_and_recovers_corrupt_tail);
+  RUN_TEST(test_store_faults_are_observable_and_quota_does_not_overwrite);
+  RUN_TEST(test_gap_tracker_coalesces_and_counts_overflow);
+  RUN_TEST(test_serialized_workload_budget_is_bounded);
+  RUN_TEST(test_media_failover_keeps_primary_pending_and_uses_littlefs_fallback);
+  return UNITY_END();
+}

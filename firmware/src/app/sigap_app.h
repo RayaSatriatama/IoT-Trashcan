@@ -14,6 +14,8 @@
 #include "processing_runtime.h"
 #include "models/model_lifecycle.h"
 #include "maintenance/model_runtime.h"
+#include "storage/archive_media.h"
+#include "archive_runtime.h"
 
 namespace sigap {
 
@@ -51,6 +53,10 @@ class SigapApp final {
   acquisition::ProfileManager profile_manager_;
   acquisition::AcquisitionFoundation acquisition_;
   ProcessingRuntime processing_runtime_{};
+  storage::LittleFsArchiveStore littlefs_store_{};
+  storage::SdArchiveStore sd_store_{};
+  storage::MediaFailoverStore archive_store_;
+  ArchiveRuntime archive_runtime_{};
   models::NvsModelProfilePersistence model_persistence_{};
   models::ModelProfileLifecycle model_lifecycle_;
   maintenance::ModelMaintenanceRouter model_router_;

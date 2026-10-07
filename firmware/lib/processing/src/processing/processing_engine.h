@@ -951,6 +951,17 @@ class EvaluatedResultRing final {
     --size_;
     return ResultHandoffStatus::Dequeued;
   }
+  ResultHandoffStatus try_peek(Result& result) const noexcept {
+    if (size_ == 0U) return ResultHandoffStatus::Empty;
+    result = results_[head_];
+    return ResultHandoffStatus::Dequeued;
+  }
+  ResultHandoffStatus discard_front() noexcept {
+    if (size_ == 0U) return ResultHandoffStatus::Empty;
+    head_ = (head_ + 1U) % Capacity;
+    --size_;
+    return ResultHandoffStatus::Dequeued;
+  }
   constexpr std::size_t size() const noexcept { return size_; }
   constexpr uint64_t dropped_results() const noexcept {
     return dropped_results_;

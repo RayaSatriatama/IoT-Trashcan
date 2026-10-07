@@ -7,6 +7,11 @@
 
 #ifdef ARDUINO
 #include <Arduino.h>
+#include <LittleFS.h>
+#ifdef SIGAP_USE_SD
+#include <SD.h>
+#include <SPI.h>
+#endif
 #endif
 
 namespace sigap {
@@ -24,6 +29,7 @@ SigapApp::SigapApp() noexcept
                        &audit_ring_),
       acquisition_(config_manager_, record_factory_, board::kN16R8Pins,
                    profiles_),
+      archive_store_(sd_store_, littlefs_store_),
       model_lifecycle_(model_persistence_,
                        models::ModelProfilePersistence::default_codec()),
       model_router_(model_lifecycle_,
@@ -34,7 +40,9 @@ SigapApp::SigapApp() noexcept
       maintenance_service_(maintenance_transport_, maintenance_router_) {
   profile_manager_.bind_runtime_profiles(profiles_);
   evidence_cache_.set_profiles(&profiles_);
-  processing_runtime_.set_downstream_observer(&evidence_cache_);
+  archive_runtime_.set_store(&archive_store_);
+  archive_runtime_.set_secondary_observer(&evidence_cache_);
+  processing_runtime_.set_downstream_observer(&archive_runtime_);
   acquisition_.set_sample_observer(&processing_runtime_);
   acquisition_.set_calibration_state_provider(&maintenance_router_);
 }
@@ -112,6 +120,25 @@ void SigapApp::setup() noexcept {
     return;
   }
   record_context_.config_ref = ref;
+#ifdef ARDUINO
+  if (LittleFS.begin(false)) {
+    (void)littlefs_store_.begin(
+        LittleFS, config_manager_.active().storage.flash_pending_quota_bytes);
+  }
+#ifdef SIGAP_USE_SD
+  SPI.begin(board::kSdSck, board::kSdMiso, board::kSdMosi, board::kSdCs);
+  if (SD.begin(board::kSdCs, SPI, 20'000'000U)) {
+    (void)sd_store_.begin(
+        SD, config_manager_.active().storage.sd_pending_quota_bytes);
+  }
+#endif
+  (void)archive_store_.recover();
+#else
+  (void)littlefs_store_.begin(
+      config_manager_.active().storage.flash_pending_quota_bytes);
+  (void)sd_store_.begin(
+      config_manager_.active().storage.sd_pending_quota_bytes);
+#endif
   const processing::ResultRecordContext result_context{
       record_context_.device_id,
       record_context_.boot_id,
@@ -148,6 +175,7 @@ void SigapApp::loop() noexcept {
   }
   acquisition_.poll(now_us);
   processing_runtime_.poll(now_us);
+  (void)archive_runtime_.drain_results(processing_runtime_.handoff());
   maintenance_service_.poll(now_us);
 #ifdef ARDUINO
   if (reboot_controller_.consume_request()) {
