@@ -196,7 +196,11 @@ class LittleFsArchiveStore : public IArchiveStore {
     bool conflict_seen = false;
     while (file.available()) {
       ImmutableRecordBytes& record = scan_record_;
-      record = ImmutableRecordBytes{};
+      record.bytes.fill(0U);
+      record.size = 0U;
+      record.identity = ArchiveIdentity{};
+      record.hash.fill(0U);
+      record.committed = false;
       if (file.read(record.bytes.data(), kArchiveHeaderBytes) !=
           static_cast<int>(kArchiveHeaderBytes)) {
         tail_corrupt = true;
@@ -419,7 +423,11 @@ class LittleFsArchiveStore : public IArchiveStore {
     return written > 0 && static_cast<std::size_t>(written) < size;
   }
   static bool read_record(File& file, ImmutableRecordBytes& record) noexcept {
-    record = ImmutableRecordBytes{};
+    record.bytes.fill(0U);
+    record.size = 0U;
+    record.identity = ArchiveIdentity{};
+    record.hash.fill(0U);
+    record.committed = false;
     if (file.read(record.bytes.data(), kArchiveHeaderBytes) !=
         static_cast<int>(kArchiveHeaderBytes)) return false;
     const uint32_t payload_size = read_u32(record.bytes.data() +
@@ -477,7 +485,11 @@ class LittleFsArchiveStore : public IArchiveStore {
     std::size_t offset = 0U;
     while (file.available() && offset < limit_bytes) {
       ImmutableRecordBytes& record = lookup_record_;
-      record = ImmutableRecordBytes{};
+      record.bytes.fill(0U);
+      record.size = 0U;
+      record.identity = ArchiveIdentity{};
+      record.hash.fill(0U);
+      record.committed = false;
       if (limit_bytes - offset < kArchiveHeaderBytes ||
           file.read(record.bytes.data(), kArchiveHeaderBytes) !=
               static_cast<int>(kArchiveHeaderBytes)) {
