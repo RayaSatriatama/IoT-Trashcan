@@ -137,8 +137,7 @@ class StorageWorker final {
                                pending_record_.hash, terminal_context,
                                terminal_gap};
     if (!queue_.try_push(item)) {
-      pending_record_ = ImmutableRecordBytes{};
-      pending_owned_ = false;
+      clear_owned();
       ++stats_.overflow;
       return false;
     }
@@ -214,7 +213,11 @@ class StorageWorker final {
   }
 
   void clear_owned() noexcept {
-    pending_record_ = ImmutableRecordBytes{};
+    pending_record_.bytes.fill(0U);
+    pending_record_.size = 0U;
+    pending_record_.identity = ArchiveIdentity{};
+    pending_record_.hash.fill(0U);
+    pending_record_.committed = false;
     pending_owned_ = false;
   }
 
