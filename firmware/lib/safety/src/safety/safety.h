@@ -83,6 +83,16 @@ struct SafetyResult final {
 
 class SafetyEvaluator final {
  public:
+  SafetyEvaluator() noexcept = default;
+  SafetyEvaluator(const SafetyEvaluator&) = delete;
+  SafetyEvaluator& operator=(const SafetyEvaluator&) = delete;
+  SafetyEvaluator(SafetyEvaluator&&) = delete;
+  SafetyEvaluator& operator=(SafetyEvaluator&&) = delete;
+
+  // This object is an instance-owned B3 safety state machine. The owner must
+  // keep one evaluator for the lifetime of the runtime, rather than creating
+  // a temporary evaluator for each processing cycle. reset() is reserved for
+  // an explicit maintenance/reboot boundary.
   SafetyResult evaluate(const models::SafetyModelProfile* profile,
                         const HazardInputFrame& inputs) noexcept;
 

@@ -1,6 +1,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <type_traits>
 
 #include <unity.h>
 
@@ -185,6 +186,39 @@ void test_safety_runtime_state_is_bounded() {
   TEST_ASSERT_TRUE(sizeof(SafetyTrace) <= 256U);
 }
 
+void test_evaluator_is_instance_owned_and_not_copyable() {
+  TEST_ASSERT_FALSE(std::is_copy_constructible<SafetyEvaluator>::value);
+  TEST_ASSERT_FALSE(std::is_copy_assignable<SafetyEvaluator>::value);
+  TEST_ASSERT_FALSE(std::is_move_constructible<SafetyEvaluator>::value);
+  TEST_ASSERT_FALSE(std::is_move_assignable<SafetyEvaluator>::value);
+}
+
+void test_model_change_preserves_latch_and_restarts_clear_window() {
+  auto first = test_profile();
+  SafetyEvaluator evaluator{};
+  auto result = evaluator.evaluate(&first, ready_inputs(65.0F, 300.0F));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(SafetyState::Alert),
+                        static_cast<int>(result.state));
+
+  auto second = first;
+  second.manifest.profile_version = first.manifest.profile_version + 1U;
+  second.manifest.hash[0] = 0xA5U;
+
+  result = evaluator.evaluate(&second, ready_inputs(45.0F, 300.0F));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(SafetyState::Alert),
+                        static_cast<int>(result.state));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(SafetyReason::AlertLatched),
+                        static_cast<int>(result.reason));
+  TEST_ASSERT_EQUAL_UINT8(1U, result.trace.clear_streak);
+  TEST_ASSERT_TRUE(result.trace.alert_latched_before);
+  TEST_ASSERT_TRUE(result.trace.alert_latched_after);
+
+  result = evaluator.evaluate(&second, ready_inputs(45.0F, 300.0F));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(SafetyState::Clear),
+                        static_cast<int>(result.state));
+  TEST_ASSERT_FALSE(evaluator.alert_latched());
+}
+
 }  // namespace
 
 void setUp() {}
@@ -199,5 +233,7 @@ int main(int, char**) {
   RUN_TEST(test_trace_is_bounded_and_carries_model_provenance);
   RUN_TEST(test_model_activation_never_clears_existing_alert);
   RUN_TEST(test_safety_runtime_state_is_bounded);
+  RUN_TEST(test_evaluator_is_instance_owned_and_not_copyable);
+  RUN_TEST(test_model_change_preserves_latch_and_restarts_clear_window);
   return UNITY_END();
 }
