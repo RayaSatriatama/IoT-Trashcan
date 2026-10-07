@@ -44,6 +44,12 @@ struct ImmutableRecordBytes final {
   bool committed{false};
 };
 
+struct ArchiveRecordView final {
+  ArchiveIdentity identity{};
+  const uint8_t* payload{nullptr};
+  std::size_t payload_size{0U};
+};
+
 class PayloadWriter final {
  public:
   PayloadWriter(uint8_t* data, std::size_t capacity) noexcept
@@ -171,6 +177,26 @@ class RecordCodec final {
            kArchiveCommitMarker;
   }
 
+  static bool read(const ImmutableRecordBytes& record,
+                   ArchiveRecordView& view) noexcept {
+    view = ArchiveRecordView{};
+    if (!valid(record)) return false;
+    view.identity.kind = static_cast<ArchiveRecordKind>(
+        record.bytes[kArchiveKindOffset]);
+    view.identity.sequence = get_u64(record.bytes.data() + kArchiveSequenceOffset);
+    view.identity.device_id.present = true;
+    view.identity.boot_id.present = true;
+    std::memcpy(view.identity.device_id.bytes.data(),
+                record.bytes.data() + kArchiveDeviceIdOffset,
+                view.identity.device_id.bytes.size());
+    std::memcpy(view.identity.boot_id.bytes.data(),
+                record.bytes.data() + kArchiveBootIdOffset,
+                view.identity.boot_id.bytes.size());
+    view.payload = record.bytes.data() + kArchiveHeaderBytes;
+    view.payload_size = get_u32(record.bytes.data() + kArchivePayloadSizeOffset);
+    return true;
+  }
+
   static bool encode_sample(const acquisition::SampleRecord& sample,
                             ImmutableRecordBytes& output) noexcept {
     const ArchiveIdentity identity{sample.header.device_id, sample.header.boot_id,
@@ -223,6 +249,13 @@ class RecordCodec final {
   }
   static void put_u64(uint8_t* out, uint64_t value) noexcept {
     for (std::size_t i = 0U; i < 8U; ++i) out[i] = static_cast<uint8_t>(value >> (i * 8U));
+  }
+  static uint64_t get_u64(const uint8_t* in) noexcept {
+    uint64_t value{0U};
+    for (std::size_t i = 0U; i < 8U; ++i) {
+      value |= static_cast<uint64_t>(in[i]) << (i * 8U);
+    }
+    return value;
   }
   static uint16_t get_u16(const uint8_t* in) noexcept {
     return static_cast<uint16_t>(in[0U] | (static_cast<uint16_t>(in[1U]) << 8U));

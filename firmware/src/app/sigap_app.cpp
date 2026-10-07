@@ -41,8 +41,7 @@ SigapApp::SigapApp() noexcept
   profile_manager_.bind_runtime_profiles(profiles_);
   evidence_cache_.set_profiles(&profiles_);
   archive_runtime_.set_store(&archive_store_);
-  archive_runtime_.set_secondary_observer(&evidence_cache_);
-  processing_runtime_.set_downstream_observer(&archive_runtime_);
+  processing_runtime_.set_downstream_observer(&evidence_cache_);
   acquisition_.set_sample_observer(&processing_runtime_);
   acquisition_.set_calibration_state_provider(&maintenance_router_);
 }
@@ -124,6 +123,7 @@ void SigapApp::setup() noexcept {
   if (LittleFS.begin(false)) {
     (void)littlefs_store_.begin(
         LittleFS, config_manager_.active().storage.flash_pending_quota_bytes);
+    (void)ack_journal_.begin(LittleFS);
   }
 #ifdef SIGAP_USE_SD
   SPI.begin(board::kSdSck, board::kSdMiso, board::kSdMosi, board::kSdCs);
@@ -174,6 +174,7 @@ void SigapApp::loop() noexcept {
     (void)acquisition_.refresh_profiles(now_us);
   }
   acquisition_.poll(now_us);
+  (void)archive_runtime_.drain_samples(acquisition_.handoff());
   processing_runtime_.poll(now_us);
   (void)archive_runtime_.drain_results(processing_runtime_.handoff());
   maintenance_service_.poll(now_us);

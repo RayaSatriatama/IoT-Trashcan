@@ -511,7 +511,10 @@ void test_acquisition_memory_footprint_is_bounded() {
   UnityPrintNumber(static_cast<int>(sizeof(TargetDs18b20Reader)));
   UnityPrint("\\n");
   TEST_ASSERT_LESS_OR_EQUAL_UINT(512U, sizeof(SampleRecord));
-  TEST_ASSERT_LESS_OR_EQUAL_UINT(16U * sizeof(SampleRecord) + 64U,
+  // The logger-owned ring retains one dropped identity for an auditable
+  // queue-full gap in addition to its bounded sample storage.
+  TEST_ASSERT_LESS_OR_EQUAL_UINT(16U * sizeof(SampleRecord) +
+                                     2U * sizeof(SampleRecord) + 64U,
                                   sizeof(SampleRing<16>));
 }
 

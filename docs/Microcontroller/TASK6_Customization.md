@@ -11,6 +11,7 @@ backend archive code, or migration 005.
 | record maximum | archive codec, bytes | 16 KiB contract bound | compile-time contract |
 | batch maximum | immutable batch, bytes | 32 KiB contract bound | compile-time contract |
 | journal/gap capacity | instance-owned rings | bounded static capacity | firmware build; no mutable global |
+| target batch index | `FsImmutableBatchStore`, entries | 64 committed batch identities | firmware build; rebuilt on restart |
 
 Calibration coefficients, capacity, and scientific model parameters remain
 typed versioned profiles. GPIO and bus mapping remain board/build constants.
@@ -29,9 +30,12 @@ or reclaim pending data on the failed primary. Migration, if later needed,
 must use copy, verify, checkpoint, and reclaim.
 
 `ImmutableBatch` freezes the exact request body and SHA-256 before the first
-attempt. `AckJournal` advances only for a matching durable server ACK. Timeout,
-conflict, invalid ACK, and summary-v2 ACK do not advance the delivered state;
-reclaim requires an explicit checkpoint.
+attempt. `FsImmutableBatchStore` stores device identity, record count, body
+hash, and exact bytes, rebuilds a bounded identity index after restart, and
+provides a bounded replay operation. `AckJournal` and the target `FsAckJournalStore` advance only for a
+matching durable server ACK including device identity, body hash, and counts.
+Timeout, conflict, invalid ACK, and summary-v2 ACK do not advance the
+delivered state; reclaim requires an explicit checkpoint.
 
-Native tests use a memory store and fault injection. They are not physical SD,
-power-cut, wear, throughput, or HIL evidence.
+Native tests use memory stores, a filesystem test double, and fault injection.
+They are not physical SD, power-cut, wear, throughput, or HIL evidence.

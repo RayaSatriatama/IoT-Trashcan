@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <string_view>
 
+#include "acquisition/acquisition_types.h"
 #include "config/config_types.h"
 #include "telemetry/sha256.h"
 
@@ -23,6 +24,7 @@ struct ImmutableBatch final {
   std::size_t batch_id_size{0U};
   config::ConfigHash body_hash{};
   uint16_t record_count{0U};
+  acquisition::DeviceId device_id{};
   bool attempted{false};
 
   bool prepare(std::string_view id, const uint8_t* bytes, std::size_t size,
@@ -43,6 +45,9 @@ struct ImmutableBatch final {
   std::string_view exact_body() const noexcept {
     return std::string_view(reinterpret_cast<const char*>(body.data()), body_size);
   }
+  void set_device_id(const acquisition::DeviceId& device) noexcept {
+    device_id = device;
+  }
 };
 
 struct Ack final {
@@ -52,11 +57,14 @@ struct Ack final {
   uint16_t record_count{0U};
   uint16_t stored_count{0U};
   uint16_t deduplicated_count{0U};
+  acquisition::DeviceId device_id{};
   AckStatus status{AckStatus::Invalid};
 };
 
 inline bool ack_matches(const ImmutableBatch& batch, const Ack& ack) noexcept {
   return batch.attempted && ack.status == AckStatus::Durable &&
+         batch.device_id.present && ack.device_id.present &&
+         batch.device_id.bytes == ack.device_id.bytes &&
          ack.batch_id_size == batch.batch_id_size &&
          std::equal(batch.batch_id.begin(), batch.batch_id.begin() + batch.batch_id_size,
                     ack.batch_id.begin()) && ack.body_hash == batch.body_hash &&

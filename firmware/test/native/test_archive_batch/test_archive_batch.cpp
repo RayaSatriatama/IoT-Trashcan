@@ -7,15 +7,24 @@
 
 #include "telemetry_archive/immutable_batch.h"
 #include "telemetry_archive/batch_store.h"
+#include "telemetry_archive/ack_journal_store.h"
 
 namespace {
 
 using namespace sigap::telemetry_archive;
 
+sigap::acquisition::DeviceId device() {
+  sigap::acquisition::DeviceId value{};
+  value.present = true;
+  value.bytes[0] = 0xD1U;
+  return value;
+}
+
 ImmutableBatch make_batch() {
   ImmutableBatch batch{};
   constexpr std::array<uint8_t, 5U> body{{'{', '1', '}', '\n', 0U}};
   (void)batch.prepare("batch-1", body.data(), 4U, 2U);
+  batch.set_device_id(device());
   return batch;
 }
 
@@ -27,6 +36,7 @@ Ack valid_ack(const ImmutableBatch& batch) {
   }
   ack.body_hash = batch.body_hash;
   ack.record_count = batch.record_count;
+  ack.device_id = batch.device_id;
   ack.stored_count = batch.record_count;
   ack.status = AckStatus::Durable;
   return ack;
@@ -93,6 +103,31 @@ void test_batch_bytes_are_durable_and_duplicate_identity_is_not_rewritten() {
   TEST_ASSERT_EQUAL_INT(0, std::memcmp(store.at(0U)->exact_body().data(),
                                        batch.exact_body().data(),
                                        batch.body_size));
+  ImmutableBatch replay{};
+  TEST_ASSERT_TRUE(store.load(0U, replay));
+  TEST_ASSERT_EQUAL_UINT32(batch.record_count, replay.record_count);
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(batch.device_id.bytes.data(),
+                                replay.device_id.bytes.data(),
+                                batch.device_id.bytes.size());
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(batch.body_hash.data(), replay.body_hash.data(),
+                                batch.body_hash.size());
+}
+
+void test_persistent_ack_boundary_requires_checkpoint_before_reclaim() {
+  auto batch = make_batch();
+  MemoryAckJournalStore<2U> journal{};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AckPersistStatus::Durable),
+                        static_cast<int>(journal.append_pending(batch)));
+  auto ack = valid_ack(batch);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AckPersistStatus::Durable),
+                        static_cast<int>(journal.apply_ack(ack)));
+  TEST_ASSERT_EQUAL_UINT32(0U, journal.reclaim());
+  journal.set_checkpoint_failure(true);
+  TEST_ASSERT_FALSE(journal.checkpoint());
+  TEST_ASSERT_EQUAL_UINT32(0U, journal.reclaim());
+  journal.set_checkpoint_failure(false);
+  TEST_ASSERT_TRUE(journal.checkpoint());
+  TEST_ASSERT_EQUAL_UINT32(1U, journal.reclaim());
 }
 
 }  // namespace
@@ -103,5 +138,6 @@ int main() {
   RUN_TEST(test_only_valid_ack_advances_and_checkpoint_allows_reclaim);
   RUN_TEST(test_ack_conflict_timeout_and_hash_mismatch_do_not_advance);
   RUN_TEST(test_batch_bytes_are_durable_and_duplicate_identity_is_not_rewritten);
+  RUN_TEST(test_persistent_ack_boundary_requires_checkpoint_before_reclaim);
   return UNITY_END();
 }

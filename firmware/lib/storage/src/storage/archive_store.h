@@ -16,6 +16,12 @@ enum class GapReason : uint8_t { QueueFull, QuotaFull, MediaFailure, InvalidReco
 struct GapRange final {
   uint64_t first_sequence{0U};
   uint64_t last_sequence{0U};
+  acquisition::DeviceId device_id{};
+  acquisition::BootId boot_id{};
+  acquisition::SensorId sensor{acquisition::SensorId::Mq4};
+  acquisition::StreamId stream{acquisition::StreamId::Organic};
+  uint64_t first_monotonic_us{0U};
+  uint64_t last_monotonic_us{0U};
   GapReason reason{GapReason::QueueFull};
   bool present{false};
 };
@@ -35,7 +41,45 @@ class GapTracker final {
       ++overflow_count_;
       return false;
     }
-    ranges_[count_++] = GapRange{sequence, sequence, reason, true};
+    GapRange range{};
+    range.first_sequence = sequence;
+    range.last_sequence = sequence;
+    range.reason = reason;
+    range.present = true;
+    ranges_[count_++] = range;
+    return true;
+  }
+  bool record(const acquisition::SampleRecord& sample,
+              GapReason reason) noexcept {
+    ++unlogged_records_;
+    if (count_ != 0U) {
+      GapRange& current = ranges_[count_ - 1U];
+      if (current.reason == reason && current.device_id.bytes == sample.header.device_id.bytes &&
+          current.boot_id.bytes == sample.header.boot_id.bytes &&
+          current.sensor == sample.header.sensor && current.stream == sample.header.stream &&
+          current.last_sequence != UINT64_MAX &&
+          current.last_sequence + 1U == sample.header.sequence) {
+        current.last_sequence = sample.header.sequence;
+        current.last_monotonic_us = sample.header.monotonic_us;
+        return true;
+      }
+    }
+    if (count_ == Capacity) {
+      ++overflow_count_;
+      return false;
+    }
+    GapRange range{};
+    range.first_sequence = sample.header.sequence;
+    range.last_sequence = sample.header.sequence;
+    range.device_id = sample.header.device_id;
+    range.boot_id = sample.header.boot_id;
+    range.sensor = sample.header.sensor;
+    range.stream = sample.header.stream;
+    range.first_monotonic_us = sample.header.monotonic_us;
+    range.last_monotonic_us = sample.header.monotonic_us;
+    range.reason = reason;
+    range.present = true;
+    ranges_[count_++] = range;
     return true;
   }
   uint64_t unlogged_records() const noexcept { return unlogged_records_; }
@@ -143,14 +187,13 @@ class ArchiveAppendController final {
 
   AppendStatus append(const ImmutableRecordBytes& record) noexcept {
     const auto status = store_.append(record);
-    if (status == AppendStatus::Durable) ++durable_records_;
-    else if (status == AppendStatus::LoggingBlocked) {
-      gaps_.record(record.identity.sequence, GapReason::QuotaFull);
-    } else if (status == AppendStatus::Retryable) {
-      gaps_.record(record.identity.sequence, GapReason::MediaFailure);
-    } else {
+    if (status == AppendStatus::Durable) {
+      ++durable_records_;
+    } else if (status == AppendStatus::Invalid) {
       gaps_.record(record.identity.sequence, GapReason::InvalidRecord);
     }
+    // Retryable and LoggingBlocked remain pending. They become a terminal gap
+    // only when the owning queue explicitly discards the identity.
     return status;
   }
   uint64_t durable_records() const noexcept { return durable_records_; }

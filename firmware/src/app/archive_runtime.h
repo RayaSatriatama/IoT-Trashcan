@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "acquisition/handoff.h"
 #include "acquisition/record.h"
 #include "processing_runtime.h"
 #include "storage/archive_store.h"
@@ -10,10 +11,11 @@
 
 namespace sigap {
 
-class ArchiveRuntime final : public acquisition::ISampleObserver {
+class ArchiveRuntime final {
  public:
   using ResultEnvelope = ProcessingRuntime::ResultEnvelope;
   using ResultHandoff = ProcessingRuntime::Handoff;
+  using SampleHandoff = acquisition::SampleRing<16U>;
 
   explicit ArchiveRuntime(storage::IArchiveStore* store = nullptr) noexcept
       : store_(store) {}
@@ -21,19 +23,40 @@ class ArchiveRuntime final : public acquisition::ISampleObserver {
   void set_store(storage::IArchiveStore* store) noexcept {
     store_ = store;
   }
-  void set_secondary_observer(acquisition::ISampleObserver* observer) noexcept {
-    secondary_ = observer;
-  }
-
-  void observe(const acquisition::SampleRecord& sample) noexcept override {
-    if (secondary_ != nullptr) secondary_->observe(sample);
-    storage::ImmutableRecordBytes encoded{};
-    if (!storage::RecordCodec::encode_sample(sample, encoded)) {
+  storage::AppendStatus append_sample(
+      const acquisition::SampleRecord& sample) noexcept {
+    if (!storage::RecordCodec::encode_sample(sample, scratch_)) {
       ++encode_failures_;
       gaps_.record(sample.header.sequence, storage::GapReason::InvalidRecord);
-      return;
+      return storage::AppendStatus::Invalid;
     }
-    (void)append_record(encoded);
+    return append(scratch_);
+  }
+
+  bool drain_samples(SampleHandoff& handoff) noexcept {
+    bool progressed{false};
+    acquisition::SampleRecord sample{};
+    if (const auto* dropped = handoff.first_dropped(); dropped != nullptr) {
+      gaps_.record(*dropped, storage::GapReason::QueueFull);
+      const auto* last_dropped = handoff.last_dropped();
+      if (last_dropped != nullptr &&
+          last_dropped->header.sequence != dropped->header.sequence) {
+        gaps_.record(*last_dropped, storage::GapReason::QueueFull);
+      }
+      handoff.clear_last_dropped();
+      progressed = true;
+    }
+    while (handoff.try_peek(sample) == acquisition::HandoffStatus::Dequeued) {
+      const auto status = append_sample(sample);
+      if (status == storage::AppendStatus::Durable ||
+          status == storage::AppendStatus::Invalid) {
+        handoff.discard_front();
+        progressed = true;
+        continue;
+      }
+      break;
+    }
+    return progressed;
   }
 
   storage::AppendStatus append_record(
@@ -45,15 +68,14 @@ class ArchiveRuntime final : public acquisition::ISampleObserver {
     bool progressed{false};
     ResultEnvelope envelope{};
     while (handoff.try_peek(envelope) == processing::ResultHandoffStatus::Dequeued) {
-      storage::ImmutableRecordBytes encoded{};
-      if (!encode_result(envelope, encoded)) {
+      if (!encode_result(envelope, scratch_)) {
         ++encode_failures_;
         handoff.discard_front();
         gaps_.record(envelope.header.sequence, storage::GapReason::InvalidRecord);
         progressed = true;
         continue;
       }
-      if (append(encoded) != storage::AppendStatus::Durable) break;
+      if (append(scratch_) != storage::AppendStatus::Durable) break;
       handoff.discard_front();
       progressed = true;
     }
@@ -75,10 +97,9 @@ class ArchiveRuntime final : public acquisition::ISampleObserver {
     }
     const auto status = store_->append(record);
     if (status == storage::AppendStatus::Durable) ++durable_records_;
-    else gaps_.record(record.identity.sequence,
-                      status == storage::AppendStatus::LoggingBlocked
-                          ? storage::GapReason::QuotaFull
-                          : storage::GapReason::MediaFailure);
+    else if (status == storage::AppendStatus::Invalid) {
+      gaps_.record(record.identity.sequence, storage::GapReason::InvalidRecord);
+    }
     return status;
   }
 
@@ -122,11 +143,77 @@ class ArchiveRuntime final : public acquisition::ISampleObserver {
         !write_metric(values.mq8_mv, writer)) return false;
     const auto& fis = envelope.result.fuzzy.value();
     const auto& safety = envelope.result.safety.value();
-    return writer.u8(static_cast<uint8_t>(fis.state)) &&
-           writer.u8(static_cast<uint8_t>(fis.reason)) &&
-           writer.u8(static_cast<uint8_t>(safety.state)) &&
-           writer.u8(static_cast<uint8_t>(safety.reason)) &&
+    return write_fis(fis, writer) && write_safety(safety, writer) &&
            storage::RecordCodec::finish(output, writer);
+  }
+
+  static bool write_model_id(const models::ModelId& id,
+                             storage::PayloadWriter& writer) noexcept {
+    return writer.bytes(reinterpret_cast<const uint8_t*>(id.data()), id.size());
+  }
+
+  static bool write_profile_ref(const acquisition::ProfileRef& ref,
+                                storage::PayloadWriter& writer) noexcept {
+    return writer.u8(ref.present ? 1U : 0U) &&
+           writer.u8(static_cast<uint8_t>(ref.kind)) &&
+           writer.u32(ref.schema_version) && writer.u32(ref.profile_version) &&
+           writer.u32(ref.target_id) && writer.bytes(ref.hash.data(), ref.hash.size());
+  }
+
+  static bool write_fis(const fuzzy::FisResult& fis,
+                        storage::PayloadWriter& writer) noexcept {
+    if (fis.trace.membership_count > fis.trace.memberships.size() ||
+        fis.trace.rule_count > fis.trace.rules.size()) return false;
+    if (!writer.u8(static_cast<uint8_t>(fis.state)) ||
+        !writer.u8(static_cast<uint8_t>(fis.reason)) ||
+        !writer.u8(static_cast<uint8_t>(fis.model_state)) ||
+        !writer.u8(fis.score_present ? 1U : 0U) || !writer.f32(fis.score) ||
+        !writer.u8(fis.label_present ? 1U : 0U) || !write_model_id(fis.label, writer) ||
+        !writer.u8(fis.trace_present ? 1U : 0U) ||
+        !writer.u32(fis.trace.model_ref.version) ||
+        !writer.bytes(fis.trace.model_ref.hash.data(), fis.trace.model_ref.hash.size()) ||
+        !writer.u16(static_cast<uint16_t>(fis.trace.membership_count))) return false;
+    for (std::size_t i = 0U; i < fis.trace.membership_count; ++i) {
+      const auto& membership = fis.trace.memberships[i];
+      if (!writer.u8(static_cast<uint8_t>(membership.input)) ||
+          !write_model_id(membership.set_id, writer) || !writer.f32(membership.value)) {
+        return false;
+      }
+    }
+    if (!writer.u16(static_cast<uint16_t>(fis.trace.rule_count))) return false;
+    for (std::size_t i = 0U; i < fis.trace.rule_count; ++i) {
+      const auto& rule = fis.trace.rules[i];
+      if (!writer.u16(rule.id) || !writer.f32(rule.strength) ||
+          !write_model_id(rule.output_id, writer)) return false;
+    }
+    return writer.u8(fis.trace.aggregate.present ? 1U : 0U) &&
+           write_model_id(fis.trace.aggregate.output_id, writer) &&
+           writer.f32(fis.trace.aggregate.area) &&
+           writer.u8(fis.trace.aggregate.centroid_present ? 1U : 0U) &&
+           writer.f32(fis.trace.aggregate.centroid);
+  }
+
+  static bool write_safety(const safety::SafetyResult& safety_result,
+                           storage::PayloadWriter& writer) noexcept {
+    const auto& trace = safety_result.trace;
+    if (trace.evidence_count > trace.evidence.size()) return false;
+    if (!writer.u8(static_cast<uint8_t>(safety_result.state)) ||
+        !writer.u8(static_cast<uint8_t>(safety_result.reason)) ||
+        !writer.u8(static_cast<uint8_t>(safety_result.model_state)) ||
+        !write_profile_ref(trace.model_ref, writer) ||
+        !writer.u8(trace.evidence_count) || !writer.u8(trace.clear_streak) ||
+        !writer.u8(trace.alert_latched_before ? 1U : 0U) ||
+        !writer.u8(trace.alert_latched_after ? 1U : 0U)) return false;
+    for (std::size_t i = 0U; i < trace.evidence_count; ++i) {
+      const auto& evidence = trace.evidence[i];
+      if (!writer.u8(static_cast<uint8_t>(evidence.signal)) ||
+          !writer.u8(static_cast<uint8_t>(evidence.input_state)) ||
+          !writer.f32(evidence.value) || !writer.f32(evidence.alert_at_or_above) ||
+          !writer.f32(evidence.clear_below) ||
+          !writer.u8(evidence.threshold_exceeded ? 1U : 0U) ||
+          !writer.u8(evidence.clear_condition_met ? 1U : 0U)) return false;
+    }
+    return true;
   }
 
   static bool write_profile_refs(
@@ -153,7 +240,10 @@ class ArchiveRuntime final : public acquisition::ISampleObserver {
   }
 
   storage::IArchiveStore* store_{nullptr};
-  acquisition::ISampleObserver* secondary_{nullptr};
+  // The cooperative runtime encodes one record at a time. Keeping this
+  // bounded buffer in the instance avoids a 16 KiB automatic loop-stack
+  // allocation and keeps filesystem work outside acquisition callbacks.
+  storage::ImmutableRecordBytes scratch_{};
   storage::GapTracker<32U> gaps_{};
   uint64_t durable_records_{0U};
   uint64_t encode_failures_{0U};

@@ -53,6 +53,20 @@ ImmutableRecordBytes encoded(uint64_t sequence) {
   return value;
 }
 
+ImmutableRecordBytes encoded_kind(uint64_t sequence, ArchiveRecordKind kind) {
+  ImmutableRecordBytes value{};
+  const ArchiveIdentity identity{device(), boot(), sequence, kind};
+  PayloadWriter writer{nullptr, 0U};
+  if (!RecordCodec::begin(identity, value, writer)) return value;
+  writer = PayloadWriter(value.bytes.data() + kArchiveHeaderBytes,
+                         value.bytes.size() - kArchiveHeaderBytes -
+                             kArchiveTrailerBytes);
+  if (!writer.u8(static_cast<uint8_t>(kind)) ||
+      !writer.u32(static_cast<uint32_t>(sequence)) ||
+      !RecordCodec::finish(value, writer)) return ImmutableRecordBytes{};
+  return value;
+}
+
 void test_framing_rejects_corrupt_and_partial_tail() {
   const auto full = encoded(1U);
   TEST_ASSERT_TRUE(RecordCodec::valid(full));
@@ -60,6 +74,21 @@ void test_framing_rejects_corrupt_and_partial_tail() {
   corrupt.bytes[corrupt.size - 1U] ^= 0x01U;
   TEST_ASSERT_FALSE(RecordCodec::valid(corrupt));
   TEST_ASSERT_FALSE(RecordCodec::valid_frame(full.bytes.data(), full.size - 1U));
+}
+
+void test_codec_reader_round_trips_identity_and_payload() {
+  const auto record = encoded(12U);
+  ArchiveRecordView view{};
+  TEST_ASSERT_TRUE(RecordCodec::read(record, view));
+  TEST_ASSERT_EQUAL_UINT64(12U, view.identity.sequence);
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(ArchiveRecordKind::Sample),
+                          static_cast<uint8_t>(view.identity.kind));
+  TEST_ASSERT_TRUE(view.identity.device_id.present);
+  TEST_ASSERT_TRUE(view.identity.boot_id.present);
+  TEST_ASSERT_EQUAL_UINT32(
+      static_cast<uint32_t>(record.size - kArchiveHeaderBytes - kArchiveTrailerBytes),
+      static_cast<uint32_t>(view.payload_size));
+  TEST_ASSERT_EQUAL_UINT8(record.bytes[kArchiveHeaderBytes], view.payload[0]);
 }
 
 void test_store_deduplicates_and_recovers_corrupt_tail() {
@@ -107,19 +136,30 @@ void test_gap_tracker_coalesces_and_counts_overflow() {
   TEST_ASSERT_EQUAL_UINT64(11U, gaps.at(0U).last_sequence);
 }
 
-void test_serialized_workload_budget_is_bounded() {
+void test_serialized_mixed_workload_budget_is_bounded() {
   std::printf("memory ArchiveIdentity=%zu ImmutableRecordBytes=%zu MemoryArchiveStore=%zu "
               "GapTracker32=%zu LittleFsArchiveStore=%zu MediaFailoverStore=%zu\n",
               sizeof(ArchiveIdentity), sizeof(ImmutableRecordBytes),
               sizeof(MemoryArchiveStore<128U>), sizeof(GapTracker<32U>),
               sizeof(LittleFsArchiveStore), sizeof(MediaFailoverStore));
   MemoryArchiveStore<128U> store(2U * 1024U * 1024U);
-  for (uint64_t sequence = 0U; sequence < 78U; ++sequence) {
+  for (uint64_t sequence = 0U; sequence < 75U; ++sequence) {
     TEST_ASSERT_EQUAL_INT(static_cast<int>(AppendStatus::Durable),
                           static_cast<int>(store.append(encoded(sequence))));
   }
+  for (uint64_t sequence = 75U; sequence < 78U; ++sequence) {
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(AppendStatus::Durable),
+                          static_cast<int>(store.append(encoded_kind(
+                              sequence, ArchiveRecordKind::Result))));
+  }
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AppendStatus::Durable),
+                        static_cast<int>(store.append(encoded_kind(
+                            78U, ArchiveRecordKind::Event))));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AppendStatus::Durable),
+                        static_cast<int>(store.append(encoded_kind(
+                            79U, ArchiveRecordKind::Metadata))));
   TEST_ASSERT_TRUE(store.pending_bytes() < store.pending_quota_bytes());
-  TEST_ASSERT_EQUAL_UINT32(78U, store.size());
+  TEST_ASSERT_EQUAL_UINT32(80U, store.size());
 }
 
 void test_media_failover_keeps_primary_pending_and_uses_littlefs_fallback() {
@@ -135,15 +175,51 @@ void test_media_failover_keeps_primary_pending_and_uses_littlefs_fallback() {
                         static_cast<int>(router.health()));
 }
 
+void test_filesystem_double_recovers_tail_and_rebuilds_index() {
+  ArchiveFileSystemDouble<8U, 64U * 1024U> filesystem{};
+  NativeArchiveFileStore<8U, 64U * 1024U> first_store(filesystem);
+  TEST_ASSERT_TRUE(first_store.recover());
+  const auto first = encoded(90U);
+  const auto second = encoded(91U);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AppendStatus::Durable),
+                        static_cast<int>(first_store.append(first)));
+  filesystem.append_partial_byte(0xA5U);
+  TEST_ASSERT_TRUE(first_store.recover());
+  TEST_ASSERT_EQUAL_UINT32(1U, first_store.size());
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AppendStatus::Durable),
+                        static_cast<int>(first_store.append(second)));
+
+  NativeArchiveFileStore<8U, 64U * 1024U> restarted(filesystem);
+  TEST_ASSERT_TRUE(restarted.recover());
+  TEST_ASSERT_EQUAL_UINT32(2U, restarted.size());
+  TEST_ASSERT_EQUAL_UINT64(first.size + second.size, restarted.pending_bytes());
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AppendStatus::Durable),
+                        static_cast<int>(restarted.append(second)));
+  filesystem.set_flush_failure(true);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AppendStatus::Retryable),
+                        static_cast<int>(restarted.append(encoded(92U))));
+}
+
+void test_filesystem_double_distinguishes_missing_from_open_error() {
+  ArchiveFileSystemDouble<4U, 16U * 1024U> missing_fs{};
+  NativeArchiveFileStore<4U, 16U * 1024U> missing_store(missing_fs);
+  TEST_ASSERT_TRUE(missing_store.recover());
+  missing_fs.set_open_failure(true);
+  TEST_ASSERT_FALSE(missing_store.recover());
+}
+
 }  // namespace
 
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_framing_rejects_corrupt_and_partial_tail);
+  RUN_TEST(test_codec_reader_round_trips_identity_and_payload);
   RUN_TEST(test_store_deduplicates_and_recovers_corrupt_tail);
   RUN_TEST(test_store_faults_are_observable_and_quota_does_not_overwrite);
   RUN_TEST(test_gap_tracker_coalesces_and_counts_overflow);
-  RUN_TEST(test_serialized_workload_budget_is_bounded);
+  RUN_TEST(test_serialized_mixed_workload_budget_is_bounded);
   RUN_TEST(test_media_failover_keeps_primary_pending_and_uses_littlefs_fallback);
+  RUN_TEST(test_filesystem_double_recovers_tail_and_rebuilds_index);
+  RUN_TEST(test_filesystem_double_distinguishes_missing_from_open_error);
   return UNITY_END();
 }

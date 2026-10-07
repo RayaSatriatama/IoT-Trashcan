@@ -16,6 +16,7 @@
 #include "maintenance/model_runtime.h"
 #include "storage/archive_media.h"
 #include "archive_runtime.h"
+#include "telemetry_archive/ack_journal_store.h"
 
 namespace sigap {
 
@@ -57,6 +58,9 @@ class SigapApp final {
   storage::SdArchiveStore sd_store_{};
   storage::MediaFailoverStore archive_store_;
   ArchiveRuntime archive_runtime_{};
+#ifdef ARDUINO
+  telemetry_archive::FsAckJournalStore ack_journal_{};
+#endif
   models::NvsModelProfilePersistence model_persistence_{};
   models::ModelProfileLifecycle model_lifecycle_;
   maintenance::ModelMaintenanceRouter model_router_;
