@@ -136,7 +136,9 @@ class ProcessingRuntime final : public acquisition::ISampleObserver {
     // Capture the cycle at the observed monotonic time so records collected
     // after the old deadline remain eligible rather than being future-dated.
     evaluate_cycle(now_us);
-    retained_count_ = 0U;
+    // Keep the latest attempt between cycles: slower channels may still be
+    // fresh. Quality, age, and profile identity are checked on every cycle.
+    // begin()/disable() clear this cache; a newer failed attempt replaces READY.
     window_ = processing::SampleWindow<kWindowCapacity>{};
     ++cycles_completed_;
   }
