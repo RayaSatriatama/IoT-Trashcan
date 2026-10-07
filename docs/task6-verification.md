@@ -73,9 +73,9 @@ of the production PlatformIO configuration.
 Cppcheck reported `No defects found`.
 
 Target compilation passed for `sigap_n16r8`, `sigap_n16r8_sd`, and
-`sigap_bench`. Final usage was 299,392 B RAM and 480,681 B flash for
-`sigap_n16r8`, 299,676 B RAM and 530,925 B flash for `sigap_n16r8_sd`, and
-299,392 B RAM and 480,681 B flash for `sigap_bench`. These are compilation
+`sigap_bench`. Final usage was 299,392 B RAM and 480,677 B flash for
+`sigap_n16r8`, 299,676 B RAM and 530,921 B flash for `sigap_n16r8_sd`, and
+299,392 B RAM and 480,677 B flash for `sigap_bench`. These are compilation
 evidence only, not physical N16R8 or SD I/O validation.
 
 Native size probes continue to treat record/batch byte arrays and journal
