@@ -41,13 +41,13 @@ sensor, heater, or network test was performed.
 
 ## Fresh native evidence
 
-The integrated native suite passed 271/271 tests, including archive storage,
+The integrated native suite passed 272/272 tests, including archive storage,
 archive runtime, immutable batch, ACK, failover, corrupt-tail, quota, 129-entry
-cache overflow, 4,680-record workload, migration adapter, gap reserve, and
+cache overflow, 4,680-record workload, migration adapter, gap reserve failover, and
 producer-to-archive retry tests. The existing telemetry contract tests also
 passed their frozen canonical record and exact-body hash fixtures.
 
-The same 271-test suite was rerun with AddressSanitizer and UndefinedBehavior-
+The same 272-test suite was rerun with AddressSanitizer and UndefinedBehavior-
 Sanitizer enabled through a temporary native PlatformIO configuration. It
 completed without sanitizer diagnostics.
 Cppcheck reported `No defects found`.
