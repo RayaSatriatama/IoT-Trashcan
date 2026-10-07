@@ -106,6 +106,21 @@ void test_profile_codec_round_trips_all_profile_families() {
   TEST_ASSERT_TRUE(codec.decode(encoded, sht_restored));
   TEST_ASSERT_EQUAL_UINT8(0x44U, sht_restored.address);
   TEST_ASSERT_EQUAL_INT(-7, sht_restored.humidity_offset_centi_pct);
+
+  OperationalCapacityProfile capacity{};
+  manifest<int>(capacity.manifest, ProfileTarget::Hx711Organic, 7U);
+  capacity.manifest.kind = ProfileKind::Capacity;
+  capacity.stream = StreamId::Organic;
+  capacity.operational_capacity_kg = 4.0F;
+  capacity.present = true;
+  TEST_ASSERT_TRUE(codec.encode(capacity, encoded));
+  OperationalCapacityProfile capacity_restored{};
+  TEST_ASSERT_TRUE(codec.decode(encoded, capacity_restored));
+  TEST_ASSERT_TRUE(capacity_restored.valid_for_normalization());
+  TEST_ASSERT_FLOAT_WITHIN(0.001F, 4.0F,
+                           capacity_restored.operational_capacity_kg);
+  TEST_ASSERT_TRUE(codec.validate(
+      encoded, ProfileKey{ProfileKind::Capacity, ProfileTarget::Hx711Organic}));
 }
 
 void test_profile_provenance_is_part_of_hashed_bytes() {
@@ -310,6 +325,42 @@ void test_mq7_adc_and_heater_profiles_coexist_by_typed_key() {
   TEST_ASSERT_EQUAL_UINT32(7U, runtime.heater->profile_version);
 }
 
+void test_capacity_profile_has_independent_lifecycle_and_runtime_binding() {
+  MemoryProfileStore store{};
+  ProfilePersistence persistence(store);
+  ProfileCodec codec{};
+  ProfileManager manager(persistence, codec);
+  TargetProfileSet runtime{};
+  manager.bind_runtime_profiles(runtime);
+  const ProfileKey key{ProfileKind::Capacity, ProfileTarget::Hx711Organic};
+  TEST_ASSERT_TRUE(manager.load(key));
+
+  OperationalCapacityProfile capacity{};
+  manifest<int>(capacity.manifest, ProfileTarget::Hx711Organic, 1U);
+  capacity.manifest.kind = ProfileKind::Capacity;
+  capacity.stream = StreamId::Organic;
+  capacity.operational_capacity_kg = 4.0F;
+  capacity.present = true;
+  EncodedProfile encoded{};
+  TEST_ASSERT_TRUE(codec.encode(capacity, encoded));
+  TEST_ASSERT_TRUE(manager.stage_import(key, encoded));
+  TEST_ASSERT_TRUE(manager.validate(key));
+  TEST_ASSERT_TRUE(manager.preview(key));
+  TEST_ASSERT_TRUE(manager.commit(key));
+  TEST_ASSERT_NOT_NULL(runtime.capacity[0]);
+  TEST_ASSERT_TRUE(runtime.capacity[0]->valid_for_normalization());
+  TEST_ASSERT_FLOAT_WITHIN(0.001F, 4.0F,
+                           runtime.capacity[0]->operational_capacity_kg);
+
+  ProfileManager reloaded(persistence, codec);
+  TargetProfileSet reloaded_runtime{};
+  reloaded.bind_runtime_profiles(reloaded_runtime);
+  TEST_ASSERT_TRUE(reloaded.load(key));
+  TEST_ASSERT_TRUE(reloaded_runtime.capacity[0]->valid_for_normalization());
+  TEST_ASSERT_EQUAL_UINT32(1U,
+                           reloaded_runtime.capacity[0]->manifest.profile_version);
+}
+
 void test_corrupt_activation_metadata_never_promotes_staged_slot() {
   MemoryProfileStore store{};
   ProfilePersistence persistence(store);
@@ -399,6 +450,7 @@ void setup() {
   RUN_TEST(test_profile_manager_import_preview_commit_and_snapshot_identity);
   RUN_TEST(test_profile_memory_footprint_is_bounded);
   RUN_TEST(test_mq7_adc_and_heater_profiles_coexist_by_typed_key);
+  RUN_TEST(test_capacity_profile_has_independent_lifecycle_and_runtime_binding);
   RUN_TEST(test_corrupt_activation_metadata_never_promotes_staged_slot);
   RUN_TEST(test_corrupt_newest_metadata_copy_uses_previous_committed_generation);
   RUN_TEST(test_profile_audit_ring_records_activation_context_and_overflow);

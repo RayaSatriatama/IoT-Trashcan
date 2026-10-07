@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 #include "sigap/build/build_config.h"
 #include "config/config_types.h"
 
@@ -15,3 +17,11 @@ inline constexpr AppConfig kFactoryDefaults{
 };
 
 }  // namespace sigap::config
+
+namespace sigap::processing_policy {
+
+// Processing cadence is an engineering execution policy, not telemetry batch
+// cadence. Telemetry summary_period_ms remains owned by AppConfig.
+inline constexpr uint64_t kProcessingPeriodUs{1'000'000U};
+
+}  // namespace sigap::processing_policy

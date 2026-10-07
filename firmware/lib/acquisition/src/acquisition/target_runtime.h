@@ -44,6 +44,9 @@ struct TargetProfileSet {
   std::array<const Hx711Profile*, 3> hx711{};
   std::array<const UltrasonicProfile*, 3> ultrasonic{};
   std::array<const MqAdcProfile*, 4> mq_adc{};
+  // Capacity is a typed processing boundary. The pointer is populated by the
+  // composition/profile layer when an active mechanical profile exists.
+  std::array<const OperationalCapacityProfile*, 3> capacity{};
   const Ds18b20Profile* ds18b20{nullptr};
   std::array<const Sht31Profile*, 2> sht31{};
   const Mq7HeaterProfile* heater{nullptr};

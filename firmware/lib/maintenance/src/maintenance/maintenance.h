@@ -71,6 +71,16 @@ enum class CommandKind : std::uint8_t {
   ProfileCommit,
   ProfileRollback,
   ProfileReset,
+  ModelStatus,
+  ModelExport,
+  ModelImportBegin,
+  ModelImportChunk,
+  ModelImportFinish,
+  ModelValidate,
+  ModelPreview,
+  ModelCommit,
+  ModelCancel,
+  ModelRollback,
   Reboot,
 };
 
@@ -171,6 +181,16 @@ class IMaintenanceCommandSink {
                                 MaintenanceResponse& response) noexcept = 0;
   virtual void poll(std::uint64_t) noexcept {}
   virtual void transport_lost() noexcept {}
+};
+
+class IModelCommandHandler {
+ public:
+  virtual ~IModelCommandHandler() = default;
+  virtual CommandStatus execute_model(const MaintenanceCommand& command,
+                                      std::uint64_t now_us,
+                                      MaintenanceResponse& response) noexcept = 0;
+  virtual void poll_model(std::uint64_t now_us) noexcept = 0;
+  virtual void cancel_model() noexcept = 0;
 };
 
 struct MaintenancePollStats final {

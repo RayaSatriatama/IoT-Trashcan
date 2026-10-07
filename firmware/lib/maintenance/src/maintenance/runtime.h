@@ -11,6 +11,8 @@
 
 namespace sigap::maintenance {
 
+class ModelMaintenanceRouter;
+
 enum class DeviceMode : uint8_t {
   Run,
   Maintenance,
@@ -73,9 +75,11 @@ class CommandRouter final : public IMaintenanceCommandSink,
                 calibration::ICalibrationEvidenceSource* evidence = nullptr,
                 IRebootController* reboot = nullptr,
                 acquisition::IProfileAuditSink* audit = nullptr,
-                const acquisition::BootId* boot_id = nullptr) noexcept
+                const acquisition::BootId* boot_id = nullptr,
+                IModelCommandHandler* models = nullptr) noexcept
       : config_(config), secrets_(secrets), profiles_(profiles),
-        evidence_(evidence), reboot_(reboot), audit_(audit), boot_id_(boot_id) {
+        evidence_(evidence), reboot_(reboot), audit_(audit), boot_id_(boot_id),
+        models_(models) {
     refresh_mode();
   }
 
@@ -115,6 +119,7 @@ class CommandRouter final : public IMaintenanceCommandSink,
   IRebootController* reboot_{nullptr};
   acquisition::IProfileAuditSink* audit_{nullptr};
   const acquisition::BootId* boot_id_{nullptr};
+  IModelCommandHandler* models_{nullptr};
   calibration::CalibrationSession calibration_{};
   uint64_t evidence_sequence_{0U};
   bool criteria_set_{false};

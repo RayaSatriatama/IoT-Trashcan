@@ -161,7 +161,7 @@ class ProfileManager final {
   uint32_t generation() const noexcept { return generation_; }
 
  private:
-  static constexpr std::size_t kTargetCount{14U};
+  static constexpr std::size_t kTargetCount{17U};
   static std::size_t index(ProfileTarget target) noexcept;
   static bool valid_key(ProfileKey key) noexcept;
   static std::size_t key_index(ProfileKey key) noexcept;
@@ -188,6 +188,7 @@ class ProfileManager final {
   Mq7HeaterProfile heater_runtime_{};
   Ds18b20Profile ds_runtime_{};
   std::array<Sht31Profile, 2> sht_runtime_{};
+  std::array<OperationalCapacityProfile, 3> capacity_runtime_{};
   uint32_t generation_{0U};
 };
 
