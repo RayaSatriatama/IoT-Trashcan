@@ -182,6 +182,26 @@ struct DecodedEventPayload final {
   DecodedProfileRef current{};
 };
 
+enum class ArchiveMetadataType : uint8_t {
+  ConfigActivation = 1U,
+  ProfileActivation = 2U,
+  Boot = 3U,
+  HealthSnapshot = 4U,
+};
+
+struct DecodedMetadataPayload final {
+  ArchiveMetadataType type{ArchiveMetadataType::Boot};
+  uint64_t monotonic_us{0U};
+  bool recorded_at_available{false};
+  int64_t recorded_at_epoch_ms{0};
+  uint8_t time_quality{0U};
+  DecodedConfigRef config_ref{};
+  std::array<DecodedProfileRef, kArchiveMaxProfileRefs> profile_refs{};
+  uint16_t profile_ref_count{0U};
+  std::array<char, 64U> firmware_version{};
+  uint8_t reset_reason{0U};
+};
+
 class PayloadWriter final {
  public:
   PayloadWriter(uint8_t* data, std::size_t capacity) noexcept
@@ -559,12 +579,59 @@ class RecordCodec final {
                              : TypedDecodeStatus::MalformedPayload;
   }
 
-  static TypedDecodeStatus decode_metadata(const ImmutableRecordBytes& record,
-                                           TypedArchiveRecordView& view) noexcept {
-    if (!decode_metadata_view(record, view)) {
-      return TypedDecodeStatus::InvalidFrame;
+  static TypedDecodeStatus decode_metadata(
+      const ImmutableRecordBytes& record,
+      DecodedMetadataPayload& output) noexcept {
+    output = DecodedMetadataPayload{};
+    ArchiveRecordView view{};
+    if (!read(record, view)) return TypedDecodeStatus::InvalidFrame;
+    if (view.identity.kind != ArchiveRecordKind::Metadata) {
+      return TypedDecodeStatus::WrongKind;
     }
-    return TypedDecodeStatus::UnsupportedKind;
+    PayloadReader reader{view.payload, view.payload_size};
+    uint8_t type{0U};
+    uint8_t flag{0U};
+    if (!reader.u8(type) || type < static_cast<uint8_t>(ArchiveMetadataType::ConfigActivation) ||
+        type > static_cast<uint8_t>(ArchiveMetadataType::HealthSnapshot) ||
+        !reader.u64(output.monotonic_us) || !reader.u8(flag) ||
+        !reader.i64(output.recorded_at_epoch_ms) || !reader.u8(output.time_quality) ||
+        !read_config_ref(reader, output.config_ref)) {
+      return TypedDecodeStatus::MalformedPayload;
+    }
+    output.type = static_cast<ArchiveMetadataType>(type);
+    output.recorded_at_available = flag != 0U;
+    uint16_t count{0U};
+    if (!reader.u16(count) || count > kArchiveMaxProfileRefs) {
+      return TypedDecodeStatus::BoundsExceeded;
+    }
+    output.profile_ref_count = count;
+    for (uint16_t index = 0U; index < count; ++index) {
+      if (!read_profile_ref(reader, output.profile_refs[index])) {
+        return TypedDecodeStatus::MalformedPayload;
+      }
+    }
+    if (output.type == ArchiveMetadataType::Boot) {
+      uint8_t length{0U};
+      if (!reader.u8(length) || length == 0U || length >= output.firmware_version.size() ||
+          !reader.bytes(reinterpret_cast<uint8_t*>(output.firmware_version.data()), length) ||
+          !reader.u8(output.reset_reason)) {
+        return TypedDecodeStatus::MalformedPayload;
+      }
+      output.firmware_version[length] = '\0';
+    }
+    return reader.finished() ? TypedDecodeStatus::Decoded
+                             : TypedDecodeStatus::MalformedPayload;
+  }
+
+  // Compatibility view for callers that only need kind validation. Typed
+  // metadata consumers must use the overload above so payload semantics are
+  // checked before batching.
+  static TypedDecodeStatus decode_metadata(
+      const ImmutableRecordBytes& record,
+      TypedArchiveRecordView& view) noexcept {
+    return decode_metadata_view(record, view)
+               ? TypedDecodeStatus::UnsupportedKind
+               : TypedDecodeStatus::InvalidFrame;
   }
 
   static bool encode_sample(const acquisition::SampleRecord& sample,

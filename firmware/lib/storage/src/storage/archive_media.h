@@ -801,6 +801,22 @@ class MediaFailoverStore final : public IArchiveStore {
                                                          : ArchiveHealth::Blocked;
   }
 
+  bool peek_pending(ImmutableRecordBytes& output) noexcept override {
+    if (primary_.peek_pending(output)) return true;
+    return fallback_.peek_pending(output);
+  }
+
+  bool reclaim_pending(const ArchiveIdentity& identity,
+                       const config::ConfigHash& hash) noexcept override {
+    if (primary_.reclaim_pending(identity, hash)) return true;
+    return fallback_.reclaim_pending(identity, hash);
+  }
+
+  bool contains(const ArchiveIdentity& identity,
+                const config::ConfigHash& hash) noexcept override {
+    return primary_.contains(identity, hash) || fallback_.contains(identity, hash);
+  }
+
  private:
   IArchiveStore& primary_;
   IArchiveStore& fallback_;

@@ -288,7 +288,11 @@ class FsImmutableBatchStore final : public IImmutableBatchStore {
       entry.record_count = read_u16(header.data() + 8U);
       entry.body_size = body_size;
       entry.present = true;
-      index_[index_count_++] = entry;
+      // The index is a hot cache, not the archive capacity. Older entries
+      // remain file-backed and are found by scan_identity/load after restart.
+      if (index_count_ < index_.size()) {
+        index_[index_count_++] = entry;
+      }
       pending_bytes_ += kBatchFrameHeaderBytes + id_size + body_size +
                         kBatchFrameTrailerBytes;
       valid_bytes += kBatchFrameHeaderBytes + id_size + body_size +
@@ -332,9 +336,9 @@ class FsImmutableBatchStore final : public IImmutableBatchStore {
         return false;
       }
       const bool selected = current == index;
-      load_scratch_ = ImmutableBatch{};
-      ImmutableBatch& candidate = load_scratch_;
+      ImmutableBatch& candidate = output;
       if (selected) {
+        candidate = ImmutableBatch{};
         std::copy(id.begin(), id.begin() + id_size, candidate.batch_id.begin());
         candidate.batch_id_size = id_size;
         candidate.record_count = read_u16(header.data() + 8U);
@@ -601,9 +605,6 @@ class FsImmutableBatchStore final : public IImmutableBatchStore {
   const char* checkpoint_path_{"/sigap/batches.ckp"};
   std::array<BatchIndexEntry, kBatchIndexCapacity> index_{};
   std::size_t index_count_{0U};
-  // Reused for target replay so load() never places a 32 KiB batch on the
-  // Arduino loop stack.
-  ImmutableBatch load_scratch_{};
 #endif
   uint64_t quota_bytes_{0U};
   uint64_t pending_bytes_{0U};

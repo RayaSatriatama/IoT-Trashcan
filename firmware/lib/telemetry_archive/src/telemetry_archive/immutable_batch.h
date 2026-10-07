@@ -43,6 +43,19 @@ struct ImmutableBatch final {
     attempted = true;
     return true;
   }
+  bool prepare_in_place(std::string_view id, std::size_t size,
+                        uint16_t count) noexcept {
+    if (attempted || id.empty() || id.size() >= batch_id.size() ||
+        size == 0U || size > body.size() || count == 0U ||
+        count > kMaxBatchRecords) return false;
+    std::copy(id.begin(), id.end(), batch_id.begin());
+    batch_id_size = id.size();
+    body_size = size;
+    record_count = count;
+    body_hash = telemetry_contract::sha256(exact_body());
+    attempted = true;
+    return true;
+  }
   std::string_view id() const noexcept { return std::string_view(batch_id.data(), batch_id_size); }
   std::string_view exact_body() const noexcept {
     return std::string_view(reinterpret_cast<const char*>(body.data()), body_size);

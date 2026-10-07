@@ -75,6 +75,9 @@ void test_sample_drain_archives_without_filesystem_in_callback() {
                         static_cast<int>(handoff.try_push(sample())));
   TEST_ASSERT_TRUE(runtime.drain_samples(handoff));
   TEST_ASSERT_EQUAL_UINT32(0U, handoff.size());
+  TEST_ASSERT_EQUAL_UINT64(0U, runtime.durable_records());
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(storage::AppendStatus::Durable),
+                        static_cast<int>(runtime.poll_storage()));
   TEST_ASSERT_EQUAL_UINT64(1U, runtime.durable_records());
   TEST_ASSERT_EQUAL_INT(static_cast<int>(storage::ArchiveHealth::Healthy),
                         static_cast<int>(runtime.health()));
@@ -88,13 +91,14 @@ void test_failed_sample_append_keeps_acquisition_handoff_for_retry() {
   TEST_ASSERT_EQUAL_INT(static_cast<int>(HandoffStatus::Enqueued),
                         static_cast<int>(handoff.try_push(sample())));
   store.set_fault(storage::StoreFault::ShortWrite);
-  TEST_ASSERT_FALSE(runtime.drain_samples(handoff));
-  TEST_ASSERT_EQUAL_UINT32(1U, handoff.size());
+  TEST_ASSERT_TRUE(runtime.drain_samples(handoff));
+  TEST_ASSERT_EQUAL_UINT32(0U, handoff.size());
+  TEST_ASSERT_EQUAL_UINT32(1U, runtime.storage_worker().queue().size());
   TEST_ASSERT_EQUAL_UINT32(0U, store.size());
   TEST_ASSERT_EQUAL_UINT64(0U, runtime.gaps().unlogged_records());
   store.set_fault(storage::StoreFault::None);
-  TEST_ASSERT_TRUE(runtime.drain_samples(handoff));
-  TEST_ASSERT_EQUAL_UINT32(0U, handoff.size());
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(storage::AppendStatus::Durable),
+                        static_cast<int>(runtime.poll_storage()));
   TEST_ASSERT_EQUAL_UINT32(1U, store.size());
 }
 
@@ -106,12 +110,13 @@ void test_failed_result_append_keeps_handoff_for_retry() {
       static_cast<int>(processing::ResultHandoffStatus::Enqueued),
       static_cast<int>(handoff.try_push(result())));
   store.set_fault(storage::StoreFault::ShortWrite);
-  TEST_ASSERT_FALSE(runtime.drain_results(handoff));
-  TEST_ASSERT_EQUAL_UINT32(1U, handoff.size());
-  TEST_ASSERT_EQUAL_UINT32(0U, store.size());
-  store.set_fault(storage::StoreFault::None);
   TEST_ASSERT_TRUE(runtime.drain_results(handoff));
   TEST_ASSERT_EQUAL_UINT32(0U, handoff.size());
+  TEST_ASSERT_EQUAL_UINT32(1U, runtime.storage_worker().queue().size());
+  TEST_ASSERT_EQUAL_UINT32(0U, store.size());
+  store.set_fault(storage::StoreFault::None);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(storage::AppendStatus::Durable),
+                        static_cast<int>(runtime.poll_storage()));
   TEST_ASSERT_EQUAL_UINT32(1U, store.size());
 }
 
@@ -143,6 +148,10 @@ void test_result_codec_persists_fis_and_safety_evidence() {
                         static_cast<int>(traced_handoff.try_push(traced)));
   TEST_ASSERT_TRUE(base_runtime.drain_results(base_handoff));
   TEST_ASSERT_TRUE(traced_runtime.drain_results(traced_handoff));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(storage::AppendStatus::Durable),
+                        static_cast<int>(base_runtime.poll_storage()));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(storage::AppendStatus::Durable),
+                        static_cast<int>(traced_runtime.poll_storage()));
   const auto& base_record = base_store.at(0U);
   const auto& traced_record = traced_store.at(0U);
   TEST_ASSERT_NOT_EQUAL(0, std::memcmp(base_record.bytes.data(),
@@ -195,9 +204,13 @@ void test_gap_reserve_failure_is_observable_without_dropping_record_retry() {
   TEST_ASSERT_TRUE(runtime.gap_persistence_failures() > 0U);
   TEST_ASSERT_EQUAL_UINT32(0U, store.gap_size());
   store.set_fault(storage::StoreFault::None);
-  TEST_ASSERT_EQUAL_UINT32(16U, handoff.size());
-  TEST_ASSERT_TRUE(runtime.drain_samples(handoff));
+  TEST_ASSERT_EQUAL_UINT32(15U, handoff.size());
+  for (std::size_t attempt = 0U; attempt < 4U; ++attempt) {
+    (void)runtime.poll_storage();
+    (void)runtime.drain_samples(handoff);
+  }
   TEST_ASSERT_EQUAL_UINT32(4U, store.size());
+  TEST_ASSERT_EQUAL_UINT32(11U, handoff.size());
 }
 
 void test_runtime_wires_bounded_media_migration_source_and_destination() {
@@ -210,8 +223,10 @@ void test_runtime_wires_bounded_media_migration_source_and_destination() {
   runtime.set_media_migration(&migration);
 
   TEST_ASSERT_EQUAL_INT(
-      static_cast<int>(storage::AppendStatus::Durable),
+      static_cast<int>(storage::AppendStatus::Queued),
       static_cast<int>(runtime.append_sample(sample())));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(storage::AppendStatus::Durable),
+                        static_cast<int>(runtime.poll_storage()));
   TEST_ASSERT_EQUAL_UINT32(1U, source_store.size());
   TEST_ASSERT_EQUAL_INT(
       static_cast<int>(storage::MigrationStatus::Durable),
@@ -235,8 +250,10 @@ void test_audit_event_uses_shared_sequence_and_is_archived() {
   event.kind = acquisition::AuditEventKind::ProfileActivated;
   event.monotonic_us = 1234U;
   event.config_ref = config_ref();
-  TEST_ASSERT_EQUAL_INT(static_cast<int>(storage::AppendStatus::Durable),
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(storage::AppendStatus::Queued),
                         static_cast<int>(runtime.append_audit_event(event)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(storage::AppendStatus::Durable),
+                        static_cast<int>(runtime.poll_storage()));
   TEST_ASSERT_EQUAL_UINT32(1U, store.size());
   storage::TypedArchiveRecordView view{};
   TEST_ASSERT_TRUE(storage::RecordCodec::decode_event_view(store.at(0U), view));
@@ -254,12 +271,15 @@ void test_audit_event_stays_queued_across_retry_and_archives_once() {
   audit.profile_activated(ProfileRef{}, ProfileRef{});
 
   store.set_fault(storage::StoreFault::ShortWrite);
-  TEST_ASSERT_FALSE(runtime.drain_audit_events(audit));
+  TEST_ASSERT_TRUE(runtime.drain_audit_events(audit));
   TEST_ASSERT_EQUAL_UINT32(1U, audit.size());
   TEST_ASSERT_EQUAL_UINT32(0U, store.size());
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(storage::AppendStatus::Retryable),
+                        static_cast<int>(runtime.poll_storage()));
 
   store.set_fault(storage::StoreFault::None);
-  TEST_ASSERT_TRUE(runtime.drain_audit_events(audit));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(storage::AppendStatus::Durable),
+                        static_cast<int>(runtime.poll_storage()));
   TEST_ASSERT_EQUAL_UINT32(0U, audit.size());
   TEST_ASSERT_EQUAL_UINT32(1U, store.size());
   TEST_ASSERT_FALSE(runtime.drain_audit_events(audit));

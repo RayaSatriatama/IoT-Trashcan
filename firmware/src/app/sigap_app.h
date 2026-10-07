@@ -17,6 +17,7 @@
 #include "storage/archive_media.h"
 #include "archive_runtime.h"
 #include "telemetry_archive/ack_journal_store.h"
+#include "telemetry_archive/runtime.h"
 
 namespace sigap {
 
@@ -40,6 +41,17 @@ class SigapApp final {
   }
 
  private:
+#ifdef ARDUINO
+  using BatchStore = telemetry_archive::FsImmutableBatchStore;
+  using AckJournal = telemetry_archive::FsAckJournalStore;
+  using BatchRuntime = telemetry_archive::ArchiveBatchRuntime<
+      BatchStore, AckJournal>;
+#else
+  using BatchStore = telemetry_archive::MemoryImmutableBatchStore<8U>;
+  using AckJournal = telemetry_archive::MemoryAckJournalStore<8U>;
+  using BatchRuntime = telemetry_archive::ArchiveBatchRuntime<
+      BatchStore, AckJournal>;
+#endif
   config::NvsConfigStore config_store_{};
   config::ConfigManager config_manager_;
   provisioning::NvsSecretStore secret_store_{};
@@ -61,9 +73,13 @@ class SigapApp final {
   storage::ArchiveStoreMigrationDestination migration_destination_;
   storage::ArchiveMediaMigration media_migration_;
   ArchiveRuntime archive_runtime_{};
+  BatchStore batch_store_{};
 #ifdef ARDUINO
-  telemetry_archive::FsAckJournalStore ack_journal_{};
+  AckJournal ack_journal_{};
+#else
+  AckJournal ack_journal_{};
 #endif
+  BatchRuntime batch_runtime_{};
   models::NvsModelProfilePersistence model_persistence_{};
   models::ModelProfileLifecycle model_lifecycle_;
   maintenance::ModelMaintenanceRouter model_router_;

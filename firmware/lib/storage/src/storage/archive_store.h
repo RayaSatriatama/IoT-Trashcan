@@ -9,7 +9,17 @@
 
 namespace sigap::storage {
 
-enum class AppendStatus : uint8_t { Durable, Retryable, LoggingBlocked, Invalid };
+// Queued means ownership transferred to the instance-owned storage worker.
+// It is deliberately distinct from Durable: a producer may release its
+// source handoff only after Queued, while the worker still retries the frozen
+// bytes until the backend reports Durable.
+enum class AppendStatus : uint8_t {
+  Durable,
+  Queued,
+  Retryable,
+  LoggingBlocked,
+  Invalid
+};
 enum class ArchiveHealth : uint8_t { Healthy, Degraded, Blocked };
 enum class GapReason : uint8_t { QueueFull, QuotaFull, MediaFailure, InvalidRecord };
 

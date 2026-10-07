@@ -72,6 +72,7 @@ class ArchiveRuntime final {
            handoff.try_peek(sample) == acquisition::HandoffStatus::Dequeued) {
       const auto status = append_sample(sample);
       if (status == storage::AppendStatus::Durable ||
+          status == storage::AppendStatus::Queued ||
           status == storage::AppendStatus::Invalid) {
         handoff.discard_front();
         progressed = true;
@@ -121,6 +122,42 @@ class ArchiveRuntime final {
     return append(scratch_);
   }
 
+  storage::AppendStatus append_boot_metadata(
+      uint64_t monotonic_us, std::string_view firmware_version,
+      uint8_t reset_reason) noexcept {
+    if (sequence_ == nullptr || !event_device_.present || !event_boot_.present ||
+        !event_config_.present || firmware_version.empty() ||
+        firmware_version.size() >= 64U) {
+      return storage::AppendStatus::Invalid;
+    }
+    uint64_t sequence{0U};
+    if (!sequence_->allocate(sequence)) return storage::AppendStatus::Invalid;
+    const storage::ArchiveIdentity identity{
+        event_device_, event_boot_, sequence, storage::ArchiveRecordKind::Metadata};
+    storage::PayloadWriter writer{nullptr, 0U};
+    if (!storage::RecordCodec::begin(identity, scratch_, writer)) {
+      return storage::AppendStatus::Invalid;
+    }
+    writer = storage::PayloadWriter(
+        scratch_.bytes.data() + storage::kArchiveHeaderBytes,
+        scratch_.bytes.size() - storage::kArchiveHeaderBytes -
+            storage::kArchiveTrailerBytes);
+    if (!writer.u8(static_cast<uint8_t>(storage::ArchiveMetadataType::Boot)) ||
+        !writer.u64(monotonic_us) || !writer.u8(0U) || !writer.i64(0) ||
+        !writer.u8(static_cast<uint8_t>(acquisition::TimeQuality::Unsynced)) ||
+        !writer.u32(event_config_.schema_version) ||
+        !writer.u64(event_config_.config_version) ||
+        !writer.u8(event_config_.present ? 1U : 0U) ||
+        !writer.bytes(event_config_.hash.data(), event_config_.hash.size()) ||
+        !writer.u16(0U) || !writer.u8(static_cast<uint8_t>(firmware_version.size())) ||
+        !writer.bytes(reinterpret_cast<const uint8_t*>(firmware_version.data()),
+                      firmware_version.size()) ||
+        !writer.u8(reset_reason) || !storage::RecordCodec::finish(scratch_, writer)) {
+      return storage::AppendStatus::Invalid;
+    }
+    return append(scratch_);
+  }
+
   bool drain_audit_events(
       acquisition::ProfileAuditRing<16U>& audit_ring) noexcept {
     if (!audit_encoded_) {
@@ -135,7 +172,13 @@ class ArchiveRuntime final {
     }
 
     const auto status = append(audit_scratch_);
-    if (status == storage::AppendStatus::Durable) {
+    if (status == storage::AppendStatus::Durable ||
+        status == storage::AppendStatus::Queued) {
+      if (status == storage::AppendStatus::Queued) {
+        audit_ring_ = &audit_ring;
+        audit_queued_ = true;
+        return true;
+      }
       (void)audit_ring.discard_front();
       audit_encoded_ = false;
       return true;
@@ -165,7 +208,8 @@ class ArchiveRuntime final {
         continue;
       }
       const auto status = append(scratch_);
-      if (status != storage::AppendStatus::Durable) break;
+      if (status != storage::AppendStatus::Durable &&
+          status != storage::AppendStatus::Queued) break;
       handoff.discard_front();
       progressed = true;
       ++drained;
@@ -192,35 +236,56 @@ class ArchiveRuntime final {
     if (worker_.queue().size() == 0U) return storage::AppendStatus::Durable;
     const auto* pending = worker_.queue().peek();
     const uint64_t sequence = pending == nullptr ? 0U : pending->identity.sequence;
+    const auto pending_identity = pending == nullptr
+                                      ? storage::ArchiveIdentity{}
+                                      : pending->identity;
     const uint64_t durable_before = worker_.stats().durable;
     const uint64_t terminal_before = worker_.stats().terminal;
     (void)worker_.process_one();
     if (worker_.stats().durable != durable_before) {
       ++durable_records_;
+      if (audit_queued_ && audit_ring_ != nullptr &&
+          same_identity(pending_identity, audit_scratch_.identity)) {
+        (void)audit_ring_->discard_front();
+        audit_ring_ = nullptr;
+        audit_queued_ = false;
+        audit_encoded_ = false;
+      }
       return storage::AppendStatus::Durable;
     }
     if (worker_.stats().terminal != terminal_before) {
       record_gap(sequence, storage::GapReason::InvalidRecord);
+      if (audit_queued_ && audit_ring_ != nullptr &&
+          same_identity(pending_identity, audit_scratch_.identity)) {
+        (void)audit_ring_->discard_front();
+        audit_ring_ = nullptr;
+        audit_queued_ = false;
+        audit_encoded_ = false;
+      }
       return storage::AppendStatus::Invalid;
     }
     return storage::AppendStatus::Retryable;
   }
 
  private:
+  static bool same_identity(const storage::ArchiveIdentity& left,
+                            const storage::ArchiveIdentity& right) noexcept {
+    return left.kind == right.kind && left.sequence == right.sequence &&
+           left.device_id.bytes == right.device_id.bytes &&
+           left.boot_id.bytes == right.boot_id.bytes;
+  }
+
   storage::AppendStatus append(const storage::ImmutableRecordBytes& record) noexcept {
     if (store_ == nullptr) {
-      record_gap(record.identity.sequence, storage::GapReason::MediaFailure);
       return storage::AppendStatus::Retryable;
     }
-    // Retry a previously submitted immutable frame before accepting another
-    // source handoff.  This preserves the source queue until durability and
-    // keeps the encoded bytes stable across backend faults.
+    // Producers only transfer ownership to the worker. Filesystem I/O runs
+    // from poll_storage(), outside acquisition and processing drains.
     if (worker_.queue().size() != 0U) {
-      const auto pending_status = poll_storage();
-      if (pending_status != storage::AppendStatus::Durable) return pending_status;
+      return storage::AppendStatus::Retryable;
     }
     if (!worker_.try_enqueue_copy(record)) return storage::AppendStatus::Retryable;
-    return poll_storage();
+    return storage::AppendStatus::Queued;
   }
 
   bool encode_audit_event(const acquisition::AuditEvent& event,
@@ -444,6 +509,8 @@ class ArchiveRuntime final {
   storage::ImmutableRecordBytes scratch_{};
   storage::ImmutableRecordBytes audit_scratch_{};
   bool audit_encoded_{false};
+  acquisition::ProfileAuditRing<16U>* audit_ring_{nullptr};
+  bool audit_queued_{false};
   storage::GapTracker<32U> gaps_{};
   uint64_t durable_records_{0U};
   uint64_t encode_failures_{0U};

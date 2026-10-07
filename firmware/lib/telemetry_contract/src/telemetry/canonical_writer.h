@@ -38,7 +38,17 @@ class CanonicalBuffer final {
     return {data_, size_};
   }
 
+  char* data() const noexcept { return data_; }
+
   std::size_t size() const noexcept { return size_; }
+
+  std::size_t capacity() const noexcept { return capacity_; }
+
+  bool set_size(std::size_t size) noexcept {
+    if (size > capacity_) return false;
+    size_ = size;
+    return true;
+  }
 
  private:
   std::size_t remaining() const noexcept {

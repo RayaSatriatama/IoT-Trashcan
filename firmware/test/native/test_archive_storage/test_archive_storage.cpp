@@ -535,6 +535,67 @@ void test_serialized_sixty_second_workload_reconciles_all_identities() {
   TEST_ASSERT_EQUAL_UINT32(kRecords, restarted.size());
 }
 
+void test_serialized_mixed_sixty_second_workload_reconciles_typed_records() {
+  constexpr std::size_t kSamples = 4500U;
+  constexpr std::size_t kResults = 180U;
+  constexpr std::size_t kEvents = 4U;
+  constexpr std::size_t kRecords = kSamples + kResults + kEvents;
+  constexpr std::size_t kBytes = 6U * 1024U * 1024U;
+  static ArchiveFileSystemDouble<5000U, kBytes> filesystem{};
+  static NativeArchiveFileStore<5000U, kBytes> store(filesystem);
+  TEST_ASSERT_TRUE(store.recover());
+  for (uint64_t sequence = 0U; sequence < kSamples; ++sequence) {
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(AppendStatus::Durable),
+                          static_cast<int>(store.append(encoded(sequence))));
+  }
+  for (uint64_t sequence = kSamples;
+       sequence < kSamples + kResults; ++sequence) {
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(AppendStatus::Durable),
+                          static_cast<int>(store.append(
+                              encoded_result_fixture(sequence))));
+  }
+  for (uint64_t sequence = kSamples + kResults;
+       sequence < kRecords; ++sequence) {
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(AppendStatus::Durable),
+                          static_cast<int>(store.append(
+                              encoded_event_fixture(sequence))));
+  }
+  TEST_ASSERT_EQUAL_UINT32(kRecords, store.size());
+  NativeArchiveFileStore<5000U, kBytes> restarted(filesystem);
+  TEST_ASSERT_TRUE(restarted.recover());
+  TEST_ASSERT_EQUAL_UINT32(kRecords, restarted.size());
+  std::size_t offset{0U};
+  std::size_t seen{0U};
+  while (offset < filesystem.size()) {
+    std::array<uint8_t, kArchiveHeaderBytes> header{};
+    TEST_ASSERT_TRUE(filesystem.read(offset, header.data(), header.size()));
+    const std::size_t payload_size =
+        static_cast<std::size_t>(header[kArchivePayloadSizeOffset]) |
+        (static_cast<std::size_t>(header[kArchivePayloadSizeOffset + 1U]) << 8U) |
+        (static_cast<std::size_t>(header[kArchivePayloadSizeOffset + 2U]) << 16U) |
+        (static_cast<std::size_t>(header[kArchivePayloadSizeOffset + 3U]) << 24U);
+    const std::size_t total = kArchiveHeaderBytes + payload_size + kArchiveTrailerBytes;
+    ImmutableRecordBytes record{};
+    TEST_ASSERT_TRUE(total <= record.bytes.size());
+    TEST_ASSERT_TRUE(filesystem.read(offset, record.bytes.data(), total));
+    record.size = total;
+    record.committed = true;
+    TEST_ASSERT_TRUE(RecordCodec::valid(record));
+    ArchiveRecordView view{};
+    TEST_ASSERT_TRUE(RecordCodec::read(record, view));
+    TEST_ASSERT_EQUAL_UINT64(static_cast<uint64_t>(seen), view.identity.sequence);
+    const auto expected = seen < kSamples
+        ? encoded(seen)
+        : seen < kSamples + kResults
+            ? encoded_result_fixture(seen)
+            : encoded_event_fixture(seen);
+    TEST_ASSERT_EQUAL_INT(0, std::memcmp(record.bytes.data(), expected.bytes.data(), total));
+    offset += total;
+    ++seen;
+  }
+  TEST_ASSERT_EQUAL_UINT32(kRecords, seen);
+}
+
 void test_media_migration_requires_verify_checkpoint_before_reclaim() {
   const auto record = encoded(100U);
   MigrationSource source(record);
@@ -600,6 +661,7 @@ int main() {
   RUN_TEST(test_filesystem_duplicate_frame_is_deduplicated_across_restart);
   RUN_TEST(test_filesystem_conflict_keeps_valid_records_and_marks_degraded);
   RUN_TEST(test_serialized_sixty_second_workload_reconciles_all_identities);
+  RUN_TEST(test_serialized_mixed_sixty_second_workload_reconciles_typed_records);
   RUN_TEST(test_media_migration_requires_verify_checkpoint_before_reclaim);
   RUN_TEST(test_media_migration_keeps_source_on_checkpoint_failure);
   RUN_TEST(test_store_migration_adapters_copy_verify_checkpoint_and_reclaim);

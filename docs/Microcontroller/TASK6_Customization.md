@@ -52,7 +52,23 @@ They are not physical SD, power-cut, wear, throughput, or HIL evidence.
 
 Audit events use the same ownership rule as samples and results: the producer
 ring remains queued until the archive append is durable. A short write keeps
-the event identity, sequence, provenance, and encoded bytes for retry. The
-current application composition uses the bounded cooperative drain boundary;
-the tested `StorageWorker` is the isolated ownership seam for a future task
-split and does not itself imply filesystem or network delivery.
+the event identity, sequence, provenance, and encoded bytes for retry.
+`StorageWorker` is an active instance-owned consumer in `SigapApp`: drains do
+only bounded encoding/enqueue work, while the worker owns filesystem
+append/retry. `Queued` transfers ownership to the worker; `Durable` means the
+backend append completed. The worker is cooperative rather than a second
+FreeRTOS task in this slice, so target stack high-water and physical I/O
+latency remain hardware evidence items.
+
+`ArchiveBatchRuntime` is also bound by the composition root. It decodes the
+typed archive frame, builds a canonical telemetry-v3 immutable body, persists
+exact bytes, records a pending ACK journal entry, and applies a validated ACK
+only after a durable checkpoint. Reclaim never follows an invalid,
+summary-v2, mismatched, or uncheckpointed ACK. Native tests inject ACKs only
+at the transport boundary; production does not synthesize server ACKs.
+
+The composition root binds LittleFS as the archive source, SD as the optional
+destination, failover, and the copy/verify/checkpoint/reclaim migration
+adapter. Boot metadata uses the shared sequence domain and is emitted only
+when a provisioned device identity is present. No device identity or sensor
+evidence is fabricated.
