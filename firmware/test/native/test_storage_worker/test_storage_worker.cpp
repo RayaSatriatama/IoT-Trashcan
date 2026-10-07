@@ -114,6 +114,36 @@ void test_budget_does_not_process_more_than_requested() {
   TEST_ASSERT_EQUAL_UINT32(1U, store.size());
 }
 
+void test_owned_copy_survives_source_reuse_and_short_write() {
+  MemoryArchiveStore<4U> store(64U * 1024U);
+  StorageWorker<2U> worker(&store);
+  auto source = record(31U);
+  const auto expected_hash = source.hash;
+  TEST_ASSERT_TRUE(worker.try_enqueue_copy(source));
+  source.bytes[0U] ^= 0xFFU;
+  store.set_fault(StoreFault::ShortWrite);
+  TEST_ASSERT_FALSE(worker.process_one());
+  TEST_ASSERT_EQUAL_UINT32(1U, worker.queue().size());
+  store.set_fault(StoreFault::None);
+  TEST_ASSERT_TRUE(worker.process_one());
+  TEST_ASSERT_EQUAL_UINT32(1U, store.size());
+  TEST_ASSERT_EQUAL_UINT64(31U, store.at(0U).identity.sequence);
+  TEST_ASSERT_TRUE(store.at(0U).hash == expected_hash);
+}
+
+void test_owned_slot_applies_backpressure_without_overwriting_pending() {
+  MemoryArchiveStore<4U> store(64U * 1024U);
+  StorageWorker<4U> worker(&store);
+  const auto first = record(41U);
+  const auto second = record(42U);
+  TEST_ASSERT_TRUE(worker.try_enqueue_copy(first));
+  TEST_ASSERT_FALSE(worker.try_enqueue_copy(second));
+  TEST_ASSERT_EQUAL_UINT32(1U, worker.queue().size());
+  TEST_ASSERT_EQUAL_UINT64(1U, worker.stats().overflow);
+  TEST_ASSERT_TRUE(worker.process_one());
+  TEST_ASSERT_EQUAL_UINT64(41U, store.at(0U).identity.sequence);
+}
+
 }  // namespace
 
 int main() {
@@ -122,5 +152,7 @@ int main() {
   RUN_TEST(test_queue_overflow_is_observable_without_overwrite);
   RUN_TEST(test_changed_source_bytes_become_terminal_gap);
   RUN_TEST(test_budget_does_not_process_more_than_requested);
+  RUN_TEST(test_owned_copy_survives_source_reuse_and_short_write);
+  RUN_TEST(test_owned_slot_applies_backpressure_without_overwriting_pending);
   return UNITY_END();
 }

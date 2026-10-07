@@ -110,14 +110,53 @@ class StorageWorker final {
     return true;
   }
 
+  // Copies one encoded record into the worker-owned pending slot.  This is
+  // the safe handoff for producers whose source handoff may be reused after
+  // enqueue.  The slot is intentionally singular: upstream typed rings keep
+  // ownership of all additional records and provide backpressure without a
+  // second 16 KiB frame allocation per queue entry.
+  bool try_enqueue_copy(
+      const ImmutableRecordBytes& record, void* terminal_context = nullptr,
+      void (*terminal_gap)(void*, const ArchiveIdentity&,
+                           GapReason) noexcept = nullptr) noexcept {
+    if (pending_owned_) {
+      ++stats_.overflow;
+      return false;
+    }
+    if (!RecordCodec::valid(record)) {
+      ++stats_.invalid_source;
+      if (terminal_gap != nullptr) {
+        terminal_gap(terminal_context, record.identity, GapReason::InvalidRecord);
+      }
+      ++stats_.terminal;
+      return false;
+    }
+    pending_record_ = record;
+    pending_owned_ = true;
+    const StorageWorkItem item{&pending_record_, pending_record_.identity,
+                               pending_record_.hash, terminal_context,
+                               terminal_gap};
+    if (!queue_.try_push(item)) {
+      pending_record_ = ImmutableRecordBytes{};
+      pending_owned_ = false;
+      ++stats_.overflow;
+      return false;
+    }
+    ++stats_.enqueued;
+    stats_.high_water = queue_.high_water();
+    return true;
+  }
+
   // Returns true when one item was removed or terminally discarded.  A
   // transient backend failure returns false and preserves the exact item.
   bool process_one() noexcept {
     StorageWorkItem* item = queue_.peek();
     if (item == nullptr || store_ == nullptr) return false;
     if (item->record == nullptr || !same_frozen_identity(*item)) {
+      const bool owned = item->record == &pending_record_;
       terminal(*item, GapReason::InvalidRecord);
       queue_.discard_front();
+      if (owned) clear_owned();
       ++stats_.terminal;
       ++stats_.invalid_source;
       return true;
@@ -125,13 +164,17 @@ class StorageWorker final {
 
     const AppendStatus status = store_->append(*item->record);
     if (status == AppendStatus::Durable) {
+      const bool owned = item->record == &pending_record_;
       queue_.discard_front();
+      if (owned) clear_owned();
       ++stats_.durable;
       return true;
     }
     if (status == AppendStatus::Invalid) {
+      const bool owned = item->record == &pending_record_;
       terminal(*item, GapReason::InvalidRecord);
       queue_.discard_front();
+      if (owned) clear_owned();
       ++stats_.terminal;
       return true;
     }
@@ -170,8 +213,15 @@ class StorageWorker final {
     }
   }
 
+  void clear_owned() noexcept {
+    pending_record_ = ImmutableRecordBytes{};
+    pending_owned_ = false;
+  }
+
   IArchiveStore* store_{nullptr};
   StorageWorkQueue<Capacity> queue_{};
+  ImmutableRecordBytes pending_record_{};
+  bool pending_owned_{false};
   StorageWorkerStats stats_{};
 };
 

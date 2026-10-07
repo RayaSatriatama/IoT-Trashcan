@@ -9,6 +9,7 @@
 #include "processing_runtime.h"
 #include "storage/archive_store.h"
 #include "storage/media_migration.h"
+#include "storage/storage_worker.h"
 #include "telemetry_archive/batch_store.h"
 
 namespace sigap {
@@ -21,10 +22,11 @@ class ArchiveRuntime final {
   using SampleHandoff = acquisition::SampleRing<16U>;
 
   explicit ArchiveRuntime(storage::IArchiveStore* store = nullptr) noexcept
-      : store_(store) {}
+      : store_(store), worker_(store) {}
 
   void set_store(storage::IArchiveStore* store) noexcept {
     store_ = store;
+    worker_.set_store(store);
   }
   void set_media_migration(storage::ArchiveMediaMigration* migration) noexcept {
     migration_ = migration;
@@ -183,6 +185,26 @@ class ArchiveRuntime final {
   storage::ArchiveHealth health() const noexcept {
     return store_ == nullptr ? storage::ArchiveHealth::Degraded : store_->health();
   }
+  const storage::StorageWorker<4U>& storage_worker() const noexcept {
+    return worker_;
+  }
+  storage::AppendStatus poll_storage() noexcept {
+    if (worker_.queue().size() == 0U) return storage::AppendStatus::Durable;
+    const auto* pending = worker_.queue().peek();
+    const uint64_t sequence = pending == nullptr ? 0U : pending->identity.sequence;
+    const uint64_t durable_before = worker_.stats().durable;
+    const uint64_t terminal_before = worker_.stats().terminal;
+    (void)worker_.process_one();
+    if (worker_.stats().durable != durable_before) {
+      ++durable_records_;
+      return storage::AppendStatus::Durable;
+    }
+    if (worker_.stats().terminal != terminal_before) {
+      record_gap(sequence, storage::GapReason::InvalidRecord);
+      return storage::AppendStatus::Invalid;
+    }
+    return storage::AppendStatus::Retryable;
+  }
 
  private:
   storage::AppendStatus append(const storage::ImmutableRecordBytes& record) noexcept {
@@ -190,12 +212,15 @@ class ArchiveRuntime final {
       record_gap(record.identity.sequence, storage::GapReason::MediaFailure);
       return storage::AppendStatus::Retryable;
     }
-    const auto status = store_->append(record);
-    if (status == storage::AppendStatus::Durable) ++durable_records_;
-    else if (status == storage::AppendStatus::Invalid) {
-      record_gap(record.identity.sequence, storage::GapReason::InvalidRecord);
+    // Retry a previously submitted immutable frame before accepting another
+    // source handoff.  This preserves the source queue until durability and
+    // keeps the encoded bytes stable across backend faults.
+    if (worker_.queue().size() != 0U) {
+      const auto pending_status = poll_storage();
+      if (pending_status != storage::AppendStatus::Durable) return pending_status;
     }
-    return status;
+    if (!worker_.try_enqueue_copy(record)) return storage::AppendStatus::Retryable;
+    return poll_storage();
   }
 
   bool encode_audit_event(const acquisition::AuditEvent& event,
@@ -407,6 +432,7 @@ class ArchiveRuntime final {
   }
 
   storage::IArchiveStore* store_{nullptr};
+  storage::StorageWorker<4U> worker_{};
   storage::ArchiveMediaMigration* migration_{nullptr};
   acquisition::SequenceAllocator* sequence_{nullptr};
   acquisition::DeviceId event_device_{};
