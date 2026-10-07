@@ -38,9 +38,10 @@ records and forwards every observed sample to the downstream logger observer.
 Capacity profiles use the existing typed ProfileManager and pointer-last store;
 no load-cell rating is used as an operational default.
 
-## Verification record
+## Verification record at dcb471f
 
-Fresh verification on the integrated source completed as follows:
+The implementation agent reported fresh verification on source commit
+`dcb471fe557d919c4417a2e9df62b3ee2d4367a5` as follows:
 
 - Native PlatformIO tests: **239/239 passed**.
 - Native ASan/UBSan PlatformIO copy: **239/239 passed**.
@@ -68,3 +69,26 @@ full pushes without overwriting older entries.
 The remediation adds 11 native regression cases over the previous checkpoint
 and retains the fixed 13-channel processing budget. No target heap high-water
 or sensor timing claim is made because no sensors or outputs are connected.
+
+
+## Independent review follow-up: retained channel freshness
+
+Review reproduced a remaining cadence regression: an SHT31 sample at 900,000 us
+was valid at the 1,000,000 us cycle but became Missing at 2,000,000 us despite
+being only 1.1 seconds old (the initial freshness bound is 5 seconds).
+The latest-per-channel cache now survives processing cycles. begin/disable
+still clears it, and every cycle rechecks age, quality, and profile identity.
+A newer failed attempt still supersedes a retained READY attempt.
+
+- Added two ProcessingRuntime regressions for between-cycle freshness, stale
+  expiry, source provenance, and newest timeout precedence.
+- Before the fix, the runtime suite had 10 tests with 1 freshness failure.
+- After the fix, 89 relevant existing/new native tests across 9 suites passed
+  using GCC C++17 with ASan/UBSan (LeakSanitizer disabled in the review environment).
+- Production change adds no fields or dynamic allocation. Native ProcessingRuntime
+  footprint remains 16,728 bytes.
+- Review environment has no PlatformIO, cppcheck, or Go executable. Full native
+  PlatformIO, target builds, static analysis, and repository-required checks must
+  be rerun on the updated branch before merging; the baseline results above are
+  not claimed as fresh results for this follow-up.
+- No hardware upload, reboot, unplug, SD access, sensor, or actuator HIL performed.
