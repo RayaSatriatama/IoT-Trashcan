@@ -47,6 +47,7 @@ class ArchiveRuntime final {
   }
   storage::AppendStatus append_sample(
       const acquisition::SampleRecord& sample) noexcept {
+    if (audit_queued_) return storage::AppendStatus::Retryable;
     if (!storage::RecordCodec::encode_sample(sample, scratch_)) {
       ++encode_failures_;
       gaps_.record(sample.header.sequence, storage::GapReason::InvalidRecord);
@@ -56,6 +57,7 @@ class ArchiveRuntime final {
   }
 
   bool drain_samples(SampleHandoff& handoff) noexcept {
+    if (audit_queued_) return false;
     bool progressed{false};
     acquisition::SampleRecord sample{};
     if (const auto* dropped = handoff.first_dropped(); dropped != nullptr) {
@@ -91,6 +93,7 @@ class ArchiveRuntime final {
 
   storage::AppendStatus append_audit_event(
       const acquisition::AuditEvent& event) noexcept {
+    if (audit_queued_) return storage::AppendStatus::Retryable;
     if (sequence_ == nullptr || !event_device_.present || !event_boot_.present) {
       return storage::AppendStatus::Retryable;
     }
@@ -125,6 +128,7 @@ class ArchiveRuntime final {
   storage::AppendStatus append_boot_metadata(
       uint64_t monotonic_us, std::string_view firmware_version,
       uint8_t reset_reason) noexcept {
+    if (audit_queued_) return storage::AppendStatus::Retryable;
     if (sequence_ == nullptr || !event_device_.present || !event_boot_.present ||
         !event_config_.present || firmware_version.empty() ||
         firmware_version.size() >= 64U) {
@@ -163,15 +167,19 @@ class ArchiveRuntime final {
     if (!audit_encoded_) {
       acquisition::AuditEvent event{};
       if (!audit_ring.try_peek(event)) return false;
-      if (!encode_audit_event(event, audit_scratch_)) {
+      // append() copies the frame into the worker-owned pending slot before
+      // returning Queued. While that slot is pending, other encoders are
+      // paused so this shared scratch remains the immutable audit source.
+      if (!encode_audit_event(event, scratch_)) {
         (void)audit_ring.discard_front();
         record_gap(0U, storage::GapReason::InvalidRecord);
         return true;
       }
+      audit_identity_ = scratch_.identity;
       audit_encoded_ = true;
     }
 
-    const auto status = append(audit_scratch_);
+    const auto status = append(scratch_);
     if (status == storage::AppendStatus::Durable ||
         status == storage::AppendStatus::Queued) {
       if (status == storage::AppendStatus::Queued) {
@@ -186,7 +194,7 @@ class ArchiveRuntime final {
     if (status == storage::AppendStatus::Invalid) {
       (void)audit_ring.discard_front();
       audit_encoded_ = false;
-      record_gap(audit_scratch_.identity.sequence,
+      record_gap(audit_identity_.sequence,
                  storage::GapReason::InvalidRecord);
       return true;
     }
@@ -194,6 +202,7 @@ class ArchiveRuntime final {
   }
 
   bool drain_results(ResultHandoff& handoff) noexcept {
+    if (audit_queued_) return false;
     bool progressed{false};
     ResultEnvelope envelope{};
     std::size_t drained{0U};
@@ -245,7 +254,7 @@ class ArchiveRuntime final {
     if (worker_.stats().durable != durable_before) {
       ++durable_records_;
       if (audit_queued_ && audit_ring_ != nullptr &&
-          same_identity(pending_identity, audit_scratch_.identity)) {
+          same_identity(pending_identity, audit_identity_)) {
         (void)audit_ring_->discard_front();
         audit_ring_ = nullptr;
         audit_queued_ = false;
@@ -256,7 +265,7 @@ class ArchiveRuntime final {
     if (worker_.stats().terminal != terminal_before) {
       record_gap(sequence, storage::GapReason::InvalidRecord);
       if (audit_queued_ && audit_ring_ != nullptr &&
-          same_identity(pending_identity, audit_scratch_.identity)) {
+          same_identity(pending_identity, audit_identity_)) {
         (void)audit_ring_->discard_front();
         audit_ring_ = nullptr;
         audit_queued_ = false;
@@ -535,7 +544,7 @@ class ArchiveRuntime final {
   // bounded buffer in the instance avoids a 16 KiB automatic loop-stack
   // allocation and keeps filesystem work outside acquisition callbacks.
   storage::ImmutableRecordBytes scratch_{};
-  storage::ImmutableRecordBytes audit_scratch_{};
+  storage::ArchiveIdentity audit_identity_{};
   bool audit_encoded_{false};
   acquisition::ProfileAuditRing<16U>* audit_ring_{nullptr};
   bool audit_queued_{false};

@@ -18,7 +18,7 @@ backend archive code, or migration 005.
 | storage worker queue | `storage/storage_worker.h`, entries | target composition uses one owned frozen-frame slot; native fault tests exercise larger bounded queues; high-water and overflow observable | instance-owned; retryable until durable, terminal gap on invalid input |
 | ACK journal frame | `FsAckJournalStore`, bytes | fixed little-endian frame with CRC and generation-bound checkpoint | protocol constant; target recovery validates before state transition |
 | `storage sd test` probe | maintenance/SigapApp, bytes and elapsed microseconds | one 256-byte deterministic test file; no formatting; dedicated path removed after verification | explicit command on `SIGAP_USE_SD` target; requires authorized upload/reboot before physical execution |
-| SD transport policy | `sigap/board/sd_transport.h`, typed build policy | `ExternalSpi`: SCK/MISO/MOSI/CS 39/40/41/43; opt-in `SdMmc1Bit`: CLK/CMD/D0 39/38/40, 1-bit, no format | compile-time board/build selection; default remains ExternalSpi until the installed board topology is proven |
+| SD transport policy | `sigap/board/sd_transport.h`, typed build policy | selected PKM KC `SdMmc1Bit`: CLK/CMD/D0 39/38/40, 1-bit, no format; explicit `ExternalSpi`: SCK/MISO/MOSI/CS 39/40/41/43 | compile-time board/build selection; `sigap_n16r8_sd` selects SdMmc1Bit, `sigap_n16r8_sd_spi` selects ExternalSpi |
 
 Calibration coefficients, capacity, and scientific model parameters remain
 typed versioned profiles. GPIO and bus mapping remain board/build constants.
@@ -52,11 +52,14 @@ Native tests use memory stores, a filesystem test double that exercises the
 store migration adapters, and fault injection.
 They are not physical SD, power-cut, wear, throughput, or HIL evidence.
 
-The PKM KC reference uses an onboard ESP32-S3 CAM SD_MMC socket on
-39/38/40. That is not evidence for the SIGAP DevKitC-1 target. GPIO38 remains
-reserved by the generic SIGAP board safety map and is allowed only inside the
-explicit opt-in `SdMmc1Bit` policy. The installed SIGAP board must be matched
-to a schematic or clear wiring evidence before selecting that policy.
+The confirmed installed board follows the PKM KC onboard ESP32-S3 CAM SD_MMC
+topology: 1-bit `CLK=39`, `CMD=38`, `D0=40`, with
+`format_if_mount_failed=false` and no SPI chip-select. The selected
+`sigap_n16r8_sd` target enables `SIGAP_SD_TRANSPORT_SDMMC_1BIT` and uses this
+policy. GPIO38 remains reserved by the generic SIGAP safety map and is
+permitted only by this explicit policy. The separate `sigap_n16r8_sd_spi`
+target retains the external SPI variant (`SCK=39`, `MISO=40`, `MOSI=41`,
+`CS=43`) for hardware using an external module.
 
 Audit events use the same ownership rule as samples and results: the producer
 ring remains queued until the archive append is durable. A short write keeps

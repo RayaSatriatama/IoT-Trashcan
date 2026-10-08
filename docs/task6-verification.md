@@ -5,9 +5,9 @@
 This report covers the durable archive/logger and immutable batching slice on
 the `feat/firmware-durable-archive` branch. Task 5 was merged before this
 branch was created. No firmware upload, reboot, power-cut, sensor, heater, or
-network test was performed. Physical SD I/O was not executed because the
-running image predates the bounded `storage sd test` command and upload/reboot
-was not authorized in this batch.
+network test was performed. Physical SD I/O was not executed in this batch;
+the corrected image is prepared for a separately authorized upload and
+attached-only SD probe.
 
 ## Implemented evidence (final remediation)
 
@@ -74,7 +74,7 @@ was not authorized in this batch.
 
 ## Fresh native evidence (final remediation run)
 
-The integrated native suite passed **326/326 tests**, including archive storage,
+The integrated native suite passed **328/328 tests**, including archive storage,
 archive runtime, immutable batch, ACK, failover, corrupt-tail, quota, 129-entry
 cache overflow, 4,684-record workload, migration adapter, gap reserve failover,
 producer-to-archive retry, typed metadata decode, and runtime batch/ACK tests.
@@ -85,27 +85,35 @@ contract tests passed their frozen canonical record and exact-body hash
 fixtures.
 
 The complete native suite was rerun with AddressSanitizer and UndefinedBehaviorSanitizer
-through a temporary native PlatformIO configuration: **326/326 tests**, with
+through a temporary native PlatformIO configuration: **328/328 tests**, with
 no sanitizer diagnostics. The sanitizer environment is temporary and is not part of the production
 PlatformIO configuration. The final regression is covered by the focused
 native run and the final full native run.
 Cppcheck reported `No defects found`.
 
-Target compilation passed for `sigap_n16r8`, `sigap_n16r8_sd`, and
-`sigap_bench`. Final usage was 300,296 B RAM and 489,621 B flash for
-`sigap_n16r8`, 300,580 B RAM and 541,825 B flash for `sigap_n16r8_sd`, and
-300,296 B RAM and 489,621 B flash for `sigap_bench`. The target composition
-uses one owned storage handoff slot; upstream typed rings retain additional
-records, keeping the SD variant below the internal DRAM limit. These are compilation
-evidence only, not physical N16R8 or SD I/O validation.
+Target compilation passed for `sigap_n16r8`, selected `sigap_n16r8_sd`,
+explicit `sigap_n16r8_sd_spi`, and `sigap_bench`. Final usage was:
+
+| Target | RAM | Flash |
+| --- | ---: | ---: |
+| `sigap_n16r8` | 283,864 B | 489,745 B |
+| `sigap_n16r8_sd` (SdMmc1Bit) | 284,404 B | 562,553 B |
+| `sigap_n16r8_sd_spi` (ExternalSpi) | 284,148 B | 541,917 B |
+| `sigap_bench` | 283,864 B | 489,745 B |
+
+The selected SD_MMC image is below the 327,680-byte internal DRAM limit.
+These are compilation/map measurements only, not physical SD I/O validation.
 
 Native size probes continue to treat record/batch byte arrays and journal
 capacity as explicit bounded ownership. `SampleRing<16>` is 5,088 B after
 adding first/last dropped identities for queue gap evidence. The large native
 fault-injection stores are not instantiated in the target composition.
-`ArchiveRuntime` is 35,976 B, including two instance-owned 16,488 B record
-codec buffer; no equivalent 16 KiB automatic buffer remains on the application
-loop stack. `ImmutableRecordBytes` is 16,488 B, `ImmutableBatch` is 32,936 B,
+`ArchiveRuntime` now owns one 16,488 B record codec buffer plus a small audit
+identity, rather than a second redundant 16,488 B audit frame. The shared
+scratch is protected by explicit audit backpressure, and the regression test
+proves a pending audit cannot be overwritten by a sample. No equivalent 16 KiB
+automatic buffer remains on the application loop stack. `ImmutableRecordBytes`
+is 16,488 B, `ImmutableBatch` is 32,936 B,
 `GapTracker<32>` is 2,840 B, and the native `MemoryAckJournalStore<2>` is
 336 B. `StorageWorker<1>` is instance-owned in the target composition and
 stores one owned frozen frame plus bounded status counters. Native
@@ -138,8 +146,8 @@ step. Recovery markers are the only tail-repair authority; unmarked quarantine
 and post-reclaim backup files are not selected as pending data. Native
 filesystem-double regressions cover source retention on checkpoint failure and
 receipt retry/restart behavior. Physical replay and
-copy-verify-checkpoint-reclaim remain unverified because the installed image
-does not contain the new probe and upload/reboot was not authorized.
+copy-verify-checkpoint-reclaim remain unverified because the corrected image
+has not been uploaded in this batch.
 
 The archive-reader to telemetry-v3 JSON batch-builder to immutable batch store
 to ACK-application chain is runtime-wired and natively fault-tested. The
@@ -166,36 +174,50 @@ backend archive, migration 005, and actuator output are out of scope.
 ## Hardware inventory and SD prerequisite
 
 The native maintenance interface is the Espressif USB JTAG/serial debug unit
-(`303A:1001`) at the stable by-id path observed as `/dev/ttyACM0`. The SD
-target uses SPI pins SCK=39, MISO=40, MOSI=41, CS=43 and the
-`sigap_n16r8_sd` PlatformIO environment. A bounded `storage sd test` command
-is available only after the new image is uploaded and rebooted. The precise
-next action for physical SD evidence is an explicitly authorized upload and
-controlled reboot, followed by that command over native USB. No format or
+(`303A:1001`) at the stable by-id path observed as `/dev/ttyACM0`. The
+confirmed PKM KC onboard slot is selected by `sigap_n16r8_sd` with SD_MMC
+1-bit pins CLK=39, CMD=38, D0=40, no chip select, and
+`format_if_mount_failed=false`. The bounded `storage sd test` command is
+available after the corrected image is uploaded and rebooted. No format or
 destructive operation is required.
 
 ## SD transport reconciliation
 
-The PKM KC reference is an ESP32-S3-N16R8 CAM design using SD_MMC 1-bit
-(`CLK=39`, `CMD=38`, `D0=40`, `format_if_fail=false`). SIGAP remains on the
-PRD/TSD DevKitC-1 profile with external SPI (`SCK=39`, `MISO=40`, `MOSI=41`,
-`CS=43`). The transport policy now represents both modes, but the default and
-selected build remain `ExternalSpi`. No available board descriptor, USB
-identity, wiring record, or schematic proves that the installed SIGAP board is
-the CAM topology. Therefore no SD_MMC upload image was produced or selected.
-A temporary opt-in SD_MMC build was evaluated after the reference comparison;
-the pinned Arduino SD_MMC library overflowed internal DRAM by 3,048 bytes, so
-that unconfirmed variant was not retained as a PlatformIO environment. The
-supported corrected image remains `sigap_n16r8_sd` with ExternalSpi.
+The user-confirmed installed board follows the PKM KC ESP32-S3-N16R8 CAM
+topology using SD_MMC 1-bit (`CLK=39`, `CMD=38`, `D0=40`,
+`format_if_mount_failed=false`). The selected `sigap_n16r8_sd` target now
+enables this policy. GPIO38 remains reserved by the generic SIGAP safety map
+and is allowed only in the explicit `SdMmc1Bit` policy. The external SPI
+variant remains available as `sigap_n16r8_sd_spi` (`SCK=39`, `MISO=40`,
+`MOSI=41`, `CS=43`).
 
-Fresh reconciliation verification on this working tree: native PlatformIO
-passed 326/326 tests; the serial ASan/UBSan run also passed 326/326. Cppcheck
-passed with `--fail-on-defect=low`. The corrected target images built with
-the pinned Arduino framework (`espressif32@7.1.3`, Arduino
-`4.20017.260907+sha.dcc1105b`): `sigap_n16r8` RAM 300,296 B / flash 489,621 B,
-`sigap_n16r8_sd` RAM 300,580 B / flash 541,825 B, and `sigap_bench` RAM
-300,296 B / flash 489,621 B. The temporary SD_MMC opt-in was not retained:
-its unconfirmed build exceeded internal DRAM by 3,048 B. Go/schema checks
-could not be rerun in this environment because no Go executable is installed;
-the previously recorded contract/golden evidence is unchanged and no Go or
-schema files were modified by this reconciliation.
+A prior SD_MMC link failed by 3,048 bytes. The linker maps identified the
+precise cause: SD_MMC-required IRAM increased `.dram0.dummy` from `0xb0cc` to
+`0xbbbc` (+2,800 B), with `.dram0.data` +112 B and `.dram0.bss` +144 B; only
+8 B remained, producing the reported overflow. This was not a physical-heap
+measurement. The remediation removes the redundant target audit frame buffer
+and serializes SD_MMC without unused high-level `SD`/`SPI` libraries
+(`lib_ignore = SD, SPI`); required SD_MMC integrity, recovery, quota, and
+workload paths remain unchanged. The resulting selected build uses 284,404 B
+RAM and links successfully.
+
+Compiler stack-usage instrumentation on the selected target produced 71 `.su`
+files. Largest relevant static frame estimates were
+`ProcessingRuntime::evaluate_cycle` 14,064 B, `BatchJsonBuilder::write_result`
+9,232 B, and `ProcessingPipeline::evaluate` 7,168 B. Archive recovery and
+storage functions remained bounded (for example, `FsImmutableBatchStore::recover`
+976 B, `FsAckJournalStore::recover` 416 B, `ArchiveMediaMigration::migrate_one`
+160 B, and `StorageWorker::process_one` 192 B). These are compiler estimates,
+not measured runtime stack high-water values; physical stack telemetry remains
+HIL work.
+
+The reproducible selected image is
+`.pio/build/sigap_n16r8_sd/firmware.bin`, SHA-256
+`cc35859400fe3f2aa262a68643a298a2bfe33640d680b5e90926fe4f8cb70ac1`.
+
+Fresh final verification: native PlatformIO 328/328, ASan/UBSan 328/328,
+cppcheck no defects, and all four firmware environments above passed. The
+cached official Go 1.27.1 toolchain was invoked explicitly: telemetry tests,
+full Go tests, and `go vet ./...` passed. Schema tests compiled all 14 schemas,
+validated 24 valid fixtures, rejected the 36 structural invalid fixtures, and
+the canonical record and exact-body golden hashes remained unchanged.

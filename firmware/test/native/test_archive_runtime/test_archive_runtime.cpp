@@ -286,6 +286,32 @@ void test_audit_event_stays_queued_across_retry_and_archives_once() {
   TEST_ASSERT_EQUAL_UINT32(1U, store.size());
 }
 
+void test_audit_pending_reuses_encoder_without_corrupting_sample() {
+  storage::MemoryArchiveStore<4U> store(64U * 1024U);
+  ArchiveRuntime runtime(&store);
+  SequenceAllocator sequence{};
+  runtime.set_sequence_allocator(&sequence);
+  runtime.set_event_context(device(), boot(), config_ref());
+  ProfileAuditRing<16U> audit{};
+  audit.set_context(1234U, config_ref());
+  audit.profile_activated(ProfileRef{}, ProfileRef{});
+
+  TEST_ASSERT_TRUE(runtime.drain_audit_events(audit));
+  ArchiveRuntime::SampleHandoff handoff{};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(HandoffStatus::Enqueued),
+                        static_cast<int>(handoff.try_push(sample())));
+  TEST_ASSERT_FALSE(runtime.drain_samples(handoff));
+  TEST_ASSERT_EQUAL_UINT32(1U, handoff.size());
+
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(storage::AppendStatus::Durable),
+                        static_cast<int>(runtime.poll_storage()));
+  TEST_ASSERT_TRUE(runtime.drain_samples(handoff));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(storage::AppendStatus::Durable),
+                        static_cast<int>(runtime.poll_storage()));
+  TEST_ASSERT_EQUAL_UINT32(2U, store.size());
+  TEST_ASSERT_EQUAL_UINT32(0U, audit.size());
+}
+
 }  // namespace
 
 int main() {
@@ -299,5 +325,6 @@ int main() {
   RUN_TEST(test_runtime_wires_bounded_media_migration_source_and_destination);
   RUN_TEST(test_audit_event_uses_shared_sequence_and_is_archived);
   RUN_TEST(test_audit_event_stays_queued_across_retry_and_archives_once);
+  RUN_TEST(test_audit_pending_reuses_encoder_without_corrupting_sample);
   return UNITY_END();
 }

@@ -31,6 +31,12 @@ void test_gpio38_is_not_allowed_by_external_spi_policy() {
   TEST_ASSERT_FALSE(sigap::board::sd_transport_policy_valid(policy));
 }
 
+void test_gpio38_exception_is_limited_to_sd_mmc_policy() {
+  const auto policy = sigap::board::sd_mmc_1bit_policy();
+  TEST_ASSERT_FALSE(sigap::board::sd_transport_conflicts_with_board(policy));
+  TEST_ASSERT_TRUE(sigap::board::sd_transport_policy_valid(policy));
+}
+
 void test_default_build_keeps_external_spi_selected() {
 #ifndef SIGAP_SD_TRANSPORT_SDMMC_1BIT
   TEST_ASSERT_EQUAL_INT(
@@ -51,6 +57,7 @@ void setup() {
   RUN_TEST(test_external_spi_policy_matches_sigap_contract);
   RUN_TEST(test_onboard_sd_mmc_policy_is_explicit_and_non_formatting);
   RUN_TEST(test_gpio38_is_not_allowed_by_external_spi_policy);
+  RUN_TEST(test_gpio38_exception_is_limited_to_sd_mmc_policy);
   RUN_TEST(test_default_build_keeps_external_spi_selected);
   UNITY_END();
 }
