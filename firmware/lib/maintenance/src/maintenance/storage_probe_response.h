@@ -17,7 +17,7 @@ inline CommandStatus append_sd_probe_pass(
     MaintenanceResponse& response, std::string_view bus,
     uint16_t bytes, const std::array<uint8_t, 32U>& hash,
     uint64_t elapsed_us, uint64_t total_bytes, uint64_t used_bytes,
-    uint64_t free_bytes) noexcept {
+    uint64_t free_bytes, bool archive_verified = false) noexcept {
   if (!response.empty() || (bus != "mmc1" && bus != "spi") || bytes > 256U)
     return CommandStatus::Failed;
   char number[32U]{};
@@ -43,6 +43,7 @@ inline CommandStatus append_sd_probe_pass(
   return response.append("\n") && append_u64("us=", elapsed_us) &&
                  append_u64("t=", total_bytes) && append_u64("u=", used_bytes) &&
                  append_u64("f=", free_bytes) &&
+                 (!archive_verified || response.append("a=PASS\n")) &&
                  response.append_status(CommandStatus::Accepted)
              ? CommandStatus::Accepted : CommandStatus::Failed;
 }

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+
 #include "config/config_manager.h"
 #include "config/nvs_config_store.h"
 #include "acquisition/boot_identity.h"
@@ -24,9 +26,25 @@ namespace sigap {
 #ifdef ARDUINO
 class ArduinoSdProbe final : public maintenance::IStorageTestProbe {
  public:
+  void bind_archive_store(storage::SdArchiveStore& store,
+                          uint64_t quota_bytes) noexcept {
+    archive_store_ = &store;
+    archive_quota_bytes_ = quota_bytes;
+  }
+
   maintenance::CommandStatus run_sd_probe(
       maintenance::MaintenanceResponse& response) noexcept override;
+
+ private:
+  storage::SdArchiveStore* archive_store_{nullptr};
+  uint64_t archive_quota_bytes_{0U};
+  storage::ArchiveIdentity archive_identity_{};
+  config::ConfigHash archive_hash_{};
+
 };
+
+static_assert(sizeof(ArduinoSdProbe) <= 1024U,
+              "SD probe workspace must remain bounded and instance-owned");
 #endif
 
 class SigapApp final {

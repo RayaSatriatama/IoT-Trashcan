@@ -77,6 +77,7 @@ void test_target_archive_failed_recovery_copy_is_restart_safe() {
   fs::FS filesystem{};
   LittleFsArchiveStore initial("/sigap/archive.bin");
   TEST_ASSERT_TRUE(initial.begin(filesystem, 1024U * 1024U));
+  TEST_ASSERT_TRUE(filesystem.exists("/sigap"));
   const auto first = record(1U);
   const auto second = record(2U);
   TEST_ASSERT_EQUAL_INT(static_cast<int>(AppendStatus::Durable),
@@ -105,6 +106,24 @@ void test_target_archive_failed_recovery_copy_is_restart_safe() {
   TEST_ASSERT_TRUE(after_reclaim.begin(filesystem, 1024U * 1024U));
   TEST_ASSERT_FALSE(after_reclaim.contains(first.identity, first.hash));
   TEST_ASSERT_TRUE(after_reclaim.contains(second.identity, second.hash));
+}
+
+void test_target_archive_reclaims_non_head_probe_record() {
+  fs::FS filesystem{};
+  LittleFsArchiveStore store("/sigap/archive.bin");
+  TEST_ASSERT_TRUE(store.begin(filesystem, 1024U * 1024U));
+  const auto first = record(101U);
+  const auto second = record(102U);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AppendStatus::Durable),
+                        static_cast<int>(store.append(first)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AppendStatus::Durable),
+                        static_cast<int>(store.append(second)));
+  TEST_ASSERT_TRUE(store.reclaim_pending(second.identity, second.hash));
+
+  LittleFsArchiveStore restarted("/sigap/archive.bin");
+  TEST_ASSERT_TRUE(restarted.begin(filesystem, 1024U * 1024U));
+  TEST_ASSERT_TRUE(restarted.contains(first.identity, first.hash));
+  TEST_ASSERT_FALSE(restarted.contains(second.identity, second.hash));
 }
 
 void test_target_batch_and_ack_replay_preserve_exact_bytes_and_binding() {
@@ -259,6 +278,7 @@ void test_target_migration_receipt_survives_restart_boundary() {
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_target_archive_failed_recovery_copy_is_restart_safe);
+  RUN_TEST(test_target_archive_reclaims_non_head_probe_record);
   RUN_TEST(test_target_batch_and_ack_replay_preserve_exact_bytes_and_binding);
   RUN_TEST(test_target_ack_restart_does_not_reclaim_wrong_pending_batch);
   RUN_TEST(test_target_ack_short_frame_recovery_preserves_valid_prefix);

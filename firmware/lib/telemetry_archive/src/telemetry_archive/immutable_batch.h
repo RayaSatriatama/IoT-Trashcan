@@ -28,7 +28,10 @@ struct BatchSourceBinding final {
 };
 
 struct ImmutableBatch final {
-  std::array<uint8_t, kMaxBatchBytes> body{};
+  // The batch body is also the owner of the transient typed decode workspace
+  // used while building a result batch.  Keep the storage suitably aligned so
+  // the workspace never becomes an automatic stack allocation.
+  alignas(std::max_align_t) std::array<uint8_t, kMaxBatchBytes> body{};
   std::size_t body_size{0U};
   std::array<char, kMaxBatchIdBytes> batch_id{};
   std::size_t batch_id_size{0U};

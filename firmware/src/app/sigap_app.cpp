@@ -46,16 +46,29 @@ uint8_t reset_reason_code() noexcept {
 }
 
 #ifdef SIGAP_USE_SD
+bool sd_transport_pins_configured{false};
+bool sd_transport_mounted{false};
+
 bool begin_sd_transport() noexcept {
   const auto& policy = board::kSdTransportPolicy;
 #ifdef SIGAP_SD_TRANSPORT_SDMMC_1BIT
-  SD_MMC.setPins(policy.clk, policy.cmd_or_miso, policy.d0_or_mosi);
-  return SD_MMC.begin(policy.mount_point, policy.mode_1bit,
-                      policy.format_if_mount_failed, SDMMC_FREQ_DEFAULT,
-                      policy.max_files);
+  // Arduino-ESP32 requires setPins() before the first SD_MMC.begin() only.
+  // The maintenance probe may run after setup has mounted the same singleton;
+  // repeating setPins() then fails and falsely reports a media outage.
+  if (!sd_transport_pins_configured) {
+    SD_MMC.setPins(policy.clk, policy.cmd_or_miso, policy.d0_or_mosi);
+    sd_transport_pins_configured = true;
+  }
+  if (sd_transport_mounted) return true;
+  sd_transport_mounted = SD_MMC.begin(
+      policy.mount_point, policy.mode_1bit, policy.format_if_mount_failed,
+      SDMMC_FREQ_DEFAULT, policy.max_files);
+  return sd_transport_mounted;
 #else
+  if (sd_transport_mounted) return true;
   SPI.begin(policy.clk, policy.cmd_or_miso, policy.d0_or_mosi, policy.cs);
-  return SD.begin(policy.cs, SPI, policy.spi_frequency_hz);
+  sd_transport_mounted = SD.begin(policy.cs, SPI, policy.spi_frequency_hz);
+  return sd_transport_mounted;
 #endif
 }
 
@@ -101,6 +114,29 @@ maintenance::CommandStatus ArduinoSdProbe::run_sd_probe(
     return maintenance::CommandStatus::Rejected;
   }
   fs::FS& sd = sd_filesystem();
+  bool archive_verified = false;
+  if (archive_store_ != nullptr) {
+    if (archive_quota_bytes_ == 0U ||
+        !archive_store_->begin(sd, archive_quota_bytes_)) {
+      return maintenance::CommandStatus::Failed;
+    }
+    archive_identity_ = storage::ArchiveIdentity{};
+    archive_hash_.fill(0U);
+    if (archive_store_->append_probe_record(
+            static_cast<uint64_t>(started_us < 0 ? 0 : started_us),
+            archive_identity_, archive_hash_) !=
+        storage::AppendStatus::Durable) {
+      return maintenance::CommandStatus::Failed;
+    }
+    // Re-open and recover the same store to prove the archive frame survived
+    // the filesystem boundary, then remove only this probe record.
+    archive_verified = archive_store_->begin(sd, archive_quota_bytes_) &&
+                       archive_store_->contains(archive_identity_, archive_hash_) &&
+                       archive_store_->reclaim_pending(archive_identity_,
+                                                       archive_hash_) &&
+                       !archive_store_->contains(archive_identity_, archive_hash_);
+    if (!archive_verified) return maintenance::CommandStatus::Failed;
+  }
   (void)sd.remove(kPath);
   File output = sd.open(kPath, FILE_WRITE);
   if (!output) return maintenance::CommandStatus::Failed;
@@ -119,16 +155,15 @@ maintenance::CommandStatus ArduinoSdProbe::run_sd_probe(
     (void)sd.remove(kPath);
     return maintenance::CommandStatus::Failed;
   }
-  std::array<uint8_t, kProbeBytes.size()> readback{};
-  const bool read = input.read(readback.data(), readback.size()) ==
-                    static_cast<int>(readback.size());
   input.close();
   const auto expected_hash = telemetry_contract::sha256(std::string_view(
       reinterpret_cast<const char*>(kProbeBytes.data()), kProbeBytes.size()));
-  const auto actual_hash = telemetry_contract::sha256(std::string_view(
-      reinterpret_cast<const char*>(readback.data()), readback.size()));
-  const bool hash_match = read && expected_hash == actual_hash &&
-                          readback == kProbeBytes;
+  config::ConfigHash actual_hash{};
+  const bool hash_match = archive_store_ != nullptr &&
+                          archive_store_->verify_probe_file(
+                              sd, kPath, kProbeBytes.data(), kProbeBytes.size(),
+                              actual_hash) &&
+                          expected_hash == actual_hash;
   const bool removed = sd.remove(kPath);
   if (!hash_match || !removed) return maintenance::CommandStatus::Failed;
   const uint64_t total_bytes = sd_total_bytes();
@@ -142,9 +177,9 @@ maintenance::CommandStatus ArduinoSdProbe::run_sd_probe(
       response,
       board::kSdTransportPolicy.transport == board::SdTransport::SdMmc1Bit
           ? "mmc1" : "spi",
-      static_cast<uint16_t>(readback.size()), actual_hash,
+      static_cast<uint16_t>(kProbeBytes.size()), actual_hash,
       ended_us >= started_us ? static_cast<uint64_t>(ended_us - started_us) : 0U,
-      total_bytes, used_bytes, free_bytes);
+      total_bytes, used_bytes, free_bytes, archive_verified);
 #else
   (void)response;
   return maintenance::CommandStatus::Rejected;
@@ -190,6 +225,8 @@ SigapApp::SigapApp() noexcept
                           nullptr),
 #endif
       maintenance_service_(maintenance_transport_, maintenance_router_) {
+  sd_probe_.bind_archive_store(
+      sd_store_, config_manager_.active().storage.sd_pending_quota_bytes);
   profile_manager_.bind_runtime_profiles(profiles_);
   evidence_cache_.set_profiles(&profiles_);
   archive_runtime_.set_store(&archive_store_);
@@ -244,6 +281,10 @@ void SigapApp::setup() noexcept {
 #endif
   const config::ConfigBootResult boot_result = config_manager_.begin();
   (void)boot_result;
+#ifdef ARDUINO
+  sd_probe_.bind_archive_store(
+      sd_store_, config_manager_.active().storage.sd_pending_quota_bytes);
+#endif
   for (uint32_t target = 1U; target <= 13U; ++target) {
     (void)profile_manager_.load(
         static_cast<acquisition::ProfileTarget>(target));

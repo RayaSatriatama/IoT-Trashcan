@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <new>
 #include <cstdio>
 #include <string_view>
 
@@ -35,16 +36,23 @@ class BatchJsonBuilder final {
     // scratch object on the storage worker stack.
     constexpr std::size_t kEnvelopeReserve{1024U};
     if (kEnvelopeReserve >= batch.body.size()) return false;
+    constexpr std::size_t kResultWorkspaceBytes{
+        sizeof(storage::DecodedResultPayload)};
+    const std::size_t workspace_reserve =
+        record.identity.kind == storage::ArchiveRecordKind::Result
+            ? kResultWorkspaceBytes
+            : 0U;
+    if (workspace_reserve >= batch.body.size() - kEnvelopeReserve) return false;
     telemetry_contract::CanonicalBuffer writer{
         reinterpret_cast<char*>(batch.body.data() + kEnvelopeReserve),
-        batch.body.size() - kEnvelopeReserve};
+        batch.body.size() - kEnvelopeReserve - workspace_reserve};
     bool written = false;
     switch (record.identity.kind) {
       case storage::ArchiveRecordKind::Sample:
         written = write_sample(record, writer);
         break;
       case storage::ArchiveRecordKind::Result:
-        written = write_result(record, writer);
+        written = write_result(record, writer, result_workspace(batch));
         break;
       case storage::ArchiveRecordKind::Event:
         written = write_event(record, writer);
@@ -86,6 +94,14 @@ class BatchJsonBuilder final {
   }
 
  private:
+  static storage::DecodedResultPayload& result_workspace(
+      ImmutableBatch& batch) noexcept {
+    constexpr std::size_t kWorkspaceBytes{
+        sizeof(storage::DecodedResultPayload)};
+    auto* address = batch.body.data() + batch.body.size() - kWorkspaceBytes;
+    return *::new (static_cast<void*>(address)) storage::DecodedResultPayload{};
+  }
+
   static bool append_string(telemetry_contract::CanonicalBuffer& out,
                             std::string_view value) noexcept {
     return out.append('"') && telemetry_contract::detail::append_json_string_content(out, value) &&
@@ -503,8 +519,8 @@ class BatchJsonBuilder final {
            out.append('}');
   }
   static bool write_result(const storage::ImmutableRecordBytes& record,
-                           telemetry_contract::CanonicalBuffer& out) noexcept {
-    storage::DecodedResultPayload decoded{};
+                           telemetry_contract::CanonicalBuffer& out,
+                           storage::DecodedResultPayload& decoded) noexcept {
     if (storage::RecordCodec::decode_result(record, decoded) != storage::TypedDecodeStatus::Decoded) {
       return false;
     }

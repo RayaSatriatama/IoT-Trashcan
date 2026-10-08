@@ -29,7 +29,11 @@ class LittleFsArchiveStore : public IArchiveStore {
   bool begin(fs::FS& filesystem, uint64_t quota_bytes) noexcept {
     filesystem_ = &filesystem;
     quota_bytes_ = quota_bytes;
-    if (!filesystem_->exists("/sigap")) (void)filesystem_->mkdir("/sigap");
+    if (!filesystem_->exists("/sigap") && !filesystem_->mkdir("/sigap")) {
+      filesystem_ = nullptr;
+      health_ = ArchiveHealth::Degraded;
+      return false;
+    }
     return recover();
   }
 #else
@@ -89,6 +93,61 @@ class LittleFsArchiveStore : public IArchiveStore {
     return AppendStatus::Retryable;
 #endif
   }
+
+  // The maintenance SD probe reuses this instance-owned codec workspace so
+  // its archive verification cannot place a 16 KiB frame on loopTask's stack.
+  AppendStatus append_probe_record(uint64_t monotonic_us,
+                                   ArchiveIdentity& identity,
+                                   config::ConfigHash& hash) noexcept {
+#ifdef ARDUINO
+    probe_sample_ = acquisition::SampleRecord{};
+    probe_sample_.header.device_id.present = true;
+    probe_sample_.header.device_id.bytes[0U] = 0x53U;
+    probe_sample_.header.boot_id.present = true;
+    probe_sample_.header.boot_id.bytes[0U] = 0x44U;
+    probe_sample_.header.sequence = 0x53444750524F4245ULL;
+    probe_sample_.header.monotonic_us = monotonic_us;
+    probe_sample_.header.sensor = acquisition::SensorId::Mq4;
+    probe_sample_.header.stream = acquisition::StreamId::Organic;
+    probe_sample_.header.kind = acquisition::SampleKind::MqAdc;
+    probe_sample_.quality = acquisition::SampleQuality::Timeout;
+    probe_sample_.reason = acquisition::SampleReason::Timeout;
+    if (!RecordCodec::encode_sample(probe_sample_, scan_record_)) {
+      return AppendStatus::Invalid;
+    }
+    identity = scan_record_.identity;
+    hash = scan_record_.hash;
+    return append(scan_record_);
+#else
+    (void)monotonic_us;
+    (void)identity;
+    (void)hash;
+    return AppendStatus::Retryable;
+#endif
+  }
+
+#ifdef ARDUINO
+  bool verify_probe_file(fs::FS& filesystem, const char* path,
+                         const uint8_t* expected, std::size_t size,
+                         config::ConfigHash& actual_hash) noexcept {
+    actual_hash.fill(0U);
+    if (path == nullptr || expected == nullptr || size == 0U ||
+        size > copy_buffer_.size()) return false;
+    File input = filesystem.open(path, FILE_READ);
+    if (!input || input.size() != size) {
+      if (input) input.close();
+      return false;
+    }
+    const bool read = input.read(copy_buffer_.data(), size) ==
+                      static_cast<int>(size);
+    input.close();
+    if (!read || !std::equal(copy_buffer_.begin(), copy_buffer_.begin() + size,
+                             expected)) return false;
+    actual_hash = telemetry_contract::sha256(std::string_view(
+        reinterpret_cast<const char*>(copy_buffer_.data()), size));
+    return true;
+  }
+#endif
 
   AppendStatus append_gap(const GapRange& range) noexcept override {
 #ifdef ARDUINO
@@ -341,9 +400,26 @@ class LittleFsArchiveStore : public IArchiveStore {
 #ifdef ARDUINO
     if (filesystem_ == nullptr || !recovery_ready_) return false;
     File source = filesystem_->open(path_, FILE_READ);
-    if (!source || !read_record(source, scan_record_) ||
-        !same_identity(scan_record_.identity, identity) ||
-        scan_record_.hash != hash) {
+    if (!source) {
+      return false;
+    }
+    bool found = false;
+    while (source.available()) {
+      if (!read_record(source, scan_record_)) {
+        source.close();
+        return false;
+      }
+      if (same_identity(scan_record_.identity, identity)) {
+        if (scan_record_.hash != hash) {
+          source.close();
+          health_ = ArchiveHealth::Degraded;
+          return false;
+        }
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
       if (source) source.close();
       return false;
     }
@@ -356,17 +432,20 @@ class LittleFsArchiveStore : public IArchiveStore {
     }
     if (filesystem_->exists(temporary)) (void)filesystem_->remove(temporary);
     File destination = filesystem_->open(temporary, FILE_WRITE);
-    if (!destination || !source.seek(scan_record_.size, SeekSet)) {
+    if (!destination || !source.seek(0U, SeekSet)) {
       if (destination) destination.close();
       source.close();
       return false;
     }
     bool copied = true;
     while (source.available()) {
-      const int read_count = source.read(copy_buffer_.data(), copy_buffer_.size());
-      if (read_count <= 0 ||
-          destination.write(copy_buffer_.data(), static_cast<std::size_t>(read_count)) !=
-              static_cast<std::size_t>(read_count)) {
+      if (!read_record(source, scan_record_)) {
+        copied = false;
+        break;
+      }
+      if (same_identity(scan_record_.identity, identity)) continue;
+      if (destination.write(scan_record_.bytes.data(), scan_record_.size) !=
+          scan_record_.size) {
         copied = false;
         break;
       }
@@ -815,6 +894,7 @@ class LittleFsArchiveStore : public IArchiveStore {
   bool recovery_ready_{false};
   ImmutableRecordBytes scan_record_{};
   ImmutableRecordBytes lookup_record_{};
+  acquisition::SampleRecord probe_sample_{};
   ArchiveHealth health_{ArchiveHealth::Healthy};
 #endif
   const char* gap_path_{"/sigap/gaps.bin"};
