@@ -52,11 +52,27 @@ enum class NetworkOutcome : uint8_t {
 
 enum class TransportResult : uint8_t { Response, Timeout, Failed };
 
-struct HttpResponse final {
+inline constexpr std::size_t kMaxAckBodyBytes{512U};
+
+struct NetworkHttpResponse final {
   int status_code{0};
   uint32_t retry_after_ms{0U};
   bool ack_present{false};
   telemetry_archive::Ack ack{};
+  std::array<char, kMaxAckBodyBytes> body{};
+  std::size_t body_size{0U};
+  bool body_truncated{false};
+};
+
+enum class AckDecodeStatus : uint8_t { Valid, Invalid, TooLarge };
+
+class IAckDecoder {
+ public:
+  virtual ~IAckDecoder() = default;
+  // Decode only the bounded response body. The decoder must reject malformed
+  // JSON, wrong fields, and non-archive ACK variants without side effects.
+  virtual AckDecodeStatus decode(std::string_view body,
+                                 telemetry_archive::Ack& output) noexcept = 0;
 };
 
 class IMonotonicClock {
@@ -86,8 +102,9 @@ class IHttpTransport {
   // send these bytes exactly, without reparsing or reserializing them.
   virtual TransportResult post_batch(std::string_view body,
                                      std::string_view device_token,
+                                     uint16_t record_count,
                                      uint32_t timeout_ms,
-                                     HttpResponse& response) noexcept = 0;
+                                     NetworkHttpResponse& response) noexcept = 0;
 };
 
 enum class DeliveryStatus : uint8_t {
@@ -112,9 +129,10 @@ class NetworkWorker final {
   NetworkWorker(NetworkPolicy policy, IMonotonicClock& clock,
                 IRandomJitter& jitter, IWifiLink& wifi,
                 IHttpTransport& transport,
-                IImmutableBatchSource& batches) noexcept
+                IImmutableBatchSource& batches,
+                IAckDecoder* decoder = nullptr) noexcept
       : policy_(policy), clock_(clock), jitter_(jitter), wifi_(wifi),
-        transport_(transport), batches_(batches) {}
+        transport_(transport), batches_(batches), decoder_(decoder) {}
 
   bool begin(std::string_view device_token) noexcept {
     if (!policy_.valid() || device_token.empty() ||
@@ -153,10 +171,10 @@ class NetworkWorker final {
       }
     }
     state_ = NetworkState::Online;
-    HttpResponse response{};
+    NetworkHttpResponse response{};
     const auto result = transport_.post_batch(
         batch->exact_body(), std::string_view(token_.data(), token_size_),
-        policy_.request_timeout_ms, response);
+        batch->record_count, policy_.request_timeout_ms, response);
     if (result == TransportResult::Timeout) {
       schedule_retry(now, 0U);
       return NetworkOutcome::Timeout;
@@ -167,6 +185,14 @@ class NetworkWorker final {
     }
 
     if (response.status_code == 200) {
+      if (!response.ack_present && decoder_ != nullptr &&
+          response.body_size <= response.body.size() &&
+          !response.body_truncated) {
+        const auto decoded = decoder_->decode(
+            std::string_view(response.body.data(), response.body_size),
+            response.ack);
+        response.ack_present = decoded == AckDecodeStatus::Valid;
+      }
       if (!response.ack_present ||
           !telemetry_archive::ack_matches(*batch, response.ack)) {
         state_ = NetworkState::Backoff;
@@ -239,6 +265,7 @@ class NetworkWorker final {
   IWifiLink& wifi_;
   IHttpTransport& transport_;
   IImmutableBatchSource& batches_;
+  IAckDecoder* decoder_{nullptr};
   std::array<char, kMaxTokenBytes> token_{};
   std::size_t token_size_{0U};
   NetworkState state_{NetworkState::Offline};
