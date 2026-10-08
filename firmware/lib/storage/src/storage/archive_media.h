@@ -161,6 +161,12 @@ class LittleFsArchiveStore : public IArchiveStore {
     pending_bytes_ = 0U;
     gap_bytes_ = 0U;
     gap_repair_pending_ = false;
+    bool marked_recovery{false};
+    if (!recover_marked_quarantine(marked_recovery)) {
+      health_ = ArchiveHealth::Degraded;
+      return false;
+    }
+    if (marked_recovery) return recover();
     File gap_file = filesystem_->open(gap_path_, FILE_READ);
     bool gap_valid = true;
     if (gap_file) {
@@ -406,6 +412,10 @@ class LittleFsArchiveStore : public IArchiveStore {
   static constexpr uint32_t kGapMagic{0x53474150U};
   static constexpr uint8_t kGapVersion{1U};
   static constexpr uint32_t kGapMarker{0x47415021U};
+  static constexpr uint32_t kRecoveryMagic{0x53494752U};
+  static constexpr uint8_t kRecoveryVersion{1U};
+  static constexpr uint32_t kRecoveryMarker{0x52454356U};
+  static constexpr std::size_t kRecoveryFrameBytes{24U};
 
   bool validate_gap_file(File& file, uint64_t& valid_bytes) noexcept {
     const std::size_t size = file.size();
@@ -443,6 +453,9 @@ class LittleFsArchiveStore : public IArchiveStore {
     if (output == nullptr || suffix == nullptr || path_ == nullptr) return false;
     const int written = std::snprintf(output, size, "%s%s", path_, suffix);
     return written > 0 && static_cast<std::size_t>(written) < size;
+  }
+  bool recovery_marker_path(char* output, std::size_t size) const noexcept {
+    return make_related_path(output, size, ".recover");
   }
   static bool read_record(File& file, ImmutableRecordBytes& record) noexcept {
     record.bytes.fill(0U);
@@ -675,12 +688,114 @@ class LittleFsArchiveStore : public IArchiveStore {
     }
     return true;
   }
+
+  bool write_recovery_marker(uint8_t suffix,
+                             std::size_t valid_bytes) noexcept {
+    char marker_path[96]{};
+    if (filesystem_ == nullptr || !recovery_marker_path(marker_path,
+                                                         sizeof(marker_path))) {
+      return false;
+    }
+    std::array<uint8_t, kRecoveryFrameBytes> frame{};
+    write_u32(frame.data(), kRecoveryMagic);
+    frame[4U] = kRecoveryVersion;
+    frame[5U] = suffix;
+    write_u64(frame.data() + 6U, static_cast<uint64_t>(valid_bytes));
+    write_u32(frame.data() + 14U, archive_crc32(frame.data(), 14U));
+    write_u32(frame.data() + 18U, kRecoveryMarker);
+    File file = filesystem_->open(marker_path, FILE_WRITE);
+    if (!file) return false;
+    const bool written = file.write(frame.data(), frame.size()) ==
+                         static_cast<int>(frame.size());
+    if (written) file.flush();
+    file.close();
+    return written;
+  }
+
+  bool recover_marked_quarantine(bool& marker_found) noexcept {
+    marker_found = false;
+    char marker_path[96]{};
+    if (filesystem_ == nullptr || !recovery_marker_path(marker_path,
+                                                         sizeof(marker_path))) {
+      return false;
+    }
+    File marker = filesystem_->open(marker_path, FILE_READ);
+    if (!marker) return true;
+    marker_found = true;
+    if (marker.size() != kRecoveryFrameBytes) {
+      marker.close();
+      return false;
+    }
+    std::array<uint8_t, kRecoveryFrameBytes> frame{};
+    const bool read_ok = marker.read(frame.data(), frame.size()) ==
+                         static_cast<int>(frame.size());
+    marker.close();
+    if (!read_ok || read_u32(frame.data()) != kRecoveryMagic ||
+        frame[4U] != kRecoveryVersion || frame[5U] >= 4U ||
+        read_u32(frame.data() + 14U) != archive_crc32(frame.data(), 14U) ||
+        read_u32(frame.data() + 18U) != kRecoveryMarker) {
+      return false;
+    }
+    char quarantine[64]{};
+    const int written = std::snprintf(quarantine, sizeof(quarantine), "%s.tail%u",
+                                      path_, static_cast<unsigned>(frame[5U]));
+    const std::size_t valid_bytes = static_cast<std::size_t>(
+        read_u64(frame.data() + 6U));
+    if (written <= 0 || static_cast<std::size_t>(written) >= sizeof(quarantine) ||
+        !filesystem_->exists(quarantine) ||
+        !copy_valid_prefix(quarantine, path_, valid_bytes) ||
+        !verify_valid_prefix(path_, valid_bytes)) {
+      return false;
+    }
+    return filesystem_->remove(marker_path);
+  }
+
+  bool verify_valid_prefix(const char* source_path,
+                           std::size_t expected_bytes) noexcept {
+    if (filesystem_ == nullptr || source_path == nullptr ||
+        !filesystem_->exists(source_path)) return false;
+    File file = filesystem_->open(source_path, FILE_READ);
+    if (!file || file.size() != expected_bytes) {
+      if (file) file.close();
+      return false;
+    }
+    std::size_t measured{0U};
+    while (measured < expected_bytes) {
+      if (!read_record(file, lookup_record_)) {
+        file.close();
+        return false;
+      }
+      measured += lookup_record_.size;
+    }
+    file.close();
+    return measured == expected_bytes;
+  }
+
   bool quarantine_tail(std::size_t valid_bytes) noexcept {
     if (filesystem_ == nullptr) return false;
     char quarantine[64]{};
     if (!make_quarantine_path(quarantine, sizeof(quarantine))) return false;
-    if (!filesystem_->rename(path_, quarantine)) return false;
-    return copy_valid_prefix(quarantine, path_, valid_bytes);
+    unsigned suffix{0U};
+    bool suffix_found{false};
+    for (; suffix < 4U; ++suffix) {
+      char expected[64]{};
+      const int written = std::snprintf(expected, sizeof(expected), "%s.tail%u",
+                                        path_, suffix);
+      if (written > 0 && static_cast<std::size_t>(written) < sizeof(expected) &&
+          std::strcmp(expected, quarantine) == 0) {
+        suffix_found = true;
+        break;
+      }
+    }
+    if (!suffix_found || !filesystem_->rename(path_, quarantine)) return false;
+    if (!write_recovery_marker(static_cast<uint8_t>(suffix), valid_bytes)) {
+      (void)filesystem_->rename(quarantine, path_);
+      return false;
+    }
+    if (!copy_valid_prefix(quarantine, path_, valid_bytes)) return false;
+    // Leave the marker until the next recovery scan verifies the prefix.  A
+    // reset during this copy therefore replays from the quarantine source.
+    return true;
   }
   bool copy_valid_prefix(const char* source_path,
                          const char* destination_path,

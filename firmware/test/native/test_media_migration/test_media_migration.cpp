@@ -108,7 +108,7 @@ class Destination final : public IMigrationDestination {
   bool append_retry_{false};
 };
 
-class ReceiptJournal final : public IMigrationReceiptJournal {
+class ReceiptJournal : public IMigrationReceiptJournal {
  public:
   MigrationReceiptLoad load(MigrationReceipt& output) noexcept override {
     if (!present_) return MigrationReceiptLoad::NotFound;
@@ -136,6 +136,86 @@ class ReceiptJournal final : public IMigrationReceiptJournal {
  private:
   MigrationReceipt receipt_{};
   bool present_{false};
+};
+
+class TwoRecordSource final : public IMigrationSource {
+ public:
+  TwoRecordSource(const ImmutableRecordBytes& first,
+                  const ImmutableRecordBytes& second) noexcept
+      : records_{first, second} {}
+
+  bool peek(ImmutableRecordBytes& output) noexcept override {
+    if (cursor_ >= records_.size()) return false;
+    output = records_[cursor_];
+    return true;
+  }
+
+  bool reclaim(const MigrationReceipt& receipt) noexcept override {
+    if (cursor_ >= records_.size() ||
+        !same_archive_identity(receipt.identity, records_[cursor_].identity) ||
+        receipt.hash != records_[cursor_].hash) return false;
+    ++cursor_;
+    return true;
+  }
+
+  bool contains(const ArchiveIdentity& identity,
+                const std::array<uint8_t, 32U>& hash) noexcept override {
+    for (std::size_t index = cursor_; index < records_.size(); ++index) {
+      if (same_archive_identity(identity, records_[index].identity) &&
+          hash == records_[index].hash) return true;
+    }
+    return false;
+  }
+
+  std::size_t cursor() const noexcept { return cursor_; }
+
+ private:
+  std::array<ImmutableRecordBytes, 2U> records_{};
+  std::size_t cursor_{0U};
+};
+
+class TwoRecordDestination final : public IMigrationDestination {
+ public:
+  AppendStatus append(const ImmutableRecordBytes& value) noexcept override {
+    record_ = value;
+    present_ = true;
+    return AppendStatus::Durable;
+  }
+
+  bool verify(const ArchiveIdentity& identity,
+              const std::array<uint8_t, 32U>& hash) noexcept override {
+    return present_ && same_archive_identity(identity, record_.identity) &&
+           hash == record_.hash;
+  }
+
+  bool checkpoint(uint64_t& generation) noexcept override {
+    generation = ++generation_;
+    return true;
+  }
+
+  bool contains(const ArchiveIdentity& identity,
+                const std::array<uint8_t, 32U>& hash) noexcept override {
+    return verify(identity, hash);
+  }
+
+ private:
+  ImmutableRecordBytes record_{};
+  uint64_t generation_{0U};
+  bool present_{false};
+};
+
+class ClearFailOnceJournal final : public ReceiptJournal {
+ public:
+  bool clear(const MigrationReceipt& value) noexcept override {
+    if (fail_once_) {
+      fail_once_ = false;
+      return false;
+    }
+    return ReceiptJournal::clear(value);
+  }
+
+ private:
+  bool fail_once_{true};
 };
 
 void test_budget_prevents_unbounded_migration() {
@@ -223,6 +303,36 @@ void test_migration_reports_estimated_io_budget() {
   TEST_ASSERT_TRUE(migration.io_bytes_last_poll() > value.size);
 }
 
+void test_reclaimed_receipt_does_not_resurrect_source_after_restart() {
+  const auto first = record(6U);
+  const auto second = record(7U);
+  TwoRecordSource source(first, second);
+  TwoRecordDestination destination;
+  ClearFailOnceJournal journal;
+
+  {
+    ArchiveMediaMigration migration(source, destination,
+                                    ArchiveMedia::LittleFs,
+                                    ArchiveMedia::Sd, {}, &journal);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(MigrationStatus::Retryable),
+                          static_cast<int>(migration.migrate_one()));
+    TEST_ASSERT_EQUAL_UINT32(1U, static_cast<uint32_t>(source.cursor()));
+  }
+
+  // The destination is durable and the source has advanced past the receipt,
+  // but the clear frame was interrupted.  A recreated migration must clear
+  // only that receipt and leave the next source record pending.
+  ArchiveMediaMigration restarted(source, destination,
+                                  ArchiveMedia::LittleFs,
+                                  ArchiveMedia::Sd, {}, &journal);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(MigrationStatus::Durable),
+                        static_cast<int>(restarted.migrate_one()));
+  TEST_ASSERT_EQUAL_UINT32(1U, static_cast<uint32_t>(source.cursor()));
+  ImmutableRecordBytes pending{};
+  TEST_ASSERT_TRUE(source.peek(pending));
+  TEST_ASSERT_EQUAL_UINT64(7U, pending.identity.sequence);
+}
+
 }  // namespace
 
 int main() {
@@ -232,5 +342,6 @@ int main() {
   RUN_TEST(test_checkpoint_retry_preserves_source_and_receipt_is_not_faked);
   RUN_TEST(test_checkpoint_receipt_reconstructs_after_runtime_restart);
   RUN_TEST(test_migration_reports_estimated_io_budget);
+  RUN_TEST(test_reclaimed_receipt_does_not_resurrect_source_after_restart);
   return UNITY_END();
 }
