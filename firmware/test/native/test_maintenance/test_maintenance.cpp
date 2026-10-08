@@ -7,6 +7,8 @@
 #include <unity.h>
 
 #include "maintenance/maintenance.h"
+#include "maintenance/storage_probe_response.h"
+#include <limits>
 #include "maintenance/runtime.h"
 #include "acquisition/profile_manager.h"
 #include "acquisition/profile_store.h"
@@ -132,6 +134,17 @@ void test_profile_lifecycle_commands_parse_as_explicit_steps() {
   TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandKind::ProfileCommit),
                         static_cast<int>(sink.last.kind));
   TEST_ASSERT_EQUAL_STRING("hx711_organic", sink.last.target.c_str());
+}
+
+void test_storage_sd_probe_command_is_bounded_and_explicit() {
+  FakeTransport transport{};
+  transport.input = "storage sd test\n";
+  FakeSink sink{};
+  MaintenanceService service(transport, sink);
+  drain(service, transport);
+  TEST_ASSERT_EQUAL_UINT32(1U, sink.calls);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandKind::StorageSdTest),
+                        static_cast<int>(sink.last.kind));
 }
 
 void test_service_polls_without_input_and_reports_disconnect_once() {
@@ -525,6 +538,23 @@ void test_config_numeric_and_calibration_arguments_are_typed() {
   TEST_ASSERT_EQUAL_STRING("organic", sink.last.target.c_str());
 }
 
+void test_response_fits_complete_sd_probe_with_uint64_capacity() {
+  std::array<uint8_t, 32U> hash{};
+  hash.fill(0xFFU);
+  const auto largest = std::numeric_limits<uint64_t>::max();
+  MaintenanceResponse response{};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),
+      static_cast<int>(append_sd_probe_pass(
+          response, "mmc1", 256U, hash, largest, largest, largest, largest)));
+  const std::string maximum = "18446744073709551615";
+  const std::string expected =
+      "sd=PASS\nbus=mmc1\nn=256\nhash=" + std::string(64U, 'f') +
+      "\nus=" + maximum + "\nt=" + maximum + "\nu=" + maximum +
+      "\nf=" + maximum + "\nOK\n";
+  TEST_ASSERT_EQUAL_STRING(expected.c_str(), response.c_str());
+  TEST_ASSERT_TRUE(response.size() <= kMaxResponseBytes);
+}
+
 void test_response_redacts_secret_and_stays_bounded() {
   MaintenanceResponse response;
   TEST_ASSERT_TRUE(response.append_secret("token", "super-secret"));
@@ -600,6 +630,7 @@ void setup() {
   UNITY_BEGIN();
   RUN_TEST(test_fragmented_input_is_buffered_until_line_end);
   RUN_TEST(test_profile_lifecycle_commands_parse_as_explicit_steps);
+  RUN_TEST(test_storage_sd_probe_command_is_bounded_and_explicit);
   RUN_TEST(test_service_polls_without_input_and_reports_disconnect_once);
   RUN_TEST(test_disconnect_discards_partial_parser_line);
   RUN_TEST(test_profile_import_round_trip_uses_real_router_and_explicit_activation);
@@ -611,6 +642,7 @@ void setup() {
   RUN_TEST(test_oversized_command_is_rejected_and_parser_recovers);
   RUN_TEST(test_unknown_empty_and_invalid_numeric_commands_are_explicit);
   RUN_TEST(test_config_numeric_and_calibration_arguments_are_typed);
+  RUN_TEST(test_response_fits_complete_sd_probe_with_uint64_capacity);
   RUN_TEST(test_response_redacts_secret_and_stays_bounded);
   RUN_TEST(test_parser_failure_does_not_stop_later_commands);
   RUN_TEST(test_command_router_keeps_draft_isolated_and_redacts_status);

@@ -111,6 +111,7 @@ const char* command_name(CommandKind command) noexcept {
     case CommandKind::ModelCommit: return "model.commit";
     case CommandKind::ModelCancel: return "model.cancel";
     case CommandKind::ModelRollback: return "model.rollback";
+    case CommandKind::StorageSdTest: return "storage.sd.test";
     case CommandKind::Reboot: return "reboot";
     case CommandKind::Unknown: break;
   }
@@ -291,6 +292,13 @@ bool MaintenanceParser::emit_line(ParseEvent& event) noexcept {
       command.kind = CommandKind::SecretClear;
       valid = copy_token(line_.data(), tokens[2], command.value) &&
               command.value.view() == "CONFIRM";
+    } else {
+      valid = false;
+    }
+  } else if (equals(line_.data(), tokens[0], "storage")) {
+    if (count == 3U && equals(line_.data(), tokens[1], "sd") &&
+        equals(line_.data(), tokens[2], "test")) {
+      command.kind = CommandKind::StorageSdTest;
     } else {
       valid = false;
     }

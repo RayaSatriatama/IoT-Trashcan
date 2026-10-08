@@ -6,6 +6,9 @@
 namespace sigap::build {
 
 inline constexpr char kBoardProfile[] = "n16r8";
+// Bounded source/build identity used by boot metadata. This is not a
+// scientific model version and is never used as a calibration provenance.
+inline constexpr char kFirmwareBuildId[] = "sigap-task6";
 inline constexpr uint32_t kConfigSchemaVersion{1};
 inline constexpr uint32_t kTelemetrySchemaVersion{3};
 inline constexpr uint16_t kMaxRecordsPerBatch{128};

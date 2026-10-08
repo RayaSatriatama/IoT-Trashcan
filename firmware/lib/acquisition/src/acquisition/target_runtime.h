@@ -526,6 +526,12 @@ class TargetDs18b20Reader final : public IDs18b20Reader {
     result.temperature_centi_c = static_cast<int32_t>(scratchpad.raw_temperature) *
                                  625 / 100;
     result.conversion_complete = true;
+    if (result.identity_valid) {
+      result.wire_evidence = true;
+      result.rom = last_rom_;
+      result.scratchpad = last_scratchpad_;
+      result.resolution_bits = ds18b20_resolution_from_config(scratchpad.config);
+    }
     return result;
   }
 
@@ -538,6 +544,7 @@ class TargetDs18b20Reader final : public IDs18b20Reader {
     write_byte(0xbeU);  // READ SCRATCHPAD
     std::array<uint8_t, 9> scratchpad{};
     for (uint8_t& byte : scratchpad) byte = read_byte();
+    last_scratchpad_ = scratchpad;
     (void)parse_ds18b20_scratchpad(scratchpad, decoded);
     return true;
   }
@@ -548,6 +555,7 @@ class TargetDs18b20Reader final : public IDs18b20Reader {
     write_byte(0x33U);  // READ ROM
     std::array<uint8_t, 8> rom{};
     for (uint8_t& byte : rom) byte = read_byte();
+    last_rom_ = rom;
     return ds18b20_crc8(rom.data(), 7U) == rom[7] && rom == expected_rom_;
   }
 
@@ -616,6 +624,8 @@ class TargetDs18b20Reader final : public IDs18b20Reader {
   uint8_t data_pin_;
   const Ds18b20Profile* profile_{nullptr};
   std::array<uint8_t, 8> expected_rom_{};
+  std::array<uint8_t, 8> last_rom_{};
+  std::array<uint8_t, 9> last_scratchpad_{};
   bool expected_rom_valid_{false};
   bool configured_{false};
   bool conversion_requested_{false};

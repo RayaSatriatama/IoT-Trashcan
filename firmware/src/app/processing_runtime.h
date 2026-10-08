@@ -38,6 +38,20 @@ class ProcessingRuntime final : public acquisition::ISampleObserver {
   using Handoff = processing::EvaluatedResultRing<ResultEnvelope,
                                                    kResultHandoffCapacity>;
 
+  // A processing cycle can contain several kilobyte-scale typed values
+  // (profiles, snapshots, results, and the handoff envelope).  Keep those
+  // values in one instance-owned workspace so the Arduino loop task does not
+  // need to reserve them on its 8 KiB stack.  The workspace is reused for
+  // each stream and never aliases the logger-facing acquisition handoff.
+  struct CycleWorkspace final {
+    processing::ProcessingProfiles profiles{};
+    processing::ProcessingSnapshot snapshot{};
+    models::FisModelProfile fis{};
+    models::SafetyModelProfile safety{};
+    Pipeline::Workspace pipeline{};
+    ResultEnvelope envelope{};
+  };
+
   bool begin(const config::AppConfig& active,
              const acquisition::ConfigRef& config_ref,
              acquisition::SequenceAllocator& sequence,
@@ -75,7 +89,7 @@ class ProcessingRuntime final : public acquisition::ISampleObserver {
     safety_profile_ = nullptr;
     period_us_ = 0U;
     next_due_us_ = 0U;
-    window_ = processing::SampleWindow<kWindowCapacity>{};
+    window_.clear();
     retained_count_ = 0U;
     safety_evaluator_.reset();
   }
@@ -139,7 +153,7 @@ class ProcessingRuntime final : public acquisition::ISampleObserver {
     // Keep the latest attempt between cycles: slower channels may still be
     // fresh. Quality, age, and profile identity are checked on every cycle.
     // begin()/disable() clear this cache; a newer failed attempt replaces READY.
-    window_ = processing::SampleWindow<kWindowCapacity>{};
+    window_.clear();
     ++cycles_completed_;
   }
 
@@ -210,10 +224,11 @@ class ProcessingRuntime final : public acquisition::ISampleObserver {
            processing::same_config_ref(sample.header.config_ref, config_ref_);
   }
 
-  static processing::ProcessingProfiles capture_profiles(
+  static void capture_profiles(
       acquisition::StreamId stream,
-      const acquisition::TargetProfileSet& source) noexcept {
-    processing::ProcessingProfiles profiles{};
+      const acquisition::TargetProfileSet& source,
+      processing::ProcessingProfiles& profiles) noexcept {
+    profiles = {};
     const std::size_t index = stream_index(stream);
     if (index < 3U && source.hx711[index] != nullptr) {
       profiles.hx711 = *source.hx711[index];
@@ -249,7 +264,6 @@ class ProcessingRuntime final : public acquisition::ISampleObserver {
         profiles.mq_adc_present[mq_index] = true;
       }
     }
-    return profiles;
   }
 
   void evaluate_cycle(uint64_t cycle_started_us) noexcept {
@@ -257,7 +271,7 @@ class ProcessingRuntime final : public acquisition::ISampleObserver {
     // processing window only at cycle evaluation. This keeps every acquired
     // record available to the logger observer while processing retains a
     // deterministic one-attempt view for each channel.
-    window_ = processing::SampleWindow<kWindowCapacity>{};
+    window_.clear();
     for (std::size_t index = 0U; index < retained_count_; ++index) {
       (void)window_.try_add(retained_[index]);
     }
@@ -266,17 +280,15 @@ class ProcessingRuntime final : public acquisition::ISampleObserver {
     for (const auto stream : {acquisition::StreamId::Organic,
                               acquisition::StreamId::Inorganic,
                               acquisition::StreamId::B3}) {
-      processing::ProcessingSnapshot snapshot{};
+      capture_profiles(stream, *profiles_, workspace_.profiles);
       const auto snapshot_status = processing::ProcessingSnapshot::capture(
           cycle_started_us, kMaximumSampleAgeUs, stream, config_ref_,
-          capture_profiles(stream, *profiles_), snapshot);
+          workspace_.profiles, workspace_.snapshot);
       if (snapshot_status != processing::ProcessingSnapshotStatus::Captured) {
         ++result_failures_;
         continue;
       }
 
-      models::FisModelProfile fis_snapshot{};
-      models::SafetyModelProfile safety_snapshot{};
       const models::FisModelProfile* fis = nullptr;
       const models::SafetyModelProfile* safety = nullptr;
       const std::size_t stream_slot = stream_index(stream);
@@ -284,17 +296,17 @@ class ProcessingRuntime final : public acquisition::ISampleObserver {
                                   ? fis_profiles_[stream_slot]
                                   : nullptr;
       if (cycle_fis != nullptr) {
-        fis_snapshot = *cycle_fis;
-        fis = &fis_snapshot;
+        workspace_.fis = *cycle_fis;
+        fis = &workspace_.fis;
       }
       if (safety_profile_ != nullptr && stream == acquisition::StreamId::B3) {
-        safety_snapshot = *safety_profile_;
-        safety = &safety_snapshot;
+        workspace_.safety = *safety_profile_;
+        safety = &workspace_.safety;
       }
 
-      Result result{};
-      const auto status = Pipeline::evaluate(window_, snapshot, fis, safety,
-                                             safety_evaluator_, result);
+      const auto status = Pipeline::evaluate(
+          window_, workspace_.snapshot, fis, safety, safety_evaluator_,
+          workspace_.pipeline, workspace_.envelope.result);
       if (status == processing::ProcessStatus::NoSources) continue;
       if (status != processing::ProcessStatus::Produced) {
         ++result_failures_;
@@ -302,13 +314,13 @@ class ProcessingRuntime final : public acquisition::ISampleObserver {
       }
 
       processing::ResultRecordFactory factory(*sequence_, record_context_);
-      ResultEnvelope envelope{};
-      if (factory.make(cycle_started_us, result, envelope) !=
+      if (factory.make(cycle_started_us, workspace_.envelope.result,
+                       workspace_.envelope) !=
           processing::ResultFactoryStatus::Produced) {
         ++result_failures_;
         continue;
       }
-      if (handoff_.try_push(envelope) !=
+      if (handoff_.try_push(workspace_.envelope) !=
           processing::ResultHandoffStatus::Enqueued) {
         ++result_failures_;
       }
@@ -340,6 +352,7 @@ class ProcessingRuntime final : public acquisition::ISampleObserver {
   processing::SampleWindow<kWindowCapacity> window_{};
   std::array<acquisition::SampleRecord, kChannelCapacity> retained_{};
   std::size_t retained_count_{0U};
+  CycleWorkspace workspace_{};
   safety::SafetyEvaluator safety_evaluator_{};
   Handoff handoff_{};
   uint64_t period_us_{0U};

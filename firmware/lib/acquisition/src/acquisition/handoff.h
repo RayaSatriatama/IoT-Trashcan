@@ -17,6 +17,10 @@ class SampleRing final {
   HandoffStatus try_push(const SampleRecord& record) noexcept {
     if (size_ == Capacity) {
       ++dropped_records_;
+      ++dropped_pending_count_;
+      if (!has_dropped_) first_dropped_ = record;
+      last_dropped_ = record;
+      has_dropped_ = true;
       return HandoffStatus::Full;
     }
     records_[tail_] = record;
@@ -33,7 +37,33 @@ class SampleRing final {
     return HandoffStatus::Dequeued;
   }
 
+  HandoffStatus try_peek(SampleRecord& record) const noexcept {
+    if (size_ == 0U) return HandoffStatus::Empty;
+    record = records_[head_];
+    return HandoffStatus::Dequeued;
+  }
+
+  HandoffStatus discard_front() noexcept {
+    if (size_ == 0U) return HandoffStatus::Empty;
+    head_ = (head_ + 1U) % Capacity;
+    --size_;
+    return HandoffStatus::Dequeued;
+  }
+
   uint64_t dropped_records() const noexcept { return dropped_records_; }
+  const SampleRecord* last_dropped() const noexcept {
+    return has_dropped_ ? &last_dropped_ : nullptr;
+  }
+  const SampleRecord* first_dropped() const noexcept {
+    return has_dropped_ ? &first_dropped_ : nullptr;
+  }
+  uint64_t dropped_pending_count() const noexcept {
+    return has_dropped_ ? dropped_pending_count_ : 0U;
+  }
+  void clear_last_dropped() noexcept {
+    has_dropped_ = false;
+    dropped_pending_count_ = 0U;
+  }
   std::size_t size() const noexcept { return size_; }
 
  private:
@@ -42,6 +72,10 @@ class SampleRing final {
   std::size_t tail_{0};
   std::size_t size_{0};
   uint64_t dropped_records_{0};
+  uint64_t dropped_pending_count_{0};
+  SampleRecord last_dropped_{};
+  SampleRecord first_dropped_{};
+  bool has_dropped_{false};
 };
 
 }  // namespace sigap::acquisition

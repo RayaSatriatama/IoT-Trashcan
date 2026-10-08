@@ -47,6 +47,10 @@ class SampleWindow final {
   constexpr bool empty() const noexcept { return size_ == 0U; }
   constexpr bool overflowed() const noexcept { return overflowed_; }
   static constexpr std::size_t capacity() noexcept { return Capacity; }
+  void clear() noexcept {
+    size_ = 0U;
+    overflowed_ = false;
+  }
   const acquisition::SampleRecord* at(std::size_t index) const noexcept {
     return index < size_ ? &samples_[index] : nullptr;
   }
@@ -99,14 +103,16 @@ class ProcessingSnapshot final {
     if (maximum_sample_age_us == 0U) {
       return ProcessingSnapshotStatus::InvalidWindow;
     }
-    ProcessingSnapshot candidate{};
-    candidate.present_ = true;
-    candidate.started_monotonic_us_ = started_monotonic_us;
-    candidate.maximum_sample_age_us_ = maximum_sample_age_us;
-    candidate.stream_ = stream;
-    candidate.config_ref_ = config_ref;
-    candidate.profiles_ = profiles;
-    output = candidate;
+    // Write the caller-owned snapshot directly.  Keeping a second complete
+    // snapshot here needlessly consumes the caller's stack while the
+    // processing pipeline is already holding bounded workspace state.
+    output = {};
+    output.present_ = true;
+    output.started_monotonic_us_ = started_monotonic_us;
+    output.maximum_sample_age_us_ = maximum_sample_age_us;
+    output.stream_ = stream;
+    output.config_ref_ = config_ref;
+    output.profiles_ = profiles;
     return ProcessingSnapshotStatus::Captured;
   }
   constexpr bool present() const noexcept { return present_; }
@@ -266,23 +272,23 @@ class SlotProcessor final {
     output = ProcessedResult<SourceCapacity>{};
     if (!snapshot.present()) return ProcessStatus::InvalidSnapshot;
     if (window.overflowed()) return ProcessStatus::WindowOverflow;
-    ProcessedResult<SourceCapacity> candidate{};
-    candidate.stream = snapshot.stream();
-    candidate.computed_monotonic_us = snapshot.started_monotonic_us();
-    candidate.config_ref = snapshot.config_ref();
-    initialize_unavailable(candidate.processed);
-    if (!collect_weight(window, snapshot, candidate) ||
-        !collect_fill(window, snapshot, candidate) ||
-        !collect_temperature(window, snapshot, candidate) ||
-        !collect_mq(window, snapshot, candidate)) {
+    output.stream = snapshot.stream();
+    output.computed_monotonic_us = snapshot.started_monotonic_us();
+    output.config_ref = snapshot.config_ref();
+    initialize_unavailable(output.processed);
+    if (!collect_weight(window, snapshot, output) ||
+        !collect_fill(window, snapshot, output) ||
+        !collect_temperature(window, snapshot, output) ||
+        !collect_mq(window, snapshot, output)) {
+      output = ProcessedResult<SourceCapacity>{};
       return ProcessStatus::SourceCapacityExceeded;
     }
-    if (!collect_profile_refs(snapshot, candidate.profile_refs)) {
+    if (!collect_profile_refs(snapshot, output.profile_refs)) {
+      output = ProcessedResult<SourceCapacity>{};
       return ProcessStatus::ProfileCapacityExceeded;
     }
-    normalize_weight(snapshot, candidate.processed);
-    if (candidate.source_sample_ids.empty()) return ProcessStatus::NoSources;
-    output = candidate;
+    normalize_weight(snapshot, output.processed);
+    if (output.source_sample_ids.empty()) return ProcessStatus::NoSources;
     return ProcessStatus::Produced;
   }
  private:
@@ -718,20 +724,32 @@ inline safety::HazardInputState to_hazard_input_state(
 template <typename FuzzyResult, typename SafetyResult,
           std::size_t SourceCapacity>
 struct EvaluatedResult;
+template <std::size_t SourceCapacity>
+struct ProcessingWorkspace final {
+  ProcessedResult<SourceCapacity> processed{};
+  fuzzy::FisInputs fis_inputs{};
+  safety::HazardInputFrame hazard_inputs{};
+  fuzzy::FisResult fuzzy_result{};
+  safety::SafetyResult safety_result{};
+};
 template <std::size_t WindowCapacity, std::size_t SourceCapacity>
 class ProcessingPipeline final {
  public:
   using FuzzyResult = fuzzy::FisResult;
   using SafetyResult = safety::SafetyResult;
   using Result = EvaluatedResult<FuzzyResult, SafetyResult, SourceCapacity>;
+  using Workspace = ProcessingWorkspace<SourceCapacity>;
+
   static ProcessStatus evaluate(
       const SampleWindow<WindowCapacity>& window,
       const ProcessingSnapshot& snapshot,
       const models::FisModelProfile* fis_profile,
       const models::SafetyModelProfile* safety_profile,
       safety::SafetyEvaluator& safety_evaluator,
+      Workspace& workspace,
       Result& output) noexcept {
-    ProcessedResult<SourceCapacity> processed{};
+    auto& processed = workspace.processed;
+    processed = {};
     const auto process_status =
         SlotProcessor<WindowCapacity, SourceCapacity>::process(
             window, snapshot, processed);
@@ -768,7 +786,8 @@ class ProcessingPipeline final {
         return ProcessStatus::ProfileCapacityExceeded;
       }
     }
-    fuzzy::FisInputs fis_inputs{};
+    auto& fis_inputs = workspace.fis_inputs;
+    fis_inputs = {};
     if (fis_profile != nullptr) {
       fis_inputs.count = fis_profile->input_count;
       if (fis_inputs.count > fis_inputs.values.size()) {
@@ -784,10 +803,13 @@ class ProcessingPipeline final {
                 : fuzzy::FisInput{to_fis_input_state(*metric), metric->value};
       }
     }
-    const models::FisModelProfile empty_fis{};
+    // The empty profile is immutable protocol state, not a per-call object.
+    static const models::FisModelProfile empty_fis{};
     const auto& fis = fis_profile != nullptr ? *fis_profile : empty_fis;
-    const auto fuzzy_result = fuzzy::MamdaniEvaluator::evaluate(fis, fis_inputs);
-    safety::HazardInputFrame hazard_inputs{};
+    workspace.fuzzy_result = fuzzy::MamdaniEvaluator::evaluate(fis, fis_inputs);
+
+    auto& hazard_inputs = workspace.hazard_inputs;
+    hazard_inputs = {};
     if (safety_profile != nullptr) {
       if (safety_profile->channel_count > hazard_inputs.values.size()) {
         output = Result{};
@@ -812,12 +834,24 @@ class ProcessingPipeline final {
                            : to_hazard_input_state(*metric);
       }
     }
-    const auto safety_result = safety_profile != nullptr
-                                    ? safety_evaluator.evaluate(
-                                          safety_profile, hazard_inputs)
-                                    : safety::SafetyResult{};
-    output = Result{processed, fuzzy_result, safety_result};
+    workspace.safety_result = safety_profile != nullptr
+                                  ? safety_evaluator.evaluate(safety_profile,
+                                                               hazard_inputs)
+                                  : safety::SafetyResult{};
+    output = Result{processed, workspace.fuzzy_result, workspace.safety_result};
     return ProcessStatus::Produced;
+  }
+
+  static ProcessStatus evaluate(
+      const SampleWindow<WindowCapacity>& window,
+      const ProcessingSnapshot& snapshot,
+      const models::FisModelProfile* fis_profile,
+      const models::SafetyModelProfile* safety_profile,
+      safety::SafetyEvaluator& safety_evaluator,
+      Result& output) noexcept {
+    Workspace workspace{};
+    return evaluate(window, snapshot, fis_profile, safety_profile,
+                    safety_evaluator, workspace, output);
   }
 };
 template <typename FuzzyResult, typename SafetyResult,
@@ -905,24 +939,23 @@ class ResultRecordFactory final {
     if (!sequence_.allocate(sequence)) {
       return ResultFactoryStatus::SequenceExhausted;
     }
-    ResultEnvelope<FuzzyResult, SafetyResult, SourceCapacity> candidate{};
-    candidate.header.device_id = context_.device_id;
-    candidate.header.boot_id = context_.boot_id;
-    candidate.header.sequence = sequence;
-    candidate.header.monotonic_us = monotonic_us;
-    candidate.header.config_ref = context_.config_ref;
-    candidate.header.time_quality = acquisition::TimeQuality::Unsynced;
+    output.header.device_id = context_.device_id;
+    output.header.boot_id = context_.boot_id;
+    output.header.sequence = sequence;
+    output.header.monotonic_us = monotonic_us;
+    output.header.recorded_at = {};
+    output.header.config_ref = context_.config_ref;
+    output.header.time_quality = acquisition::TimeQuality::Unsynced;
     if (context_.utc_source != nullptr) {
       int64_t epoch_ms{0};
       if (context_.utc_source->now_ms(epoch_ms)) {
-        candidate.header.recorded_at.available = true;
-        candidate.header.recorded_at.epoch_ms = epoch_ms;
-        candidate.header.time_quality =
+        output.header.recorded_at.available = true;
+        output.header.recorded_at.epoch_ms = epoch_ms;
+        output.header.time_quality =
             acquisition::TimeQuality::Synchronized;
       }
     }
-    candidate.result = result;
-    output = candidate;
+    output.result = result;
     return ResultFactoryStatus::Produced;
   }
  private:
@@ -947,6 +980,17 @@ class EvaluatedResultRing final {
   ResultHandoffStatus try_pop(Result& result) noexcept {
     if (size_ == 0U) return ResultHandoffStatus::Empty;
     result = results_[head_];
+    head_ = (head_ + 1U) % Capacity;
+    --size_;
+    return ResultHandoffStatus::Dequeued;
+  }
+  ResultHandoffStatus try_peek(Result& result) const noexcept {
+    if (size_ == 0U) return ResultHandoffStatus::Empty;
+    result = results_[head_];
+    return ResultHandoffStatus::Dequeued;
+  }
+  ResultHandoffStatus discard_front() noexcept {
+    if (size_ == 0U) return ResultHandoffStatus::Empty;
     head_ = (head_ + 1U) % Capacity;
     --size_;
     return ResultHandoffStatus::Dequeued;

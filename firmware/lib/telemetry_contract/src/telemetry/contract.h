@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -40,9 +41,9 @@ struct Uint64Decimal final {
 
 inline bool is_canonical_uint64(std::string_view value) noexcept {
   if (value.empty() || (value.size() > 1U && value.front() == '0') || value.size() > 20U) return false;
-  for (const char character : value) {
-    if (character < '0' || character > '9') return false;
-  }
+  if (!std::all_of(value.begin(), value.end(), [](char character) {
+        return character >= '0' && character <= '9';
+      })) return false;
   if (value.size() < 20U) return true;
   constexpr std::string_view kMaximum{"18446744073709551615"};
   return value <= kMaximum;

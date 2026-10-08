@@ -1,15 +1,191 @@
+#include "maintenance/storage_probe_response.h"
 #include "sigap_app.h"
 
+#include <array>
+#include <cstdio>
+#include <string_view>
+
 #include "sigap/board/board_memory.h"
+#include "sigap/board/sd_transport.h"
 #include "sigap/build/build_config.h"
 #include "acquisition/provenance.h"
 #include "acquisition/arduino_adapters.h"
 
 #ifdef ARDUINO
 #include <Arduino.h>
+#include <LittleFS.h>
+#include <esp_system.h>
+#include <esp_timer.h>
+#ifdef SIGAP_USE_SD
+#ifdef SIGAP_SD_TRANSPORT_SDMMC_1BIT
+#include <SD_MMC.h>
+#else
+#include <SD.h>
+#include <SPI.h>
+#endif
+#endif
+#endif
+#ifdef ARDUINO
+#include "telemetry/sha256.h"
 #endif
 
 namespace sigap {
+
+#ifdef ARDUINO
+namespace {
+uint8_t reset_reason_code() noexcept {
+  switch (esp_reset_reason()) {
+    case ESP_RST_POWERON: return 1U;
+    case ESP_RST_BROWNOUT: return 2U;
+    case ESP_RST_TASK_WDT:
+    case ESP_RST_WDT:
+    case ESP_RST_INT_WDT: return 3U;
+    case ESP_RST_SW: return 4U;
+    default: return 0U;
+  }
+}
+
+#ifdef SIGAP_USE_SD
+bool sd_transport_pins_configured{false};
+bool sd_transport_mounted{false};
+
+bool begin_sd_transport() noexcept {
+  const auto& policy = board::kSdTransportPolicy;
+#ifdef SIGAP_SD_TRANSPORT_SDMMC_1BIT
+  // Arduino-ESP32 requires setPins() before the first SD_MMC.begin() only.
+  // The maintenance probe may run after setup has mounted the same singleton;
+  // repeating setPins() then fails and falsely reports a media outage.
+  if (!sd_transport_pins_configured) {
+    SD_MMC.setPins(policy.clk, policy.cmd_or_miso, policy.d0_or_mosi);
+    sd_transport_pins_configured = true;
+  }
+  if (sd_transport_mounted) return true;
+  sd_transport_mounted = SD_MMC.begin(
+      policy.mount_point, policy.mode_1bit, policy.format_if_mount_failed,
+      SDMMC_FREQ_DEFAULT, policy.max_files);
+  return sd_transport_mounted;
+#else
+  if (sd_transport_mounted) return true;
+  SPI.begin(policy.clk, policy.cmd_or_miso, policy.d0_or_mosi, policy.cs);
+  sd_transport_mounted = SD.begin(policy.cs, SPI, policy.spi_frequency_hz);
+  return sd_transport_mounted;
+#endif
+}
+
+fs::FS& sd_filesystem() noexcept {
+#ifdef SIGAP_SD_TRANSPORT_SDMMC_1BIT
+  return SD_MMC;
+#else
+  return SD;
+#endif
+}
+
+uint64_t sd_total_bytes() noexcept {
+#ifdef SIGAP_SD_TRANSPORT_SDMMC_1BIT
+  return SD_MMC.totalBytes();
+#else
+  return SD.totalBytes();
+#endif
+}
+
+uint64_t sd_used_bytes() noexcept {
+#ifdef SIGAP_SD_TRANSPORT_SDMMC_1BIT
+  return SD_MMC.usedBytes();
+#else
+  return SD.usedBytes();
+#endif
+}
+#endif
+}  // namespace
+
+maintenance::CommandStatus ArduinoSdProbe::run_sd_probe(
+    maintenance::MaintenanceResponse& response) noexcept {
+#ifdef SIGAP_USE_SD
+  static constexpr std::array<uint8_t, 256U> kProbeBytes = [] {
+    std::array<uint8_t, 256U> value{};
+    for (std::size_t index = 0U; index < value.size(); ++index) {
+      value[index] = static_cast<uint8_t>(index ^ 0x5AU);
+    }
+    return value;
+  }();
+  constexpr const char* kPath = "/sigap/task6_sd_probe.bin";
+  const int64_t started_us = esp_timer_get_time();
+  if (!begin_sd_transport()) {
+    return maintenance::CommandStatus::Rejected;
+  }
+  fs::FS& sd = sd_filesystem();
+  bool archive_verified = false;
+  if (archive_store_ != nullptr) {
+    if (archive_quota_bytes_ == 0U ||
+        !archive_store_->begin(sd, archive_quota_bytes_)) {
+      return maintenance::CommandStatus::Failed;
+    }
+    archive_identity_ = storage::ArchiveIdentity{};
+    archive_hash_.fill(0U);
+    if (archive_store_->append_probe_record(
+            static_cast<uint64_t>(started_us < 0 ? 0 : started_us),
+            archive_identity_, archive_hash_) !=
+        storage::AppendStatus::Durable) {
+      return maintenance::CommandStatus::Failed;
+    }
+    // Re-open and recover the same store to prove the archive frame survived
+    // the filesystem boundary, then remove only this probe record.
+    archive_verified = archive_store_->begin(sd, archive_quota_bytes_) &&
+                       archive_store_->contains(archive_identity_, archive_hash_) &&
+                       archive_store_->reclaim_pending(archive_identity_,
+                                                       archive_hash_) &&
+                       !archive_store_->contains(archive_identity_, archive_hash_);
+    if (!archive_verified) return maintenance::CommandStatus::Failed;
+  }
+  (void)sd.remove(kPath);
+  File output = sd.open(kPath, FILE_WRITE);
+  if (!output) return maintenance::CommandStatus::Failed;
+  const bool written = output.write(kProbeBytes.data(), kProbeBytes.size()) ==
+                       kProbeBytes.size();
+  if (written) output.flush();
+  const bool flushed = written;
+  output.close();
+  if (!flushed) {
+    (void)sd.remove(kPath);
+    return maintenance::CommandStatus::Failed;
+  }
+  File input = sd.open(kPath, FILE_READ);
+  if (!input || input.size() != kProbeBytes.size()) {
+    if (input) input.close();
+    (void)sd.remove(kPath);
+    return maintenance::CommandStatus::Failed;
+  }
+  input.close();
+  const auto expected_hash = telemetry_contract::sha256(std::string_view(
+      reinterpret_cast<const char*>(kProbeBytes.data()), kProbeBytes.size()));
+  config::ConfigHash actual_hash{};
+  const bool hash_match = archive_store_ != nullptr &&
+                          archive_store_->verify_probe_file(
+                              sd, kPath, kProbeBytes.data(), kProbeBytes.size(),
+                              actual_hash) &&
+                          expected_hash == actual_hash;
+  const bool removed = sd.remove(kPath);
+  if (!hash_match || !removed) return maintenance::CommandStatus::Failed;
+  const uint64_t total_bytes = sd_total_bytes();
+  const uint64_t used_bytes = sd_used_bytes();
+  const uint64_t free_bytes = total_bytes >= used_bytes
+                                  ? total_bytes - used_bytes
+                                  : 0U;
+
+  const int64_t ended_us = esp_timer_get_time();
+  return maintenance::append_sd_probe_pass(
+      response,
+      board::kSdTransportPolicy.transport == board::SdTransport::SdMmc1Bit
+          ? "mmc1" : "spi",
+      static_cast<uint16_t>(kProbeBytes.size()), actual_hash,
+      ended_us >= started_us ? static_cast<uint64_t>(ended_us - started_us) : 0U,
+      total_bytes, used_bytes, free_bytes, archive_verified);
+#else
+  (void)response;
+  return maintenance::CommandStatus::Rejected;
+#endif
+}
+#endif
 
 SigapApp::SigapApp() noexcept
     : config_manager_(config_store_,
@@ -24,16 +200,42 @@ SigapApp::SigapApp() noexcept
                        &audit_ring_),
       acquisition_(config_manager_, record_factory_, board::kN16R8Pins,
                    profiles_),
+      archive_store_(sd_store_, littlefs_store_),
+      migration_source_(littlefs_store_, storage::ArchiveMedia::LittleFs),
+      migration_destination_(&sd_store_, storage::ArchiveMedia::Sd),
+      media_migration_(migration_source_, migration_destination_,
+                       storage::ArchiveMedia::LittleFs,
+                       storage::ArchiveMedia::Sd,
+                       storage::MigrationBudget{},
+#ifdef ARDUINO
+                       &migration_journal_),
+#else
+                       nullptr),
+#endif
       model_lifecycle_(model_persistence_,
                        models::ModelProfilePersistence::default_codec()),
       model_router_(model_lifecycle_,
                     models::ModelProfilePersistence::default_codec()),
       maintenance_router_(config_manager_, secret_store_, &profile_manager_,
                           &evidence_cache_, &reboot_controller_, &audit_ring_,
-                          &boot_identity_.boot_id, &model_router_),
+                          &boot_identity_.boot_id, &model_router_,
+#ifdef ARDUINO
+                          &sd_probe_),
+#else
+                          nullptr),
+#endif
       maintenance_service_(maintenance_transport_, maintenance_router_) {
+  sd_probe_.bind_archive_store(
+      sd_store_, config_manager_.active().storage.sd_pending_quota_bytes);
   profile_manager_.bind_runtime_profiles(profiles_);
   evidence_cache_.set_profiles(&profiles_);
+  archive_runtime_.set_store(&archive_store_);
+  archive_runtime_.set_media_migration(&media_migration_);
+  archive_runtime_.set_sequence_allocator(&boot_identity_.sequence);
+  batch_runtime_.bind(&archive_store_, &batch_store_, &ack_journal_);
+  archive_runtime_.set_event_context(record_context_.device_id,
+                                     record_context_.boot_id,
+                                     record_context_.config_ref);
   processing_runtime_.set_downstream_observer(&evidence_cache_);
   acquisition_.set_sample_observer(&processing_runtime_);
   acquisition_.set_calibration_state_provider(&maintenance_router_);
@@ -79,6 +281,10 @@ void SigapApp::setup() noexcept {
 #endif
   const config::ConfigBootResult boot_result = config_manager_.begin();
   (void)boot_result;
+#ifdef ARDUINO
+  sd_probe_.bind_archive_store(
+      sd_store_, config_manager_.active().storage.sd_pending_quota_bytes);
+#endif
   for (uint32_t target = 1U; target <= 13U; ++target) {
     (void)profile_manager_.load(
         static_cast<acquisition::ProfileTarget>(target));
@@ -112,6 +318,30 @@ void SigapApp::setup() noexcept {
     return;
   }
   record_context_.config_ref = ref;
+  archive_runtime_.set_event_context(record_context_.device_id,
+                                     record_context_.boot_id, ref);
+#ifdef ARDUINO
+  if (LittleFS.begin(false)) {
+    (void)migration_journal_.begin(LittleFS);
+    (void)littlefs_store_.begin(
+        LittleFS, config_manager_.active().storage.flash_pending_quota_bytes);
+    (void)batch_store_.begin(
+        LittleFS, config_manager_.active().storage.flash_pending_quota_bytes);
+    (void)ack_journal_.begin(LittleFS);
+  }
+#ifdef SIGAP_USE_SD
+  if (begin_sd_transport()) {
+    (void)sd_store_.begin(
+        sd_filesystem(), config_manager_.active().storage.sd_pending_quota_bytes);
+  }
+#endif
+  (void)archive_store_.recover();
+#else
+  (void)littlefs_store_.begin(
+      config_manager_.active().storage.flash_pending_quota_bytes);
+  (void)sd_store_.begin(
+      config_manager_.active().storage.sd_pending_quota_bytes);
+#endif
   const processing::ResultRecordContext result_context{
       record_context_.device_id,
       record_context_.boot_id,
@@ -119,18 +349,33 @@ void SigapApp::setup() noexcept {
       record_context_.utc_source,
   };
 #ifdef ARDUINO
+  uint64_t now_us{0U};
   const acquisition::ArduinoMonotonicClock clock{};
-  const uint64_t now_us = clock.now_us();
+  now_us = clock.now_us();
   (void)processing_runtime_.begin(config_manager_.active(), ref,
                                   boot_identity_.sequence, result_context,
                                   profiles_, now_us);
   (void)acquisition_.begin(config_manager_.active(), ref, now_us);
 #else
+  const uint64_t now_us{0U};
   (void)acquisition_.begin(config_manager_.active(), ref, 0U);
   (void)processing_runtime_.begin(config_manager_.active(), ref,
                                   boot_identity_.sequence, result_context,
                                   profiles_, 0U);
 #endif
+  if (record_context_.device_id.present) {
+    const auto metadata_status = archive_runtime_.append_boot_metadata(
+        now_us, build::kFirmwareBuildId,
+#ifdef ARDUINO
+        reset_reason_code()
+#else
+        0U
+#endif
+    );
+    if (metadata_status == storage::AppendStatus::Queued) {
+      (void)archive_runtime_.poll_storage();
+    }
+  }
 }
 
 // cppcheck-suppress unusedFunction
@@ -139,6 +384,9 @@ void SigapApp::loop() noexcept {
   const acquisition::ArduinoMonotonicClock clock{};
   const uint64_t now_us = clock.now_us();
   maintenance_service_.poll(now_us);
+  std::size_t audit_budget{2U};
+  while (audit_budget-- != 0U && archive_runtime_.drain_audit_events(audit_ring_)) {
+  }
   refresh_model_profiles();
   if (profile_generation_ != profile_manager_.generation()) {
     profile_generation_ = profile_manager_.generation();
@@ -147,7 +395,12 @@ void SigapApp::loop() noexcept {
     (void)acquisition_.refresh_profiles(now_us);
   }
   acquisition_.poll(now_us);
+  (void)archive_runtime_.drain_samples(acquisition_.handoff());
   processing_runtime_.poll(now_us);
+  (void)archive_runtime_.drain_results(processing_runtime_.handoff());
+  (void)archive_runtime_.poll_storage_slice(4U, 32U * 1024U);
+  (void)batch_runtime_.poll();
+  (void)archive_runtime_.poll_media_migration();
   maintenance_service_.poll(now_us);
 #ifdef ARDUINO
   if (reboot_controller_.consume_request()) {

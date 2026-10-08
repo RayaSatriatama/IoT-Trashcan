@@ -81,6 +81,7 @@ enum class CommandKind : std::uint8_t {
   ModelCommit,
   ModelCancel,
   ModelRollback,
+  StorageSdTest,
   Reboot,
 };
 
@@ -181,6 +182,12 @@ class IMaintenanceCommandSink {
                                 MaintenanceResponse& response) noexcept = 0;
   virtual void poll(std::uint64_t) noexcept {}
   virtual void transport_lost() noexcept {}
+};
+
+class IStorageTestProbe {
+ public:
+  virtual ~IStorageTestProbe() = default;
+  virtual CommandStatus run_sd_probe(MaintenanceResponse& response) noexcept = 0;
 };
 
 class IModelCommandHandler {

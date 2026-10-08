@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+
 #include "config/config_manager.h"
 #include "config/nvs_config_store.h"
 #include "acquisition/boot_identity.h"
@@ -14,8 +16,36 @@
 #include "processing_runtime.h"
 #include "models/model_lifecycle.h"
 #include "maintenance/model_runtime.h"
+#include "storage/archive_media.h"
+#include "archive_runtime.h"
+#include "telemetry_archive/ack_journal_store.h"
+#include "telemetry_archive/runtime.h"
 
 namespace sigap {
+
+#ifdef ARDUINO
+class ArduinoSdProbe final : public maintenance::IStorageTestProbe {
+ public:
+  void bind_archive_store(storage::SdArchiveStore& store,
+                          uint64_t quota_bytes) noexcept {
+    archive_store_ = &store;
+    archive_quota_bytes_ = quota_bytes;
+  }
+
+  maintenance::CommandStatus run_sd_probe(
+      maintenance::MaintenanceResponse& response) noexcept override;
+
+ private:
+  storage::SdArchiveStore* archive_store_{nullptr};
+  uint64_t archive_quota_bytes_{0U};
+  storage::ArchiveIdentity archive_identity_{};
+  config::ConfigHash archive_hash_{};
+
+};
+
+static_assert(sizeof(ArduinoSdProbe) <= 1024U,
+              "SD probe workspace must remain bounded and instance-owned");
+#endif
 
 class SigapApp final {
  public:
@@ -37,6 +67,17 @@ class SigapApp final {
   }
 
  private:
+#ifdef ARDUINO
+  using BatchStore = telemetry_archive::FsImmutableBatchStore;
+  using AckJournal = telemetry_archive::FsAckJournalStore;
+  using BatchRuntime = telemetry_archive::ArchiveBatchRuntime<
+      BatchStore, AckJournal>;
+#else
+  using BatchStore = telemetry_archive::MemoryImmutableBatchStore<8U>;
+  using AckJournal = telemetry_archive::MemoryAckJournalStore<8U>;
+  using BatchRuntime = telemetry_archive::ArchiveBatchRuntime<
+      BatchStore, AckJournal>;
+#endif
   config::NvsConfigStore config_store_{};
   config::ConfigManager config_manager_;
   provisioning::NvsSecretStore secret_store_{};
@@ -51,6 +92,23 @@ class SigapApp final {
   acquisition::ProfileManager profile_manager_;
   acquisition::AcquisitionFoundation acquisition_;
   ProcessingRuntime processing_runtime_{};
+  storage::LittleFsArchiveStore littlefs_store_{};
+  storage::SdArchiveStore sd_store_{};
+  storage::MediaFailoverStore archive_store_;
+  storage::ArchiveStoreMigrationSource migration_source_;
+  storage::ArchiveStoreMigrationDestination migration_destination_;
+#ifdef ARDUINO
+  storage::FsMigrationReceiptJournal migration_journal_{};
+#endif
+  storage::ArchiveMediaMigration media_migration_;
+  ArchiveRuntime archive_runtime_{};
+  BatchStore batch_store_{};
+#ifdef ARDUINO
+  AckJournal ack_journal_{};
+#else
+  AckJournal ack_journal_{};
+#endif
+  BatchRuntime batch_runtime_{};
   models::NvsModelProfilePersistence model_persistence_{};
   models::ModelProfileLifecycle model_lifecycle_;
   maintenance::ModelMaintenanceRouter model_router_;
@@ -66,6 +124,9 @@ class SigapApp final {
 #else
   maintenance::NullTransport maintenance_transport_{};
   maintenance::NullRebootController reboot_controller_{};
+#endif
+#ifdef ARDUINO
+  ArduinoSdProbe sd_probe_{};
 #endif
   maintenance::CommandRouter maintenance_router_;
   maintenance::MaintenanceService maintenance_service_;

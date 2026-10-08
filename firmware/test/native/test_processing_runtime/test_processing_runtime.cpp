@@ -354,13 +354,16 @@ void test_runtime_newest_failed_attempt_supersedes_retained_ready() {
 }
 
 void test_processing_resource_footprint_is_bounded() {
-  std::printf("memory ProcessingRuntime=%zu ProcessingSnapshot=%zu "
-              "ProcessedValues=%zu ResultEnvelope=%zu ModelLifecycle=%zu\\n",
-              sizeof(ProcessingRuntime), sizeof(processing::ProcessingSnapshot),
+  std::printf("memory ProcessingRuntime=%zu CycleWorkspace=%zu "
+              "ProcessingSnapshot=%zu ProcessedValues=%zu ResultEnvelope=%zu "
+              "ModelLifecycle=%zu\\n",
+              sizeof(ProcessingRuntime), sizeof(ProcessingRuntime::CycleWorkspace),
+              sizeof(processing::ProcessingSnapshot),
               sizeof(processing::ProcessedValues),
               sizeof(ProcessingRuntime::ResultEnvelope),
               sizeof(models::ModelProfileLifecycle));
-  TEST_ASSERT_TRUE(sizeof(ProcessingRuntime) < 20000U);
+  TEST_ASSERT_TRUE(sizeof(ProcessingRuntime::CycleWorkspace) <= 16000U);
+  TEST_ASSERT_TRUE(sizeof(ProcessingRuntime) <= 32000U);
   TEST_ASSERT_TRUE(sizeof(ProcessingRuntime::Handoff) < 20000U);
 }
 
