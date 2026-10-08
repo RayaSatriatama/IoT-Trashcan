@@ -17,7 +17,6 @@ function stateLabel(status: WifiStatus | null): string {
 }
 
 export function WifiSettingsDialog({ deviceId }: WifiSettingsDialogProps) {
-  const client = useMemo(() => new BleProvisioningClient(), []);
   const [open, setOpen] = useState(false);
   const [bleConnected, setBleConnected] = useState(false);
   const [status, setStatus] = useState<WifiStatus | null>(null);
@@ -27,6 +26,7 @@ export function WifiSettingsDialog({ deviceId }: WifiSettingsDialogProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
+  const client = useMemo(() => new BleProvisioningClient({ onConnectionChange: setBleConnected }), []);
 
   useEffect(() => () => client.close(), [client]);
 
