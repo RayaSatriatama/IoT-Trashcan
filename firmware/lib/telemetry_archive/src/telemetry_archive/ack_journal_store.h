@@ -611,7 +611,9 @@ class FsAckJournalStore final {
   bool quarantine_tail(std::size_t valid_bytes) noexcept {
     if (filesystem_ == nullptr) return false;
     char quarantine[96]{};
+    char marker_path[96]{};
     if (!make_quarantine_path(quarantine, sizeof(quarantine)) ||
+        !recovery_marker_path(marker_path, sizeof(marker_path)) ||
         filesystem_->exists(quarantine) ||
         !filesystem_->rename(path_, quarantine)) {
       return false;
@@ -623,7 +625,12 @@ class FsAckJournalStore final {
     // The marker and original source remain durable across a short write or
     // failed reopen.  The next boot repairs from that explicit transaction,
     // never from an arbitrary longest tail.
-    return copy_quarantine_prefix(valid_bytes);
+    // The copy has reached a complete framed boundary. Clear the recovery
+    // authority before returning so an append in this same runtime cannot be
+    // overwritten by the old quarantine on the next restart. If marker
+    // removal fails, leave it durable and force the caller to retry recovery.
+    if (!copy_quarantine_prefix(valid_bytes)) return false;
+    return filesystem_->remove(marker_path);
   }
   fs::FS* filesystem_{nullptr};
   const char* path_{nullptr};

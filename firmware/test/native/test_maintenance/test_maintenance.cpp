@@ -134,6 +134,17 @@ void test_profile_lifecycle_commands_parse_as_explicit_steps() {
   TEST_ASSERT_EQUAL_STRING("hx711_organic", sink.last.target.c_str());
 }
 
+void test_storage_sd_probe_command_is_bounded_and_explicit() {
+  FakeTransport transport{};
+  transport.input = "storage sd test\n";
+  FakeSink sink{};
+  MaintenanceService service(transport, sink);
+  drain(service, transport);
+  TEST_ASSERT_EQUAL_UINT32(1U, sink.calls);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandKind::StorageSdTest),
+                        static_cast<int>(sink.last.kind));
+}
+
 void test_service_polls_without_input_and_reports_disconnect_once() {
   FakeTransport transport{};
   FakeSink sink{};
@@ -600,6 +611,7 @@ void setup() {
   UNITY_BEGIN();
   RUN_TEST(test_fragmented_input_is_buffered_until_line_end);
   RUN_TEST(test_profile_lifecycle_commands_parse_as_explicit_steps);
+  RUN_TEST(test_storage_sd_probe_command_is_bounded_and_explicit);
   RUN_TEST(test_service_polls_without_input_and_reports_disconnect_once);
   RUN_TEST(test_disconnect_discards_partial_parser_line);
   RUN_TEST(test_profile_import_round_trip_uses_real_router_and_explicit_activation);

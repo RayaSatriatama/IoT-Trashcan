@@ -17,6 +17,7 @@ backend archive code, or migration 005.
 | migration work budget | `ArchiveMediaMigration` / `ArchiveRuntime`, records per loop | one bounded record step | instance-owned; retryable until verify, checkpoint, and reclaim succeed |
 | storage worker queue | `storage/storage_worker.h`, entries | target composition uses one owned frozen-frame slot; native fault tests exercise larger bounded queues; high-water and overflow observable | instance-owned; retryable until durable, terminal gap on invalid input |
 | ACK journal frame | `FsAckJournalStore`, bytes | fixed little-endian frame with CRC and generation-bound checkpoint | protocol constant; target recovery validates before state transition |
+| `storage sd test` probe | maintenance/SigapApp, bytes and elapsed microseconds | one 256-byte deterministic test file; no formatting; dedicated path removed after verification | explicit command on `SIGAP_USE_SD` target; requires authorized upload/reboot before physical execution |
 
 Calibration coefficients, capacity, and scientific model parameters remain
 typed versioned profiles. GPIO and bus mapping remain board/build constants.

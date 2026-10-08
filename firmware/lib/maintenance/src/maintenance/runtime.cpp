@@ -865,6 +865,10 @@ CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
       return models_ == nullptr
                  ? CommandStatus::Rejected
                  : models_->execute_model(command, now_us, response);
+    case CommandKind::StorageSdTest:
+      return storage_probe_ == nullptr
+                 ? CommandStatus::Rejected
+                 : storage_probe_->run_sd_probe(response);
     case CommandKind::Reboot:
       calibration_.abort();
       criteria_set_ = false;

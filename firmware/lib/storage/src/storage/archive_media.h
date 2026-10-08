@@ -743,10 +743,17 @@ class LittleFsArchiveStore : public IArchiveStore {
       (void)filesystem_->rename(quarantine, path_);
       return false;
     }
-    if (!copy_valid_prefix(quarantine, path_, valid_bytes)) return false;
-    // Leave the marker until the next recovery scan verifies the prefix.  A
-    // reset during this copy therefore replays from the quarantine source.
-    return true;
+    if (!copy_valid_prefix(quarantine, path_, valid_bytes) ||
+        !verify_valid_prefix(path_, valid_bytes)) {
+      return false;
+    }
+    // The copy is now verified and the replacement is authoritative. Keep
+    // the quarantine as forensic evidence, but retire the transaction marker
+    // before accepting new appends so a later restart cannot resurrect a
+    // legitimately reclaimed prefix.
+    char marker_path[96]{};
+    return recovery_marker_path(marker_path, sizeof(marker_path)) &&
+           filesystem_->remove(marker_path);
   }
   bool copy_valid_prefix(const char* source_path,
                          const char* destination_path,

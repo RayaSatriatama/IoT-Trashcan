@@ -1,5 +1,9 @@
 #include "sigap_app.h"
 
+#include <array>
+#include <cstdio>
+#include <string_view>
+
 #include "sigap/board/board_memory.h"
 #include "sigap/build/build_config.h"
 #include "acquisition/provenance.h"
@@ -9,10 +13,14 @@
 #include <Arduino.h>
 #include <LittleFS.h>
 #include <esp_system.h>
+#include <esp_timer.h>
 #ifdef SIGAP_USE_SD
 #include <SD.h>
 #include <SPI.h>
 #endif
+#endif
+#ifdef ARDUINO
+#include "telemetry/sha256.h"
 #endif
 
 namespace sigap {
@@ -31,6 +39,98 @@ uint8_t reset_reason_code() noexcept {
   }
 }
 }  // namespace
+
+maintenance::CommandStatus ArduinoSdProbe::run_sd_probe(
+    maintenance::MaintenanceResponse& response) noexcept {
+#ifdef SIGAP_USE_SD
+  static constexpr std::array<uint8_t, 256U> kProbeBytes = [] {
+    std::array<uint8_t, 256U> value{};
+    for (std::size_t index = 0U; index < value.size(); ++index) {
+      value[index] = static_cast<uint8_t>(index ^ 0x5AU);
+    }
+    return value;
+  }();
+  constexpr const char* kPath = "/sigap/task6_sd_probe.bin";
+  const int64_t started_us = esp_timer_get_time();
+  if (!SD.begin(board::kSdCs, SPI, 20'000'000U)) {
+    return maintenance::CommandStatus::Rejected;
+  }
+  (void)SD.remove(kPath);
+  File output = SD.open(kPath, FILE_WRITE);
+  if (!output) return maintenance::CommandStatus::Failed;
+  const bool written = output.write(kProbeBytes.data(), kProbeBytes.size()) ==
+                       kProbeBytes.size();
+  if (written) output.flush();
+  const bool flushed = written;
+  output.close();
+  if (!flushed) {
+    (void)SD.remove(kPath);
+    return maintenance::CommandStatus::Failed;
+  }
+  File input = SD.open(kPath, FILE_READ);
+  if (!input || input.size() != kProbeBytes.size()) {
+    if (input) input.close();
+    (void)SD.remove(kPath);
+    return maintenance::CommandStatus::Failed;
+  }
+  std::array<uint8_t, kProbeBytes.size()> readback{};
+  const bool read = input.read(readback.data(), readback.size()) ==
+                    static_cast<int>(readback.size());
+  input.close();
+  const auto expected_hash = telemetry_contract::sha256(std::string_view(
+      reinterpret_cast<const char*>(kProbeBytes.data()), kProbeBytes.size()));
+  const auto actual_hash = telemetry_contract::sha256(std::string_view(
+      reinterpret_cast<const char*>(readback.data()), readback.size()));
+  const bool hash_match = read && expected_hash == actual_hash &&
+                          readback == kProbeBytes;
+  const bool removed = SD.remove(kPath);
+  if (!hash_match || !removed) return maintenance::CommandStatus::Failed;
+  const uint64_t total_bytes = SD.totalBytes();
+  const uint64_t used_bytes = SD.usedBytes();
+  const uint64_t free_bytes = total_bytes >= used_bytes
+                                  ? total_bytes - used_bytes
+                                  : 0U;
+
+  char number[32]{};
+  const auto append_u64 = [&response, &number](const char* label,
+                                                uint64_t value) noexcept {
+    const int written = std::snprintf(number, sizeof(number), "%llu",
+                                       static_cast<unsigned long long>(value));
+    return written > 0 && response.append(label) &&
+           response.append(std::string_view(number, static_cast<std::size_t>(written)));
+  };
+  static constexpr char digits[] = "0123456789abcdef";
+  if (!response.append("sd_probe=PASS\n") ||
+      !append_u64("bytes=", readback.size()) ||
+      !response.append("\n") ||
+      !response.append("hash=") ) {
+    return maintenance::CommandStatus::Failed;
+  }
+  for (const uint8_t byte : actual_hash) {
+    char pair[2]{digits[byte >> 4U], digits[byte & 0x0FU]};
+    if (!response.append(std::string_view(pair, 2U))) {
+      return maintenance::CommandStatus::Failed;
+    }
+  }
+  const int64_t ended_us = esp_timer_get_time();
+  return response.append("\n") &&
+                 append_u64("elapsed_us=", ended_us >= started_us
+                                             ? static_cast<uint64_t>(ended_us - started_us)
+                                             : 0U) &&
+                 response.append("\n") &&
+                 append_u64("total_bytes=", total_bytes) &&
+                 response.append("\n") &&
+                 append_u64("used_bytes=", used_bytes) &&
+                 response.append("\n") &&
+                 append_u64("free_bytes=", free_bytes) &&
+                 response.append("\n")
+             ? maintenance::CommandStatus::Accepted
+             : maintenance::CommandStatus::Failed;
+#else
+  (void)response;
+  return maintenance::CommandStatus::Rejected;
+#endif
+}
 #endif
 
 SigapApp::SigapApp() noexcept
@@ -64,7 +164,12 @@ SigapApp::SigapApp() noexcept
                     models::ModelProfilePersistence::default_codec()),
       maintenance_router_(config_manager_, secret_store_, &profile_manager_,
                           &evidence_cache_, &reboot_controller_, &audit_ring_,
-                          &boot_identity_.boot_id, &model_router_),
+                          &boot_identity_.boot_id, &model_router_,
+#ifdef ARDUINO
+                          &sd_probe_),
+#else
+                          nullptr),
+#endif
       maintenance_service_(maintenance_transport_, maintenance_router_) {
   profile_manager_.bind_runtime_profiles(profiles_);
   evidence_cache_.set_profiles(&profiles_);

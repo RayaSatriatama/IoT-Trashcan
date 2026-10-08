@@ -30,6 +30,10 @@ inline constexpr std::size_t kBatchFrameHeaderChecksumOffset{120U};
 inline constexpr std::size_t kBatchFrameHeaderBytes{124U};
 inline constexpr std::size_t kBatchFrameTrailerBytes{4U};
 inline constexpr std::size_t kBatchIndexCapacity{64U};
+inline constexpr uint32_t kBatchRecoveryMagic{0x53474252U};
+inline constexpr uint8_t kBatchRecoveryVersion{1U};
+inline constexpr uint32_t kBatchRecoveryMarker{0x42544352U};
+inline constexpr std::size_t kBatchRecoveryFrameBytes{24U};
 
 enum class BatchStoreStatus : uint8_t { Durable, Retryable, LoggingBlocked, Invalid };
 enum class BatchStoreFault : uint8_t { None, ShortWrite, FlushFailure, CorruptTail };
@@ -268,12 +272,17 @@ class FsImmutableBatchStore final : public IImmutableBatchStore {
     if (filesystem_ == nullptr) return false;
     pending_bytes_ = 0U;
     index_count_ = 0U;
+    bool marked_recovery{false};
+    if (!recover_marked_tail(marked_recovery)) return false;
+    if (marked_recovery) return recover();
     File file = filesystem_->open(path_, FILE_READ);
     if (!file) {
       if (filesystem_->exists(path_)) return false;
-      if (!restore_from_quarantine()) return false;
-      file = filesystem_->open(path_, FILE_READ);
-      if (!file) return !filesystem_->exists(path_);
+      // Unmarked quarantine is forensic data only. A prior reclaim or an
+      // interrupted older generation must never be resurrected implicitly.
+      char quarantine[64]{};
+      if (!make_quarantine_path(quarantine, sizeof(quarantine))) return false;
+      return !filesystem_->exists(quarantine);
     }
     std::size_t valid_bytes = 0U;
     bool clean = true;
@@ -664,16 +673,40 @@ class FsImmutableBatchStore final : public IImmutableBatchStore {
       bytes[index] = static_cast<uint8_t>(value >> (index * 8U));
     }
   }
-  bool quarantine_tail(std::size_t valid_bytes) noexcept {
-    if (filesystem_ == nullptr) return false;
+  bool make_quarantine_path(char* output, std::size_t size) const noexcept {
+    if (output == nullptr || path_ == nullptr) return false;
+    const int written = std::snprintf(output, size, "%s.tail", path_);
+    return written > 0 && static_cast<std::size_t>(written) < size;
+  }
+  bool recovery_marker_path(char* output, std::size_t size) const noexcept {
+    if (output == nullptr || path_ == nullptr) return false;
+    const int written = std::snprintf(output, size, "%s.recover", path_);
+    return written > 0 && static_cast<std::size_t>(written) < size;
+  }
+  bool write_recovery_marker(std::size_t valid_bytes) noexcept {
+    char marker_path[64]{};
+    if (filesystem_ == nullptr ||
+        !recovery_marker_path(marker_path, sizeof(marker_path))) return false;
+    std::array<uint8_t, kBatchRecoveryFrameBytes> frame{};
+    put_u32(frame.data(), kBatchRecoveryMagic);
+    frame[4U] = kBatchRecoveryVersion;
+    put_u64(frame.data() + 6U, static_cast<uint64_t>(valid_bytes));
+    put_u32(frame.data() + 14U,
+            storage::archive_crc32(frame.data(), 14U));
+    put_u32(frame.data() + 18U, kBatchRecoveryMarker);
+    File marker = filesystem_->open(marker_path, FILE_WRITE);
+    if (!marker) return false;
+    const bool written = marker.write(frame.data(), frame.size()) ==
+                         static_cast<int>(frame.size());
+    if (written) marker.flush();
+    marker.close();
+    return written;
+  }
+  bool copy_quarantine_prefix(std::size_t valid_bytes) noexcept {
     char quarantine[64]{};
-    const int written = std::snprintf(quarantine, sizeof(quarantine),
-                                      "%s.tail", path_);
-    if (written <= 0 || static_cast<std::size_t>(written) >= sizeof(quarantine)) {
-      return false;
-    }
-    if (filesystem_->exists(quarantine)) return false;
-    if (!filesystem_->rename(path_, quarantine)) return false;
+    if (filesystem_ == nullptr ||
+        !make_quarantine_path(quarantine, sizeof(quarantine)) ||
+        !filesystem_->exists(quarantine)) return false;
     File source = filesystem_->open(quarantine, FILE_READ);
     File destination = filesystem_->open(path_, FILE_WRITE);
     if (!source || !destination) {
@@ -696,15 +729,51 @@ class FsImmutableBatchStore final : public IImmutableBatchStore {
     destination.flush();
     source.close();
     destination.close();
-    return copied && remaining == 0U;
+    return copied && remaining == 0U &&
+           destination_size_matches(path_, valid_bytes);
   }
-  bool restore_from_quarantine() noexcept {
+  bool recover_marked_tail(bool& marker_found) noexcept {
+    marker_found = false;
+    char marker_path[64]{};
+    if (filesystem_ == nullptr ||
+        !recovery_marker_path(marker_path, sizeof(marker_path))) return false;
+    File marker = filesystem_->open(marker_path, FILE_READ);
+    if (!marker) return true;
+    marker_found = true;
+    if (marker.size() != kBatchRecoveryFrameBytes) {
+      marker.close();
+      return false;
+    }
+    std::array<uint8_t, kBatchRecoveryFrameBytes> frame{};
+    const bool read_ok = marker.read(frame.data(), frame.size()) ==
+                         static_cast<int>(frame.size());
+    marker.close();
+    if (!read_ok || read_u32(frame.data()) != kBatchRecoveryMagic ||
+        frame[4U] != kBatchRecoveryVersion ||
+        read_u32(frame.data() + 14U) !=
+            storage::archive_crc32(frame.data(), 14U) ||
+        read_u32(frame.data() + 18U) != kBatchRecoveryMarker) return false;
+    const uint64_t encoded = read_u64(frame.data() + 6U);
+    if (encoded > static_cast<uint64_t>(SIZE_MAX) ||
+        !copy_quarantine_prefix(static_cast<std::size_t>(encoded))) return false;
+    return filesystem_->remove(marker_path);
+  }
+  bool quarantine_tail(std::size_t valid_bytes) noexcept {
     if (filesystem_ == nullptr) return false;
     char quarantine[64]{};
+    char marker_path[64]{};
     const int written = std::snprintf(quarantine, sizeof(quarantine),
                                       "%s.tail", path_);
     if (written <= 0 || static_cast<std::size_t>(written) >= sizeof(quarantine) ||
-        !filesystem_->exists(quarantine)) return true;
+        !recovery_marker_path(marker_path, sizeof(marker_path))) {
+      return false;
+    }
+    if (filesystem_->exists(quarantine)) return false;
+    if (!filesystem_->rename(path_, quarantine)) return false;
+    if (!write_recovery_marker(valid_bytes)) {
+      (void)filesystem_->rename(quarantine, path_);
+      return false;
+    }
     File source = filesystem_->open(quarantine, FILE_READ);
     File destination = filesystem_->open(path_, FILE_WRITE);
     if (!source || !destination) {
@@ -713,7 +782,7 @@ class FsImmutableBatchStore final : public IImmutableBatchStore {
       return false;
     }
     std::array<uint8_t, 256U> buffer{};
-    std::size_t remaining = source.size();
+    std::size_t remaining = valid_bytes;
     bool copied = true;
     while (remaining != 0U) {
       const std::size_t chunk = remaining < buffer.size() ? remaining : buffer.size();
@@ -727,7 +796,20 @@ class FsImmutableBatchStore final : public IImmutableBatchStore {
     destination.flush();
     source.close();
     destination.close();
-    return copied && remaining == 0U;
+    if (!copied || remaining != 0U ||
+        !destination_size_matches(path_, valid_bytes)) {
+      return false;
+    }
+    return filesystem_->remove(marker_path);
+  }
+  bool destination_size_matches(const char* path,
+                                std::size_t expected) noexcept {
+    if (filesystem_ == nullptr) return false;
+    File file = filesystem_->open(path, FILE_READ);
+    if (!file) return false;
+    const bool matches = static_cast<std::size_t>(file.size()) == expected;
+    file.close();
+    return matches;
   }
   fs::FS* filesystem_{nullptr};
   const char* path_{nullptr};

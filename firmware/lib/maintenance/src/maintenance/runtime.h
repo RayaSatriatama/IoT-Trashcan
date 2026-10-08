@@ -76,10 +76,11 @@ class CommandRouter final : public IMaintenanceCommandSink,
                 IRebootController* reboot = nullptr,
                 acquisition::IProfileAuditSink* audit = nullptr,
                 const acquisition::BootId* boot_id = nullptr,
-                IModelCommandHandler* models = nullptr) noexcept
+                IModelCommandHandler* models = nullptr,
+                IStorageTestProbe* storage_probe = nullptr) noexcept
       : config_(config), secrets_(secrets), profiles_(profiles),
         evidence_(evidence), reboot_(reboot), audit_(audit), boot_id_(boot_id),
-        models_(models) {
+        models_(models), storage_probe_(storage_probe) {
     refresh_mode();
   }
 
@@ -120,6 +121,7 @@ class CommandRouter final : public IMaintenanceCommandSink,
   acquisition::IProfileAuditSink* audit_{nullptr};
   const acquisition::BootId* boot_id_{nullptr};
   IModelCommandHandler* models_{nullptr};
+  IStorageTestProbe* storage_probe_{nullptr};
   calibration::CalibrationSession calibration_{};
   uint64_t evidence_sequence_{0U};
   bool criteria_set_{false};

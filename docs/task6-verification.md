@@ -4,8 +4,10 @@
 
 This report covers the durable archive/logger and immutable batching slice on
 the `feat/firmware-durable-archive` branch. Task 5 was merged before this
-branch was created. No physical SD write, firmware upload, reboot, power-cut,
-sensor, heater, or network test was performed.
+branch was created. No firmware upload, reboot, power-cut, sensor, heater, or
+network test was performed. Physical SD I/O was not executed because the
+running image predates the bounded `storage sd test` command and upload/reboot
+was not authorized in this batch.
 
 ## Implemented evidence (final remediation)
 
@@ -59,10 +61,20 @@ sensor, heater, or network test was performed.
 - The composition root binds LittleFS archive, SD archive, failover, and the
   media migration source/destination. Boot metadata is produced only when a
   provisioned device identity is available; no identity is fabricated.
+- Production `#ifdef ARDUINO` archive, batch, ACK, and migration paths are
+  executed through a filesystem test double. The focused adapter suite covers
+  failed recovery copy, failed rename, short read/write, marker recovery,
+  restart reconstruction, exact-byte ACK replay, and migration receipt
+  persistence.
+- A bounded target maintenance command, `storage sd test`, is implemented for
+  the SD target. It mounts without formatting, writes one deterministic
+  256-byte file, flushes/closes, reopens, verifies size and SHA-256, reports
+  timing/capacity, and removes only its own test file. It is target-compiled
+  but has not been run on the board image currently installed.
 
 ## Fresh native evidence (final remediation run)
 
-The integrated native suite passed **308/308 tests**, including archive storage,
+The integrated native suite passed **320/320 tests**, including archive storage,
 archive runtime, immutable batch, ACK, failover, corrupt-tail, quota, 129-entry
 cache overflow, 4,684-record workload, migration adapter, gap reserve failover,
 producer-to-archive retry, typed metadata decode, and runtime batch/ACK tests.
@@ -73,16 +85,16 @@ contract tests passed their frozen canonical record and exact-body hash
 fixtures.
 
 The complete native suite was rerun with AddressSanitizer and UndefinedBehaviorSanitizer
-through a temporary native PlatformIO configuration: **308/308 tests**, with
+through a temporary native PlatformIO configuration: **320/320 tests**, with
 no sanitizer diagnostics. The sanitizer environment is temporary and is not part of the production
 PlatformIO configuration. The final regression is covered by the focused
 native run and the final full native run.
 Cppcheck reported `No defects found`.
 
 Target compilation passed for `sigap_n16r8`, `sigap_n16r8_sd`, and
-`sigap_bench`. Final usage was 300,280 B RAM and 488,397 B flash for
-`sigap_n16r8`, 300,564 B RAM and 538,641 B flash for `sigap_n16r8_sd`, and
-300,280 B RAM and 488,397 B flash for `sigap_bench`. The target composition
+`sigap_bench`. Final usage was 300,296 B RAM and 489,621 B flash for
+`sigap_n16r8`, 300,580 B RAM and 541,677 B flash for `sigap_n16r8_sd`, and
+300,296 B RAM and 489,621 B flash for `sigap_bench`. The target composition
 uses one owned storage handoff slot; upstream typed rings retain additional
 records, keeping the SD variant below the internal DRAM limit. These are compilation
 evidence only, not physical N16R8 or SD I/O validation.
@@ -126,8 +138,8 @@ step. Recovery markers are the only tail-repair authority; unmarked quarantine
 and post-reclaim backup files are not selected as pending data. Native
 filesystem-double regressions cover source retention on checkpoint failure and
 receipt retry/restart behavior. Physical replay and
-copy-verify-checkpoint-reclaim remain unverified because physical SD I/O is
-prohibited in this batch.
+copy-verify-checkpoint-reclaim remain unverified because the installed image
+does not contain the new probe and upload/reboot was not authorized.
 
 The archive-reader to telemetry-v3 JSON batch-builder to immutable batch store
 to ACK-application chain is runtime-wired and natively fault-tested. The
@@ -143,9 +155,21 @@ remain out of Task 6.
 
 Physical SD mount/read/write, crash/power-cut tail loss, wear, and physical
 copy-verify-checkpoint-reclaim migration remain deferred. Target filesystem,
-batch, ACK, and migration adapters are exercised through native filesystem
-doubles and fault injection, not the physical card. The cooperative worker
+batch, ACK, and migration adapters are exercised through the production
+`#ifdef ARDUINO` code with a native filesystem double and fault injection, not
+the physical card. The cooperative worker
 keeps filesystem work outside acquisition callbacks and bounds migration to
 one budgeted step per poll; target stack high-water and physical latency are
 not claimed. HTTPS transport, backend ACK production, network workers,
 backend archive, migration 005, and actuator output are out of scope.
+
+## Hardware inventory and SD prerequisite
+
+The native maintenance interface is the Espressif USB JTAG/serial debug unit
+(`303A:1001`) at the stable by-id path observed as `/dev/ttyACM0`. The SD
+target uses SPI pins SCK=39, MISO=40, MOSI=41, CS=43 and the
+`sigap_n16r8_sd` PlatformIO environment. A bounded `storage sd test` command
+is available only after the new image is uploaded and rebooted. The precise
+next action for physical SD evidence is an explicitly authorized upload and
+controlled reboot, followed by that command over native USB. No format or
+destructive operation is required.

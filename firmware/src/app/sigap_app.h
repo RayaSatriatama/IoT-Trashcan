@@ -21,6 +21,14 @@
 
 namespace sigap {
 
+#ifdef ARDUINO
+class ArduinoSdProbe final : public maintenance::IStorageTestProbe {
+ public:
+  maintenance::CommandStatus run_sd_probe(
+      maintenance::MaintenanceResponse& response) noexcept override;
+};
+#endif
+
 class SigapApp final {
  public:
   SigapApp() noexcept;
@@ -98,6 +106,9 @@ class SigapApp final {
 #else
   maintenance::NullTransport maintenance_transport_{};
   maintenance::NullRebootController reboot_controller_{};
+#endif
+#ifdef ARDUINO
+  ArduinoSdProbe sd_probe_{};
 #endif
   maintenance::CommandRouter maintenance_router_;
   maintenance::MaintenanceService maintenance_service_;
