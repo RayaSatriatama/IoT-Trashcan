@@ -312,6 +312,46 @@ void test_audit_pending_reuses_encoder_without_corrupting_sample() {
   TEST_ASSERT_EQUAL_UINT32(0U, audit.size());
 }
 
+void test_audit_waiting_for_worker_preserves_scratch_until_durable() {
+  storage::MemoryArchiveStore<4U> store(64U * 1024U);
+  ArchiveRuntime runtime(&store);
+  SequenceAllocator sequence{};
+  runtime.set_sequence_allocator(&sequence);
+  runtime.set_event_context(device(), boot(), config_ref());
+  ProfileAuditRing<16U> audit{};
+  audit.set_context(1234U, config_ref());
+  audit.profile_activated(ProfileRef{}, ProfileRef{});
+
+  // Another producer owns the sole worker slot before audit encoding.
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(storage::AppendStatus::Queued),
+                        static_cast<int>(runtime.append_sample(sample())));
+  TEST_ASSERT_FALSE(runtime.drain_audit_events(audit));
+  TEST_ASSERT_EQUAL_UINT32(1U, audit.size());
+
+  // The encoded audit must survive competing encoders while backpressured.
+  auto competing = sample();
+  competing.header.sequence = 11U;
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(storage::AppendStatus::Retryable),
+                        static_cast<int>(runtime.append_sample(competing)));
+  ProcessingRuntime::Handoff results{};
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(processing::ResultHandoffStatus::Enqueued),
+      static_cast<int>(results.try_push(result())));
+  TEST_ASSERT_FALSE(runtime.drain_results(results));
+  TEST_ASSERT_EQUAL_UINT32(1U, results.size());
+
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(storage::AppendStatus::Durable),
+                        static_cast<int>(runtime.poll_storage()));
+  TEST_ASSERT_TRUE(runtime.drain_audit_events(audit));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(storage::AppendStatus::Durable),
+                        static_cast<int>(runtime.poll_storage()));
+  TEST_ASSERT_EQUAL_UINT32(2U, store.size());
+  storage::TypedArchiveRecordView view{};
+  TEST_ASSERT_TRUE(storage::RecordCodec::decode_event_view(store.at(1U), view));
+  TEST_ASSERT_EQUAL_UINT64(0U, view.identity.sequence);
+  TEST_ASSERT_EQUAL_UINT32(0U, audit.size());
+}
+
 }  // namespace
 
 int main() {
@@ -326,5 +366,6 @@ int main() {
   RUN_TEST(test_audit_event_uses_shared_sequence_and_is_archived);
   RUN_TEST(test_audit_event_stays_queued_across_retry_and_archives_once);
   RUN_TEST(test_audit_pending_reuses_encoder_without_corrupting_sample);
+  RUN_TEST(test_audit_waiting_for_worker_preserves_scratch_until_durable);
   return UNITY_END();
 }
