@@ -97,6 +97,14 @@ class IMigrationDestination {
   virtual bool verify(const ArchiveIdentity& identity,
                       const std::array<uint8_t, 32U>& hash) noexcept = 0;
   virtual bool checkpoint(uint64_t& generation) noexcept = 0;
+  // A durable receipt may authorize source reclaim only while the destination
+  // still recognizes the checkpoint generation that produced that copy.  The
+  // default preserves existing stores whose durable checkpoint authority is
+  // the receipt journal itself; backends with a generation ledger can
+  // override it with a stronger check.
+  virtual bool checkpoint_authorized(uint64_t generation) noexcept {
+    return generation != 0U;
+  }
   virtual bool contains(const ArchiveIdentity& identity,
                         const std::array<uint8_t, 32U>& hash) noexcept {
     (void)identity;
@@ -178,6 +186,15 @@ class ArchiveStoreMigrationDestination final : public IMigrationDestination {
     return true;
   }
 
+  bool checkpoint_authorized(uint64_t generation) noexcept override {
+    // IArchiveStore::checkpoint() is the target persistence boundary.  Its
+    // in-RAM generation counter is intentionally not authoritative across a
+    // reboot; a persisted receipt written after that checkpoint carries the
+    // durable generation.  Recovery still independently checks identity and
+    // hash in the destination store before source reclaim.
+    return generation != 0U;
+  }
+
   uint64_t generation() const noexcept { return generation_; }
   ArchiveMedia media() const noexcept { return media_; }
 
@@ -226,8 +243,7 @@ class ArchiveMediaMigration final {
 
     if (!source_.peek(scratch_)) {
       if (has_pending_receipt_ &&
-          destination_.contains(pending_receipt_.identity,
-                                pending_receipt_.hash)) {
+          receipt_authorizes_reclaim()) {
         // Source reclaim completed immediately before the receipt clear was
         // persisted.  The destination identity is authoritative; do not
         // resurrect a forensic source copy on restart.
@@ -266,6 +282,23 @@ class ArchiveMediaMigration final {
         // Never reclaim a different record with the old receipt.
         return MigrationStatus::Fault;
       }
+      if (!receipt_persisted_) {
+        // A checkpointed destination copy is not reclaim authority until its
+        // receipt is durably persisted.  Retrying persistence is a separate
+        // transaction step so a prior failed write can never be bypassed by
+        // a later poll in the same runtime.
+        if (!destination_has_receipt() ||
+            !destination_.checkpoint_authorized(
+                pending_receipt_.checkpoint_generation)) {
+          return MigrationStatus::Fault;
+        }
+        if (journal_ != nullptr && !journal_->persist(pending_receipt_)) {
+          return MigrationStatus::Retryable;
+        }
+        receipt_persisted_ = true;
+        return MigrationStatus::Retryable;
+      }
+      if (!receipt_authorizes_reclaim()) return MigrationStatus::Fault;
       if (!source_.reclaim(pending_receipt_)) return MigrationStatus::Retryable;
       pending_receipt_.phase = MigrationPhase::Reclaimed;
       pending_receipt_.durable = true;
@@ -302,9 +335,11 @@ class ArchiveMediaMigration final {
     receipt.durable = true;
     pending_receipt_ = receipt;
     has_pending_receipt_ = true;
+    receipt_persisted_ = journal_ == nullptr;
     if (journal_ != nullptr && !journal_->persist(pending_receipt_)) {
       return MigrationStatus::Retryable;
     }
+    receipt_persisted_ = true;
     if (!source_.reclaim(pending_receipt_)) return MigrationStatus::Retryable;
     pending_receipt_.phase = MigrationPhase::Reclaimed;
     if (journal_ != nullptr && !journal_->clear(pending_receipt_)) {
@@ -343,9 +378,27 @@ class ArchiveMediaMigration final {
       }
       pending_receipt_ = persisted;
       has_pending_receipt_ = true;
+      receipt_persisted_ = true;
     }
     journal_loaded_ = true;
     return true;
+  }
+
+  bool receipt_authorizes_reclaim() noexcept {
+    return has_pending_receipt_ && receipt_persisted_ &&
+           pending_receipt_.durable &&
+           pending_receipt_.phase == MigrationPhase::Checkpointed &&
+           pending_receipt_.checkpoint_generation != 0U &&
+           destination_has_receipt() &&
+           destination_.checkpoint_authorized(
+               pending_receipt_.checkpoint_generation);
+  }
+
+  bool destination_has_receipt() noexcept {
+    return destination_.contains(pending_receipt_.identity,
+                                 pending_receipt_.hash) ||
+           destination_.verify(pending_receipt_.identity,
+                               pending_receipt_.hash);
   }
 
   static constexpr std::size_t estimated_io_bytes(std::size_t record_bytes) noexcept {
@@ -364,6 +417,7 @@ class ArchiveMediaMigration final {
   std::size_t bytes_migrated_last_poll_{0U};
   std::size_t io_bytes_last_poll_{0U};
   bool has_pending_receipt_{false};
+  bool receipt_persisted_{false};
   IMigrationReceiptJournal* journal_{nullptr};
   bool journal_loaded_{false};
   // One bounded instance-owned frame avoids a 16 KiB call-stack temporary.

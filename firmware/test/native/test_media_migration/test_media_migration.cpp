@@ -117,6 +117,10 @@ class ReceiptJournal : public IMigrationReceiptJournal {
   }
 
   bool persist(const MigrationReceipt& value) noexcept override {
+    if (persist_failures_ != 0U) {
+      --persist_failures_;
+      return false;
+    }
     receipt_ = value;
     present_ = true;
     return true;
@@ -132,9 +136,11 @@ class ReceiptJournal : public IMigrationReceiptJournal {
   }
 
   bool present() const noexcept { return present_; }
+  void fail_persist(uint32_t count) noexcept { persist_failures_ = count; }
 
  private:
   MigrationReceipt receipt_{};
+  uint32_t persist_failures_{0U};
   bool present_{false};
 };
 
@@ -293,6 +299,77 @@ void test_checkpoint_receipt_reconstructs_after_runtime_restart() {
   TEST_ASSERT_EQUAL_UINT32(1U, destination.append_calls());
 }
 
+void test_failed_receipt_persist_never_authorizes_reclaim_on_next_poll() {
+  const auto value = record(41U);
+  Source source(value);
+  Destination destination;
+  ReceiptJournal journal;
+  journal.fail_persist(2U);
+  ArchiveMediaMigration migration(source, destination, ArchiveMedia::LittleFs,
+                                  ArchiveMedia::Sd, {}, &journal);
+
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(MigrationStatus::Retryable),
+                        static_cast<int>(migration.migrate_one()));
+  TEST_ASSERT_FALSE(source.reclaimed());
+  TEST_ASSERT_FALSE(journal.present());
+
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(MigrationStatus::Retryable),
+                        static_cast<int>(migration.migrate_one()));
+  TEST_ASSERT_FALSE(source.reclaimed());
+  TEST_ASSERT_FALSE(journal.present());
+}
+
+void test_retried_receipt_persist_requires_a_later_reclaim_poll() {
+  const auto value = record(411U);
+  Source source(value);
+  Destination destination;
+  ReceiptJournal journal;
+  journal.fail_persist(1U);
+  ArchiveMediaMigration migration(source, destination, ArchiveMedia::LittleFs,
+                                  ArchiveMedia::Sd, {}, &journal);
+
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(MigrationStatus::Retryable),
+                        static_cast<int>(migration.migrate_one()));
+  TEST_ASSERT_FALSE(source.reclaimed());
+
+  // This poll persists the receipt after revalidating the destination.  It
+  // deliberately does not reclaim in the same transition.
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(MigrationStatus::Retryable),
+                        static_cast<int>(migration.migrate_one()));
+  TEST_ASSERT_TRUE(journal.present());
+  TEST_ASSERT_FALSE(source.reclaimed());
+
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(MigrationStatus::Durable),
+                        static_cast<int>(migration.migrate_one()));
+  TEST_ASSERT_TRUE(source.reclaimed());
+}
+
+void test_failed_receipt_persist_cannot_survive_restart_as_reclaim_authority() {
+  const auto value = record(42U);
+  Source source(value);
+  Destination destination;
+  ReceiptJournal journal;
+  journal.fail_persist(1U);
+
+  {
+    ArchiveMediaMigration migration(source, destination, ArchiveMedia::LittleFs,
+                                    ArchiveMedia::Sd, {}, &journal);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(MigrationStatus::Retryable),
+                          static_cast<int>(migration.migrate_one()));
+    TEST_ASSERT_FALSE(source.reclaimed());
+    TEST_ASSERT_FALSE(journal.present());
+  }
+
+  // Restart owns no persisted receipt.  It must build a fresh destination
+  // transaction before reclaiming the source rather than trusting RAM state.
+  ArchiveMediaMigration restarted(source, destination, ArchiveMedia::LittleFs,
+                                  ArchiveMedia::Sd, {}, &journal);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(MigrationStatus::Durable),
+                        static_cast<int>(restarted.migrate_one()));
+  TEST_ASSERT_TRUE(source.reclaimed());
+  TEST_ASSERT_EQUAL_UINT32(2U, destination.append_calls());
+}
+
 void test_migration_reports_estimated_io_budget() {
   const auto value = record(5U);
   Source source(value);
@@ -341,6 +418,9 @@ int main() {
   RUN_TEST(test_reclaim_retry_reuses_checkpointed_receipt);
   RUN_TEST(test_checkpoint_retry_preserves_source_and_receipt_is_not_faked);
   RUN_TEST(test_checkpoint_receipt_reconstructs_after_runtime_restart);
+  RUN_TEST(test_failed_receipt_persist_never_authorizes_reclaim_on_next_poll);
+  RUN_TEST(test_retried_receipt_persist_requires_a_later_reclaim_poll);
+  RUN_TEST(test_failed_receipt_persist_cannot_survive_restart_as_reclaim_authority);
   RUN_TEST(test_migration_reports_estimated_io_budget);
   RUN_TEST(test_reclaimed_receipt_does_not_resurrect_source_after_restart);
   return UNITY_END();
