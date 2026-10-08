@@ -17,6 +17,29 @@ with fresh command output before the Task 8 PR is reviewed.
 - Migration 005 is additive to the existing four migrations. Legacy ingest and
   dashboard read routes remain unchanged.
 
+## Remediation acceptance scope
+
+The archive read boundary is also required to provide a complete record-level
+view. The current-state projection must compare trusted acquisition chronology,
+not insertion time: same-boot sequence/monotonic order is usable, while
+cross-boot monotonic values and untrusted or absent UTC remain explicitly
+unresolved. A late offline backlog must not replace newer current evidence.
+Samples are projected by `(stream, sensor_id)` so independent sensors sharing a
+stream are retained. Results remain independently projected by stream.
+
+Record export is authenticated and bounded. It uses a stable cursor composed
+from canonical `device_id`, `boot_id`, and decimal uint64 `sequence`, supports
+sensor/stream/kind/quality/UTC-null filters, and streams pages without loading
+the complete archive into memory. Exact stored evidence and provenance are
+returned; no hardware-v3 normalization, FIS, or Safety decisions are
+recalculated by the backend.
+
+The remediation tests must cover same-boot ordering, cross-boot chronology,
+UTC-null records, late backfill, more than 200 records for one sensor,
+same-stream multi-sensor projection, maximum uint64 cursor values, stable
+pagination, authorization, and exact record evidence. Results below are only
+marked PASS after those tests execute on the final HEAD.
+
 ## Verification ledger
 
 Results below were run on the Task 8 worktree after the archive and router

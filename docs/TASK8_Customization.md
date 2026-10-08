@@ -8,6 +8,8 @@ calibration profiles.
 | telemetry body | bytes | `<= 32 KiB` | frozen v3 contract | request boundary |
 | records per batch | count | `<= 128` | frozen v3 contract | request boundary |
 | archive page size | count | 50 default, 200 maximum | `ArchiveQuery` | per read |
+| record export page size | count | 50 default, 200 maximum | `ArchiveQuery` | per read |
+| record export body | bytes | bounded by response policy; streamed | `ArchiveQuery`/HTTP read boundary | per request |
 | device credential | secret bytes | existing `SecretStore`/digest | device auth | before archive mutation |
 | exact batch bytes | SQLite BLOB | one immutable body per `(device_id,batch_id)` | migration 005 | committed transaction |
 
@@ -23,6 +25,35 @@ new serializer. No MCU FIS/Safety recalculation or network worker is added in
 Task 8.
 
 Read surfaces are bounded and use the same device credential boundary:
-manifest listing, exact batch export, and a current projection containing the
-newest persisted sample/result JSON per stream. The projection returns stored
-evidence and does not recalculate a model decision.
+manifest listing, exact batch export, record-level archive export, and a
+current projection. Exact batch and record export return stored evidence; they
+never rebuild a body with a new serializer or recalculate an MCU model
+decision.
+
+Current-state ordering is based on trusted acquisition chronology, not server
+insert time. A same-boot `(monotonic_us, sequence)` order is valid. Monotonic
+values from different boots are never compared as one timeline. UTC is used
+only when its `time_quality` is trusted; otherwise the projection retains an
+explicit unresolved ordering state instead of inventing a timestamp. A late
+offline batch therefore cannot replace newer current evidence.
+
+Current samples are keyed by both stream and sensor identity. For example,
+`hx711_organic`, `ultrasonic_organic`, `mq4`, `mq135`, and `sht31_44` remain
+independent entries under `organic`; one sensor cannot overwrite another.
+Results remain independently keyed by stream. Quality, reason, raw/converted
+nullability, provenance, source IDs, and original record identity are retained.
+
+Record export uses a stable decimal-uint64 cursor derived from
+`(device_id, boot_id, sequence)`. It supports sensor, stream, record-kind,
+quality, and UTC-null filters, with bounded pagination and streaming response
+handling. SQLite integer columns are not used for raw uint64 sequence values;
+the canonical decimal representation and a lossless sort key are retained.
+
+Migration 005 remains additive and is the source of truth for exact batch
+bytes and record bindings. Any additive record-index/backfill change must be
+safe for existing rows and must preserve legacy `/api/ingest` behavior.
+
+The backend does not recalculate hardware-v3 normalization, FIS, or Safety.
+It stores and projects the MCU decisions and provenance as received. Device
+credentials remain in the authentication boundary and are never returned to
+the frontend.

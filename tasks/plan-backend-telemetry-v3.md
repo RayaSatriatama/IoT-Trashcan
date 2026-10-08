@@ -21,7 +21,9 @@
 | Additive batch endpoint | `internal/http/telemetry_batch_handler.go` | handler tests |
 | Transactional archive | `internal/telemetryarchive/service.go`, migration 005 | service tests |
 | Exact bytes and dedupe/conflict | manifest/body hash constraints | round-trip tests |
-| Archive query/export | `internal/telemetryarchive/query.go` | query tests |
+| Archive query/export | `internal/telemetryarchive/query.go`, record cursor/read boundary | bounded query, cursor, filter, and exact-byte export tests |
+| Current chronology | `internal/telemetryarchive/query.go` | late-backlog, same-boot, cross-boot, UTC-null ordering tests |
+| Per-sensor projection | `internal/telemetryarchive/query.go` | same-stream multi-sensor and invalid-evidence tests |
 | Migration sequencing | `migrations/005_telemetry_archive.sql` | database tests |
 | Legacy compatibility | existing ingest route untouched | full Go suite |
 
