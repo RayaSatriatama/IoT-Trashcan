@@ -20,11 +20,24 @@ sigap::acquisition::DeviceId device() {
   return value;
 }
 
+sigap::acquisition::BootId boot() {
+  sigap::acquisition::BootId value{};
+  value.present = true;
+  value.bytes[0] = 0xB1U;
+  return value;
+}
+
 ImmutableBatch make_batch() {
   ImmutableBatch batch{};
   constexpr std::array<uint8_t, 5U> body{{'{', '1', '}', '\n', 0U}};
   (void)batch.prepare("batch-1", body.data(), 4U, 2U);
   batch.set_device_id(device());
+  sigap::config::ConfigHash source_hash{};
+  source_hash[0] = 0xA5U;
+  (void)batch.bind_source(
+      device(), boot(), 17U,
+      static_cast<uint8_t>(sigap::storage::ArchiveRecordKind::Result),
+      source_hash);
   return batch;
 }
 
@@ -49,6 +62,9 @@ void test_batch_bytes_and_hash_are_immutable_after_prepare() {
   TEST_ASSERT_FALSE(batch.prepare("batch-2", reinterpret_cast<const uint8_t*>("x"),
                                   1U, 1U));
   TEST_ASSERT_EQUAL_UINT8_ARRAY(hash.data(), batch.body_hash.data(), hash.size());
+  TEST_ASSERT_FALSE(batch.bind_source(
+      device(), boot(), 18U,
+      static_cast<uint8_t>(sigap::storage::ArchiveRecordKind::Result), hash));
   TEST_ASSERT_EQUAL_UINT32(7U, batch.id().size());
   TEST_ASSERT_EQUAL_INT(0, std::memcmp(batch.id().data(), "batch-1", 7U));
 }
@@ -142,6 +158,11 @@ void test_batch_bytes_are_durable_and_duplicate_identity_is_not_rewritten() {
                                 batch.device_id.bytes.size());
   TEST_ASSERT_EQUAL_UINT8_ARRAY(batch.body_hash.data(), replay.body_hash.data(),
                                 batch.body_hash.size());
+  TEST_ASSERT_TRUE(replay.source.present);
+  TEST_ASSERT_EQUAL_UINT64(17U, replay.source.sequence);
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(batch.source.record_hash.data(),
+                                replay.source.record_hash.data(),
+                                batch.source.record_hash.size());
 }
 
 void test_persistent_ack_boundary_requires_checkpoint_before_reclaim() {

@@ -18,6 +18,15 @@ inline constexpr uint16_t kMaxBatchRecords{128U};
 
 enum class AckStatus : uint8_t { Durable, Invalid, Conflict, Timeout, SummaryV2 };
 
+struct BatchSourceBinding final {
+  acquisition::DeviceId device_id{};
+  acquisition::BootId boot_id{};
+  uint64_t sequence{0U};
+  uint8_t record_kind{0U};
+  config::ConfigHash record_hash{};
+  bool present{false};
+};
+
 struct ImmutableBatch final {
   std::array<uint8_t, kMaxBatchBytes> body{};
   std::size_t body_size{0U};
@@ -26,6 +35,7 @@ struct ImmutableBatch final {
   config::ConfigHash body_hash{};
   uint16_t record_count{0U};
   acquisition::DeviceId device_id{};
+  BatchSourceBinding source{};
   bool attempted{false};
 
   bool prepare(std::string_view id, const uint8_t* bytes, std::size_t size,
@@ -66,6 +76,21 @@ struct ImmutableBatch final {
   }
   void set_device_id(const acquisition::DeviceId& device) noexcept {
     device_id = device;
+  }
+  bool bind_source(const acquisition::DeviceId& device,
+                   const acquisition::BootId& boot, uint64_t sequence,
+                   uint8_t record_kind,
+                   const config::ConfigHash& record_hash) noexcept {
+    if (!attempted || source.present || !device.present || !boot.present) {
+      return false;
+    }
+    source.device_id = device;
+    source.boot_id = boot;
+    source.sequence = sequence;
+    source.record_kind = record_kind;
+    source.record_hash = record_hash;
+    source.present = true;
+    return true;
   }
 };
 

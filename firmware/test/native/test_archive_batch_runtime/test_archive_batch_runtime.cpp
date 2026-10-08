@@ -317,6 +317,44 @@ void test_ack_recovery_reclaims_source_after_runtime_restart() {
   TEST_ASSERT_EQUAL_UINT32(0U, journal.size());
 }
 
+void test_ack_restart_uses_exact_persisted_batch_not_current_serializer() {
+  MemoryArchiveStore<8U> archive(256U * 1024U);
+  MemoryImmutableBatchStore<8U> batches(256U * 1024U);
+  MemoryAckJournalStore<8U> journal{};
+  const auto encoded = sample(91U);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AppendStatus::Durable),
+                        static_cast<int>(archive.append(encoded)));
+
+  // Represents a batch produced by an older serializer. Its exact bytes are
+  // intentionally different from BatchJsonBuilder's current output.
+  ImmutableBatch persisted{};
+  constexpr std::string_view historical_body{
+      "{\"schema_version\":3,\"historical_serializer\":true}"};
+  TEST_ASSERT_TRUE(persisted.prepare(
+      "historical-batch-91",
+      reinterpret_cast<const uint8_t*>(historical_body.data()),
+      historical_body.size(), 1U));
+  persisted.set_device_id(encoded.identity.device_id);
+  TEST_ASSERT_TRUE(persisted.bind_source(
+      encoded.identity.device_id, encoded.identity.boot_id,
+      encoded.identity.sequence, static_cast<uint8_t>(encoded.identity.kind),
+      encoded.hash));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(BatchStoreStatus::Durable),
+                        static_cast<int>(batches.append(persisted)));
+  TEST_ASSERT_TRUE(batches.checkpoint());
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AckPersistStatus::Durable),
+                        static_cast<int>(journal.append_pending(persisted)));
+
+  ArchiveBatchRuntime<MemoryImmutableBatchStore<8U>, MemoryAckJournalStore<8U>>
+      restarted_runtime(&archive, &batches, &journal);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AckPersistStatus::Durable),
+                        static_cast<int>(
+                            restarted_runtime.apply_ack(ack_for(persisted))));
+  ImmutableRecordBytes replay{};
+  TEST_ASSERT_FALSE(archive.peek_pending(replay));
+  TEST_ASSERT_EQUAL_UINT32(0U, journal.size());
+}
+
 }  // namespace
 
 int main() {
@@ -330,5 +368,6 @@ int main() {
   RUN_TEST(test_ack_journal_compacts_after_more_than_cache_capacity);
   RUN_TEST(test_replayed_ack_cannot_reclaim_next_pending_record);
   RUN_TEST(test_ack_recovery_reclaims_source_after_runtime_restart);
+  RUN_TEST(test_ack_restart_uses_exact_persisted_batch_not_current_serializer);
   return UNITY_END();
 }

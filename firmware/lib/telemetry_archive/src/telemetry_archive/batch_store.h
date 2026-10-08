@@ -15,11 +15,19 @@
 namespace sigap::telemetry_archive {
 
 inline constexpr uint32_t kBatchFrameMagic{0x53474254U};
-inline constexpr uint16_t kBatchFrameVersion{1U};
+// Version 2 adds the durable source binding needed for exact ACK replay.
+// Version-1 Task 6 frames are rejected because they cannot authorize reclaim.
+inline constexpr uint16_t kBatchFrameVersion{2U};
 inline constexpr uint32_t kBatchFrameCommitMarker{0xBA7C0EDU};
 inline constexpr std::size_t kBatchFrameDeviceIdOffset{14U};
 inline constexpr std::size_t kBatchFrameHashOffset{30U};
-inline constexpr std::size_t kBatchFrameHeaderBytes{62U};
+inline constexpr std::size_t kBatchFrameSourcePresentOffset{62U};
+inline constexpr std::size_t kBatchFrameSourceKindOffset{63U};
+inline constexpr std::size_t kBatchFrameSourceBootOffset{64U};
+inline constexpr std::size_t kBatchFrameSourceSequenceOffset{80U};
+inline constexpr std::size_t kBatchFrameSourceHashOffset{88U};
+inline constexpr std::size_t kBatchFrameHeaderChecksumOffset{120U};
+inline constexpr std::size_t kBatchFrameHeaderBytes{124U};
 inline constexpr std::size_t kBatchFrameTrailerBytes{4U};
 inline constexpr std::size_t kBatchIndexCapacity{64U};
 
@@ -32,6 +40,7 @@ class IImmutableBatchStore {
   virtual BatchStoreStatus append(const ImmutableBatch& batch) noexcept = 0;
   virtual bool checkpoint() noexcept = 0;
   virtual bool recover() noexcept = 0;
+  virtual bool load_manifest(const Ack& ack, ImmutableBatch& output) noexcept = 0;
   virtual uint64_t pending_bytes() const noexcept = 0;
   virtual uint64_t quota_bytes() const noexcept = 0;
 };
@@ -53,7 +62,8 @@ class MemoryImmutableBatchStore final : public IImmutableBatchStore {
     }
     for (std::size_t index = 0U; index < count_; ++index) {
       if (entries_[index].batch.id() == batch.id()) {
-        return entries_[index].batch.body_hash == batch.body_hash
+        return entries_[index].batch.body_hash == batch.body_hash &&
+                       same_source(entries_[index].batch.source, batch.source)
                    ? BatchStoreStatus::Durable
                    : BatchStoreStatus::Invalid;
       }
@@ -90,8 +100,23 @@ class MemoryImmutableBatchStore final : public IImmutableBatchStore {
     output = *entry;
     return true;
   }
+  bool load_manifest(const Ack& ack, ImmutableBatch& output) noexcept override {
+    for (std::size_t index = 0U; index < count_; ++index) {
+      if (ack_matches(entries_[index].batch, ack)) {
+        output = entries_[index].batch;
+        return true;
+      }
+    }
+    return false;
+  }
 
  private:
+  static bool same_source(const BatchSourceBinding& left,
+                          const BatchSourceBinding& right) noexcept {
+    return left.present == right.present && left.device_id.bytes == right.device_id.bytes &&
+           left.boot_id.bytes == right.boot_id.bytes && left.sequence == right.sequence &&
+           left.record_kind == right.record_kind && left.record_hash == right.record_hash;
+  }
   struct Entry final { ImmutableBatch batch{}; };
   std::array<Entry, Capacity> entries_{};
   uint64_t quota_bytes_{0U};
@@ -177,6 +202,27 @@ class FsImmutableBatchStore final : public IImmutableBatchStore {
     for (std::size_t index = 0U; index < batch.body_hash.size(); ++index) {
       header[kBatchFrameHashOffset + index] = batch.body_hash[index];
     }
+    header[kBatchFrameSourcePresentOffset] = batch.source.present ? 1U : 0U;
+    if (batch.source.present) {
+      if (batch.source.device_id.bytes != batch.device_id.bytes ||
+          batch.source.record_kind <
+              static_cast<uint8_t>(storage::ArchiveRecordKind::Sample) ||
+          batch.source.record_kind >
+              static_cast<uint8_t>(storage::ArchiveRecordKind::Metadata)) {
+        file.close();
+        return BatchStoreStatus::Invalid;
+      }
+      header[kBatchFrameSourceKindOffset] = batch.source.record_kind;
+      std::copy(batch.source.boot_id.bytes.begin(), batch.source.boot_id.bytes.end(),
+                header.begin() + kBatchFrameSourceBootOffset);
+      put_u64(header.data() + kBatchFrameSourceSequenceOffset,
+              batch.source.sequence);
+      std::copy(batch.source.record_hash.begin(), batch.source.record_hash.end(),
+                header.begin() + kBatchFrameSourceHashOffset);
+    }
+    put_u32(header.data() + kBatchFrameHeaderChecksumOffset,
+            storage::archive_crc32(header.data(),
+                                   kBatchFrameHeaderChecksumOffset));
     const auto write = [&](const uint8_t* bytes, std::size_t size) noexcept {
       return file.write(bytes, size) == size;
     };
@@ -234,8 +280,7 @@ class FsImmutableBatchStore final : public IImmutableBatchStore {
     while (file.available()) {
       std::array<uint8_t, kBatchFrameHeaderBytes> header{};
       if (file.read(header.data(), header.size()) != static_cast<int>(header.size()) ||
-          read_u32(header.data()) != kBatchFrameMagic ||
-          read_u16(header.data() + 4U) != kBatchFrameVersion) {
+          !valid_header(header)) {
         clean = false;
         break;
       }
@@ -284,6 +329,11 @@ class FsImmutableBatchStore final : public IImmutableBatchStore {
                 header.begin() + kBatchFrameDeviceIdOffset +
                     entry.device_id.bytes.size(),
                 entry.device_id.bytes.begin());
+      BatchSourceBinding recovered_source{};
+      if (!read_source(header, entry.device_id, recovered_source)) {
+        clean = false;
+        break;
+      }
       entry.body_hash = body_hash;
       entry.record_count = read_u16(header.data() + 8U);
       entry.body_size = body_size;
@@ -307,10 +357,24 @@ class FsImmutableBatchStore final : public IImmutableBatchStore {
   uint64_t pending_bytes() const noexcept override { return pending_bytes_; }
   uint64_t quota_bytes() const noexcept override { return quota_bytes_; }
 
+#ifndef ARDUINO
+  bool load_manifest(const Ack&, ImmutableBatch&) noexcept override {
+    return false;
+  }
+#endif
 #ifdef ARDUINO
   // Replays one exact immutable batch after a runtime object is recreated.
   // The scan is bounded by the 32 KiB body contract and never changes bytes.
   bool load(std::size_t index, ImmutableBatch& output) noexcept {
+    return load_selected(index, nullptr, output);
+  }
+  bool load_manifest(const Ack& ack, ImmutableBatch& output) noexcept override {
+    return load_selected(0U, &ack, output);
+  }
+
+ private:
+  bool load_selected(std::size_t selected_index, const Ack* ack,
+                     ImmutableBatch& output) noexcept {
     if (filesystem_ == nullptr) return false;
     File file = filesystem_->open(path_, FILE_READ);
     if (!file) return false;
@@ -318,8 +382,7 @@ class FsImmutableBatchStore final : public IImmutableBatchStore {
     while (file.available()) {
       std::array<uint8_t, kBatchFrameHeaderBytes> header{};
       if (file.read(header.data(), header.size()) != static_cast<int>(header.size()) ||
-          read_u32(header.data()) != kBatchFrameMagic ||
-          read_u16(header.data() + 4U) != kBatchFrameVersion) {
+          !valid_header(header)) {
         file.close();
         return false;
       }
@@ -335,7 +398,10 @@ class FsImmutableBatchStore final : public IImmutableBatchStore {
         file.close();
         return false;
       }
-      const bool selected = current == index;
+      const bool selected = ack == nullptr
+                                ? current == selected_index
+                                : header_matches_ack(header, id.data(), id_size,
+                                                     *ack);
       ImmutableBatch& candidate = output;
       if (selected) {
         candidate = ImmutableBatch{};
@@ -347,6 +413,10 @@ class FsImmutableBatchStore final : public IImmutableBatchStore {
                   header.begin() + kBatchFrameDeviceIdOffset +
                       candidate.device_id.bytes.size(),
                   candidate.device_id.bytes.begin());
+        if (!read_source(header, candidate.device_id, candidate.source)) {
+          file.close();
+          return false;
+        }
       }
       telemetry_contract::Sha256 digest{};
       std::array<uint8_t, 256U> chunk{};
@@ -389,8 +459,6 @@ class FsImmutableBatchStore final : public IImmutableBatchStore {
     return false;
   }
 #endif
-
- private:
 #ifdef ARDUINO
   static void put_u16(uint8_t* bytes, uint16_t value) noexcept {
     bytes[0U] = static_cast<uint8_t>(value);
@@ -411,6 +479,21 @@ class FsImmutableBatchStore final : public IImmutableBatchStore {
            (static_cast<uint32_t>(bytes[2U]) << 16U) |
            (static_cast<uint32_t>(bytes[3U]) << 24U);
   }
+  static uint64_t read_u64(const uint8_t* bytes) noexcept {
+    uint64_t value{0U};
+    for (std::size_t index = 0U; index < 8U; ++index) {
+      value |= static_cast<uint64_t>(bytes[index]) << (index * 8U);
+    }
+    return value;
+  }
+  static bool valid_header(
+      const std::array<uint8_t, kBatchFrameHeaderBytes>& header) noexcept {
+    return read_u32(header.data()) == kBatchFrameMagic &&
+           read_u16(header.data() + 4U) == kBatchFrameVersion &&
+           read_u32(header.data() + kBatchFrameHeaderChecksumOffset) ==
+               storage::archive_crc32(header.data(),
+                                      kBatchFrameHeaderChecksumOffset);
+  }
   static config::ConfigHash read_hash(const uint8_t* bytes) noexcept {
     config::ConfigHash hash{};
     for (std::size_t index = 0U; index < hash.size(); ++index) hash[index] = bytes[index];
@@ -425,6 +508,48 @@ class FsImmutableBatchStore final : public IImmutableBatchStore {
     std::size_t body_size{0U};
     bool present{false};
   };
+  static bool read_source(
+      const std::array<uint8_t, kBatchFrameHeaderBytes>& header,
+      const acquisition::DeviceId& device,
+      BatchSourceBinding& source) noexcept {
+    source = BatchSourceBinding{};
+    const uint8_t present = header[kBatchFrameSourcePresentOffset];
+    if (present == 0U) return true;
+    if (present != 1U) return false;
+    const uint8_t kind = header[kBatchFrameSourceKindOffset];
+    if (kind < static_cast<uint8_t>(storage::ArchiveRecordKind::Sample) ||
+        kind > static_cast<uint8_t>(storage::ArchiveRecordKind::Metadata)) {
+      return false;
+    }
+    source.present = true;
+    source.device_id = device;
+    source.boot_id.present = true;
+    std::copy(header.begin() + kBatchFrameSourceBootOffset,
+              header.begin() + kBatchFrameSourceBootOffset +
+                  source.boot_id.bytes.size(),
+              source.boot_id.bytes.begin());
+    source.sequence = read_u64(header.data() + kBatchFrameSourceSequenceOffset);
+    source.record_kind = kind;
+    std::copy(header.begin() + kBatchFrameSourceHashOffset,
+              header.begin() + kBatchFrameSourceHashOffset +
+                  source.record_hash.size(),
+              source.record_hash.begin());
+    return true;
+  }
+  static bool header_matches_ack(
+      const std::array<uint8_t, kBatchFrameHeaderBytes>& header,
+      const uint8_t* id, std::size_t id_size, const Ack& ack) noexcept {
+    if (id_size != ack.batch_id_size ||
+        read_u16(header.data() + 8U) != ack.record_count ||
+        read_hash(header.data() + kBatchFrameHashOffset) != ack.body_hash ||
+        !std::equal(id, id + id_size, ack.batch_id.begin())) {
+      return false;
+    }
+    return std::equal(header.begin() + kBatchFrameDeviceIdOffset,
+                      header.begin() + kBatchFrameDeviceIdOffset +
+                          ack.device_id.bytes.size(),
+                      ack.device_id.bytes.begin());
+  }
   const BatchIndexEntry* find_index(const ImmutableBatch& batch) const noexcept {
     for (std::size_t index = 0U; index < index_count_; ++index) {
       const auto& entry = index_[index];
@@ -449,8 +574,7 @@ class FsImmutableBatchStore final : public IImmutableBatchStore {
       std::array<uint8_t, kBatchFrameHeaderBytes> header{};
       if (file.read(header.data(), header.size()) !=
               static_cast<int>(header.size()) ||
-          read_u32(header.data()) != kBatchFrameMagic ||
-          read_u16(header.data() + 4U) != kBatchFrameVersion) {
+          !valid_header(header)) {
         file.close();
         return false;
       }
@@ -509,6 +633,11 @@ class FsImmutableBatchStore final : public IImmutableBatchStore {
         match.body_hash = body_hash;
         match.record_count = static_cast<uint16_t>(record_count);
         match.body_size = body_size;
+        BatchSourceBinding recovered_source{};
+        if (!read_source(header, match.device_id, recovered_source)) {
+          file.close();
+          return false;
+        }
         match.present = true;
         found = true;
         file.close();
@@ -615,7 +744,13 @@ static_assert(kBatchFrameHeaderBytes + kBatchFrameTrailerBytes <
               "batch frame must remain bounded");
 static_assert(kBatchFrameDeviceIdOffset + 16U == kBatchFrameHashOffset,
               "batch identity layout must remain contiguous");
-static_assert(kBatchFrameHashOffset + 32U == kBatchFrameHeaderBytes,
-              "batch header hash offset must remain exact");
+static_assert(kBatchFrameHashOffset + 32U == kBatchFrameSourcePresentOffset,
+              "batch body identity layout must remain contiguous");
+static_assert(kBatchFrameSourceHashOffset + 32U ==
+                  kBatchFrameHeaderChecksumOffset,
+              "batch source binding layout must remain contiguous");
+static_assert(kBatchFrameHeaderChecksumOffset + sizeof(uint32_t) ==
+                  kBatchFrameHeaderBytes,
+              "batch header checksum layout must remain exact");
 
 }  // namespace sigap::telemetry_archive

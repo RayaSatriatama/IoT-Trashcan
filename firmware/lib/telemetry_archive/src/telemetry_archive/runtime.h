@@ -79,7 +79,10 @@ class BatchJsonBuilder final {
       return false;
     }
     batch.set_device_id(record.identity.device_id);
-    return true;
+    return batch.bind_source(record.identity.device_id, record.identity.boot_id,
+                             record.identity.sequence,
+                             static_cast<uint8_t>(record.identity.kind),
+                             record.hash);
   }
 
  private:
@@ -931,47 +934,34 @@ class ArchiveBatchRuntime final {
     if (journal_->append_pending(batch_) != AckPersistStatus::Durable) {
       return BatchRuntimeStatus::Retryable;
     }
-    pending_identity_ = source_.identity;
-    pending_hash_ = source_.hash;
     pending_ = true;
     return BatchRuntimeStatus::Durable;
   }
 
   AckPersistStatus apply_ack(const Ack& ack) noexcept {
-    if (journal_ == nullptr) return AckPersistStatus::Retryable;
+    if (journal_ == nullptr || batches_ == nullptr) {
+      return AckPersistStatus::Retryable;
+    }
     const auto status = journal_->apply_ack(ack);
     if (status != AckPersistStatus::Durable) return status;
     if (!journal_->checkpoint()) return AckPersistStatus::Retryable;
-    // A runtime can be recreated after the manifest and ACK are durable but
-    // before the source record is reclaimed. Rebuild the source-to-manifest
-    // binding from the exact pending archive frame before compacting the
-    // journal. A replay for another manifest leaves the current source intact.
-    if (!pending_ && archive_ != nullptr) {
-      storage::ImmutableRecordBytes recovered_source{};
-      if (archive_->peek_pending(recovered_source)) {
-        ImmutableBatch recovered_batch{};
-        if (!builder_.build(recovered_source, recovered_batch)) {
-          return AckPersistStatus::Retryable;
-        }
-        if (ack_matches(recovered_batch, ack) &&
-            !archive_->reclaim_pending(recovered_source.identity,
-                                       recovered_source.hash) &&
-            archive_->contains(recovered_source.identity,
-                               recovered_source.hash)) {
-          return AckPersistStatus::Retryable;
-        }
-      }
+    // Exact stored bytes and their source binding are authoritative after a
+    // restart. Re-serializing the archive record here would make an old ACK
+    // depend on the current firmware serializer.
+    if (!batches_->load_manifest(ack, batch_) || !ack_matches(batch_, ack) ||
+        !batch_.source.present) {
+      return AckPersistStatus::Retryable;
     }
-    // Reclaim only the source record represented by this in-memory batch.
-    // A replayed ACK for another manifest must never reclaim the current
-    // pending record. The journal still compacts the exact ACK manifest.
-    if (pending_ && archive_ != nullptr && ack_matches(batch_, ack)) {
-      if (!archive_->reclaim_pending(pending_identity_, pending_hash_) &&
-          archive_->contains(pending_identity_, pending_hash_)) {
+    const storage::ArchiveIdentity bound_source{
+        batch_.source.device_id, batch_.source.boot_id, batch_.source.sequence,
+        static_cast<storage::ArchiveRecordKind>(batch_.source.record_kind)};
+    if (archive_ != nullptr) {
+      if (!archive_->reclaim_pending(bound_source, batch_.source.record_hash) &&
+          archive_->contains(bound_source, batch_.source.record_hash)) {
         return AckPersistStatus::Retryable;
       }
-      pending_ = false;
     }
+    pending_ = false;
     const auto reclaimed = journal_->reclaim(ack);
     if (reclaimed == AckPersistStatus::Durable ||
         reclaimed == AckPersistStatus::NotFound) {
@@ -990,8 +980,6 @@ class ArchiveBatchRuntime final {
   BatchJsonBuilder builder_{};
   storage::ImmutableRecordBytes source_{};
   ImmutableBatch batch_{};
-  storage::ArchiveIdentity pending_identity_{};
-  config::ConfigHash pending_hash_{};
   bool pending_{false};
 };
 
