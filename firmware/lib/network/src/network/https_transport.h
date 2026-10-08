@@ -8,6 +8,12 @@
 #include "network/network.h"
 #include "provisioning/secret_store.h"
 
+#ifdef ARDUINO
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+#include <freertos/task.h>
+#endif
+
 namespace sigap::network {
 
 inline constexpr std::size_t kMaxArchiveBodyBytes{32U * 1024U};
@@ -42,9 +48,6 @@ uint32_t parse_retry_after_ms(std::string_view value) noexcept;
 bool valid_archive_http_request(const HttpPostRequest& request) noexcept;
 
 #ifdef ARDUINO
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
-
 class WiFiArchiveHttpTransport final : public IHttpTransport {
  public:
   WiFiArchiveHttpTransport() noexcept = default;
@@ -70,15 +73,20 @@ class WiFiArchiveHttpTransport final : public IHttpTransport {
   void cancel_batch() noexcept override;
 
  private:
+  enum class TaskState : uint8_t {
+    Idle,
+    Running,
+    Complete,
+  };
+
   static void network_task(void* context) noexcept;
   std::array<char, kMaxEndpointBytes + 1U> endpoint_{};
   std::array<char, kMaxResponseBodyBytes> response_body_{};
   std::size_t response_body_size_{0U};
   const char* ca_certificate_{nullptr};
   bool configured_{false};
-  volatile bool task_active_{false};
-  volatile bool task_complete_{false};
-  volatile bool task_cancelled_{false};
+  TaskState task_state_{TaskState::Idle};
+  bool task_cancelled_{false};
   TransportResult task_result_{TransportResult::Failed};
   NetworkHttpResponse task_response_{};
   const char* task_body_{nullptr};
@@ -87,9 +95,8 @@ class WiFiArchiveHttpTransport final : public IHttpTransport {
   std::size_t task_token_size_{0U};
   uint16_t task_record_count_{0U};
   uint32_t task_timeout_ms_{0U};
-#ifdef ARDUINO
-  TaskHandle_t task_handle_{nullptr};
-#endif
+  SemaphoreHandle_t state_mutex_{nullptr};
+  SemaphoreHandle_t completion_{nullptr};
 };
 
 #endif  // ARDUINO

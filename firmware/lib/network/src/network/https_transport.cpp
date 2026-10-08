@@ -287,11 +287,28 @@ TransportResult WiFiArchiveHttpTransport::start_batch(
   response = NetworkHttpResponse{};
   const HttpPostRequest request{
       std::string_view(endpoint_.data()), bearer_token, exact_body, record_count};
-  if (!valid_archive_http_request(request) || task_active_ ||
-      task_complete_ || !configured_ || !connected() ||
+  if (!valid_archive_http_request(request) || !configured_ || !connected() ||
       ca_certificate_ == nullptr) {
     return TransportResult::Failed;
   }
+
+  if (state_mutex_ == nullptr) {
+    state_mutex_ = xSemaphoreCreateMutex();
+  }
+  if (completion_ == nullptr) {
+    completion_ = xSemaphoreCreateBinary();
+  }
+  if (state_mutex_ == nullptr || completion_ == nullptr ||
+      xSemaphoreTake(state_mutex_, 0U) != pdTRUE) {
+    return TransportResult::Failed;
+  }
+  if (task_state_ != TaskState::Idle) {
+    xSemaphoreGive(state_mutex_);
+    return TransportResult::Failed;
+  }
+  // A previous failed create must not leave a stale publication token for the
+  // next request. Normal completion consumes this token in poll_response().
+  (void)xSemaphoreTake(completion_, 0U);
   task_body_ = exact_body.data();
   task_body_size_ = exact_body.size();
   task_token_ = bearer_token.data();
@@ -301,13 +318,16 @@ TransportResult WiFiArchiveHttpTransport::start_batch(
   task_response_ = NetworkHttpResponse{};
   task_result_ = TransportResult::Failed;
   task_cancelled_ = false;
-  task_complete_ = false;
-  task_active_ = true;
+  task_state_ = TaskState::Running;
+  xSemaphoreGive(state_mutex_);
   const auto created = xTaskCreate(
       &WiFiArchiveHttpTransport::network_task, "sigap_net", 3072U, this,
-      1U, &task_handle_);
+      1U, nullptr);
   if (created != pdPASS) {
-    task_active_ = false;
+    if (xSemaphoreTake(state_mutex_, 0U) == pdTRUE) {
+      task_state_ = TaskState::Idle;
+      xSemaphoreGive(state_mutex_);
+    }
     return TransportResult::Failed;
   }
   return TransportResult::Pending;
@@ -315,27 +335,55 @@ TransportResult WiFiArchiveHttpTransport::start_batch(
 
 TransportResult WiFiArchiveHttpTransport::poll_response(
     NetworkHttpResponse& response) noexcept {
-  if (!task_complete_) return TransportResult::Pending;
+  if (completion_ == nullptr ||
+      xSemaphoreTake(completion_, 0U) != pdTRUE) {
+    if (state_mutex_ != nullptr &&
+        xSemaphoreTake(state_mutex_, 0U) == pdTRUE) {
+      const auto state = task_state_;
+      xSemaphoreGive(state_mutex_);
+      return state == TaskState::Running ? TransportResult::Pending
+                                         : TransportResult::Failed;
+    }
+    return TransportResult::Failed;
+  }
+  if (state_mutex_ == nullptr ||
+      xSemaphoreTake(state_mutex_, 0U) != pdTRUE) {
+    (void)xSemaphoreGive(completion_);
+    return TransportResult::Failed;
+  }
+  if (task_state_ != TaskState::Complete) {
+    xSemaphoreGive(state_mutex_);
+    return TransportResult::Failed;
+  }
   response = task_response_;
   const auto result = task_result_;
-  task_complete_ = false;
+  task_state_ = TaskState::Idle;
+  xSemaphoreGive(state_mutex_);
   return result;
 }
 
 void WiFiArchiveHttpTransport::cancel_batch() noexcept {
-  task_cancelled_ = true;
+  if (state_mutex_ == nullptr ||
+      xSemaphoreTake(state_mutex_, 0U) != pdTRUE) {
+    return;
+  }
+  if (task_state_ == TaskState::Running) task_cancelled_ = true;
+  xSemaphoreGive(state_mutex_);
 }
 
 void WiFiArchiveHttpTransport::network_task(void* context) noexcept {
   auto& self = *static_cast<WiFiArchiveHttpTransport*>(context);
-  self.task_result_ = self.post_batch(
+  const auto result = self.post_batch(
       std::string_view(self.task_body_, self.task_body_size_),
       std::string_view(self.task_token_, self.task_token_size_),
       self.task_record_count_, self.task_timeout_ms_, self.task_response_);
-  if (self.task_cancelled_) self.task_result_ = TransportResult::Failed;
-  self.task_complete_ = true;
-  self.task_active_ = false;
-  self.task_handle_ = nullptr;
+  if (self.state_mutex_ != nullptr &&
+      xSemaphoreTake(self.state_mutex_, portMAX_DELAY) == pdTRUE) {
+    self.task_result_ = self.task_cancelled_ ? TransportResult::Failed : result;
+    self.task_state_ = TaskState::Complete;
+    xSemaphoreGive(self.state_mutex_);
+  }
+  if (self.completion_ != nullptr) (void)xSemaphoreGive(self.completion_);
   vTaskDelete(nullptr);
 }
 
@@ -391,20 +439,34 @@ TransportResult WiFiArchiveHttpTransport::post_batch(
   Stream* stream = http.getStreamPtr();
   if (stream != nullptr) {
     const uint32_t started_ms = millis();
-    bool waiting_for_more = true;
-    while (waiting_for_more &&
-           millis() - started_ms < (timeout_ms == 0U ? kHttpTimeoutMs : timeout_ms)) {
+    const int content_length = http.getSize();
+    const bool has_content_length = content_length >= 0;
+    const std::size_t expected_size = has_content_length
+                                          ? static_cast<std::size_t>(content_length)
+                                          : 0U;
+    if (expected_size > response_body_.size()) response.body_truncated = true;
+    while (!response.body_truncated &&
+           millis() - started_ms <
+               (timeout_ms == 0U ? kHttpTimeoutMs : timeout_ms)) {
+      if (has_content_length && response_body_size_ >= expected_size) break;
       if (response_body_size_ == response_body_.size()) {
-        response.body_truncated = true;
-        break;
+        if (stream->available() > 0) response.body_truncated = true;
+        if (has_content_length && expected_size == response_body_.size() &&
+            stream->available() == 0) {
+          break;
+        }
+        if (response.body_truncated) break;
       }
       const std::size_t available = static_cast<std::size_t>(stream->available());
       if (available == 0U) {
         delay(1U);
         continue;
       }
-      const std::size_t amount = std::min(
-          available, response_body_.size() - response_body_size_);
+      const std::size_t remaining = has_content_length
+                                        ? expected_size - response_body_size_
+                                        : response_body_.size() -
+                                              response_body_size_;
+      const std::size_t amount = std::min(available, remaining);
       const int read = stream->readBytes(
           response_body_.data() + response_body_size_, amount);
       if (read <= 0) {
@@ -412,6 +474,9 @@ TransportResult WiFiArchiveHttpTransport::post_batch(
         continue;
       }
       response_body_size_ += static_cast<std::size_t>(read);
+    }
+    if (has_content_length && response_body_size_ < expected_size) {
+      response.body_truncated = true;
     }
     std::copy(response_body_.begin(),
               response_body_.begin() + static_cast<std::ptrdiff_t>(response_body_size_),
