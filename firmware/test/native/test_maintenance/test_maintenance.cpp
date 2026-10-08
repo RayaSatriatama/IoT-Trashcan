@@ -7,6 +7,8 @@
 #include <unity.h>
 
 #include "maintenance/maintenance.h"
+#include "maintenance/storage_probe_response.h"
+#include <limits>
 #include "maintenance/runtime.h"
 #include "acquisition/profile_manager.h"
 #include "acquisition/profile_store.h"
@@ -536,6 +538,23 @@ void test_config_numeric_and_calibration_arguments_are_typed() {
   TEST_ASSERT_EQUAL_STRING("organic", sink.last.target.c_str());
 }
 
+void test_response_fits_complete_sd_probe_with_uint64_capacity() {
+  std::array<uint8_t, 32U> hash{};
+  hash.fill(0xFFU);
+  const auto largest = std::numeric_limits<uint64_t>::max();
+  MaintenanceResponse response{};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),
+      static_cast<int>(append_sd_probe_pass(
+          response, "mmc1", 256U, hash, largest, largest, largest, largest)));
+  const std::string maximum = "18446744073709551615";
+  const std::string expected =
+      "sd=PASS\nbus=mmc1\nn=256\nhash=" + std::string(64U, 'f') +
+      "\nus=" + maximum + "\nt=" + maximum + "\nu=" + maximum +
+      "\nf=" + maximum + "\nOK\n";
+  TEST_ASSERT_EQUAL_STRING(expected.c_str(), response.c_str());
+  TEST_ASSERT_TRUE(response.size() <= kMaxResponseBytes);
+}
+
 void test_response_redacts_secret_and_stays_bounded() {
   MaintenanceResponse response;
   TEST_ASSERT_TRUE(response.append_secret("token", "super-secret"));
@@ -623,6 +642,7 @@ void setup() {
   RUN_TEST(test_oversized_command_is_rejected_and_parser_recovers);
   RUN_TEST(test_unknown_empty_and_invalid_numeric_commands_are_explicit);
   RUN_TEST(test_config_numeric_and_calibration_arguments_are_typed);
+  RUN_TEST(test_response_fits_complete_sd_probe_with_uint64_capacity);
   RUN_TEST(test_response_redacts_secret_and_stays_bounded);
   RUN_TEST(test_parser_failure_does_not_stop_later_commands);
   RUN_TEST(test_command_router_keeps_draft_isolated_and_redacts_status);

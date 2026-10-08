@@ -1,3 +1,4 @@
+#include "maintenance/storage_probe_response.h"
 #include "sigap_app.h"
 
 #include <array>
@@ -136,45 +137,14 @@ maintenance::CommandStatus ArduinoSdProbe::run_sd_probe(
                                   ? total_bytes - used_bytes
                                   : 0U;
 
-  char number[32]{};
-  const auto append_u64 = [&response, &number](const char* label,
-                                                uint64_t value) noexcept {
-    const int written = std::snprintf(number, sizeof(number), "%llu",
-                                       static_cast<unsigned long long>(value));
-    return written > 0 && response.append(label) &&
-           response.append(std::string_view(number, static_cast<std::size_t>(written)));
-  };
-  static constexpr char digits[] = "0123456789abcdef";
-  if (!response.append("sd_probe=PASS\n") ||
-      !response.append("transport=") ||
-      !response.append(board::sd_transport_name(
-          board::kSdTransportPolicy.transport)) ||
-      !response.append("\n") ||
-      !append_u64("bytes=", readback.size()) ||
-      !response.append("\n") ||
-      !response.append("hash=") ) {
-    return maintenance::CommandStatus::Failed;
-  }
-  for (const uint8_t byte : actual_hash) {
-    char pair[2]{digits[byte >> 4U], digits[byte & 0x0FU]};
-    if (!response.append(std::string_view(pair, 2U))) {
-      return maintenance::CommandStatus::Failed;
-    }
-  }
   const int64_t ended_us = esp_timer_get_time();
-  return response.append("\n") &&
-                 append_u64("elapsed_us=", ended_us >= started_us
-                                             ? static_cast<uint64_t>(ended_us - started_us)
-                                             : 0U) &&
-                 response.append("\n") &&
-                 append_u64("total_bytes=", total_bytes) &&
-                 response.append("\n") &&
-                 append_u64("used_bytes=", used_bytes) &&
-                 response.append("\n") &&
-                 append_u64("free_bytes=", free_bytes) &&
-                 response.append("\n")
-             ? maintenance::CommandStatus::Accepted
-             : maintenance::CommandStatus::Failed;
+  return maintenance::append_sd_probe_pass(
+      response,
+      board::kSdTransportPolicy.transport == board::SdTransport::SdMmc1Bit
+          ? "mmc1" : "spi",
+      static_cast<uint16_t>(readback.size()), actual_hash,
+      ended_us >= started_us ? static_cast<uint64_t>(ended_us - started_us) : 0U,
+      total_bytes, used_bytes, free_bytes);
 #else
   (void)response;
   return maintenance::CommandStatus::Rejected;

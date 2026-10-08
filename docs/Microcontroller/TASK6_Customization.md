@@ -86,3 +86,12 @@ destination, failover, and the copy/verify/checkpoint/reclaim migration
 adapter. Boot metadata uses the shared sequence domain and is emitted only
 when a provisioned device identity is present. No device identity or sensor
 evidence is fabricated.
+
+### Bounded SD probe response
+
+`storage sd test` emits compact diagnostics within the existing 192-byte
+maintenance response limit: `sd=PASS`, `bus=mmc1|spi`, `n` (bytes), `hash`
+(SHA-256), `us` (elapsed microseconds), and `t/u/f` (total/used/free bytes).
+A successful response ends with `OK`. Worst-case uint64 fields and the full
+hash fit in 189 bytes. PASS requires the existing readback verification and
+probe-file cleanup to succeed. Maintenance buffer size is unchanged.
