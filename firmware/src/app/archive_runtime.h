@@ -275,18 +275,19 @@ class ArchiveRuntime final {
       std::size_t record_budget,
       std::size_t byte_budget = 32U * 1024U) noexcept {
     std::size_t completed{0U};
+    std::size_t attempted_bytes{0U};
     while (completed < record_budget && worker_.queue().size() != 0U) {
+      const auto* pending = worker_.queue().peek();
+      if (pending == nullptr || pending->record == nullptr) break;
+      const std::size_t record_bytes = pending->record->size;
+      if (completed != 0U && attempted_bytes + record_bytes > byte_budget) break;
       const uint64_t before = worker_.stats().durable + worker_.stats().terminal;
       const auto status = poll_storage();
       if (status == storage::AppendStatus::Retryable) break;
       const uint64_t after = worker_.stats().durable + worker_.stats().terminal;
       if (after == before) break;
+      attempted_bytes += record_bytes;
       ++completed;
-      const auto* pending = worker_.queue().peek();
-      if (pending != nullptr && pending->record != nullptr &&
-          pending->record->size >= byte_budget) {
-        break;
-      }
     }
     return completed;
   }

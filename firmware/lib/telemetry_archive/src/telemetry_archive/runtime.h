@@ -869,12 +869,22 @@ class ArchiveBatchRuntime final {
     const auto status = journal_->apply_ack(ack);
     if (status != AckPersistStatus::Durable) return status;
     if (!journal_->checkpoint()) return AckPersistStatus::Retryable;
-    if (pending_ && archive_ != nullptr &&
-        !archive_->reclaim_pending(pending_identity_, pending_hash_)) {
-      return AckPersistStatus::Retryable;
+    // Reclaim only the source record represented by this in-memory batch.
+    // A replayed ACK for another manifest must never reclaim the current
+    // pending record. The journal still compacts the exact ACK manifest.
+    if (pending_ && archive_ != nullptr && ack_matches(batch_, ack)) {
+      if (!archive_->reclaim_pending(pending_identity_, pending_hash_) &&
+          archive_->contains(pending_identity_, pending_hash_)) {
+        return AckPersistStatus::Retryable;
+      }
+      pending_ = false;
     }
-    pending_ = false;
-    return AckPersistStatus::Durable;
+    const auto reclaimed = journal_->reclaim(ack);
+    if (reclaimed == AckPersistStatus::Durable ||
+        reclaimed == AckPersistStatus::NotFound) {
+      return AckPersistStatus::Durable;
+    }
+    return reclaimed;
   }
 
   bool pending() const noexcept { return pending_; }

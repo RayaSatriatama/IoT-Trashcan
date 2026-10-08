@@ -153,7 +153,8 @@ void test_runtime_builds_json_batch_and_persists_pending_ack() {
   TEST_ASSERT_EQUAL_UINT32(1U, batches.size());
   TEST_ASSERT_EQUAL_UINT32(1U, journal.size());
   const auto body = batches.at(0U)->exact_body();
-  TEST_ASSERT_TRUE(body.find("{\"records\":[") != std::string_view::npos);
+  TEST_ASSERT_TRUE(body.find("{\"schema_version\":3") != std::string_view::npos);
+  TEST_ASSERT_TRUE(body.find("\"samples\":[") != std::string_view::npos);
 }
 
 void test_invalid_ack_does_not_reclaim_archive_record() {
@@ -206,7 +207,7 @@ void test_metadata_decoder_and_batch_builder_preserve_boot_provenance() {
   BatchJsonBuilder builder{};
   ImmutableBatch batch{};
   TEST_ASSERT_TRUE(builder.build(encoded, batch));
-  TEST_ASSERT_TRUE(batch.exact_body().find("\"record_id\":\"archive-13\"") !=
+  TEST_ASSERT_TRUE(batch.exact_body().find("\"record_id\":\"11000000000000000000000000000000/22000000000000000000000000000000/13\"") !=
                   std::string_view::npos);
   TEST_ASSERT_TRUE(batch.exact_body().find("\"metadata_type\":\"BOOT\"") !=
                   std::string_view::npos);
@@ -266,6 +267,32 @@ void test_ack_journal_compacts_after_more_than_cache_capacity() {
   TEST_ASSERT_EQUAL_UINT32(0U, journal.size());
 }
 
+void test_replayed_ack_cannot_reclaim_next_pending_record() {
+  MemoryArchiveStore<8U> archive(256U * 1024U);
+  MemoryImmutableBatchStore<8U> batches(256U * 1024U);
+  MemoryAckJournalStore<8U> journal{};
+  ArchiveBatchRuntime<MemoryImmutableBatchStore<8U>, MemoryAckJournalStore<8U>> runtime(
+      &archive, &batches, &journal);
+  const auto first = sample(71U);
+  const auto second = sample(72U);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AppendStatus::Durable),
+                        static_cast<int>(archive.append(first)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AppendStatus::Durable),
+                        static_cast<int>(archive.append(second)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(BatchRuntimeStatus::Durable),
+                        static_cast<int>(runtime.poll()));
+  const Ack first_ack = ack_for(runtime.batch());
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AckPersistStatus::Durable),
+                        static_cast<int>(runtime.apply_ack(first_ack)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(BatchRuntimeStatus::Durable),
+                        static_cast<int>(runtime.poll()));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AckPersistStatus::NotFound),
+                        static_cast<int>(runtime.apply_ack(first_ack)));
+  ImmutableRecordBytes replay{};
+  TEST_ASSERT_TRUE(archive.peek_pending(replay));
+  TEST_ASSERT_EQUAL_UINT64(72U, replay.identity.sequence);
+}
+
 }  // namespace
 
 int main() {
@@ -277,5 +304,6 @@ int main() {
   RUN_TEST(test_sample_batch_preserves_partial_evidence_and_null_conversion);
   RUN_TEST(test_ack_replay_is_bound_to_acked_manifest);
   RUN_TEST(test_ack_journal_compacts_after_more_than_cache_capacity);
+  RUN_TEST(test_replayed_ack_cannot_reclaim_next_pending_record);
   return UNITY_END();
 }

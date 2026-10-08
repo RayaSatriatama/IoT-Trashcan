@@ -71,6 +71,9 @@ class SigapApp final {
   storage::MediaFailoverStore archive_store_;
   storage::ArchiveStoreMigrationSource migration_source_;
   storage::ArchiveStoreMigrationDestination migration_destination_;
+#ifdef ARDUINO
+  storage::FsMigrationReceiptJournal migration_journal_{};
+#endif
   storage::ArchiveMediaMigration media_migration_;
   ArchiveRuntime archive_runtime_{};
   BatchStore batch_store_{};

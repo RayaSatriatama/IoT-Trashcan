@@ -51,7 +51,13 @@ SigapApp::SigapApp() noexcept
       migration_destination_(&sd_store_, storage::ArchiveMedia::Sd),
       media_migration_(migration_source_, migration_destination_,
                        storage::ArchiveMedia::LittleFs,
-                       storage::ArchiveMedia::Sd),
+                       storage::ArchiveMedia::Sd,
+                       storage::MigrationBudget{},
+#ifdef ARDUINO
+                       &migration_journal_),
+#else
+                       nullptr),
+#endif
       model_lifecycle_(model_persistence_,
                        models::ModelProfilePersistence::default_codec()),
       model_router_(model_lifecycle_,
@@ -151,6 +157,7 @@ void SigapApp::setup() noexcept {
                                      record_context_.boot_id, ref);
 #ifdef ARDUINO
   if (LittleFS.begin(false)) {
+    (void)migration_journal_.begin(LittleFS);
     (void)littlefs_store_.begin(
         LittleFS, config_manager_.active().storage.flash_pending_quota_bytes);
     (void)batch_store_.begin(
@@ -227,7 +234,7 @@ void SigapApp::loop() noexcept {
   (void)archive_runtime_.drain_samples(acquisition_.handoff());
   processing_runtime_.poll(now_us);
   (void)archive_runtime_.drain_results(processing_runtime_.handoff());
-  (void)archive_runtime_.poll_storage();
+  (void)archive_runtime_.poll_storage_slice(4U, 32U * 1024U);
   (void)batch_runtime_.poll();
   (void)archive_runtime_.poll_media_migration();
   maintenance_service_.poll(now_us);
