@@ -42,18 +42,19 @@ marked PASS after those tests execute on the final HEAD.
 
 ## Verification ledger
 
-Results below were run on the Task 8 worktree after the archive and router
-integration changes. Physical device commissioning, HTTPS delivery, backend
+Results below were rerun after the archive projection and record-read
+remediation. Physical device commissioning, HTTPS delivery, backend
 deployment, and MCU sensor evidence are outside this slice.
 
 | Check | Result | Evidence |
 | --- | --- | --- |
-| Focused archive/http/database tests | PASS | `go test ./internal/telemetryarchive ./internal/http ./internal/database` |
-| Full Go tests | PASS | `go test ./...` |
-| `go vet ./...` | PASS | Go 1.27.1 |
-| Schema and frozen fixture corpus | PASS | 14 schemas, 24 valid fixtures, 36 invalid fixtures |
+| Focused archive/http/database tests | PASS | `PATH=/tmp/sigap-go-task6.hFwosm/go/bin:$PATH go test ./internal/telemetryarchive ./internal/http ./internal/database`; record cursor/export, chronology, per-sensor, authenticated route, and malformed export cursor regressions |
+| Full Go tests | PASS | `PATH=/tmp/sigap-go-task6.hFwosm/go/bin:$PATH go test ./...` |
+| Go race tests | PASS | `PATH=/tmp/sigap-go-task6.hFwosm/go/bin:$PATH go test -race ./...` |
+| `go vet ./...` | PASS | `PATH=/tmp/sigap-go-task6.hFwosm/go/bin:$PATH go vet ./...`; Go 1.27.1 |
+| Schema and frozen fixture corpus | PASS | 14 schemas compile; 24 valid fixtures pass semantic schema validation; 36 invalid fixtures reject as expected |
 | Record/body golden hashes | PASS | `a3a2593618943cc7a1d5f8bc0c90216dc22eb4c3297fb874887c11b7b6ef6883`; `3620edf0548b8a15eb1638fc7d239b1995372a28982f7f1e194949160f166c7c` |
-| Runtime archive route | PASS | POST ingest, exact export, bounded manifest list, current projection, replay dedupe |
+| Runtime archive route | PASS | POST ingest, exact batch replay, bounded manifest list, per-sensor current projection, chronology-safe late-backfill handling, authenticated record page/export, and replay dedupe |
 | Firmware native suite | PASS | 365/365 on Task 8 worktree |
 | Firmware ASan/UBSan suite | PASS | 365/365 with address/undefined sanitizers |
 | Firmware cppcheck | PASS | no defects |
@@ -70,3 +71,17 @@ transactional manifest and record persistence, exact replay bytes, dedupe and
 conflict handling, all four record kinds, and additive route wiring. No
 production server ACK or HTTPS worker is synthesized here; the ACK is produced
 only after the local archive transaction commits.
+
+The record-level archive index is additive to unreleased migration 005 and
+stores canonical decimal sequence text plus a 20-character lossless sort key;
+SQLite signed integers are never used for uint64 sequence ordering. The current
+projection scans all retained sample/result rows and bounds only the retained
+sensor-source output, so a high-rate source cannot hide a sparse source behind
+an arbitrary recent-row limit. When chronology cannot be established across
+boots because trusted UTC is absent, `ordering_unknown` is returned rather than
+inventing a total order.
+
+The backend change does not modify firmware source, telemetry schemas, or
+frozen canonical/body hashes. Existing firmware evidence therefore remains
+applicable, but it is not repeated as a new firmware run for this Go-only
+remediation.

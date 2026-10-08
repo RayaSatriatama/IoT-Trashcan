@@ -46,6 +46,16 @@ func newTelemetryRecordArchiveHandler(query telemetryRecordQuery, authorizer tel
 			return
 		}
 		if strings.HasSuffix(r.URL.Path, "/export") {
+			if err := telemetryarchive.ValidateRecordQuery(request); err != nil {
+				writeArchiveRecordQueryError(w, err)
+				return
+			}
+			preflight := request
+			preflight.Limit = 1
+			if _, err := query.ListRecords(r.Context(), preflight); err != nil {
+				writeArchiveRecordQueryError(w, err)
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			if err := query.ExportRecordsJSON(r.Context(), request, w); err != nil {
@@ -55,15 +65,19 @@ func newTelemetryRecordArchiveHandler(query telemetryRecordQuery, authorizer tel
 		}
 		page, err := query.ListRecords(r.Context(), request)
 		if err != nil {
-			if errors.Is(err, telemetryarchive.ErrInvalidQuery) {
-				writeError(w, http.StatusBadRequest, "invalid archive record query")
-			} else {
-				writeError(w, http.StatusInternalServerError, "internal server error")
-			}
+			writeArchiveRecordQueryError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, page)
 	})
+}
+
+func writeArchiveRecordQueryError(w http.ResponseWriter, err error) {
+	if errors.Is(err, telemetryarchive.ErrInvalidQuery) {
+		writeError(w, http.StatusBadRequest, "invalid archive record query")
+	} else {
+		writeError(w, http.StatusInternalServerError, "internal server error")
+	}
 }
 
 func archiveRecordQuery(r *http.Request, deviceID string) (telemetryarchive.RecordQuery, error) {

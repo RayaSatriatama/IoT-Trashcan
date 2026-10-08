@@ -75,4 +75,12 @@ func TestTelemetryRecordArchiveReadIsAuthenticatedFilteredAndCursorStable(t *tes
 	if unauthorized.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthorized record page status=%d", unauthorized.Code)
 	}
+
+	badExport := httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/api/telemetry/records/SIGAP-01/export?cursor=not-base64", nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+	handler.ServeHTTP(badExport, request)
+	if badExport.Code != http.StatusBadRequest {
+		t.Fatalf("invalid export cursor status=%d body=%s", badExport.Code, badExport.Body.String())
+	}
 }

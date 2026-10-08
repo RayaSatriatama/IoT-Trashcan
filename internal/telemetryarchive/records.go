@@ -53,6 +53,25 @@ type RecordPage struct {
 	NextCursor *string         `json:"next_cursor,omitempty"`
 }
 
+// ValidateRecordQuery checks the bounded, cursor-bearing portion of a record
+// read before a streaming response commits its HTTP headers. Export callers
+// use this preflight so malformed cursors cannot produce a misleading 200
+// status followed by an empty/truncated body.
+func ValidateRecordQuery(request RecordQuery) error {
+	request.DeviceID = strings.TrimSpace(request.DeviceID)
+	if request.DeviceID == "" || request.Limit < 0 {
+		return fmt.Errorf("%w: device_id and limit are required", ErrInvalidQuery)
+	}
+	cursor, err := decodeRecordCursor(request.Cursor)
+	if err != nil {
+		return err
+	}
+	if cursor.DeviceID != "" && cursor.DeviceID != request.DeviceID {
+		return fmt.Errorf("%w: cursor device does not match query", ErrInvalidQuery)
+	}
+	return nil
+}
+
 type recordCursor struct {
 	DeviceID string `json:"device_id"`
 	BootID   string `json:"boot_id"`
@@ -100,23 +119,17 @@ func (q *ArchiveQuery) ListRecords(ctx context.Context, request RecordQuery) (Re
 	if q == nil || q.db == nil {
 		return RecordPage{}, fmt.Errorf("%w: database is unavailable", ErrInvalidQuery)
 	}
-	request.DeviceID = strings.TrimSpace(request.DeviceID)
-	if request.DeviceID == "" || request.Limit < 0 {
-		return RecordPage{}, fmt.Errorf("%w: device_id and limit are required", ErrInvalidQuery)
+	if err := ValidateRecordQuery(request); err != nil {
+		return RecordPage{}, err
 	}
+	request.DeviceID = strings.TrimSpace(request.DeviceID)
 	if request.Limit == 0 {
 		request.Limit = DefaultRecordPageSize
 	}
 	if request.Limit > MaxRecordPageSize {
 		request.Limit = MaxRecordPageSize
 	}
-	cursor, err := decodeRecordCursor(request.Cursor)
-	if err != nil {
-		return RecordPage{}, err
-	}
-	if cursor.DeviceID != "" && cursor.DeviceID != request.DeviceID {
-		return RecordPage{}, fmt.Errorf("%w: cursor device does not match query", ErrInvalidQuery)
-	}
+	cursor, _ := decodeRecordCursor(request.Cursor)
 
 	statement, args, err := recordQuerySQL(request, cursor, request.Limit+1)
 	if err != nil {
@@ -156,17 +169,11 @@ func (q *ArchiveQuery) ExportRecordsJSON(ctx context.Context, request RecordQuer
 	if q == nil || q.db == nil || writer == nil {
 		return fmt.Errorf("%w: export dependency is unavailable", ErrInvalidQuery)
 	}
-	request.DeviceID = strings.TrimSpace(request.DeviceID)
-	if request.DeviceID == "" {
-		return fmt.Errorf("%w: device_id is required", ErrInvalidQuery)
-	}
-	cursor, err := decodeRecordCursor(request.Cursor)
-	if err != nil {
+	if err := ValidateRecordQuery(request); err != nil {
 		return err
 	}
-	if cursor.DeviceID != "" && cursor.DeviceID != request.DeviceID {
-		return fmt.Errorf("%w: cursor device does not match query", ErrInvalidQuery)
-	}
+	request.DeviceID = strings.TrimSpace(request.DeviceID)
+	cursor, _ := decodeRecordCursor(request.Cursor)
 	statement, args, err := recordQuerySQL(request, cursor, 0)
 	if err != nil {
 		return err
