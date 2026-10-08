@@ -1,3 +1,5 @@
+#include <array>
+#include <cstdio>
 #include <cstdint>
 #include <cstring>
 #include <string_view>
@@ -123,6 +125,19 @@ Ack ack_for(const ImmutableBatch& batch) {
   return ack;
 }
 
+ImmutableBatch manifest_batch(uint64_t sequence) {
+  ImmutableBatch batch{};
+  char id[32]{};
+  const int written = std::snprintf(id, sizeof(id), "batch-%llu",
+                                    static_cast<unsigned long long>(sequence));
+  TEST_ASSERT_TRUE(written > 0);
+  const std::array<uint8_t, 3U> body{{0xA1U, static_cast<uint8_t>(sequence), 0x5AU}};
+  TEST_ASSERT_TRUE(batch.prepare(std::string_view(id, static_cast<std::size_t>(written)),
+                                 body.data(), body.size(), 1U));
+  batch.set_device_id(device());
+  return batch;
+}
+
 void test_runtime_builds_json_batch_and_persists_pending_ack() {
   MemoryArchiveStore<8U> archive(256U * 1024U);
   MemoryImmutableBatchStore<8U> batches(256U * 1024U);
@@ -209,6 +224,48 @@ void test_sample_batch_preserves_partial_evidence_and_null_conversion() {
   TEST_ASSERT_TRUE(body.find("\"converted\":null") != std::string_view::npos);
 }
 
+void test_ack_replay_is_bound_to_acked_manifest() {
+  MemoryAckJournalStore<4U> journal{};
+  const auto first = manifest_batch(1U);
+  const auto second = manifest_batch(2U);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AckPersistStatus::Durable),
+                        static_cast<int>(journal.append_pending(first)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AckPersistStatus::Durable),
+                        static_cast<int>(journal.append_pending(second)));
+
+  const Ack first_ack = ack_for(first);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AckPersistStatus::Durable),
+                        static_cast<int>(journal.apply_ack(first_ack)));
+  TEST_ASSERT_TRUE(journal.find_manifest(first_ack) != nullptr);
+  TEST_ASSERT_TRUE(journal.find_manifest(ack_for(second)) != nullptr);
+  TEST_ASSERT_TRUE(journal.checkpoint());
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AckPersistStatus::Durable),
+                        static_cast<int>(journal.reclaim(first_ack)));
+
+  // Replaying A cannot reclaim or remove B.  The exact B manifest remains
+  // pending and is still discoverable by its own identity/hash.
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AckPersistStatus::NotFound),
+                        static_cast<int>(journal.reclaim(first_ack)));
+  TEST_ASSERT_EQUAL_UINT32(1U, journal.size());
+  TEST_ASSERT_TRUE(journal.find_manifest(ack_for(second)) != nullptr);
+}
+
+void test_ack_journal_compacts_after_more_than_cache_capacity() {
+  MemoryAckJournalStore<16U> journal{};
+  for (uint64_t sequence = 1U; sequence <= 40U; ++sequence) {
+    const auto batch = manifest_batch(sequence);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(AckPersistStatus::Durable),
+                          static_cast<int>(journal.append_pending(batch)));
+    const auto ack = ack_for(batch);
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(AckPersistStatus::Durable),
+                          static_cast<int>(journal.apply_ack(ack)));
+    TEST_ASSERT_TRUE(journal.checkpoint());
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(AckPersistStatus::Durable),
+                          static_cast<int>(journal.reclaim(ack)));
+  }
+  TEST_ASSERT_EQUAL_UINT32(0U, journal.size());
+}
+
 }  // namespace
 
 int main() {
@@ -218,5 +275,7 @@ int main() {
   RUN_TEST(test_valid_ack_checkpoints_before_reclaim);
   RUN_TEST(test_metadata_decoder_and_batch_builder_preserve_boot_provenance);
   RUN_TEST(test_sample_batch_preserves_partial_evidence_and_null_conversion);
+  RUN_TEST(test_ack_replay_is_bound_to_acked_manifest);
+  RUN_TEST(test_ack_journal_compacts_after_more_than_cache_capacity);
   return UNITY_END();
 }

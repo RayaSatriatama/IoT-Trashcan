@@ -63,7 +63,11 @@ class MemoryAckJournalStore final {
                    : AckPersistStatus::Invalid;
       }
     }
-    if (count_ == Capacity) return AckPersistStatus::Retryable;
+    // A bounded in-memory index may be reused only after an acknowledged
+    // entry crossed the checkpoint boundary.  Never evict a pending entry.
+    if (count_ == Capacity) {
+      if (!checkpointed_ || reclaim() == 0U) return AckPersistStatus::Retryable;
+    }
     AckJournalEntry& entry = entries_[count_++];
     std::memcpy(entry.batch_id.data(), batch.batch_id.data(), batch.batch_id_size);
     entry.batch_id_size = batch.batch_id_size;
@@ -85,6 +89,9 @@ class MemoryAckJournalStore final {
     batch.device_id = entry->device_id;
     batch.attempted = true;
     if (!ack_matches(batch, ack)) return AckPersistStatus::Invalid;
+    // ACK replay is idempotent.  Do not append a second state transition or
+    // make a later reclaim target ambiguous.
+    if (entry->state == JournalState::ServerAcked) return AckPersistStatus::Durable;
     entry->state = JournalState::ServerAcked;
     checkpointed_ = false;
     return AckPersistStatus::Durable;
@@ -110,6 +117,40 @@ class MemoryAckJournalStore final {
     count_ = write;
     checkpointed_ = false;
     return reclaimed;
+  }
+
+  // Reclaim exactly the manifest named by an ACK.  This is the safe API for
+  // delivery runtimes; reclaim() remains as a compatibility bulk-compaction
+  // operation for callers that have already established a checkpoint.
+  AckPersistStatus reclaim(const Ack& ack) noexcept {
+    AckJournalEntry* entry = find(ack);
+    if (entry == nullptr) return AckPersistStatus::NotFound;
+    if (entry->state != JournalState::ServerAcked || !checkpointed_) {
+      return AckPersistStatus::Retryable;
+    }
+    const std::size_t index = static_cast<std::size_t>(entry - entries_.data());
+    entries_[index] = entries_[count_ - 1U];
+    --count_;
+    checkpointed_ = false;
+    return AckPersistStatus::Durable;
+  }
+
+  const AckJournalEntry* find_manifest(const Ack& ack) const noexcept {
+    if (ack.batch_id_size == 0U || ack.batch_id_size >= kAckJournalIdBytes) {
+      return nullptr;
+    }
+    for (std::size_t i = 0U; i < count_; ++i) {
+      const auto& entry = entries_[i];
+      if (entry.batch_id_size == ack.batch_id_size &&
+          entry.device_id.bytes == ack.device_id.bytes &&
+          std::equal(entry.batch_id.begin(),
+                     entry.batch_id.begin() + entry.batch_id_size,
+                     ack.batch_id.begin()) &&
+          entry.body_hash == ack.body_hash) {
+        return &entry;
+      }
+    }
+    return nullptr;
   }
 
   const AckJournalEntry* at(std::size_t index) const noexcept {
@@ -162,7 +203,11 @@ class FsAckJournalStore final {
                    : AckPersistStatus::Invalid;
       }
     }
-    if (count_ == entries_.size()) return AckPersistStatus::Retryable;
+    if (count_ == entries_.size()) {
+      // Keep the journal bounded without dropping pending manifests.  Only
+      // entries that have a durable checkpoint may be compacted.
+      if (!checkpointed_ || reclaim() == 0U) return AckPersistStatus::Retryable;
+    }
     const auto status = append_frame(kAckOpPending, entry);
     if (status == AckPersistStatus::Durable) {
       entries_[count_++] = entry;
@@ -176,6 +221,7 @@ class FsAckJournalStore final {
     AckJournalEntry* entry = find(ack);
     if (entry == nullptr) return AckPersistStatus::NotFound;
     if (!ack_matches_entry(*entry, ack)) return AckPersistStatus::Invalid;
+    if (entry->state == JournalState::ServerAcked) return AckPersistStatus::Durable;
     const auto status = append_frame(kAckOpServerAcked, *entry);
     if (status == AckPersistStatus::Durable) {
       entry->state = JournalState::ServerAcked;
@@ -206,17 +252,57 @@ class FsAckJournalStore final {
     if (filesystem_ == nullptr || !checkpointed_ ||
         checkpoint_generation_ != generation_) return 0U;
     std::size_t reclaimed{0U};
-    for (std::size_t i = 0U; i < count_; ++i) {
-      if (entries_[i].state == JournalState::ServerAcked &&
-          append_frame(kAckOpReclaimed, entries_[i]) == AckPersistStatus::Durable) {
-        remove(&entries_[i]);
-        --i;
-        ++reclaimed;
-        ++generation_;
+    std::size_t i = 0U;
+    while (i < count_) {
+      if (entries_[i].state != JournalState::ServerAcked) {
+        ++i;
+        continue;
       }
+      if (append_frame(kAckOpReclaimed, entries_[i]) != AckPersistStatus::Durable) {
+        break;
+      }
+      remove(&entries_[i]);
+      ++reclaimed;
+      ++generation_;
     }
     checkpointed_ = false;
     return reclaimed;
+  }
+
+  // Reclaim only the manifest named by this validated ACK.  A replayed ACK
+  // can never reclaim a different pending batch.
+  AckPersistStatus reclaim(const Ack& ack) noexcept {
+    AckJournalEntry* entry = find(ack);
+    if (entry == nullptr) return AckPersistStatus::NotFound;
+    if (entry->state != JournalState::ServerAcked || !checkpointed_ ||
+        checkpoint_generation_ != generation_) {
+      return AckPersistStatus::Retryable;
+    }
+    if (append_frame(kAckOpReclaimed, *entry) != AckPersistStatus::Durable) {
+      return AckPersistStatus::Retryable;
+    }
+    remove(entry);
+    ++generation_;
+    checkpointed_ = false;
+    return AckPersistStatus::Durable;
+  }
+
+  const AckJournalEntry* find_manifest(const Ack& ack) const noexcept {
+    if (ack.batch_id_size == 0U || ack.batch_id_size >= kAckJournalIdBytes) {
+      return nullptr;
+    }
+    for (std::size_t i = 0U; i < count_; ++i) {
+      const auto& entry = entries_[i];
+      if (entry.batch_id_size == ack.batch_id_size &&
+          entry.device_id.bytes == ack.device_id.bytes &&
+          std::equal(entry.batch_id.begin(),
+                     entry.batch_id.begin() + entry.batch_id_size,
+                     ack.batch_id.begin()) &&
+          entry.body_hash == ack.body_hash) {
+        return &entry;
+      }
+    }
+    return nullptr;
   }
 
   bool recover() noexcept {
