@@ -326,6 +326,29 @@ class BatchJsonBuilder final {
         !key(out, "profile_refs")) return false;
     return true;
   }
+  static bool append_config_ref(telemetry_contract::CanonicalBuffer& out,
+                                const acquisition::ConfigRef& config) noexcept {
+    return out.append('{') && key(out, "config_hash") && prefixed_hash(out, config.hash) &&
+           out.append(',') && key(out, "config_version") &&
+           uint64_string(out, config.config_version) && out.append(',') &&
+           key(out, "schema_version") && append_unsigned(out, config.schema_version) &&
+           out.append('}');
+  }
+  static bool append_config_ref(telemetry_contract::CanonicalBuffer& out,
+                                const storage::DecodedConfigRef& config) noexcept {
+    return out.append('{') && key(out, "config_hash") && prefixed_hash(out, config.hash) &&
+           out.append(',') && key(out, "config_version") &&
+           uint64_string(out, config.config_version) && out.append(',') &&
+           key(out, "schema_version") && append_unsigned(out, config.schema_version) &&
+           out.append('}');
+  }
+  static bool append_record_id(telemetry_contract::CanonicalBuffer& out,
+                               const storage::ArchiveIdentity& identity) noexcept {
+    char record_id[96]{};
+    const int size = make_id(identity, record_id, sizeof(record_id));
+    return size > 0 && append_string(out, std::string_view(record_id,
+                                                            static_cast<std::size_t>(size)));
+  }
   static bool append_common(telemetry_contract::CanonicalBuffer& out,
                             const storage::ArchiveIdentity& identity,
                             uint64_t monotonic_us,
@@ -352,22 +375,28 @@ class BatchJsonBuilder final {
     }
     if (sample.header.kind == acquisition::SampleKind::Ds18b20) {
       if (!sample.raw.ds_wire_evidence) return out.append("null");
-      return out.append("{\"rom\":") &&
+      return out.append("{\"conversion_complete\":") &&
+             out.append(sample.raw.conversion_complete ? "true" : "false") &&
+             out.append(",\"crc_valid\":") &&
+             out.append(sample.raw.crc_valid ? "true" : "false") &&
+             out.append(",\"resolution_bits\":") &&
+             append_unsigned(out, sample.raw.ds_resolution_bits) &&
+             out.append(",\"rom\":") &&
              hex(out, sample.raw.ds_rom.data(), sample.raw.ds_rom.size()) &&
              out.append(",\"scratchpad_hex\":") &&
              hex(out, sample.raw.ds_scratchpad.data(), sample.raw.ds_scratchpad.size()) &&
-             out.append(",\"crc_valid\":") &&
-             out.append(sample.raw.crc_valid ? "true" : "false") &&
-             out.append(",\"conversion_complete\":") &&
-             out.append(sample.raw.conversion_complete ? "true" : "false") &&
-             out.append(",\"resolution_bits\":") &&
-             append_unsigned(out, sample.raw.ds_resolution_bits) && out.append('}');
+             out.append('}');
     }
     if (sample.header.kind == acquisition::SampleKind::Sht31) {
-      return out.append("{\"temperature_ticks\":") && append_unsigned(out, static_cast<uint32_t>(std::max(0, sample.raw.temperature_centi_c))) &&
-             out.append(",\"humidity_ticks\":") && append_unsigned(out, static_cast<uint32_t>(std::max(0, sample.raw.humidity_centi_pct))) &&
-             out.append(",\"temperature_crc_valid\":") && out.append(sample.raw.temperature_crc_valid ? "true" : "false") &&
-             out.append(",\"humidity_crc_valid\":") && out.append(sample.raw.humidity_crc_valid ? "true" : "false") && out.append('}');
+      return out.append("{\"humidity_crc_valid\":") &&
+             out.append(sample.raw.humidity_crc_valid ? "true" : "false") &&
+             out.append(",\"humidity_ticks\":") &&
+             append_unsigned(out, static_cast<uint32_t>(std::max(0, sample.raw.humidity_centi_pct))) &&
+             out.append(",\"temperature_crc_valid\":") &&
+             out.append(sample.raw.temperature_crc_valid ? "true" : "false") &&
+             out.append(",\"temperature_ticks\":") &&
+             append_unsigned(out, static_cast<uint32_t>(std::max(0, sample.raw.temperature_centi_c))) &&
+             out.append('}');
     }
     return out.append("null");
   }
@@ -400,8 +429,8 @@ class BatchJsonBuilder final {
     }
     if (sample.header.kind == acquisition::SampleKind::Sht31) {
       if (!sample.converted.primary_available || !sample.converted.secondary_available) return out.append("null");
-      return out.append("{\"temperature_c\":") && append_float(out, sample.converted.primary_value) &&
-             out.append(",\"humidity_percent\":") && append_float(out, sample.converted.secondary_value) && out.append('}');
+      return out.append("{\"humidity_percent\":") && append_float(out, sample.converted.secondary_value) &&
+             out.append(",\"temperature_c\":") && append_float(out, sample.converted.primary_value) && out.append('}');
     }
     return out.append("null");
   }
@@ -446,37 +475,62 @@ class BatchJsonBuilder final {
   static bool write_sample(const storage::ImmutableRecordBytes& record,
                            telemetry_contract::CanonicalBuffer& out) noexcept {
     acquisition::SampleRecord sample{};
-    if (!storage::RecordCodec::decode_sample(record, sample) ||
-        !append_common(out, record.identity, sample.header.monotonic_us, sample.header.config_ref, "sample") ||
-        !append_sample_profile_refs(out, sample.header.profile_ref) || !out.append(',') ||
-        !key(out, "quality") || !append_string(out, quality_name(sample.quality)) || !out.append(',') ||
-        !key(out, "raw") || !append_sample_raw(out, sample) || !out.append(',') ||
-        !key(out, "reason") || !append_string(out, reason_name(sample.reason)) || !out.append(',') ||
-        !key(out, "recorded_at") || !append_recorded_at(out, sample.header.recorded_at) || !out.append(',') ||
-        !key(out, "sensor_id") || !append_string(out, sensor_name(sample.header.sensor)) || !out.append(',') ||
-        !key(out, "sequence") || !uint64_string(out, record.identity.sequence) || !out.append(',') ||
-        !key(out, "stream") || !append_string(out, stream_name(sample.header.stream)) || !out.append(',') ||
-        !key(out, "time_quality") || !append_string(out, time_quality(sample.header.time_quality)) || !out.append(',') ||
-        !key(out, "converted") || !append_sample_converted(out, sample) || !out.append('}')) return false;
-    return true;
+    if (!storage::RecordCodec::decode_sample(record, sample)) return false;
+    if (sample.quality == acquisition::SampleQuality::Ready &&
+        (!sample.raw.present || (sample.header.kind == acquisition::SampleKind::Ds18b20 &&
+                                 !sample.raw.ds_wire_evidence))) return false;
+    return out.append('{') && key(out, "boot_id") &&
+           hex(out, record.identity.boot_id.bytes.data(), record.identity.boot_id.bytes.size()) &&
+           out.append(',') && key(out, "config_ref") && append_config_ref(out, sample.header.config_ref) &&
+           out.append(',') && key(out, "converted") && append_sample_converted(out, sample) &&
+           out.append(',') && key(out, "device_id") &&
+           hex(out, record.identity.device_id.bytes.data(), record.identity.device_id.bytes.size()) &&
+           out.append(',') && key(out, "kind") && append_string(out, "sample") &&
+           out.append(',') && key(out, "monotonic_us") && uint64_string(out, sample.header.monotonic_us) &&
+           out.append(',') && key(out, "profile_refs") && append_sample_profile_refs(out, sample.header.profile_ref) &&
+           out.append(',') && key(out, "quality") && append_string(out, quality_name(sample.quality)) &&
+           out.append(',') && key(out, "raw") && append_sample_raw(out, sample) &&
+           out.append(',') && key(out, "reason") && append_string(out, reason_name(sample.reason)) &&
+           out.append(',') && key(out, "record_id") && append_record_id(out, record.identity) &&
+           out.append(',') && key(out, "recorded_at") && append_recorded_at(out, sample.header.recorded_at) &&
+           out.append(',') && key(out, "sensor_id") && append_string(out, sensor_name(sample.header.sensor)) &&
+           out.append(',') && key(out, "sequence") && uint64_string(out, record.identity.sequence) &&
+           out.append(',') && key(out, "stream") && append_string(out, stream_name(sample.header.stream)) &&
+           out.append(',') && key(out, "time_quality") && append_string(out, time_quality(sample.header.time_quality)) &&
+           out.append('}');
   }
   static bool write_result(const storage::ImmutableRecordBytes& record,
                            telemetry_contract::CanonicalBuffer& out) noexcept {
     storage::DecodedResultPayload decoded{};
-    if (storage::RecordCodec::decode_result(record, decoded) != storage::TypedDecodeStatus::Decoded ||
-        !append_common(out, record.identity, decoded.computed_monotonic_us, decoded.config_ref, "result") ||
-        !append_profile_refs(out, decoded.profile_refs.data(), decoded.profile_ref_count) || !out.append(',') ||
-        !key(out, "computed_monotonic_us") || !uint64_string(out, decoded.computed_monotonic_us) || !out.append(',') ||
-        !key(out, "fuzzy") || !append_fis(out, decoded.fis) || !out.append(',') ||
-        !key(out, "processed") || !append_processed(out, decoded.metrics) || !out.append(',') ||
-        !key(out, "recorded_at") ||
-        !append_recorded_at(out, acquisition::RecordedAt{
-            decoded.recorded_at_available, decoded.recorded_at_epoch_ms}) || !out.append(',') ||
-        !key(out, "safety") || !append_safety(out, decoded) || !out.append(',') ||
-        !key(out, "source_sample_ids") || !append_source_ids(out, decoded.source_sample_ids.data(), decoded.source_sample_id_count) || !out.append(',') ||
-        !key(out, "stream") || !append_string(out, result_stream_name(decoded.stream)) || !out.append(',') ||
-        !key(out, "time_quality") || !append_string(out, decoded_time_quality_name(decoded.time_quality)) || !out.append('}')) return false;
-    return true;
+    if (storage::RecordCodec::decode_result(record, decoded) != storage::TypedDecodeStatus::Decoded) {
+      return false;
+    }
+    return out.append('{') && key(out, "boot_id") &&
+           hex(out, record.identity.boot_id.bytes.data(), record.identity.boot_id.bytes.size()) &&
+           out.append(',') && key(out, "computed_monotonic_us") &&
+           uint64_string(out, decoded.computed_monotonic_us) && out.append(',') &&
+           key(out, "config_ref") && append_config_ref(out, decoded.config_ref) &&
+           out.append(',') && key(out, "device_id") &&
+           hex(out, record.identity.device_id.bytes.data(), record.identity.device_id.bytes.size()) &&
+           out.append(',') && key(out, "fuzzy") && append_fis(out, decoded.fis) &&
+           out.append(',') && key(out, "kind") && append_string(out, "result") &&
+           out.append(',') && key(out, "monotonic_us") &&
+           uint64_string(out, decoded.computed_monotonic_us) && out.append(',') &&
+           key(out, "processed") && append_processed(out, decoded.metrics) && out.append(',') &&
+           key(out, "profile_refs") &&
+           append_profile_refs(out, decoded.profile_refs.data(), decoded.profile_ref_count) &&
+           out.append(',') && key(out, "record_id") && append_record_id(out, record.identity) &&
+           out.append(',') && key(out, "recorded_at") &&
+           append_recorded_at(out, acquisition::RecordedAt{
+               decoded.recorded_at_available, decoded.recorded_at_epoch_ms}) && out.append(',') &&
+           key(out, "safety") && append_safety(out, decoded) && out.append(',') &&
+           key(out, "sequence") && uint64_string(out, record.identity.sequence) && out.append(',') &&
+           key(out, "source_sample_ids") &&
+           append_source_ids(out, decoded.source_sample_ids.data(), decoded.source_sample_id_count) &&
+           out.append(',') && key(out, "stream") &&
+           append_string(out, result_stream_name(decoded.stream)) && out.append(',') &&
+           key(out, "time_quality") &&
+           append_string(out, decoded_time_quality_name(decoded.time_quality)) && out.append('}');
   }
   static bool append_source_ids(telemetry_contract::CanonicalBuffer& out,
                                 const storage::DecodedSourceId* sources,
@@ -511,14 +565,14 @@ class BatchJsonBuilder final {
   static const char* fis_reason_name(uint8_t reason) noexcept {
     switch (reason) {
       case 0U: return "MODEL_NOT_CONFIGURED";
-      case 1U: return "INVALID_MODEL";
-      case 2U: return "TRACE_OVERFLOW";
+      case 1U: return "MODEL_INVALID";
+      case 2U: return "MODEL_INVALID";
       case 3U: return "INPUT_MISSING";
-      case 4U: return "INPUT_STALE";
+      case 4U: return "STALE_INPUT";
       case 5U: return "INPUT_CALIBRATING";
-      case 6U: return "INPUT_UNCALIBRATED";
-      case 7U: return "INPUT_INVALID";
-      case 8U: return "INPUT_OUT_OF_DOMAIN";
+      case 6U: return "INPUT_MISSING";
+      case 7U: return "INPUT_MISSING";
+      case 8U: return "INPUT_MISSING";
       case 9U: return "ZERO_AREA";
       default: return "READY";
     }
@@ -575,9 +629,12 @@ class BatchJsonBuilder final {
   static bool append_processed(telemetry_contract::CanonicalBuffer& out,
                                const std::array<storage::DecodedMetric, 8U>& metrics) noexcept {
     if (!out.append('{')) return false;
+    constexpr std::array<std::size_t, 6U> order{{4U, 0U, 3U, 5U, 1U, 2U}};
     for (std::size_t index = 0U; index < 6U; ++index) {
       if (index != 0U && !out.append(',')) return false;
-      if (!key(out, metric_name(index)) || !append_metric(out, metrics[index])) return false;
+      const std::size_t metric_index = order[index];
+      if (!key(out, metric_name(metric_index)) ||
+          !append_metric(out, metrics[metric_index])) return false;
     }
     return out.append('}');
   }
@@ -643,10 +700,8 @@ class BatchJsonBuilder final {
     }
   }
   static const char* event_type_name(uint8_t kind) noexcept {
-    switch (kind) {
-      case 3U: return "RESET";
-      default: return "HEALTH_TRANSITION";
-    }
+    // ProfileReset is a profile lifecycle event, not a device reboot.
+    return "HEALTH_TRANSITION";
   }
   static const char* metadata_type_name(
       storage::ArchiveMetadataType type) noexcept {
@@ -712,13 +767,21 @@ class BatchJsonBuilder final {
     std::size_t ref_count{0U};
     if (decoded.previous.present) refs[ref_count++] = decoded.previous;
     if (decoded.current.present) refs[ref_count++] = decoded.current;
-    if (!append_common(out, record.identity, decoded.monotonic_us, decoded.config_ref, "event") ||
-        !append_profile_refs(out, refs.data(), ref_count) || !out.append(',') ||
-        !key(out, "event_type") || !append_string(out, event_type_name(decoded.event_kind)) || !out.append(',') ||
-        !key(out, "payload") || !append_event_payload(out, decoded.event_kind) || !out.append(',') ||
-        !key(out, "recorded_at") || !out.append("null,") ||
-        !key(out, "time_quality") || !append_string(out, "UNSYNCED") || !out.append('}')) return false;
-    return true;
+    return out.append('{') && key(out, "boot_id") &&
+           hex(out, record.identity.boot_id.bytes.data(), record.identity.boot_id.bytes.size()) &&
+           out.append(',') && key(out, "config_ref") && append_config_ref(out, decoded.config_ref) &&
+           out.append(',') && key(out, "device_id") &&
+           hex(out, record.identity.device_id.bytes.data(), record.identity.device_id.bytes.size()) &&
+           out.append(',') && key(out, "event_type") &&
+           append_string(out, event_type_name(decoded.event_kind)) && out.append(',') &&
+           key(out, "kind") && append_string(out, "event") && out.append(',') &&
+           key(out, "monotonic_us") && uint64_string(out, decoded.monotonic_us) && out.append(',') &&
+           key(out, "payload") && append_event_payload(out, decoded.event_kind) && out.append(',') &&
+           key(out, "profile_refs") && append_profile_refs(out, refs.data(), ref_count) && out.append(',') &&
+           key(out, "record_id") && append_record_id(out, record.identity) && out.append(',') &&
+           key(out, "recorded_at") && out.append("null,") &&
+           key(out, "sequence") && uint64_string(out, record.identity.sequence) && out.append(',') &&
+           key(out, "time_quality") && append_string(out, "UNSYNCED") && out.append('}');
   }
   static bool write_metadata(const storage::ImmutableRecordBytes& record,
                              telemetry_contract::CanonicalBuffer& out) noexcept {
@@ -727,15 +790,20 @@ class BatchJsonBuilder final {
         storage::TypedDecodeStatus::Decoded) {
       return false;
     }
-    if (!append_common(out, record.identity, decoded.monotonic_us,
-                       decoded.config_ref, "metadata") ||
-        !append_profile_refs(out, decoded.profile_refs.data(),
-                             decoded.profile_ref_count) ||
+    char record_id[96]{};
+    const int record_id_size = make_id(record.identity, record_id, sizeof(record_id));
+    if (record_id_size <= 0) return false;
+    if (!out.append('{') || !key(out, "boot_id") ||
+        !hex(out, record.identity.boot_id.bytes.data(), record.identity.boot_id.bytes.size()) ||
+        !out.append(',') || !key(out, "config_ref") || append_config_ref(out, decoded.config_ref) == false ||
+        !out.append(',') || !key(out, "device_id") ||
+        !hex(out, record.identity.device_id.bytes.data(), record.identity.device_id.bytes.size()) ||
+        !out.append(',') || !key(out, "kind") || !append_string(out, "metadata") ||
         !out.append(',') || !key(out, "metadata_type") ||
         !append_string(out, metadata_type_name(decoded.type)) ||
-        !out.append(',') || !key(out, "payload")) {
-      return false;
-    }
+        !out.append(',') || !key(out, "monotonic_us") ||
+        !uint64_string(out, decoded.monotonic_us) || !out.append(',') ||
+        !key(out, "payload")) return false;
     if (decoded.type == storage::ArchiveMetadataType::Boot) {
       std::size_t length{0U};
       while (length < decoded.firmware_version.size() &&
@@ -753,10 +821,15 @@ class BatchJsonBuilder final {
     } else {
       return false;
     }
-    return out.append(',') &&
-           key(out, "recorded_at") &&
+    return out.append(',') && key(out, "profile_refs") &&
+           append_profile_refs(out, decoded.profile_refs.data(), decoded.profile_ref_count) &&
+           out.append(',') && key(out, "record_id") &&
+           append_string(out, std::string_view(record_id, static_cast<std::size_t>(record_id_size))) &&
+           out.append(',') && key(out, "recorded_at") &&
            append_recorded_at(out, acquisition::RecordedAt{
                decoded.recorded_at_available, decoded.recorded_at_epoch_ms}) &&
+           out.append(',') && key(out, "sequence") &&
+           uint64_string(out, record.identity.sequence) &&
            out.append(',') && key(out, "time_quality") &&
            append_string(out, decoded_time_quality_name(decoded.time_quality)) &&
            out.append('}');
@@ -869,6 +942,26 @@ class ArchiveBatchRuntime final {
     const auto status = journal_->apply_ack(ack);
     if (status != AckPersistStatus::Durable) return status;
     if (!journal_->checkpoint()) return AckPersistStatus::Retryable;
+    // A runtime can be recreated after the manifest and ACK are durable but
+    // before the source record is reclaimed. Rebuild the source-to-manifest
+    // binding from the exact pending archive frame before compacting the
+    // journal. A replay for another manifest leaves the current source intact.
+    if (!pending_ && archive_ != nullptr) {
+      storage::ImmutableRecordBytes recovered_source{};
+      if (archive_->peek_pending(recovered_source)) {
+        ImmutableBatch recovered_batch{};
+        if (!builder_.build(recovered_source, recovered_batch)) {
+          return AckPersistStatus::Retryable;
+        }
+        if (ack_matches(recovered_batch, ack) &&
+            !archive_->reclaim_pending(recovered_source.identity,
+                                       recovered_source.hash) &&
+            archive_->contains(recovered_source.identity,
+                               recovered_source.hash)) {
+          return AckPersistStatus::Retryable;
+        }
+      }
+    }
     // Reclaim only the source record represented by this in-memory batch.
     // A replayed ACK for another manifest must never reclaim the current
     // pending record. The journal still compacts the exact ACK manifest.

@@ -53,41 +53,52 @@ sensor, heater, or network test was performed.
   batch -> durable batch store -> pending ACK journal. A valid ACK injected at
   the transport boundary is checkpointed before archive reclaim; invalid or
   summary ACKs cannot advance delivery. No production ACK is synthesized.
+  After runtime recreation, a durable ACK is matched against the exact pending
+  archive frame before reclaim; replaying an ACK for another manifest leaves
+  the current record pending.
 - The composition root binds LittleFS archive, SD archive, failover, and the
   media migration source/destination. Boot metadata is produced only when a
   provisioned device identity is available; no identity is fabricated.
 
-## Fresh native evidence
+## Fresh native evidence (final remediation run)
 
-The integrated native suite passed **295/295 tests**, including archive storage,
+The integrated native suite passed **304/304 tests**, including archive storage,
 archive runtime, immutable batch, ACK, failover, corrupt-tail, quota, 129-entry
-cache overflow, 4,680-record workload, migration adapter, gap reserve failover,
+cache overflow, 4,684-record workload, migration adapter, gap reserve failover,
 producer-to-archive retry, typed metadata decode, and runtime batch/ACK tests.
-The telemetry contract tests also passed their frozen canonical record and
-exact-body hash fixtures.
+The final run also covers ACK-to-manifest replay after runtime recreation. The
+actual C++ builder output for sample, result, event, and metadata records was
+independently accepted by the existing Go batch validator. The telemetry
+contract tests passed their frozen canonical record and exact-body hash
+fixtures.
 
 The complete native suite was rerun with AddressSanitizer and UndefinedBehaviorSanitizer
-through a temporary native PlatformIO configuration: **295/295 tests**, with no
-sanitizer diagnostics. The sanitizer environment is temporary and is not part
-of the production PlatformIO configuration.
+through a temporary native PlatformIO configuration: **304/304 tests**, with
+no sanitizer diagnostics. The sanitizer environment is temporary and is not part of the production
+PlatformIO configuration. The final regression is covered by the focused
+native run and the final full native run.
 Cppcheck reported `No defects found`.
 
 Target compilation passed for `sigap_n16r8`, `sigap_n16r8_sd`, and
-`sigap_bench`. Final usage was 299,392 B RAM and 480,677 B flash for
-`sigap_n16r8`, 299,676 B RAM and 530,921 B flash for `sigap_n16r8_sd`, and
-299,392 B RAM and 480,677 B flash for `sigap_bench`. These are compilation
+`sigap_bench`. Final usage was 300,272 B RAM and 486,597 B flash for
+`sigap_n16r8`, 300,556 B RAM and 536,897 B flash for `sigap_n16r8_sd`, and
+300,272 B RAM and 486,597 B flash for `sigap_bench`. The target composition
+uses one owned storage handoff slot; upstream typed rings retain additional
+records, keeping the SD variant below the internal DRAM limit. These are compilation
 evidence only, not physical N16R8 or SD I/O validation.
 
 Native size probes continue to treat record/batch byte arrays and journal
-capacity as explicit bounded ownership. `SampleRing<16>` is 4,656 B after
+capacity as explicit bounded ownership. `SampleRing<16>` is 5,088 B after
 adding first/last dropped identities for queue gap evidence. The large native
 fault-injection stores are not instantiated in the target composition.
 `ArchiveRuntime` is 35,976 B, including two instance-owned 16,488 B record
 codec buffer; no equivalent 16 KiB automatic buffer remains on the application
 loop stack. `ImmutableRecordBytes` is 16,488 B, `ImmutableBatch` is 32,936 B,
 `GapTracker<32>` is 2,840 B, and the native `MemoryAckJournalStore<2>` is
-336 B. `StorageWorker<4>` is instance-owned and its queue stores four typed
-16,488 B record slots plus bounded status counters. `FsAckJournalStore` is
+336 B. `StorageWorker<1>` is instance-owned in the target composition and
+stores one owned frozen frame plus bounded status counters. Native
+fault-injection tests still exercise larger worker queues independently.
+`FsAckJournalStore` is
 target-only and is therefore not represented by the native layout measurement;
 its bounded target entries and frame scratch remain instance-owned.
 

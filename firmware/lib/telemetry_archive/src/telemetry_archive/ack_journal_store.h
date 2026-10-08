@@ -123,7 +123,7 @@ class MemoryAckJournalStore final {
   // delivery runtimes; reclaim() remains as a compatibility bulk-compaction
   // operation for callers that have already established a checkpoint.
   AckPersistStatus reclaim(const Ack& ack) noexcept {
-    AckJournalEntry* entry = find(ack);
+    const AckJournalEntry* entry = find_manifest(ack);
     if (entry == nullptr) return AckPersistStatus::NotFound;
     if (entry->state != JournalState::ServerAcked || !checkpointed_) {
       return AckPersistStatus::Retryable;

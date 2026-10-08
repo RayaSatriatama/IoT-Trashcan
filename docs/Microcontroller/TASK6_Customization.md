@@ -15,7 +15,7 @@ backend archive code, or migration 005.
 | target archive identity cache | `LittleFsArchiveStore`, entries | 128 hot identities; full archive remains file-backed and scans cache misses | firmware build; rebuilt on restart |
 | target batch index | `FsImmutableBatchStore`, entries | 64 hot batch identities | firmware build; rebuilt on restart |
 | migration work budget | `ArchiveMediaMigration` / `ArchiveRuntime`, records per loop | one bounded record step | instance-owned; retryable until verify, checkpoint, and reclaim succeed |
-| storage worker queue | `storage/storage_worker.h`, entries | fixed metadata queue; high-water and overflow observable | instance-owned; retryable until durable, terminal gap on invalid input |
+| storage worker queue | `storage/storage_worker.h`, entries | target composition uses one owned frozen-frame slot; native fault tests exercise larger bounded queues; high-water and overflow observable | instance-owned; retryable until durable, terminal gap on invalid input |
 | ACK journal frame | `FsAckJournalStore`, bytes | fixed little-endian frame with CRC and generation-bound checkpoint | protocol constant; target recovery validates before state transition |
 
 Calibration coefficients, capacity, and scientific model parameters remain
@@ -65,7 +65,10 @@ typed archive frame, builds a canonical telemetry-v3 immutable body, persists
 exact bytes, records a pending ACK journal entry, and applies a validated ACK
 only after a durable checkpoint. Reclaim never follows an invalid,
 summary-v2, mismatched, or uncheckpointed ACK. Native tests inject ACKs only
-at the transport boundary; production does not synthesize server ACKs.
+at the transport boundary; production does not synthesize server ACKs. After
+runtime recreation, ACK application rebuilds the source binding from the exact
+pending archive frame before reclaim, so a replayed ACK cannot reclaim the next
+manifest.
 
 The composition root binds LittleFS as the archive source, SD as the optional
 destination, failover, and the copy/verify/checkpoint/reclaim migration

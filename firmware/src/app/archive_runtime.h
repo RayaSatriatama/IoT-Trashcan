@@ -229,7 +229,7 @@ class ArchiveRuntime final {
   storage::ArchiveHealth health() const noexcept {
     return store_ == nullptr ? storage::ArchiveHealth::Degraded : store_->health();
   }
-  const storage::StorageWorker<4U>& storage_worker() const noexcept {
+  const storage::StorageWorker<1U>& storage_worker() const noexcept {
     return worker_;
   }
   storage::AppendStatus poll_storage() noexcept {
@@ -522,7 +522,10 @@ class ArchiveRuntime final {
   }
 
   storage::IArchiveStore* store_{nullptr};
-  storage::StorageWorker<4U> worker_{};
+  // ArchiveRuntime transfers one immutable frame at a time. Upstream typed
+  // handoffs retain additional records until this slot drains, so the target
+  // composition does not reserve multiple 16 KiB frame references in DRAM.
+  storage::StorageWorker<1U> worker_{};
   storage::ArchiveMediaMigration* migration_{nullptr};
   acquisition::SequenceAllocator* sequence_{nullptr};
   acquisition::DeviceId event_device_{};

@@ -293,6 +293,30 @@ void test_replayed_ack_cannot_reclaim_next_pending_record() {
   TEST_ASSERT_EQUAL_UINT64(72U, replay.identity.sequence);
 }
 
+void test_ack_recovery_reclaims_source_after_runtime_restart() {
+  MemoryArchiveStore<8U> archive(256U * 1024U);
+  MemoryImmutableBatchStore<8U> batches(256U * 1024U);
+  MemoryAckJournalStore<8U> journal{};
+  ArchiveBatchRuntime<MemoryImmutableBatchStore<8U>, MemoryAckJournalStore<8U>>
+      first_runtime(&archive, &batches, &journal);
+  const auto encoded = sample(81U);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AppendStatus::Durable),
+                        static_cast<int>(archive.append(encoded)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(BatchRuntimeStatus::Durable),
+                        static_cast<int>(first_runtime.poll()));
+  const Ack ack = ack_for(first_runtime.batch());
+
+  // The second runtime represents a reboot after the manifest and ACK are
+  // durable but before the source archive frame was reclaimed.
+  ArchiveBatchRuntime<MemoryImmutableBatchStore<8U>, MemoryAckJournalStore<8U>>
+      restarted_runtime(&archive, &batches, &journal);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AckPersistStatus::Durable),
+                        static_cast<int>(restarted_runtime.apply_ack(ack)));
+  ImmutableRecordBytes replay{};
+  TEST_ASSERT_FALSE(archive.peek_pending(replay));
+  TEST_ASSERT_EQUAL_UINT32(0U, journal.size());
+}
+
 }  // namespace
 
 int main() {
@@ -305,5 +329,6 @@ int main() {
   RUN_TEST(test_ack_replay_is_bound_to_acked_manifest);
   RUN_TEST(test_ack_journal_compacts_after_more_than_cache_capacity);
   RUN_TEST(test_replayed_ack_cannot_reclaim_next_pending_record);
+  RUN_TEST(test_ack_recovery_reclaims_source_after_runtime_restart);
   return UNITY_END();
 }
