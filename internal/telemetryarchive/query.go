@@ -9,7 +9,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -18,6 +20,10 @@ const (
 	// MaxBatchPageSize bounds archive manifest reads independently of the
 	// telemetry-v3 body and record limits.
 	MaxBatchPageSize = 200
+	// MaxCurrentSensorSources bounds projection memory above the finite sensor
+	// set supported by telemetry-v3. It is not a scan limit: every archive row
+	// is still examined before this projection bound is applied.
+	MaxCurrentSensorSources = 64
 )
 
 var (
@@ -52,9 +58,16 @@ type StoredBatch struct {
 // sample and result for each stream. The values are the exact persisted JSON;
 // this endpoint does not recalculate MCU decisions.
 type CurrentSnapshot struct {
-	DeviceID string                     `json:"device_id"`
-	Samples  map[string]json.RawMessage `json:"samples"`
-	Results  map[string]json.RawMessage `json:"results"`
+	DeviceID string `json:"device_id"`
+	// Samples is indexed by stream and then sensor_id. Keeping the sensor
+	// identity in the projection prevents a high-rate MQ channel from
+	// replacing an independent load-cell or temperature observation.
+	Samples map[string]map[string]json.RawMessage `json:"samples"`
+	Results map[string]json.RawMessage            `json:"results"`
+	// OrderingUnknown identifies source keys for which records from separate
+	// boots did not carry a trusted comparable UTC anchor. The API deliberately
+	// does not invent an order in that case.
+	OrderingUnknown []string `json:"ordering_unknown,omitempty"`
 }
 
 // ArchiveQuery performs bounded, parameterized archive reads.
@@ -177,19 +190,19 @@ func LoadBatch(ctx context.Context, db *sql.DB, deviceID, batchID string) (Store
 	return query.LoadBatch(ctx, deviceID, batchID)
 }
 
-// Current returns the newest archived sample and result per stream, bounded by
-// the number of known telemetry streams and the archive hot-cache limit.
+// Current returns the newest archived sample for every sensor in each stream
+// and the newest result per stream. Records are scanned from the complete
+// retained archive; only the bounded projection is retained in memory.
 func (q *ArchiveQuery) Current(ctx context.Context, deviceID string) (CurrentSnapshot, error) {
 	if q == nil || q.db == nil || strings.TrimSpace(deviceID) == "" {
 		return CurrentSnapshot{}, fmt.Errorf("%w: device_id is required", ErrInvalidQuery)
 	}
-	snapshot := CurrentSnapshot{DeviceID: deviceID, Samples: map[string]json.RawMessage{}, Results: map[string]json.RawMessage{}}
+	snapshot := CurrentSnapshot{DeviceID: deviceID, Samples: map[string]map[string]json.RawMessage{}, Results: map[string]json.RawMessage{}}
 	rows, err := q.db.QueryContext(ctx, `
-SELECT kind, record_bytes
+	SELECT kind, record_bytes
 FROM telemetry_records
 WHERE device_id = ? AND kind IN ('sample', 'result')
-ORDER BY created_at DESC, rowid DESC
-LIMIT ?`, deviceID, MaxBatchPageSize)
+ORDER BY rowid ASC`, deviceID)
 	if err != nil {
 		return CurrentSnapshot{}, fmt.Errorf("query current telemetry: %w", err)
 	}
@@ -200,18 +213,54 @@ LIMIT ?`, deviceID, MaxBatchPageSize)
 		if err := rows.Scan(&kind, &raw); err != nil {
 			return CurrentSnapshot{}, fmt.Errorf("scan current telemetry: %w", err)
 		}
-		var fields struct {
-			Stream string `json:"stream"`
-		}
-		if err := json.Unmarshal(raw, &fields); err != nil || fields.Stream == "" {
+		evidence, err := parseCurrentEvidence(raw, kind)
+		if err != nil || evidence.stream == "" {
 			continue
 		}
-		target := snapshot.Samples
-		if kind == "result" {
-			target = snapshot.Results
+		key := evidence.stream
+		if kind == "sample" {
+			if evidence.sensorID == "" {
+				continue
+			}
+			if _, ok := snapshot.Samples[key]; !ok {
+				if currentSensorCount(snapshot.Samples) >= MaxCurrentSensorSources {
+					continue
+				}
+				snapshot.Samples[key] = map[string]json.RawMessage{}
+			}
+			previousRaw, exists := snapshot.Samples[key][evidence.sensorID]
+			if !exists {
+				snapshot.Samples[key][evidence.sensorID] = append(json.RawMessage(nil), raw...)
+				continue
+			}
+			previous, parseErr := parseCurrentEvidence(previousRaw, kind)
+			if parseErr != nil {
+				continue
+			}
+			comparison := compareCurrentEvidence(previous, evidence)
+			switch comparison {
+			case currentNewer:
+				snapshot.Samples[key][evidence.sensorID] = append(json.RawMessage(nil), raw...)
+			case currentUnknown:
+				snapshot.OrderingUnknown = appendUnique(snapshot.OrderingUnknown, key+"/"+evidence.sensorID)
+			}
+			continue
 		}
-		if _, exists := target[fields.Stream]; !exists {
-			target[fields.Stream] = append(json.RawMessage(nil), raw...)
+		target := snapshot.Results
+		previousRaw, exists := target[key]
+		if !exists {
+			target[key] = append(json.RawMessage(nil), raw...)
+			continue
+		}
+		previous, parseErr := parseCurrentEvidence(previousRaw, kind)
+		if parseErr != nil {
+			continue
+		}
+		switch compareCurrentEvidence(previous, evidence) {
+		case currentNewer:
+			target[key] = append(json.RawMessage(nil), raw...)
+		case currentUnknown:
+			snapshot.OrderingUnknown = appendUnique(snapshot.OrderingUnknown, key)
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -226,6 +275,108 @@ func Current(ctx context.Context, db *sql.DB, deviceID string) (CurrentSnapshot,
 		return CurrentSnapshot{}, err
 	}
 	return query.Current(ctx, deviceID)
+}
+
+type currentComparison uint8
+
+const (
+	currentNotNewer currentComparison = iota
+	currentNewer
+	currentUnknown
+)
+
+type currentEvidence struct {
+	stream      string
+	sensorID    string
+	bootID      string
+	sequence    uint64
+	monotonic   uint64
+	recordedAt  time.Time
+	hasUTC      bool
+	timeQuality string
+}
+
+// parseCurrentEvidence reads only the immutable common fields needed for
+// ordering. The raw record remains the response payload, so no evidence or
+// provenance is reconstructed by the projection.
+func parseCurrentEvidence(raw []byte, kind string) (currentEvidence, error) {
+	var fields struct {
+		Stream      string  `json:"stream"`
+		SensorID    string  `json:"sensor_id"`
+		BootID      string  `json:"boot_id"`
+		Sequence    string  `json:"sequence"`
+		Monotonic   string  `json:"monotonic_us"`
+		RecordedAt  *string `json:"recorded_at"`
+		TimeQuality string  `json:"time_quality"`
+	}
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return currentEvidence{}, err
+	}
+	sequence, err := strconv.ParseUint(fields.Sequence, 10, 64)
+	if err != nil || fields.BootID == "" || fields.Stream == "" {
+		return currentEvidence{}, errors.New("invalid current record identity")
+	}
+	monotonic, err := strconv.ParseUint(fields.Monotonic, 10, 64)
+	if err != nil {
+		return currentEvidence{}, errors.New("invalid current monotonic timestamp")
+	}
+	evidence := currentEvidence{
+		stream: fields.Stream, sensorID: fields.SensorID, bootID: fields.BootID,
+		sequence: sequence, monotonic: monotonic,
+		timeQuality: fields.TimeQuality,
+	}
+	if fields.RecordedAt != nil && *fields.RecordedAt != "" && fields.TimeQuality != "UNSYNCED" {
+		if value, parseErr := time.Parse(time.RFC3339Nano, *fields.RecordedAt); parseErr == nil {
+			evidence.recordedAt = value
+			evidence.hasUTC = true
+		}
+	}
+	if kind == "result" {
+		evidence.sensorID = ""
+	}
+	return evidence, nil
+}
+
+func currentSensorCount(samples map[string]map[string]json.RawMessage) int {
+	count := 0
+	for _, sensors := range samples {
+		count += len(sensors)
+	}
+	return count
+}
+
+func compareCurrentEvidence(previous, candidate currentEvidence) currentComparison {
+	if previous.bootID == candidate.bootID {
+		if candidate.sequence > previous.sequence ||
+			(candidate.sequence == previous.sequence && candidate.monotonic > previous.monotonic) {
+			return currentNewer
+		}
+		return currentNotNewer
+	}
+	// Monotonic clocks have no ordering relationship across boots. A trusted
+	// UTC anchor is the only cross-boot ordering evidence accepted here.
+	if previous.hasUTC && candidate.hasUTC {
+		if candidate.recordedAt.After(previous.recordedAt) {
+			return currentNewer
+		}
+		return currentNotNewer
+	}
+	if candidate.hasUTC != previous.hasUTC {
+		if candidate.hasUTC {
+			return currentNewer
+		}
+		return currentNotNewer
+	}
+	return currentUnknown
+}
+
+func appendUnique(values []string, value string) []string {
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
 }
 
 type manifestScanner interface {
