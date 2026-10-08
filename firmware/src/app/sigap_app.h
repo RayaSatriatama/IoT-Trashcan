@@ -1,6 +1,8 @@
 #pragma once
 
 #include <array>
+#include <optional>
+#include <string_view>
 
 #include "config/config_manager.h"
 #include "config/nvs_config_store.h"
@@ -20,8 +22,101 @@
 #include "archive_runtime.h"
 #include "telemetry_archive/ack_journal_store.h"
 #include "telemetry_archive/runtime.h"
+#include "network/network.h"
+#if defined(ARDUINO) && defined(SIGAP_NETWORK_ENDPOINT) && \
+    defined(SIGAP_NETWORK_CA_CERT)
+#include "network/https_transport.h"
+#endif
 
 namespace sigap {
+
+// Adapts the durable batch runtime to the network worker without exposing
+// mutable archive state. The runtime remains the sole owner of ACK/reclaim
+// transitions and the exact immutable body.
+template <typename BatchRuntime>
+class ArchiveBatchNetworkSource final
+    : public network::IImmutableBatchSource {
+ public:
+  explicit ArchiveBatchNetworkSource(BatchRuntime& runtime) noexcept
+      : runtime_(runtime) {}
+
+  bool peek_pending(
+      const telemetry_archive::ImmutableBatch*& output) noexcept override {
+    if (!runtime_.pending()) {
+      output = nullptr;
+      return false;
+    }
+    output = &runtime_.batch();
+    return true;
+  }
+
+  network::DeliveryStatus acknowledge(
+      const telemetry_archive::Ack& ack) noexcept override {
+    const auto status = runtime_.apply_ack(ack);
+    switch (status) {
+      case telemetry_archive::AckPersistStatus::Durable:
+        return network::DeliveryStatus::Durable;
+      case telemetry_archive::AckPersistStatus::Invalid:
+      case telemetry_archive::AckPersistStatus::NotFound:
+        return network::DeliveryStatus::Invalid;
+      case telemetry_archive::AckPersistStatus::Retryable:
+      default:
+        return network::DeliveryStatus::Retryable;
+    }
+  }
+
+ private:
+  BatchRuntime& runtime_;
+};
+
+class ApplicationNetworkClock final : public network::IMonotonicClock {
+ public:
+  uint64_t now_us() const noexcept override { return now_us_; }
+  void set_now(uint64_t now_us) noexcept { now_us_ = now_us; }
+
+ private:
+  uint64_t now_us_{0U};
+};
+
+class ApplicationNetworkJitter final : public network::IRandomJitter {
+ public:
+  uint32_t sample(uint32_t) noexcept override { return 0U; }
+};
+
+// Network provisioning is intentionally conservative until an endpoint and
+// CA bundle are supplied by the build composition. Offline polling remains a
+// valid runtime state and never alters acquisition or archive ownership.
+class DisabledNetworkLink final : public network::IWifiLink {
+ public:
+  bool connected() const noexcept override { return false; }
+  bool poll_connect() noexcept override { return false; }
+};
+
+class DisabledNetworkTransport final : public network::IHttpTransport {
+ public:
+  network::TransportResult post_batch(
+      std::string_view, std::string_view, uint16_t,
+      uint32_t, network::NetworkHttpResponse&) noexcept override {
+    return network::TransportResult::Failed;
+  }
+};
+
+#if defined(ARDUINO) && defined(SIGAP_NETWORK_ENDPOINT) && \
+    defined(SIGAP_NETWORK_CA_CERT)
+class ArduinoNetworkLink final : public network::IWifiLink {
+ public:
+  void bind(const network::WiFiArchiveHttpTransport* transport) noexcept {
+    transport_ = transport;
+  }
+  bool connected() const noexcept override {
+    return transport_ != nullptr && transport_->connected();
+  }
+  bool poll_connect() noexcept override { return connected(); }
+
+ private:
+  const network::WiFiArchiveHttpTransport* transport_{nullptr};
+};
+#endif
 
 #ifdef ARDUINO
 class ArduinoSdProbe final : public maintenance::IStorageTestProbe {
@@ -66,6 +161,11 @@ class SigapApp final {
     return maintenance_router_;
   }
 
+  network::NetworkState network_state() const noexcept {
+    return network_worker_.has_value() ? network_worker_->state()
+                                       : network::NetworkState::Offline;
+  }
+
  private:
 #ifdef ARDUINO
   using BatchStore = telemetry_archive::FsImmutableBatchStore;
@@ -102,13 +202,30 @@ class SigapApp final {
 #endif
   storage::ArchiveMediaMigration media_migration_;
   ArchiveRuntime archive_runtime_{};
+#ifdef ARDUINO
   BatchStore batch_store_{};
+#else
+  BatchStore batch_store_{6ULL * 1024ULL * 1024ULL};
+#endif
 #ifdef ARDUINO
   AckJournal ack_journal_{};
 #else
   AckJournal ack_journal_{};
 #endif
   BatchRuntime batch_runtime_{};
+  ArchiveBatchNetworkSource<BatchRuntime> network_source_;
+  ApplicationNetworkClock network_clock_{};
+  ApplicationNetworkJitter network_jitter_{};
+#if defined(ARDUINO) && defined(SIGAP_NETWORK_ENDPOINT) && \
+    defined(SIGAP_NETWORK_CA_CERT)
+  ArduinoNetworkLink network_link_{};
+  network::WiFiArchiveHttpTransport network_transport_{};
+#else
+  DisabledNetworkLink network_link_{};
+  DisabledNetworkTransport network_transport_{};
+#endif
+  std::optional<network::NetworkWorker> network_worker_{};
+  bool network_ready_{false};
   models::NvsModelProfilePersistence model_persistence_{};
   models::ModelProfileLifecycle model_lifecycle_;
   maintenance::ModelMaintenanceRouter model_router_;
