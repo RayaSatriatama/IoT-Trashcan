@@ -224,7 +224,17 @@ SigapApp::SigapApp() noexcept
 #else
                           nullptr),
 #endif
+      network_source_(batch_runtime_),
+#ifdef ARDUINO
+      wifi_manager_(secret_store_, wifi_station_, provisioning_clock_),
+      wifi_backend_(wifi_manager_),
+      ble_session_(wifi_backend_, provisioning_clock_),
+#endif
       maintenance_service_(maintenance_transport_, maintenance_router_) {
+#if defined(ARDUINO) && defined(SIGAP_NETWORK_ENDPOINT) && \
+    defined(SIGAP_NETWORK_CA_CERT)
+  network_link_.bind(&network_transport_);
+#endif
   sd_probe_.bind_archive_store(
       sd_store_, config_manager_.active().storage.sd_pending_quota_bytes);
   profile_manager_.bind_runtime_profiles(profiles_);
@@ -278,6 +288,15 @@ void SigapApp::setup() noexcept {
 #ifdef ARDUINO
   Serial.begin(115200);
   board::log_runtime_board_memory();
+  const int64_t started_us = esp_timer_get_time();
+  provisioning_clock_.set_now(
+      started_us < 0 ? 0U : static_cast<uint64_t>(started_us));
+  (void)wifi_manager_.begin();
+  char ble_name[32]{};
+  const uint64_t device_mac = ESP.getEfuseMac();
+  (void)std::snprintf(ble_name, sizeof(ble_name), "SIGAP-%04llX",
+                      static_cast<unsigned long long>(device_mac & 0xffffU));
+  (void)ble_service_.begin(ble_session_, std::string_view(ble_name));
 #endif
   const config::ConfigBootResult boot_result = config_manager_.begin();
   (void)boot_result;
@@ -320,6 +339,44 @@ void SigapApp::setup() noexcept {
   record_context_.config_ref = ref;
   archive_runtime_.set_event_context(record_context_.device_id,
                                      record_context_.boot_id, ref);
+  network_worker_.emplace(
+      network::NetworkPolicy{
+          config_manager_.active().telemetry.retry_min_ms,
+          config_manager_.active().telemetry.retry_max_ms,
+          10000U,
+          config_manager_.active().telemetry.retry_max_ms,
+          250U},
+      network_clock_, network_jitter_, network_link_, network_transport_,
+      network_source_);
+  // Network credentials are loaded only into the worker boundary. They are
+  // never serialized, logged, or exposed through maintenance responses.
+  provisioning::NetworkSecrets network_secrets{};
+  if (secret_store_.load_for_network(network_secrets)) {
+    std::size_t token_size{0U};
+    while (token_size < network_secrets.device_token.size() &&
+           network_secrets.device_token[token_size] != '\0') {
+      ++token_size;
+    }
+#ifdef ARDUINO
+    bool transport_ready{false};
+#if defined(SIGAP_NETWORK_ENDPOINT) && defined(SIGAP_NETWORK_CA_CERT)
+    transport_ready = network_transport_.set_endpoint(SIGAP_NETWORK_ENDPOINT) &&
+                      network_transport_.begin(network_secrets,
+                                               SIGAP_NETWORK_CA_CERT);
+#endif
+#else
+    constexpr bool transport_ready{true};
+#endif
+    network_ready_ = transport_ready && token_size != 0U &&
+                     network_worker_->begin(std::string_view(
+                         network_secrets.device_token.data(), token_size));
+    provisioning::secure_zero(network_secrets.ssid.data(),
+                              network_secrets.ssid.size());
+    provisioning::secure_zero(network_secrets.password.data(),
+                              network_secrets.password.size());
+    provisioning::secure_zero(network_secrets.device_token.data(),
+                              network_secrets.device_token.size());
+  }
 #ifdef ARDUINO
   if (LittleFS.begin(false)) {
     (void)migration_journal_.begin(LittleFS);
@@ -383,6 +440,9 @@ void SigapApp::loop() noexcept {
 #ifdef ARDUINO
   const acquisition::ArduinoMonotonicClock clock{};
   const uint64_t now_us = clock.now_us();
+  provisioning_clock_.set_now(now_us);
+  wifi_manager_.poll();
+  ble_service_.poll();
   maintenance_service_.poll(now_us);
   std::size_t audit_budget{2U};
   while (audit_budget-- != 0U && archive_runtime_.drain_audit_events(audit_ring_)) {
@@ -400,6 +460,10 @@ void SigapApp::loop() noexcept {
   (void)archive_runtime_.drain_results(processing_runtime_.handoff());
   (void)archive_runtime_.poll_storage_slice(4U, 32U * 1024U);
   (void)batch_runtime_.poll();
+  network_clock_.set_now(now_us);
+  if (network_ready_ && network_worker_.has_value()) {
+    (void)network_worker_->poll();
+  }
   (void)archive_runtime_.poll_media_migration();
   maintenance_service_.poll(now_us);
 #ifdef ARDUINO

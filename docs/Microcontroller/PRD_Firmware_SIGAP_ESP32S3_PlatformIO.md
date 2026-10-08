@@ -4,7 +4,7 @@ Versi 1.3  |  1 Oktober 2026  |  Kontrak implementasi firmware, configuration ar
 
 Satu ESP32-S3 DevKitC-1 N16R8 menangani tiga slot Organik, Anorganik, dan B3. Firmware membaca seluruh sensor, melakukan kalibrasi, filtering, normalisasi, evaluasi FIS, dan safety lokal, mencatat setiap sampel serta hasil per siklus, lalu mengirim ringkasan dan arsip telemetry ke backend SIGAP. Untuk sumber `HARDWARE_EDGE_V3`, hasil yang diproduksi MCU adalah source of truth: backend Go mengautentikasi, memvalidasi kontrak, menyimpan, memproyeksikan current state, dan mengekspor data tanpa menghitung ulang FIS/safety. Konfigurasi runtime perangkat tidak berupa kumpulan mutable global variable: firmware menggunakan snapshot `AppConfig` tervalidasi dan berversi, secret terpisah, calibration/model profile terpisah, serta runtime state yang tidak diperlakukan sebagai konfigurasi. Jalur simulator/legacy mempertahankan pipeline backend yang ada sampai dimigrasikan secara terpisah. Dokumen ini menetapkan perilaku produk, kontrak configuration/provisioning, telemetry, rencana PlatformIO, serta kriteria penerimaan untuk memulai implementasi.
 
-Revisi 1.3 menyatukan PRD dengan TSD v1.2 dan keputusan dari skill embedded yang telah di-merge: source of truth keputusan hardware berada di edge; arsip setiap sampel menjadi kontrak P0; policy storage-full dikunci ke **no overwrite of pending**; LittleFS menjadi 8 MiB dengan quota pending awal 6 MiB; schema telemetry v3 dibekukan; dan configuration architecture dibagi menjadi compile-time board/build constants, versioned `AppConfig`, write-only `SecretStore`, versioned calibration/model profiles, serta ephemeral `RuntimeState`. Mutable non-const global configuration dilarang. Revisi 1.2 menjadi asal freeze telemetry/archive; revisi 1.1 menjadi asal mode kalibrasi wajib P0 dan microSD opsional. Wi-Fi tetap jalur pengiriman utama; BLE tetap P1 bersyarat.
+Revisi 1.3 menyatukan PRD dengan TSD v1.2 dan keputusan dari skill embedded yang telah di-merge: source of truth keputusan hardware berada di edge; arsip setiap sampel menjadi kontrak P0; policy storage-full dikunci ke **no overwrite of pending**; LittleFS menjadi 8 MiB dengan quota pending awal 6 MiB; schema telemetry v3 dibekukan; dan configuration architecture dibagi menjadi compile-time board/build constants, versioned `AppConfig`, write-only `SecretStore`, versioned calibration/model profiles, serta ephemeral `RuntimeState`. Mutable non-const global configuration dilarang. Revisi 1.2 menjadi asal freeze telemetry/archive; revisi 1.1 menjadi asal mode kalibrasi wajib P0 dan microSD opsional. Wi-Fi tetap jalur pengiriman utama. BLE provisioning lokal selalu aktif pada Task 7; BLE telemetry gateway tetap P1 bersyarat.
 
 **Authority artefak:** file Markdown ini adalah source normative revisi 1.3. `PRD_Firmware_SIGAP_ESP32S3_PlatformIO.docx` adalah derived artifact dan tidak boleh dianggap setara sampai diregenerasi dari revisi ini serta diverifikasi layout.
 
@@ -503,11 +503,15 @@ FR STORE 07 Config/secret/calibration/model active-pointer berada pada NVS/profi
 
 Uji append/checkpoint/ACK/power-cut/hot-remove/quota-full serta p99 write latency, wear flash, high-water queue, tail loss, dan final ID/hash reconciliation.
 
-## 10B Jalur WiFi dan opsi Bluetooth
+## 10B Jalur WiFi dan provisioning Bluetooth
 
 FR NET 01 Wi-Fi memakai HTTPS ke API existing dan menjadi transport P0. Kualitas RSSI hanya diagnostik; status delivered ditentukan ack server. Firmware terus mengakuisisi dan menyimpan saat Wi-Fi tidak memenuhi jangkauan. Reconnect memakai backoff dan tidak memaksa reset hanya karena internet terputus.
 
-FR NET 02 ESP32-S3 menyediakan Bluetooth Low Energy, tanpa Bluetooth Classic. BLE dapat membawa telemetry melalui layanan GATT custom, tetapi perlu aplikasi HP atau gateway komputer yang meneruskan byte paket ke HTTPS backend. BLE tidak diperlakukan sebagai jaringan IP pengganti Wi-Fi secara otomatis. Opsi ini mengikuti permintaan pengguna bila layak, bukan kewajiban MVP.
+FR NET 02 ESP32-S3 menyediakan Bluetooth Low Energy, tanpa Bluetooth Classic. Pada Task 7, layanan GATT provisioning lokal selalu diiklankan, termasuk ketika Wi-Fi sedang tersambung, gagal, atau melakukan backoff. Browser Web Bluetooth meminta izin melalui gesture pengguna dan secure context, lalu mengirim kandidat Wi-Fi langsung ke perangkat. BLE provisioning tidak membawa telemetry dan tidak menggantikan HTTPS/Wi-Fi.
+
+FR NET 02A Candidate credential tidak menimpa SecretStore sebelum association dan IP berhasil. Scan Wi-Fi bersifat on-demand dan rate-limited; daftar SSID/RSSI/security dibatasi ukuran. Link GATT memerlukan encrypted/authenticated session, framing memiliki ukuran maksimum dan timeout, dan status tidak pernah mengembalikan password atau bearer token.
+
+FR NET 02B ESP32-S3 menyediakan Bluetooth Low Energy, tanpa Bluetooth Classic. BLE dapat membawa telemetry melalui layanan GATT custom, tetapi perlu aplikasi HP atau gateway komputer yang meneruskan byte paket ke HTTPS backend. BLE telemetry gateway tetap opsi P1 dan tidak boleh disamakan dengan provisioning Task 7.
 
 ### Rancangan gateway bila spike lolos
 

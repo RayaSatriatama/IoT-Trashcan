@@ -14,7 +14,7 @@ TSD ini adalah spesifikasi untuk pekerjaan mendatang. Angka sampling, ukuran rec
 | Pengolahan | Filter, konversi, normalisasi, FIS Mamdani, verified-empty, dan safety B3 dieksekusi di MCU. | Model numerik produksi masih perlu validasi ilmiah. |
 | Akuisisi | Seluruh frame/sampel dari semua sensor dicatat, termasuk kualitas invalid dan trial kalibrasi. | Tidak ada sampling selektif karena jaringan, hasil filter, atau ringkasan. |
 | Penyimpanan | microSD menjadi logger utama bila sehat, LittleFS menjadi fallback; record dan batch pending immutable sampai ACK server. | SD opsional secara hardware, kapasitas offline panjang bergantung pada kartu teruji. |
-| Transport | HTTPS/Wi-Fi P0; ringkasan v2 pada `POST /api/ingest`, arsip lengkap v3 pada endpoint batch baru. | BLE gateway P1 setelah spike; gateway receipt bukan ACK server. |
+| Transport | HTTPS/Wi-Fi P0; ringkasan v2 pada `POST /api/ingest`, arsip lengkap v3 pada endpoint batch baru. | BLE provisioning lokal always-on pada Task 7; BLE telemetry gateway tetap P1 setelah spike dan gateway receipt bukan ACK server. |
 | Backend | Go `net/http` dan SQLite dalam repo; migrasi menambah arsip record serta receipt batch. | Tidak menjalankan FIS, kompensasi, normalisasi, atau safety untuk data `HARDWARE_EDGE_V3`. |
 | Configuration | Compile-time board/build constants terpisah dari versioned `AppConfig`, `SecretStore`, calibration/model profiles, dan `RuntimeState`. | Tidak ada mutable non-const global configuration; P0 mengaktifkan config baru setelah controlled reboot. |
 | Antarmuka | Dashboard tetap membaca status terbaru dengan usia data; riset/ekspor membaca seluruh record secara bertahap. | Prioritas current memakai waktu ukur tepercaya; data UTC-null tetap dapat ditelusuri. |
@@ -392,7 +392,7 @@ Perangkat memverifikasi `device_id`, `batch_id`, `body_hash`, `record_count`, da
 | `400`, `404`, `409`, `415` | Catat fault/quarantine manifest tanpa menghapus record. Diagnostik menunjukkan ID dan alasan, tanpa secret. |
 | Respons malformed/hash/count berbeda | `PROTOCOL_ERROR`; tidak ACK lokal. |
 
-TLS memvalidasi CA dan hostname. Wi-Fi RSSI hanya diagnostik. Prioritas pengiriman ringkasan terbaru boleh mendahului drain arsip, namun worker harus menyediakan waktu unggah berkelanjutan bagi backlog dan tidak memblokir akuisisi. BLE P1 memakai fragmentasi beserta batch ID, indeks/total, checksum dan body identik; gateway meneruskan ACK backend yang telah diverifikasi dan tidak memiliki kewenangan menghapus journal berdasarkan receipt lokal saja.
+TLS memvalidasi CA dan hostname. Wi-Fi RSSI hanya diagnostik. Prioritas pengiriman ringkasan terbaru boleh mendahului drain arsip, namun worker harus menyediakan waktu unggah berkelanjutan bagi backlog dan tidak memblokir akuisisi. Task 7 BLE provisioning selalu aktif dengan GATT encrypted/authenticated, bounded framing, on-demand scan, candidate credential test-before-commit, serta session timeout. BLE telemetry gateway P1 memakai fragmentasi beserta batch ID, indeks/total, checksum dan body identik; gateway meneruskan ACK backend yang telah diverifikasi dan tidak memiliki kewenangan menghapus journal berdasarkan receipt lokal saja.
 
 ## 10 Rancangan penyimpanan SQLite dan API baca
 

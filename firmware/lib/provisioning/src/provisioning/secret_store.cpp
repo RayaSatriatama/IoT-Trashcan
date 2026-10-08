@@ -256,8 +256,22 @@ bool PersistentSecretStore::set_wifi(const char* ssid, const char* password) {
   }
   const bool written = backend_.write(SecretSlot::Wifi, blob.bytes.data(), blob.size);
   secure_zero(blob.bytes.data(), blob.bytes.size());
-  set_result(written ? SecretStoreResult::Ok : SecretStoreResult::StorageError);
-  return written;
+  if (!written) {
+    set_result(SecretStoreResult::StorageError);
+    return false;
+  }
+  NetworkSecrets verified{};
+  const bool readback = read_slot(SecretSlot::Wifi, verified);
+  const std::size_t ssid_size = bounded_length(ssid, 32U);
+  const std::size_t password_size = bounded_length(password, 64U);
+  const bool matches = readback && ssid_size <= 32U && password_size <= 64U &&
+      std::string_view(verified.ssid.data(), ssid_size) ==
+          std::string_view(ssid, ssid_size) &&
+      std::string_view(verified.password.data(), password_size) ==
+          std::string_view(password, password_size);
+  secure_zero(&verified, sizeof(verified));
+  set_result(matches ? SecretStoreResult::Ok : SecretStoreResult::StorageError);
+  return matches;
 }
 
 bool PersistentSecretStore::rotate_device_token(const char* token) {
