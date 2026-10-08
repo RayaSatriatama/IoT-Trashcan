@@ -126,7 +126,7 @@ class IImmutableBatchSource {
 
 class NetworkWorker final {
  public:
-  NetworkWorker(NetworkPolicy policy, IMonotonicClock& clock,
+  NetworkWorker(const NetworkPolicy& policy, IMonotonicClock& clock,
                 IRandomJitter& jitter, IWifiLink& wifi,
                 IHttpTransport& transport,
                 IImmutableBatchSource& batches,
@@ -215,6 +215,7 @@ class NetworkWorker final {
     }
     if (response.status_code == 409) {
       state_ = NetworkState::Backoff;
+      schedule_retry(now, policy_.retry_max_ms);
       return NetworkOutcome::Conflict;
     }
     if (response.status_code == 429) {
@@ -226,6 +227,9 @@ class NetworkWorker final {
       return NetworkOutcome::ServerError;
     }
     state_ = NetworkState::Backoff;
+    // Protocol faults remain pending for operator diagnosis.  Keep a bounded
+    // delay so a malformed or rejected batch cannot spin the application loop.
+    schedule_retry(now, policy_.retry_max_ms);
     return NetworkOutcome::ProtocolError;
   }
 

@@ -225,6 +225,7 @@ void test_ack_mismatch_never_marks_delivered() {
                     static_cast<int>(worker.poll()));
   TEST_ASSERT_TRUE(batches.pending);
   TEST_ASSERT_EQUAL_UINT32(0U, batches.ack_calls);
+  TEST_ASSERT_EQUAL_UINT64(1000000ULL, worker.next_attempt_us());
 }
 
 void test_conflict_keeps_batch_pending() {
@@ -241,6 +242,7 @@ void test_conflict_keeps_batch_pending() {
                     static_cast<int>(worker.poll()));
   TEST_ASSERT_TRUE(batches.pending);
   TEST_ASSERT_EQUAL_UINT32(0U, batches.ack_calls);
+  TEST_ASSERT_EQUAL_UINT64(60000000ULL, worker.next_attempt_us());
 }
 
 void test_server_errors_and_auth_are_observable() {
