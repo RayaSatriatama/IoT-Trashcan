@@ -7,6 +7,8 @@ This branch adds the bounded Wi-Fi/HTTPS archive-v3 transport foundation. It
 does not add BLE, the legacy summary worker, backend archive code, migration
 005, or actuator output.
 
+Final verified source SHA for this report: `652cd11e99296850f7cbfb5c04c2cb48cb1e806d`.
+
 ## Runtime behavior
 
 - `NetworkWorker` consumes the immutable `ArchiveBatchRuntime` view after
