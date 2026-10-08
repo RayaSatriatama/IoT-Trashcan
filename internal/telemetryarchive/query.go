@@ -362,10 +362,7 @@ func compareCurrentEvidence(previous, candidate currentEvidence) currentComparis
 		return currentNotNewer
 	}
 	if candidate.hasUTC != previous.hasUTC {
-		if candidate.hasUTC {
-			return currentNewer
-		}
-		return currentNotNewer
+		return currentUnknown
 	}
 	return currentUnknown
 }

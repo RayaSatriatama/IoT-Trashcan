@@ -21,6 +21,15 @@ CREATE TABLE telemetry_records (
     record_id TEXT NOT NULL,
     record_hash TEXT NOT NULL,
     kind TEXT NOT NULL CHECK (kind IN ('sample', 'result', 'event', 'metadata')),
+    boot_id TEXT NOT NULL,
+    sequence_decimal TEXT NOT NULL,
+    sequence_sort TEXT NOT NULL CHECK (length(sequence_sort) = 20),
+    monotonic_us TEXT NOT NULL,
+    recorded_at TEXT,
+    time_quality TEXT NOT NULL,
+    stream TEXT,
+    sensor_id TEXT,
+    quality TEXT,
     record_bytes BLOB NOT NULL,
     first_batch_id TEXT NOT NULL,
     created_at TEXT NOT NULL,
@@ -44,3 +53,7 @@ CREATE INDEX idx_telemetry_batches_created
     ON telemetry_batches(device_id, created_at DESC);
 CREATE INDEX idx_telemetry_records_created
     ON telemetry_records(device_id, created_at DESC);
+CREATE INDEX idx_telemetry_records_cursor
+    ON telemetry_records(device_id, boot_id, sequence_sort, record_id);
+CREATE INDEX idx_telemetry_records_source
+    ON telemetry_records(device_id, kind, stream, sensor_id, quality);

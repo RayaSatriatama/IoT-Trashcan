@@ -72,6 +72,13 @@ func TestIngestPersistsExactBodyAndRecords(t *testing.T) {
 	if !strings.Contains(string(recordBytes), `"record_id":"SIGAP-01/boot-A/1"`) {
 		t.Fatalf("record bytes missing identity: %s", recordBytes)
 	}
+	var bootID, sequenceSort, stream, sensorID, quality string
+	if err := db.QueryRow(`SELECT boot_id, sequence_sort, stream, sensor_id, quality FROM telemetry_records WHERE device_id = 'SIGAP-01'`).Scan(&bootID, &sequenceSort, &stream, &sensorID, &quality); err != nil {
+		t.Fatal(err)
+	}
+	if bootID != "boot-A" || sequenceSort != "00000000000000000001" || stream != "organic" || sensorID != "mq4" || quality != "UNCALIBRATED" {
+		t.Fatalf("record index mismatch boot=%s seq=%s stream=%s sensor=%s quality=%s", bootID, sequenceSort, stream, sensorID, quality)
+	}
 }
 
 func TestExactReplayDeduplicatesAndConflictDoesNotMutate(t *testing.T) {

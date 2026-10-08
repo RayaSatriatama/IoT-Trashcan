@@ -39,6 +39,15 @@ CREATE TABLE telemetry_records (
   record_id TEXT NOT NULL,
   record_hash TEXT NOT NULL,
   kind TEXT NOT NULL,
+  boot_id TEXT NOT NULL,
+  sequence_decimal TEXT NOT NULL,
+  sequence_sort TEXT NOT NULL,
+  monotonic_us TEXT NOT NULL,
+  recorded_at TEXT,
+  time_quality TEXT NOT NULL,
+  stream TEXT,
+  sensor_id TEXT,
+  quality TEXT,
   record_bytes BLOB NOT NULL,
   first_batch_id TEXT NOT NULL,
   created_at TEXT NOT NULL,
@@ -89,7 +98,22 @@ func insertQueryRecord(t *testing.T, db *sql.DB, kind, sensor, stream, boot, seq
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = db.Exec(`INSERT INTO telemetry_records (device_id,record_id,record_hash,kind,record_bytes,first_batch_id,created_at) VALUES (?,?,?,?,?,?,?)`, "device-1", object["record_id"], hash, kind, encoded, "batch", "2026-01-01T00:00:00Z")
+	sortKey, err := telemetry.SequenceSortKey(sequence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recorded any
+	if recordedAt != "" {
+		recorded = recordedAt
+	}
+	var sensorValue, qualityValue any
+	if kind == "sample" {
+		sensorValue = sensor
+		qualityValue = "READY"
+	}
+	_, err = db.Exec(`INSERT INTO telemetry_records
+ (device_id,record_id,record_hash,kind,boot_id,sequence_decimal,sequence_sort,monotonic_us,recorded_at,time_quality,stream,sensor_id,quality,record_bytes,first_batch_id,created_at)
+ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, "device-1", object["record_id"], hash, kind, boot, sequence, sortKey, monotonic, recorded, quality, stream, sensorValue, qualityValue, encoded, "batch", "2026-01-01T00:00:00Z")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,6 +266,57 @@ func TestCurrentUsesTrustedUTCAcrossBoots(t *testing.T) {
 	}
 	if current["boot_id"] != "boot-b" {
 		t.Fatalf("trusted UTC did not advance current: %#v", current)
+	}
+}
+
+func TestCurrentDoesNotCompareTrustedUTCWithNullUTCAcrossBoots(t *testing.T) {
+	db := queryTestDB(t)
+	insertQueryRecord(t, db, "sample", "mq4", "organic", "boot-a", "9", "900", "", "UNSYNCED")
+	insertQueryRecord(t, db, "sample", "mq4", "organic", "boot-b", "1", "1", "2026-01-01T00:00:01Z", "SYNCED")
+	query, err := NewArchiveQuery(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := query.Current(context.Background(), "device-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var current map[string]any
+	if err := json.Unmarshal(snapshot.Samples["organic"]["mq4"], &current); err != nil {
+		t.Fatal(err)
+	}
+	if current["boot_id"] != "boot-a" {
+		t.Fatalf("cross-boot UTC/null comparison invented ordering: %#v", current)
+	}
+	if len(snapshot.OrderingUnknown) != 1 || snapshot.OrderingUnknown[0] != "organic/mq4" {
+		t.Fatalf("unknown ordering=%v", snapshot.OrderingUnknown)
+	}
+}
+
+func TestCurrentDoesNotOrderUTCAgainstUTCNullAcrossBoots(t *testing.T) {
+	db := queryTestDB(t)
+	insertQueryRecord(t, db, "sample", "mq4", "organic", "boot-a", "9", "900", "", "UNSYNCED")
+	insertQueryRecord(t, db, "sample", "mq4", "organic", "boot-b", "1", "1", "2026-01-01T00:00:01Z", "SYNCED")
+
+	query, err := NewArchiveQuery(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := query.Current(context.Background(), "device-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var current struct {
+		BootID string `json:"boot_id"`
+	}
+	if err := json.Unmarshal(snapshot.Samples["organic"]["mq4"], &current); err != nil {
+		t.Fatal(err)
+	}
+	if current.BootID != "boot-a" {
+		t.Fatalf("UTC versus UTC-null record changed current: %#v", current)
+	}
+	if len(snapshot.OrderingUnknown) != 1 || snapshot.OrderingUnknown[0] != "organic/mq4" {
+		t.Fatalf("ordering uncertainty = %v", snapshot.OrderingUnknown)
 	}
 }
 

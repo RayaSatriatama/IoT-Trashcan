@@ -21,6 +21,7 @@ type routerConfig struct {
 	telemetryBatch      http.Handler
 	telemetryArchive    http.Handler
 	telemetryCurrent    http.Handler
+	telemetryRecords    http.Handler
 	simulation          bool
 	simulationIndicator bool
 }
@@ -64,6 +65,7 @@ func WithTelemetryArchive(service *telemetryarchive.Service, query *telemetryarc
 		config.telemetryBatch = NewTelemetryBatchHandler(service)
 		config.telemetryArchive = NewTelemetryArchiveQueryHandler(query, service)
 		config.telemetryCurrent = newTelemetryCurrentHandler(query, service)
+		config.telemetryRecords = newTelemetryRecordArchiveHandler(query, service)
 	}
 }
 
@@ -84,6 +86,8 @@ func NewRouter(service IngestService, options ...RouterOption) http.Handler {
 		mux.Handle("GET /api/telemetry/batches/{device_id}", config.telemetryArchive)
 		mux.Handle("GET /api/telemetry/batches/{device_id}/{batch_id...}", config.telemetryArchive)
 		mux.Handle("GET /api/telemetry/current/{device_id}", config.telemetryCurrent)
+		mux.Handle("GET /api/telemetry/records/{device_id}", config.telemetryRecords)
+		mux.Handle("GET /api/telemetry/records/{device_id}/export", config.telemetryRecords)
 	}
 	if config.readAPI != nil {
 		mux.Handle("GET /api/overview", http.HandlerFunc(config.readAPI.Overview))

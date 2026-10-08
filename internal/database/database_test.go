@@ -24,6 +24,31 @@ func TestOpenCreatesInitialSchema(t *testing.T) {
 			t.Fatalf("table %q was not created: %v", table, err)
 		}
 	}
+	rows, err := db.QueryContext(context.Background(), "PRAGMA table_info(telemetry_records)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	wanted := map[string]bool{"boot_id": false, "sequence_decimal": false, "sequence_sort": false, "monotonic_us": false, "recorded_at": false, "time_quality": false, "stream": false, "sensor_id": false, "quality": false}
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, dataType string
+		var defaultValue sql.NullString
+		if err := rows.Scan(&cid, &name, &dataType, &notNull, &defaultValue, &primaryKey); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := wanted[name]; ok {
+			wanted[name] = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	for name, found := range wanted {
+		if !found {
+			t.Fatalf("telemetry_records missing indexed field %q", name)
+		}
+	}
 }
 
 func TestOpenSupportsRelativePath(t *testing.T) {

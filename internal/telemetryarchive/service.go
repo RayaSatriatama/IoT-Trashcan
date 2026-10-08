@@ -107,7 +107,7 @@ func (s *Service) Ingest(ctx context.Context, bearerToken string, body []byte) (
 		return Result{}, fmt.Errorf("%w: lookup batch: %v", ErrPersistence, err)
 	}
 
-	records, err := rawRecords(body)
+	records, err := rawRecords(body, batch)
 	if err != nil {
 		return Result{}, fmt.Errorf("%w: decode records: %v", ErrPersistence, err)
 	}
@@ -143,11 +143,15 @@ func (s *Service) Ingest(ctx context.Context, bearerToken string, body []byte) (
 }
 
 type rawRecord struct {
-	id, hash, kind string
-	bytes          []byte
+	id, hash, kind            string
+	bootID, sequence, sortKey string
+	monotonicUS, timeQuality  string
+	recordedAt                *string
+	stream, sensorID, quality *string
+	bytes                     []byte
 }
 
-func rawRecords(body []byte) ([]rawRecord, error) {
+func rawRecords(body []byte, batch *telemetry.Batch) ([]rawRecord, error) {
 	var envelope struct {
 		Samples  []json.RawMessage `json:"samples"`
 		Results  []json.RawMessage `json:"results"`
@@ -157,17 +161,16 @@ func rawRecords(body []byte) ([]rawRecord, error) {
 	if err := json.Unmarshal(body, &envelope); err != nil {
 		return nil, err
 	}
-	result := make([]rawRecord, 0, len(envelope.Samples)+len(envelope.Results)+len(envelope.Events)+len(envelope.Metadata))
+	rawByID := make(map[string]json.RawMessage, len(envelope.Samples)+len(envelope.Results)+len(envelope.Events)+len(envelope.Metadata))
 	appendRecords := func(values []json.RawMessage, kind string) error {
 		for _, raw := range values {
 			var fields struct {
-				RecordID   string `json:"record_id"`
-				RecordHash string `json:"record_hash"`
+				RecordID string `json:"record_id"`
 			}
 			if err := json.Unmarshal(raw, &fields); err != nil {
 				return err
 			}
-			result = append(result, rawRecord{id: fields.RecordID, hash: fields.RecordHash, kind: kind, bytes: append([]byte(nil), raw...)})
+			rawByID[fields.RecordID] = append(json.RawMessage(nil), raw...)
 		}
 		return nil
 	}
@@ -176,6 +179,47 @@ func rawRecords(body []byte) ([]rawRecord, error) {
 		kind   string
 	}{{envelope.Samples, "sample"}, {envelope.Results, "result"}, {envelope.Events, "event"}, {envelope.Metadata, "metadata"}} {
 		if err := appendRecords(group.values, group.kind); err != nil {
+			return nil, err
+		}
+	}
+	result := make([]rawRecord, 0, len(rawByID))
+	appendCommon := func(common telemetry.CommonRecord, kind string, stream, sensorID, quality *string) error {
+		sortKey, err := telemetry.SequenceSortKey(common.Sequence)
+		if err != nil {
+			return err
+		}
+		raw, ok := rawByID[common.RecordID]
+		if !ok {
+			return fmt.Errorf("validated record missing raw bytes: %s", common.RecordID)
+		}
+		result = append(result, rawRecord{
+			id: common.RecordID, hash: common.RecordHash, kind: kind,
+			bootID: common.BootID, sequence: common.Sequence, sortKey: sortKey,
+			monotonicUS: common.MonotonicUS, recordedAt: common.RecordedAt,
+			timeQuality: common.TimeQuality, stream: stream, sensorID: sensorID,
+			quality: quality, bytes: append([]byte(nil), raw...),
+		})
+		return nil
+	}
+	for _, record := range batch.Samples {
+		stream, sensorID, quality := record.Stream, record.SensorID, record.Quality
+		if err := appendCommon(record.CommonRecord, "sample", &stream, &sensorID, &quality); err != nil {
+			return nil, err
+		}
+	}
+	for _, record := range batch.Results {
+		stream := record.Stream
+		if err := appendCommon(record.CommonRecord, "result", &stream, nil, nil); err != nil {
+			return nil, err
+		}
+	}
+	for _, record := range batch.Events {
+		if err := appendCommon(record.CommonRecord, "event", nil, nil, nil); err != nil {
+			return nil, err
+		}
+	}
+	for _, record := range batch.Metadata {
+		if err := appendCommon(record.CommonRecord, "metadata", nil, nil, nil); err != nil {
 			return nil, err
 		}
 	}
@@ -195,8 +239,15 @@ func (s *Service) insertRecords(ctx context.Context, tx *sql.Tx, batch *telemetr
 			deduplicated++
 		case errors.Is(err, sql.ErrNoRows):
 			if _, err := tx.ExecContext(ctx, `
-				INSERT INTO telemetry_records (device_id, record_id, record_hash, kind, record_bytes, first_batch_id, created_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?)`, batch.DeviceID, record.id, record.hash, record.kind, record.bytes, batch.BatchID, created); err != nil {
+				INSERT INTO telemetry_records
+				(device_id, record_id, record_hash, kind, boot_id, sequence_decimal, sequence_sort,
+				 monotonic_us, recorded_at, time_quality, stream, sensor_id, quality,
+				 record_bytes, first_batch_id, created_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				batch.DeviceID, record.id, record.hash, record.kind,
+				record.bootID, record.sequence, record.sortKey, record.monotonicUS,
+				record.recordedAt, record.timeQuality, record.stream, record.sensorID,
+				record.quality, record.bytes, batch.BatchID, created); err != nil {
 				return 0, 0, fmt.Errorf("%w: insert record: %v", ErrPersistence, err)
 			}
 			stored++
