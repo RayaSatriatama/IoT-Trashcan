@@ -22,6 +22,10 @@ inline constexpr uint8_t kAckOpPending{1U};
 inline constexpr uint8_t kAckOpServerAcked{2U};
 inline constexpr uint8_t kAckOpReclaimed{3U};
 inline constexpr uint32_t kAckJournalMarker{0xACCE551U};
+inline constexpr uint32_t kAckRecoveryMagic{0x53494152U};
+inline constexpr uint8_t kAckRecoveryVersion{1U};
+inline constexpr uint32_t kAckRecoveryMarker{0x41434B52U};
+inline constexpr std::size_t kAckRecoveryFrameBytes{24U};
 inline constexpr std::size_t kAckCheckpointBytes{12U};
 inline constexpr std::size_t kAckCheckpointChecksumOffset{8U};
 static_assert(kAckCheckpointChecksumOffset + sizeof(uint32_t) ==
@@ -311,12 +315,18 @@ class FsAckJournalStore final {
     generation_ = 0U;
     checkpointed_ = false;
     checkpoint_generation_ = 0U;
+    bool marked_recovery{false};
+    if (!recover_marked_tail(marked_recovery)) return false;
+    if (marked_recovery) return recover();
     File file = filesystem_->open(path_, FILE_READ);
     if (!file) {
       if (filesystem_->exists(path_)) return false;
-      if (!restore_from_quarantine()) return false;
-      file = filesystem_->open(path_, FILE_READ);
-      if (!file) return !filesystem_->exists(path_);
+      // A tail becomes recovery authority only through its durable marker.
+      // An unmarked tail can be a forensic copy from an older generation and
+      // must never silently replace an intentionally reclaimed journal.
+      char quarantine[96]{};
+      return !make_quarantine_path(quarantine, sizeof(quarantine)) ||
+             !filesystem_->exists(quarantine);
     }
     std::array<uint8_t, kAckJournalFrameBytes> frame{};
     std::size_t valid_bytes = 0U;
@@ -500,14 +510,41 @@ class FsAckJournalStore final {
   static uint32_t ack_crc32(const uint8_t* data, std::size_t size) noexcept {
     return sigap::storage::archive_crc32(data, size);
   }
-  bool quarantine_tail(std::size_t valid_bytes) noexcept {
+  bool make_quarantine_path(char* output, std::size_t size) const noexcept {
+    if (output == nullptr || path_ == nullptr) return false;
+    const int written = std::snprintf(output, size, "%s.tail", path_);
+    return written > 0 && static_cast<std::size_t>(written) < size;
+  }
+  bool recovery_marker_path(char* output, std::size_t size) const noexcept {
+    if (output == nullptr || path_ == nullptr) return false;
+    const int written = std::snprintf(output, size, "%s.recover", path_);
+    return written > 0 && static_cast<std::size_t>(written) < size;
+  }
+  bool write_recovery_marker(std::size_t valid_bytes) noexcept {
+    char marker_path[96]{};
+    if (filesystem_ == nullptr || !recovery_marker_path(marker_path, sizeof(marker_path))) {
+      return false;
+    }
+    std::array<uint8_t, kAckRecoveryFrameBytes> frame{};
+    write_u32(frame.data(), kAckRecoveryMagic);
+    frame[4U] = kAckRecoveryVersion;
+    for (std::size_t index = 0U; index < sizeof(uint64_t); ++index) {
+      frame[6U + index] = static_cast<uint8_t>(
+          static_cast<uint64_t>(valid_bytes) >> (index * 8U));
+    }
+    write_u32(frame.data() + 14U, ack_crc32(frame.data(), 14U));
+    write_u32(frame.data() + 18U, kAckRecoveryMarker);
+    File marker = filesystem_->open(marker_path, FILE_WRITE);
+    if (!marker) return false;
+    const bool written = marker.write(frame.data(), frame.size()) == frame.size();
+    if (written) marker.flush();
+    marker.close();
+    return written;
+  }
+  bool copy_quarantine_prefix(std::size_t valid_bytes) noexcept {
     if (filesystem_ == nullptr) return false;
-    char quarantine[64]{};
-    const int written = std::snprintf(quarantine, sizeof(quarantine),
-                                      "%s.tail", path_);
-    if (written <= 0 || static_cast<std::size_t>(written) >= sizeof(quarantine)) return false;
-    if (filesystem_->exists(quarantine)) return false;
-    if (!filesystem_->rename(path_, quarantine)) return false;
+    char quarantine[96]{};
+    if (!make_quarantine_path(quarantine, sizeof(quarantine))) return false;
     File source = filesystem_->open(quarantine, FILE_READ);
     File destination = filesystem_->open(path_, FILE_WRITE);
     if (!source || !destination) {
@@ -528,40 +565,65 @@ class FsAckJournalStore final {
       remaining -= chunk;
     }
     destination.flush();
+    const bool size_matches = destination.size() == valid_bytes;
     source.close();
     destination.close();
-    return copied && remaining == 0U;
+    return copied && remaining == 0U && size_matches;
   }
-  bool restore_from_quarantine() noexcept {
-    if (filesystem_ == nullptr) return false;
-    char quarantine[64]{};
-    const int written = std::snprintf(quarantine, sizeof(quarantine),
-                                      "%s.tail", path_);
-    if (written <= 0 || static_cast<std::size_t>(written) >= sizeof(quarantine) ||
-        !filesystem_->exists(quarantine)) return true;
-    File source = filesystem_->open(quarantine, FILE_READ);
-    File destination = filesystem_->open(path_, FILE_WRITE);
-    if (!source || !destination) {
-      if (source) source.close();
-      if (destination) destination.close();
+  bool recover_marked_tail(bool& marker_found) noexcept {
+    marker_found = false;
+    char marker_path[96]{};
+    if (filesystem_ == nullptr || !recovery_marker_path(marker_path, sizeof(marker_path))) {
       return false;
     }
-    std::array<uint8_t, 256U> buffer{};
-    std::size_t remaining = source.size();
-    bool copied = true;
-    while (remaining != 0U) {
-      const std::size_t chunk = remaining < buffer.size() ? remaining : buffer.size();
-      if (source.read(buffer.data(), chunk) != static_cast<int>(chunk) ||
-          destination.write(buffer.data(), chunk) != chunk) {
-        copied = false;
-        break;
-      }
-      remaining -= chunk;
+    File marker = filesystem_->open(marker_path, FILE_READ);
+    if (!marker) return true;
+    marker_found = true;
+    if (marker.size() != kAckRecoveryFrameBytes) {
+      marker.close();
+      return false;
     }
-    destination.flush();
-    source.close();
-    destination.close();
-    return copied && remaining == 0U;
+    std::array<uint8_t, kAckRecoveryFrameBytes> frame{};
+    const bool read = marker.read(frame.data(), frame.size()) ==
+                      static_cast<int>(frame.size());
+    marker.close();
+    if (!read || read_u32(frame.data()) != kAckRecoveryMagic ||
+        frame[4U] != kAckRecoveryVersion ||
+        read_u32(frame.data() + 14U) != ack_crc32(frame.data(), 14U) ||
+        read_u32(frame.data() + 18U) != kAckRecoveryMarker) {
+      return false;
+    }
+    char quarantine[96]{};
+    if (!make_quarantine_path(quarantine, sizeof(quarantine)) ||
+        !filesystem_->exists(quarantine)) {
+      return false;
+    }
+    uint64_t valid_bytes{0U};
+    for (std::size_t index = 0U; index < sizeof(uint64_t); ++index) {
+      valid_bytes |= static_cast<uint64_t>(frame[6U + index]) << (index * 8U);
+    }
+    if (valid_bytes > static_cast<uint64_t>(SIZE_MAX) ||
+        !copy_quarantine_prefix(static_cast<std::size_t>(valid_bytes))) {
+      return false;
+    }
+    return filesystem_->remove(marker_path);
+  }
+  bool quarantine_tail(std::size_t valid_bytes) noexcept {
+    if (filesystem_ == nullptr) return false;
+    char quarantine[96]{};
+    if (!make_quarantine_path(quarantine, sizeof(quarantine)) ||
+        filesystem_->exists(quarantine) ||
+        !filesystem_->rename(path_, quarantine)) {
+      return false;
+    }
+    if (!write_recovery_marker(valid_bytes)) {
+      (void)filesystem_->rename(quarantine, path_);
+      return false;
+    }
+    // The marker and original source remain durable across a short write or
+    // failed reopen.  The next boot repairs from that explicit transaction,
+    // never from an arbitrary longest tail.
+    return copy_quarantine_prefix(valid_bytes);
   }
   fs::FS* filesystem_{nullptr};
   const char* path_{nullptr};

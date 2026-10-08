@@ -184,24 +184,55 @@ class LittleFsArchiveStore : public IArchiveStore {
     File file = filesystem_->open(path_, FILE_READ);
     if (file && file.size() == 0U && has_quarantine()) {
       file.close();
-      if (!restore_from_quarantine()) {
-        health_ = ArchiveHealth::Degraded;
-        return false;
-      }
-      return recover();
+      // A tail without a durable recovery marker is forensic data, not an
+      // authority to replace the current archive.  In particular, an old
+      // tail may pre-date a legitimate reclaim.  The marker is processed
+      // above before any archive is opened, so reaching this branch means a
+      // prior repair was interrupted before it established authority.
+      health_ = ArchiveHealth::Degraded;
+      return false;
     }
     if (!file) {
       if (!filesystem_->exists(path_)) {
         char backup[96]{};
         if (make_related_path(backup, sizeof(backup), ".migrate.bak") &&
             filesystem_->exists(backup)) {
-          if (!copy_valid_prefix(backup, path_, SIZE_MAX)) {
-            health_ = ArchiveHealth::Degraded;
-            return false;
+          // A backup is forensic evidence after a reclaim transaction. It is
+          // not an authority to resurrect a record that was already copied to
+          // the destination. Only a still-pending replacement is eligible
+          // for completion; otherwise leave the source degraded and let the
+          // durable migration receipt decide the next action.
+          char temporary[96]{};
+          if (make_related_path(temporary, sizeof(temporary), ".migrate") &&
+              filesystem_->exists(temporary)) {
+            File replacement = filesystem_->open(temporary, FILE_READ);
+            if (!replacement) {
+              health_ = ArchiveHealth::Degraded;
+              return false;
+            }
+            const std::size_t replacement_bytes =
+                static_cast<std::size_t>(replacement.size());
+            replacement.close();
+            if (!verify_valid_prefix(temporary, replacement_bytes) ||
+                !filesystem_->rename(temporary, path_)) {
+              health_ = ArchiveHealth::Degraded;
+              return false;
+            }
+            return recover();
           }
-          return recover();
+          health_ = ArchiveHealth::Degraded;
+          return false;
         }
-        return restore_from_quarantine();
+        // Never choose a quarantine by size or age.  A marked recovery is
+        // replayed above; an unmarked tail remains forensic-only until an
+        // explicit repair path is available.
+        if (has_quarantine()) {
+          health_ = ArchiveHealth::Degraded;
+          return false;
+        }
+        recovery_ready_ = true;
+        health_ = gap_valid ? ArchiveHealth::Healthy : ArchiveHealth::Degraded;
+        return true;
       }
       health_ = ArchiveHealth::Degraded;
       return false;
@@ -268,18 +299,6 @@ class LittleFsArchiveStore : public IArchiveStore {
       valid_bytes += record.size;
     }
     file.close();
-    char quarantine[64]{};
-    std::size_t quarantine_bytes = 0U;
-    if (find_longer_quarantine(valid_bytes, quarantine, sizeof(quarantine),
-                               quarantine_bytes)) {
-      if (!copy_valid_prefix(quarantine, path_, quarantine_bytes)) {
-        health_ = ArchiveHealth::Degraded;
-        return false;
-      }
-      // Keep the quarantine until the rebuilt file has been scanned and
-      // indexed successfully on the next recovery pass.
-      return recover();
-    }
     if (tail_corrupt && !quarantine_tail(valid_bytes)) {
       health_ = ArchiveHealth::Degraded;
       return false;
@@ -589,50 +608,6 @@ class LittleFsArchiveStore : public IArchiveStore {
     }
     return false;
   }
-  bool measure_valid_prefix(const char* source_path,
-                            std::size_t& valid_bytes) noexcept {
-    valid_bytes = 0U;
-    if (filesystem_ == nullptr || source_path == nullptr ||
-        !filesystem_->exists(source_path)) {
-      return false;
-    }
-    File source = filesystem_->open(source_path, FILE_READ);
-    if (!source) return false;
-    while (source.available()) {
-      if (!read_record(source, lookup_record_)) break;
-      valid_bytes += lookup_record_.size;
-    }
-    source.close();
-    return true;
-  }
-  bool find_longer_quarantine(std::size_t current_bytes,
-                              char* output,
-                              std::size_t output_size,
-                              std::size_t& output_bytes) noexcept {
-    output_bytes = 0U;
-    if (filesystem_ == nullptr || output == nullptr || output_size == 0U) {
-      return false;
-    }
-    bool found = false;
-    for (unsigned suffix = 0U; suffix < 4U; ++suffix) {
-      char candidate[64]{};
-      const int written = std::snprintf(candidate, sizeof(candidate),
-                                        "%s.tail%u", path_, suffix);
-      if (written <= 0 || static_cast<std::size_t>(written) >= sizeof(candidate)) {
-        continue;
-      }
-      std::size_t candidate_bytes = 0U;
-      if (!measure_valid_prefix(candidate, candidate_bytes) ||
-          candidate_bytes <= current_bytes || candidate_bytes <= output_bytes) {
-        continue;
-      }
-      if (std::strlen(candidate) + 1U > output_size) continue;
-      std::strcpy(output, candidate);
-      output_bytes = candidate_bytes;
-      found = true;
-    }
-    return found;
-  }
   bool repair_gap_prefix(std::size_t valid_bytes) noexcept {
     if (filesystem_ == nullptr || gap_path_ == nullptr ||
         valid_bytes > kGapReserveBytes) return false;
@@ -665,30 +640,6 @@ class LittleFsArchiveStore : public IArchiveStore {
     // prefix.  This leaves a bounded forensic copy after a short write.
     return true;
   }
-  bool restore_from_quarantine() noexcept {
-    if (filesystem_ == nullptr) return true;
-    for (unsigned suffix = 0U; suffix < 4U; ++suffix) {
-      char quarantine[64]{};
-      const int written = std::snprintf(quarantine, sizeof(quarantine),
-                                        "%s.tail%u", path_, suffix);
-      if (written <= 0 ||
-          static_cast<std::size_t>(written) >= sizeof(quarantine) ||
-          !filesystem_->exists(quarantine)) {
-        continue;
-      }
-      if (!copy_valid_prefix(quarantine, path_, SIZE_MAX)) {
-        health_ = ArchiveHealth::Degraded;
-        return false;
-      }
-      return recover();
-    }
-    recovery_ready_ = true;
-    if (health_ != ArchiveHealth::Degraded) {
-      health_ = ArchiveHealth::Healthy;
-    }
-    return true;
-  }
-
   bool write_recovery_marker(uint8_t suffix,
                              std::size_t valid_bytes) noexcept {
     char marker_path[96]{};
