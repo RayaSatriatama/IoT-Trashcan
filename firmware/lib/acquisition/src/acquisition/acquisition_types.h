@@ -84,6 +84,13 @@ struct RawObservation {
   uint32_t distance_us{0};
   int32_t temperature_centi_c{0};
   int32_t humidity_centi_pct{0};
+  // DS18B20 wire evidence is optional and only present when the target reader
+  // captured the verified ROM and complete scratchpad. Keeping the explicit
+  // flag prevents a zero-filled array from being serialized as sensor data.
+  bool ds_wire_evidence{false};
+  std::array<uint8_t, 8> ds_rom{};
+  std::array<uint8_t, 9> ds_scratchpad{};
+  uint8_t ds_resolution_bits{0U};
 };
 
 struct ConvertedObservation {

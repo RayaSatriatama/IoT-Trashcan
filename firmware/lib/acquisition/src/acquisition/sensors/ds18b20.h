@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+
 #include "acquisition/record.h"
 #include "acquisition/profiles.h"
 
@@ -12,6 +14,12 @@ struct Ds18b20ReadResult {
   int32_t temperature_centi_c{0};
   bool resolution_matches{true};
   bool identity_valid{false};
+  // Populated only by a reader that actually captured the verified wire
+  // evidence. Native fakes leave this false rather than inventing bytes.
+  bool wire_evidence{false};
+  std::array<uint8_t, 8> rom{};
+  std::array<uint8_t, 9> scratchpad{};
+  uint8_t resolution_bits{0U};
 };
 
 enum class DsChannelState : uint8_t {
@@ -123,6 +131,12 @@ class Ds18b20Acquirer final {
     raw.crc_valid = result.crc_valid;
     raw.conversion_complete = result.conversion_complete;
     raw.temperature_centi_c = result.temperature_centi_c;
+    raw.ds_wire_evidence = result.wire_evidence;
+    if (result.wire_evidence) {
+      raw.ds_rom = result.rom;
+      raw.ds_scratchpad = result.scratchpad;
+      raw.ds_resolution_bits = result.resolution_bits;
+    }
     ConvertedObservation converted{};
     SampleQuality quality{SampleQuality::Timeout};
     SampleReason reason{SampleReason::Timeout};

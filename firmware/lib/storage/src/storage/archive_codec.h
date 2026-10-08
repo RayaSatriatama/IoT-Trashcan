@@ -665,6 +665,10 @@ class RecordCodec final {
         !writer.i64(sample.raw.signed_counts) || !writer.u16(sample.raw.adc_counts) ||
         !writer.u32(sample.raw.distance_us) || !writer.i32(sample.raw.temperature_centi_c) ||
         !writer.i32(sample.raw.humidity_centi_pct) ||
+        !writer.u8(sample.raw.ds_wire_evidence ? 1U : 0U) ||
+        !writer.bytes(sample.raw.ds_rom.data(), sample.raw.ds_rom.size()) ||
+        !writer.bytes(sample.raw.ds_scratchpad.data(), sample.raw.ds_scratchpad.size()) ||
+        !writer.u8(sample.raw.ds_resolution_bits) ||
         !writer.u8(sample.converted.primary_available ? 1U : 0U) ||
         !writer.f32(sample.converted.primary_value) ||
         !writer.u8(static_cast<uint8_t>(sample.converted.primary_kind)) ||
@@ -745,7 +749,12 @@ class RecordCodec final {
         !reader.u32(output.raw.distance_us) ||
         !reader.i32(output.raw.temperature_centi_c) ||
         !reader.i32(output.raw.humidity_centi_pct) ||
-        !reader.u8(flag)) return false;
+        !reader.u8(flag) ||
+        !reader.bytes(output.raw.ds_rom.data(), output.raw.ds_rom.size()) ||
+        !reader.bytes(output.raw.ds_scratchpad.data(), output.raw.ds_scratchpad.size()) ||
+        !reader.u8(output.raw.ds_resolution_bits)) return false;
+    output.raw.ds_wire_evidence = flag != 0U;
+    if (!reader.u8(flag)) return false;
     output.converted.primary_available = flag != 0U;
     if (!reader.f32(output.converted.primary_value) ||
         !reader.u8(primary_kind) || !reader.u8(flag)) return false;

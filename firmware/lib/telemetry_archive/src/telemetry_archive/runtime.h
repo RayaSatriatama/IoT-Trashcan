@@ -30,11 +30,14 @@ class BatchJsonBuilder final {
              ImmutableBatch& batch) noexcept {
     batch = ImmutableBatch{};
     if (!storage::RecordCodec::valid(record)) return false;
-    constexpr std::size_t kBatchPrefixBytes{12U};
-    constexpr std::size_t kBatchSuffixBytes{2U};
+    // Keep the record in the tail of the caller-owned batch buffer while the
+    // envelope header is assembled in-place. This avoids a second 32 KiB
+    // scratch object on the storage worker stack.
+    constexpr std::size_t kEnvelopeReserve{1024U};
+    if (kEnvelopeReserve >= batch.body.size()) return false;
     telemetry_contract::CanonicalBuffer writer{
-        reinterpret_cast<char*>(batch.body.data() + kBatchPrefixBytes),
-        batch.body.size() - kBatchPrefixBytes - kBatchSuffixBytes};
+        reinterpret_cast<char*>(batch.body.data() + kEnvelopeReserve),
+        batch.body.size() - kEnvelopeReserve};
     bool written = false;
     switch (record.identity.kind) {
       case storage::ArchiveRecordKind::Sample:
@@ -53,14 +56,24 @@ class BatchJsonBuilder final {
     if (!written || writer.size() == 0U) return false;
     const auto record_hash = telemetry_contract::sha256(writer.view());
     if (!insert_record_hash(writer, record_hash)) return false;
-    if (writer.size() + kBatchPrefixBytes + kBatchSuffixBytes > batch.body.size()) return false;
-    std::memcpy(batch.body.data(), "{\"records\":[", kBatchPrefixBytes);
-    batch.body[kBatchPrefixBytes + writer.size()] = ']';
-    batch.body[kBatchPrefixBytes + writer.size() + 1U] = '}';
-    const std::size_t body_size = writer.size() + kBatchPrefixBytes + kBatchSuffixBytes;
+    const std::size_t record_size = writer.size();
     char id[96]{};
-    const int id_size = make_id(record.identity, id, sizeof(id));
+    const int id_size = make_batch_id(record.identity, id, sizeof(id));
     if (id_size <= 0) return false;
+    telemetry_contract::CanonicalBuffer envelope{
+        reinterpret_cast<char*>(batch.body.data()), batch.body.size()};
+    if (!append_envelope_prefix(envelope, record.identity, id,
+                                static_cast<std::size_t>(id_size),
+                                record.identity.kind)) {
+      return false;
+    }
+    const std::size_t prefix_size = envelope.size();
+    if (prefix_size + record_size > batch.body.size()) return false;
+    std::memmove(batch.body.data() + prefix_size,
+                 batch.body.data() + kEnvelopeReserve, record_size);
+    envelope.set_size(prefix_size + record_size);
+    if (!append_envelope_suffix(envelope, record.identity.kind)) return false;
+    const std::size_t body_size = envelope.size();
     if (!batch.prepare_in_place(std::string_view(id, static_cast<std::size_t>(id_size)),
                                 body_size, 1U)) {
       return false;
@@ -127,6 +140,46 @@ class BatchJsonBuilder final {
       case acquisition::StreamId::Ambient: break;
     }
     return "b3";
+  }
+  static bool append_device(telemetry_contract::CanonicalBuffer& out,
+                            const acquisition::DeviceId& id) noexcept {
+    if (!id.present) return false;
+    return hex(out, id.bytes.data(), id.bytes.size());
+  }
+  static bool append_envelope_prefix(telemetry_contract::CanonicalBuffer& out,
+                                     const storage::ArchiveIdentity& identity,
+                                     const char* batch_id,
+                                     std::size_t batch_id_size,
+                                     storage::ArchiveRecordKind kind) noexcept {
+    if (!out.append("{\"schema_version\":3,\"device_id\":") ||
+        !append_device(out, identity.device_id) ||
+        !out.append(",\"batch_id\":") ||
+        !append_string(out, std::string_view(batch_id, batch_id_size)) ||
+        !out.append(",\"record_count\":1,\"samples\":")) return false;
+    if (kind == storage::ArchiveRecordKind::Sample) return out.append("[");
+    if (!out.append("[],\"results\":")) return false;
+    if (kind == storage::ArchiveRecordKind::Result) return out.append("[");
+    if (!out.append("[],\"events\":")) return false;
+    if (kind == storage::ArchiveRecordKind::Event) return out.append("[");
+    if (!out.append("[],\"metadata\":")) return false;
+    if (kind == storage::ArchiveRecordKind::Metadata) return out.append("[");
+    return false;
+  }
+  static bool append_envelope_suffix(telemetry_contract::CanonicalBuffer& out,
+                                     storage::ArchiveRecordKind kind) noexcept {
+    // Prefix leaves the selected array open. Close it and append the remaining
+    // arrays in deterministic schema order.
+    if (!out.append(']')) return false;
+    if (kind == storage::ArchiveRecordKind::Sample) {
+      return out.append(",\"results\":[],\"events\":[],\"metadata\":[]}");
+    }
+    if (kind == storage::ArchiveRecordKind::Result) {
+      return out.append(",\"events\":[],\"metadata\":[]}");
+    }
+    if (kind == storage::ArchiveRecordKind::Event) {
+      return out.append(",\"metadata\":[]}");
+    }
+    return out.append('}');
   }
   static const char* sensor_name(acquisition::SensorId sensor) noexcept {
     switch (sensor) {
@@ -296,6 +349,19 @@ class BatchJsonBuilder final {
     }
     if (sample.header.kind == acquisition::SampleKind::UltrasonicEcho) {
       return out.append("{\"echo_us\":") && append_unsigned(out, sample.raw.distance_us) && out.append('}');
+    }
+    if (sample.header.kind == acquisition::SampleKind::Ds18b20) {
+      if (!sample.raw.ds_wire_evidence) return out.append("null");
+      return out.append("{\"rom\":") &&
+             hex(out, sample.raw.ds_rom.data(), sample.raw.ds_rom.size()) &&
+             out.append(",\"scratchpad_hex\":") &&
+             hex(out, sample.raw.ds_scratchpad.data(), sample.raw.ds_scratchpad.size()) &&
+             out.append(",\"crc_valid\":") &&
+             out.append(sample.raw.crc_valid ? "true" : "false") &&
+             out.append(",\"conversion_complete\":") &&
+             out.append(sample.raw.conversion_complete ? "true" : "false") &&
+             out.append(",\"resolution_bits\":") &&
+             append_unsigned(out, sample.raw.ds_resolution_bits) && out.append('}');
     }
     if (sample.header.kind == acquisition::SampleKind::Sht31) {
       return out.append("{\"temperature_ticks\":") && append_unsigned(out, static_cast<uint32_t>(std::max(0, sample.raw.temperature_centi_c))) &&
@@ -705,8 +771,10 @@ class BatchJsonBuilder final {
     }
     if (position + marker.size() > out.size()) return false;
     constexpr std::string_view prefix{",\"record_hash\":\"sha256:"};
-    constexpr std::size_t suffix{2U};
-    const std::size_t added = prefix.size() + 64U + suffix;
+    // The inserted JSON consists of the prefix, 64 lowercase hex digits,
+    // and one closing quote. Do not count a second byte: the following
+    // record bytes already include the comma before recorded_at.
+    const std::size_t added = prefix.size() + 64U + 1U;
     if (out.size() + added > out.capacity()) return false;
     std::memmove(out.data() + position + added,
                  out.data() + position, out.size() - position);
@@ -721,10 +789,42 @@ class BatchJsonBuilder final {
   }
   static int make_id(const storage::ArchiveIdentity& identity,
                      char* output, std::size_t capacity) noexcept {
-    if (output == nullptr || capacity < 4U) return 0;
-    const int written = std::snprintf(output, capacity, "archive-%llu",
-                                      static_cast<unsigned long long>(identity.sequence));
+    if (output == nullptr || capacity < 4U || !identity.device_id.present ||
+        !identity.boot_id.present) return 0;
+    constexpr char digits[] = "0123456789abcdef";
+    std::size_t offset{0U};
+    const auto append_id = [&](const auto& id) noexcept -> bool {
+      for (const uint8_t byte : id.bytes) {
+        if (offset + 2U >= capacity) return false;
+        output[offset++] = digits[byte >> 4U];
+        output[offset++] = digits[byte & 0x0fU];
+      }
+      return true;
+    };
+    if (!append_id(identity.device_id) || offset + 1U >= capacity) return 0;
+    output[offset++] = '/';
+    if (!append_id(identity.boot_id) || offset + 8U >= capacity) return 0;
+    output[offset++] = '/';
+    char sequence[32]{};
+    const int written_sequence = std::snprintf(
+        sequence, sizeof(sequence), "%llu",
+        static_cast<unsigned long long>(identity.sequence));
+    if (written_sequence <= 0 || offset + static_cast<std::size_t>(written_sequence) >= capacity) return 0;
+    std::memcpy(output + offset, sequence, static_cast<std::size_t>(written_sequence));
+    offset += static_cast<std::size_t>(written_sequence);
+    output[offset] = '\0';
+    const int written = static_cast<int>(offset);
     return written > 0 && static_cast<std::size_t>(written) < capacity ? written : 0;
+  }
+  static int make_batch_id(const storage::ArchiveIdentity& identity,
+                           char* output, std::size_t capacity) noexcept {
+    const int record_size = make_id(identity, output, capacity);
+    if (record_size <= 0) return 0;
+    constexpr std::string_view suffix{"/batch"};
+    if (static_cast<std::size_t>(record_size) + suffix.size() + 1U >= capacity) return 0;
+    std::memcpy(output + record_size, suffix.data(), suffix.size());
+    output[record_size + suffix.size()] = '\0';
+    return record_size + static_cast<int>(suffix.size());
   }
 
 };
