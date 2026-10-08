@@ -147,6 +147,44 @@ bool WifiConnectionManager::request_candidate(std::string_view ssid,
   return true;
 }
 
+bool WifiConnectionManager::retry_saved() noexcept {
+  if (!has_saved_ || saved_ssid_size_ == 0U) return false;
+  station_.disconnect();
+  candidate_ = saved_;
+  candidate_ssid_size_ = saved_ssid_size_;
+  candidate_active_ = true;
+  candidate_requires_persist_ = false;
+  candidate_started_us_ = clock_.now_us();
+  if (!station_.begin_candidate(
+          std::string_view(candidate_.ssid.data(), candidate_ssid_size_),
+          std::string_view(candidate_.password.data()))) {
+    clear_candidate();
+    state_ = WifiState::Backoff;
+    next_retry_us_ = clock_.now_us() + 1000000U;
+    return false;
+  }
+  state_ = WifiState::Connecting;
+  return true;
+}
+
+WifiScanStatus WifiConnectionManager::list_known(
+    WifiNetwork* output, std::size_t capacity,
+    std::size_t& count) const noexcept {
+  count = 0U;
+  if (output == nullptr || capacity == 0U) {
+    return WifiScanStatus::Idle;
+  }
+  // An unprovisioned device has a valid empty known-network list. Returning
+  // Ready keeps the BLE setup flow usable before the first credential exists.
+  if (!has_saved_ || saved_ssid_size_ == 0U) return WifiScanStatus::Ready;
+  std::copy_n(saved_.ssid.data(), saved_ssid_size_, output[0].ssid.data());
+  output[0].ssid[saved_ssid_size_] = '\0';
+  output[0].rssi = 0;
+  output[0].secure = saved_.password[0] != '\0';
+  count = 1U;
+  return WifiScanStatus::Ready;
+}
+
 void WifiConnectionManager::cancel() noexcept {
   if (candidate_active_) station_.disconnect();
   clear_candidate();

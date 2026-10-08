@@ -69,8 +69,8 @@ describe('BLE provisioning client', () => {
       const first = decodeBleFrame(requestFrames[0]);
       const command = new TextDecoder().decode(assembleBleFrames(requestFrames.map(decodeBleFrame), 'F1')).trim();
       let response = 'OK PONG';
-      if (command.startsWith('CONNECT ')) response = 'OK CONNECTING';
-      if (command === 'STATUS') {
+      if (command.startsWith('CONNECT_WIFI ')) response = 'OK CONNECTING';
+      if (command === 'GET_STATUS') {
         statusRequests += 1;
         response = statusRequests === 1
           ? 'OK STATUS state=CONNECTING ssid='
@@ -110,7 +110,7 @@ describe('BLE provisioning client', () => {
     control = new FakeCharacteristic((requestFrames) => {
       const first = decodeBleFrame(requestFrames[0]);
       const command = new TextDecoder().decode(assembleBleFrames(requestFrames.map(decodeBleFrame), 'F1')).trim();
-      const response = command.startsWith('CONNECT ')
+      const response = command.startsWith('CONNECT_WIFI ')
         ? 'OK CONNECTING'
         : 'OK STATUS state=BACKOFF ssid=';
       encodeBleFrames(first.requestId, new TextEncoder().encode(response), 'R1').forEach((frame) => events.emit(frame));
@@ -134,7 +134,7 @@ describe('BLE provisioning client', () => {
     control = new FakeCharacteristic((requestFrames) => {
       const first = decodeBleFrame(requestFrames[0]);
       const command = new TextDecoder().decode(assembleBleFrames(requestFrames.map(decodeBleFrame), 'F1')).trim();
-      if (command !== 'SCAN') return;
+      if (command !== 'SCAN_WIFI') return;
       encodeBleFrames(first.requestId, new TextEncoder().encode('OK SCAN PENDING'), 'R1').forEach((frame) => events.emit(frame));
       encodeBleFrames(first.requestId, new TextEncoder().encode('OK SCAN READY count=1\nTestNetwork,-39,1'), 'R1').forEach((frame) => events.emit(frame));
     });

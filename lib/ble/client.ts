@@ -19,7 +19,7 @@ type BleCharacteristic = {
 };
 type BleService = { getCharacteristic: (uuid: string) => Promise<BleCharacteristic> };
 type BleServer = { getPrimaryService: (uuid: string) => Promise<BleService>; disconnect?: () => void };
-type BleDevice = { gatt?: { connect: () => Promise<BleServer> }; addEventListener: (event: string, listener: () => void) => void };
+type BleDevice = { name?: string; gatt?: { connect: () => Promise<BleServer> }; addEventListener: (event: string, listener: () => void) => void };
 type BluetoothAdapter = { requestDevice: (options: { filters: Array<{ services: string[] }> }) => Promise<BleDevice> };
 
 export type BleProvisioningClientOptions = {
@@ -28,6 +28,7 @@ export type BleProvisioningClientOptions = {
   connectPollIntervalMs?: number;
   sleep?: (milliseconds: number) => Promise<void>;
   onConnectionChange?: (connected: boolean) => void;
+  onDeviceIdentityChange?: (name: string | null) => void;
 };
 
 const bluetooth = (): BluetoothAdapter => {
@@ -53,6 +54,7 @@ export class BleProvisioningClient {
   private readonly connectPollIntervalMs: number;
   private readonly sleep: (milliseconds: number) => Promise<void>;
   private readonly onConnectionChange?: (connected: boolean) => void;
+  private readonly onDeviceIdentityChange?: (name: string | null) => void;
 
   constructor(options: BleProvisioningClientOptions = {}) {
     this.requestTimeoutMs = options.requestTimeoutMs ?? 5000;
@@ -60,6 +62,7 @@ export class BleProvisioningClient {
     this.connectPollIntervalMs = options.connectPollIntervalMs ?? 500;
     this.sleep = options.sleep ?? ((milliseconds) => new Promise((resolve) => globalThis.setTimeout(resolve, milliseconds)));
     this.onConnectionChange = options.onConnectionChange;
+    this.onDeviceIdentityChange = options.onDeviceIdentityChange;
   }
 
   async connect(): Promise<void> {
@@ -94,6 +97,7 @@ export class BleProvisioningClient {
       }
     });
     this.device = device;
+    this.onDeviceIdentityChange?.(device.name ?? null);
     this.onConnectionChange?.(true);
     device.addEventListener('gattserverdisconnected', () => this.close());
   }
@@ -105,23 +109,35 @@ export class BleProvisioningClient {
     this.server?.disconnect?.();
     this.server = null;
     this.device = null;
+    this.onDeviceIdentityChange?.(null);
     this.onConnectionChange?.(false);
   }
 
   async status(): Promise<WifiStatus> {
-    const response = await this.request('STATUS');
+    const response = await this.request('GET_STATUS');
     if (!response.status) throw new Error('Status WiFi tidak tersedia');
     return response.status;
   }
 
   async scan(): Promise<WifiNetwork[]> {
-    const response = await this.request('SCAN', {}, (value) => !value.scanPending);
+    const response = await this.request('SCAN_WIFI', {}, (value) => !value.scanPending);
     return response.networks ?? [];
+  }
+
+  async listKnownWifi(): Promise<WifiNetwork[]> {
+    const response = await this.request('LIST_KNOWN_WIFI');
+    return response.networks ?? [];
+  }
+
+  async retryWifi(): Promise<WifiStatus> {
+    const response = await this.request('RETRY_WIFI');
+    if (!response.status) throw new Error('Status retry Wi-Fi tidak tersedia');
+    return response.status;
   }
 
   async connectWifi(ssid: string, password: string): Promise<WifiStatus> {
     if (!ssid.trim() || ssid.length > 32 || password.length > 64) throw new Error('SSID atau password tidak valid');
-    const response = await this.request('CONNECT', { ssid, password });
+    const response = await this.request('CONNECT_WIFI', { ssid, password });
     if (!response.status) throw new Error('Status koneksi tidak tersedia');
     if (response.status.state === 'CONNECTED') return response.status;
     if (response.status.state === 'SETUP_REQUIRED' || response.status.state === 'UNCONFIGURED') {
@@ -144,7 +160,7 @@ export class BleProvisioningClient {
     const control = this.control;
     if (!control) throw new Error('Hubungkan perangkat BLE terlebih dahulu');
     const value = encodeBleCommand('', command, payload);
-    const requestId = `r${this.nextRequestId++}`;
+    const requestId = String(this.nextRequestId++);
     const frames = encodeBleFrames(requestId, value);
     return new Promise((resolve, reject) => {
       const timer = globalThis.setTimeout(() => {

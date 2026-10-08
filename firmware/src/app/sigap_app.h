@@ -13,6 +13,7 @@
 #include "acquisition/profile_store.h"
 #include "maintenance/runtime.h"
 #include "provisioning/secret_store.h"
+#include "provisioning/ble_provisioning.h"
 #include "calibration/calibration_session.h"
 #include "sigap/board/board_pins.h"
 #include "processing_runtime.h"
@@ -78,9 +79,33 @@ class ApplicationNetworkClock final : public network::IMonotonicClock {
   uint64_t now_us_{0U};
 };
 
+#ifdef ARDUINO
+class ApplicationProvisioningClock final
+    : public provisioning::IProvisioningClock,
+      public provisioning::BleProvisioningClock {
+ public:
+  uint64_t now_us() const noexcept override { return now_us_; }
+  void set_now(uint64_t value) noexcept { now_us_ = value; }
+
+ private:
+  uint64_t now_us_{0U};
+};
+#endif
+
 class ApplicationNetworkJitter final : public network::IRandomJitter {
  public:
-  uint32_t sample(uint32_t) noexcept override { return 0U; }
+  uint32_t sample(uint32_t maximum_ms) noexcept override {
+    if (maximum_ms == 0U) return 0U;
+    // Instance-owned deterministic PRNG keeps retry timing bounded without
+    // adding a global RNG or touching the acquisition clock domain.
+    state_ ^= state_ << 13U;
+    state_ ^= state_ >> 17U;
+    state_ ^= state_ << 5U;
+    return state_ % (maximum_ms + 1U);
+  }
+
+ private:
+  uint32_t state_{0x6D2B79F5U};
 };
 
 // Network provisioning is intentionally conservative until an endpoint and
@@ -215,6 +240,14 @@ class SigapApp final {
   BatchRuntime batch_runtime_{};
   ArchiveBatchNetworkSource<BatchRuntime> network_source_;
   ApplicationNetworkClock network_clock_{};
+#ifdef ARDUINO
+  ApplicationProvisioningClock provisioning_clock_{};
+  provisioning::ArduinoWifiStation wifi_station_{};
+  provisioning::WifiConnectionManager wifi_manager_;
+  provisioning::WifiProvisioningBackend wifi_backend_;
+  provisioning::BleProvisioningSession ble_session_;
+  provisioning::ArduinoBleProvisioningService ble_service_{};
+#endif
   ApplicationNetworkJitter network_jitter_{};
 #if defined(ARDUINO) && defined(SIGAP_NETWORK_ENDPOINT) && \
     defined(SIGAP_NETWORK_CA_CERT)

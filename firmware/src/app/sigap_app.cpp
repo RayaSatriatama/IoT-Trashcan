@@ -225,6 +225,11 @@ SigapApp::SigapApp() noexcept
                           nullptr),
 #endif
       network_source_(batch_runtime_),
+#ifdef ARDUINO
+      wifi_manager_(secret_store_, wifi_station_, provisioning_clock_),
+      wifi_backend_(wifi_manager_),
+      ble_session_(wifi_backend_, provisioning_clock_),
+#endif
       maintenance_service_(maintenance_transport_, maintenance_router_) {
 #if defined(ARDUINO) && defined(SIGAP_NETWORK_ENDPOINT) && \
     defined(SIGAP_NETWORK_CA_CERT)
@@ -283,6 +288,15 @@ void SigapApp::setup() noexcept {
 #ifdef ARDUINO
   Serial.begin(115200);
   board::log_runtime_board_memory();
+  const int64_t started_us = esp_timer_get_time();
+  provisioning_clock_.set_now(
+      started_us < 0 ? 0U : static_cast<uint64_t>(started_us));
+  (void)wifi_manager_.begin();
+  char ble_name[32]{};
+  const uint64_t device_mac = ESP.getEfuseMac();
+  (void)std::snprintf(ble_name, sizeof(ble_name), "SIGAP-%04llX",
+                      static_cast<unsigned long long>(device_mac & 0xffffU));
+  (void)ble_service_.begin(ble_session_, std::string_view(ble_name));
 #endif
   const config::ConfigBootResult boot_result = config_manager_.begin();
   (void)boot_result;
@@ -426,6 +440,9 @@ void SigapApp::loop() noexcept {
 #ifdef ARDUINO
   const acquisition::ArduinoMonotonicClock clock{};
   const uint64_t now_us = clock.now_us();
+  provisioning_clock_.set_now(now_us);
+  wifi_manager_.poll();
+  ble_service_.poll();
   maintenance_service_.poll(now_us);
   std::size_t audit_budget{2U};
   while (audit_budget-- != 0U && archive_runtime_.drain_audit_events(audit_ring_)) {

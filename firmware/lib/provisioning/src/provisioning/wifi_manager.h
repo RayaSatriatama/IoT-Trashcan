@@ -64,7 +64,10 @@ class WifiConnectionManager final {
   // Candidate credentials stay in RAM until association and IP acquisition
   // succeed.  A failed candidate never overwrites the saved credential.
   bool request_candidate(std::string_view ssid, std::string_view password) noexcept;
+  bool retry_saved() noexcept;
   void cancel() noexcept;
+  WifiScanStatus list_known(WifiNetwork* output, std::size_t capacity,
+                            std::size_t& count) const noexcept;
   WifiScanStatus request_scan() noexcept;
   WifiScanStatus poll_scan(WifiNetwork* output, std::size_t capacity,
                            std::size_t& count) noexcept;

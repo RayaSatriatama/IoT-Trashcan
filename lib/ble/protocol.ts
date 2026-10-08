@@ -36,7 +36,7 @@ export type BleResponse = {
 
 function validateFrameHeader(version: string, requestId: string, chunkIndex: number, chunkCount: number): void {
   if (version !== BLE_REQUEST_FRAME_VERSION && version !== BLE_RESPONSE_FRAME_VERSION) throw new Error('BLE frame version invalid');
-  if (!/^[A-Za-z0-9_-]{1,12}$/u.test(requestId)) throw new Error('BLE request id invalid');
+  if (!/^\d{1,10}$/u.test(requestId)) throw new Error('BLE request id invalid');
   if (!Number.isInteger(chunkIndex) || !Number.isInteger(chunkCount) || chunkCount < 1 || chunkIndex < 0 || chunkIndex >= chunkCount) {
     throw new Error('BLE chunk bounds invalid');
   }
@@ -120,15 +120,18 @@ export function assembleBleFrames(
 
 export function encodeBleCommand(_id: string, command: string, payload: Record<string, unknown> = {}): Uint8Array {
   let body = command.toUpperCase();
-  if (body === 'CONNECT') {
+  if (body === 'CONNECT' || body === 'CONNECT_WIFI') {
     const ssid = typeof payload.ssid === 'string' ? payload.ssid : '';
     const password = typeof payload.password === 'string' ? payload.password : '';
     if (!ssid || /[\s\r\n]/u.test(ssid) || ssid.length > 32 || password.length > 64 || /[\r\n]/u.test(password)) {
       throw new Error('SSID atau password tidak valid');
     }
-    body = `CONNECT ${ssid} ${password}`;
+    body = `CONNECT_WIFI ${ssid} ${password}`;
   }
-  if (body !== 'STATUS' && body !== 'SCAN' && body !== 'PING' && !body.startsWith('CONNECT ')) {
+  if (body !== 'STATUS' && body !== 'GET_STATUS' && body !== 'SCAN' &&
+      body !== 'SCAN_WIFI' && body !== 'PING' && body !== 'LIST_KNOWN_WIFI' &&
+      body !== 'RETRY_WIFI' && !body.startsWith('CONNECT ') &&
+      !body.startsWith('CONNECT_WIFI ')) {
     throw new Error('BLE command tidak dikenal');
   }
   const encoded = new TextEncoder().encode(`${body}\n`);
@@ -159,6 +162,16 @@ export function decodeBleResponse(bytes: Uint8Array): BleResponse {
     });
     return { ok: true, networks };
   }
+  if (text.startsWith('OK LIST_KNOWN_WIFI')) {
+    const lines = text.split('\n').slice(1);
+    const networks = lines.map((line) => {
+      const match = /^(.*),(0|1)$/u.exec(line);
+      if (!match || !match[1]) throw new Error('BLE known network entry invalid');
+      return { ssid: match[1], rssi: 0, secure: match[2] === '1' };
+    });
+    return { ok: true, networks };
+  }
+  if (text === 'OK RETRY_WIFI') return { ok: true, status: { state: 'CONNECTING', ssid: null } };
   throw new Error('BLE response envelope is invalid');
 }
 

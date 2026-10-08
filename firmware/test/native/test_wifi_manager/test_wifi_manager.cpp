@@ -107,10 +107,25 @@ void test_scan_is_rate_limited() {
   TEST_ASSERT_EQUAL_INT(WifiScanStatus::RateLimited, manager.request_scan());
 }
 
+void test_empty_known_network_list_is_ready_before_first_provisioning() {
+  MemorySecretBlobStore backend;
+  PersistentSecretStore secrets(backend);
+  Clock clock;
+  Station station;
+  WifiConnectionManager manager(secrets, station, clock);
+  TEST_ASSERT_TRUE(manager.begin());
+  std::array<WifiNetwork, 2> networks{};
+  std::size_t count{99U};
+  TEST_ASSERT_EQUAL_INT(WifiScanStatus::Ready,
+                        manager.list_known(networks.data(), networks.size(), count));
+  TEST_ASSERT_EQUAL_UINT(0U, count);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_candidate_failure_preserves_saved_credentials);
   RUN_TEST(test_successful_candidate_persists_after_ip);
   RUN_TEST(test_scan_is_rate_limited);
+  RUN_TEST(test_empty_known_network_list_is_ready_before_first_provisioning);
   return UNITY_END();
 }

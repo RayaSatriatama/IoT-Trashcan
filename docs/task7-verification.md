@@ -1,13 +1,17 @@
-# Task 7 network transport verification
+# Task 7 network, Wi-Fi, BLE, and web verification
 
 ## Scope
 
 Task 6 was merged into `main` at `57d0749632f29b18fd1086b893868a5612b7c935`.
-This branch adds the bounded Wi-Fi/HTTPS archive-v3 transport foundation. It
-does not add BLE, the legacy summary worker, backend archive code, migration
-005, or actuator output.
+This branch adds the bounded Wi-Fi/HTTPS archive-v3 transport foundation,
+always-on encrypted BLE provisioning, device-side Wi-Fi scanning, and the web
+Bluetooth settings flow. It does not add the legacy summary worker, backend
+archive code, migration 005, or actuator output.
 
-Final verified source SHA for this report: `652cd11e99296850f7cbfb5c04c2cb48cb1e806d`.
+Final verified source is updated after the integrated remediation commit. The
+working tree includes the HTTP publication boundary, NimBLE passkey/authentication
+callback, ATT-safe request/response framing, explicit Wi-Fi retry/list commands,
+and browser status polling.
 
 ## Runtime behavior
 
@@ -25,18 +29,34 @@ Final verified source SHA for this report: `652cd11e99296850f7cbfb5c04c2cb48cb1e
 - Target HTTPS is opt-in through an explicit endpoint and CA build boundary.
   No endpoint, certificate, credential, or production ACK is invented in the
   default target composition.
+- BLE advertises a device-specific `SIGAP-XXXX` name continuously. Its command
+  and response characteristics require NimBLE encrypted/authenticated GATT
+  with a device-local passkey derived from a separate NVS setup secret. `F1` /
+  `R1` request-ID frames are reassembled in order with a 20-byte wire bound.
+  `GET_STATUS`, `SCAN_WIFI`, `LIST_KNOWN_WIFI`, `RETRY_WIFI`, and
+  `CONNECT_WIFI` are bounded and session-scoped.
+- Wi-Fi candidates are held in RAM until association and IP acquisition. A
+  failed candidate preserves the previous saved credential. BLE remains
+  available while Wi-Fi connects, retries, or is already connected.
+- The web device detail page opens the Web Bluetooth picker from a user
+  gesture, rejects unsupported/non-secure contexts, and sends credentials only
+  through the BLE characteristic. Browser storage and API forwarding are not
+  used.
 
 ## Fresh verification
 
 | Check | Result |
 | --- | --- |
-| PlatformIO native | PASS, 346/346 |
-| Native ASan/UBSan | PASS, 346/346 |
+| PlatformIO native | PASS, 365/365 |
+| Native ASan/UBSan | PASS, 365/365 |
 | cppcheck (`--fail-on-defect=low`) | PASS, no defects |
-| `sigap_n16r8` | PASS, RAM 296,024/327,680; flash 492,577/4,194,304 |
-| `sigap_n16r8_sd` | PASS, RAM 296,572/327,680; flash 565,957/4,194,304 |
-| `sigap_n16r8_sd_spi` | PASS, RAM 296,316/327,680; flash 545,265/4,194,304 |
-| `sigap_bench` | PASS, RAM 296,024/327,680; flash 492,577/4,194,304 |
+| `sigap_n16r8` | PASS, RAM 49,496/327,680; flash 1,073,557/4,194,304 |
+| `sigap_n16r8_sd` | PASS, RAM 50,036/327,680; flash 1,147,337/4,194,304 |
+| `sigap_n16r8_sd_spi` | PASS, RAM 49,792/327,680; flash 1,126,773/4,194,304 |
+| `sigap_bench` | PASS, RAM 49,496/327,680; flash 1,073,557/4,194,304 |
+| Web Vitest | PASS, 87/87 |
+| Web TypeScript | PASS |
+| Web production export | PASS |
 | Go telemetry tests | PASS |
 | Go full tests | PASS |
 | `go vet ./...` | PASS |
@@ -52,13 +72,23 @@ fixtures, 36 invalid fixtures, and the frozen record/body hash tests. The
 sanitizer run used the same source revision and an isolated PlatformIO build
 directory with address and undefined-behavior sanitizers.
 
+The final native additions cover monotonically rejected BLE request replays,
+bounded scan-count serialization, readback-verified Wi-Fi secret persistence,
+and the empty known-network list during first setup. The sanitizer run covered
+the same 365 native cases.
+
 ## Resource notes
 
-The target map reports the `SigapApp` singleton at 276,376 bytes in the
-N16R8 DRAM image and total static RAM at 296,024 bytes. The network worker
-keeps only bounded token/retry state and references to archive-owned objects;
-the HTTPS adapter bounds request bodies at 32 KiB and response bodies at
-512 bytes. No dynamic allocation was introduced by the network worker.
+The target composition owns a large archive/application object. With Wi-Fi and
+NimBLE enabled, placing that object in internal DRAM overflowed the linker by
+about 50 KiB. The final composition allocates the object from the board's
+verified PSRAM pool after framework startup; only the pointer remains in DRAM.
+PlatformIO reports 49,496 bytes static RAM for the base target and 50,036 bytes
+for SD_MMC. The network worker keeps bounded token/retry state and references
+archive-owned bytes. HTTPS bounds request bodies at 32 KiB and response bodies
+at 512 bytes. Runtime PSRAM capacity remains a board acceptance condition and
+is reported by the existing memory probe; no physical boot was performed in
+this verification pass.
 
 Compiler stack-usage files are not emitted by the pinned PlatformIO release;
 the target map and native sanitizer checks are therefore evidence for static
@@ -66,13 +96,16 @@ footprint and memory safety, not a hardware stack high-water measurement.
 
 ## Hardware boundary
 
-No network credentials, endpoint, CA bundle, or backend service was supplied
-for this slice. Native USB/SD evidence belongs to Task 6 and is unchanged.
-Network association, TLS handshake, server ACK, Wi-Fi-loss timing, and
-throughput remain HIL/deployment checks for a provisioned device. No upload,
+No network endpoint, CA bundle, backend service, or physical BLE client was
+used in this pass. Wi-Fi credentials supplied in conversation were not written
+to source, tests, logs, or artifacts. Native USB/SD evidence belongs to Task 6
+and is unchanged. BLE advertising/pairing, device-side scan results, TLS
+handshake, server ACK, Wi-Fi-loss timing, throughput, and credential
+persistence remain HIL/deployment checks for a provisioned device. No upload,
 reboot, SD modification, sensor wiring, or actuator test was performed here.
 
 ## Provenance
 
-Task 7 source is based on the Task 6 merge above. Task 7 remains open for
-review; Task 8 and all deferred BLE/backend/actuator work were not started.
+Task 7 source is based on the Task 6 merge above. Task 8 backend work,
+migration 005, durable logger changes, FIS/Safety recalculation, and actuator
+output were not started. Physical commissioning remains deferred.

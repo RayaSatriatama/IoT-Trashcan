@@ -10,6 +10,7 @@ using sigap::provisioning::MemorySecretBlobStore;
 using sigap::provisioning::NetworkSecrets;
 using sigap::provisioning::PersistentSecretStore;
 using sigap::provisioning::SecretBlobCodec;
+using sigap::provisioning::SecretBlobReadStatus;
 using sigap::provisioning::SecretSlot;
 using sigap::provisioning::SecretStoreResult;
 
@@ -123,6 +124,21 @@ void test_failed_write_preserves_previous_secret() {
   sigap::provisioning::secure_zero(&output, sizeof(output));
 }
 
+void test_wifi_write_requires_readback_verification() {
+  MemorySecretBlobStore backend;
+  PersistentSecretStore store(backend);
+  backend.fail_next(MemorySecretBlobStore::Fault::ReadWifi);
+  TEST_ASSERT_FALSE(store.set_wifi("SSID", "PASSWORD"));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(SecretStoreResult::StorageError),
+                        static_cast<int>(store.last_result()));
+  TEST_ASSERT_TRUE(backend.present(SecretSlot::Wifi));
+  sigap::provisioning::EncodedSecretBlob raw{};
+  std::size_t size{0U};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(SecretBlobReadStatus::Found),
+                        static_cast<int>(backend.read(
+                            SecretSlot::Wifi, raw.bytes.data(), raw.bytes.size(), size)));
+}
+
 void test_clear_requires_confirmation_and_erases_both_blobs() {
   MemorySecretBlobStore backend;
   PersistentSecretStore store(backend);
@@ -192,6 +208,7 @@ void setup() {
   RUN_TEST(test_unsupported_schema_is_rejected);
   RUN_TEST(test_truncated_blob_is_rejected);
   RUN_TEST(test_failed_write_preserves_previous_secret);
+  RUN_TEST(test_wifi_write_requires_readback_verification);
   RUN_TEST(test_clear_requires_confirmation_and_erases_both_blobs);
   RUN_TEST(test_clear_failure_preserves_both_blobs);
   RUN_TEST(test_invalid_secret_input_is_rejected_without_persistence);
