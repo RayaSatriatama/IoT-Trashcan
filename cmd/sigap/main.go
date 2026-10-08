@@ -16,6 +16,7 @@ import (
 	httpapi "github.com/RayaSatriatama/IoT-Trashcan/internal/http"
 	"github.com/RayaSatriatama/IoT-Trashcan/internal/ingest"
 	"github.com/RayaSatriatama/IoT-Trashcan/internal/simulator"
+	"github.com/RayaSatriatama/IoT-Trashcan/internal/telemetryarchive"
 	"github.com/RayaSatriatama/IoT-Trashcan/internal/webapp"
 )
 
@@ -58,11 +59,17 @@ func main() {
 		service = ingest.NewService(db)
 		log.Print("production FIS and safety configuration is unset; valid ingests persist raw readings without fabricated decisions")
 	}
+	archiveService := telemetryarchive.NewService(db)
+	archiveQuery, err := telemetryarchive.NewArchiveQuery(db)
+	if err != nil {
+		log.Fatalf("configure telemetry archive query: %v", err)
+	}
 	apiHandler := httpapi.NewRouter(
 		service,
 		httpapi.WithReadDatabase(db, readOptions...),
 		httpapi.WithSimulationEnabled(simulationConfig.Enabled),
 		httpapi.WithSimulationIndicatorEnabled(simulationIndicatorEnabled),
+		httpapi.WithTelemetryArchive(archiveService, archiveQuery),
 	)
 	handler := webapp.Handler(apiHandler)
 	server := &http.Server{Addr: addr, Handler: handler}

@@ -17,7 +17,7 @@ func TestOpenCreatesInitialSchema(t *testing.T) {
 	}
 	defer db.Close()
 
-	for _, table := range []string{"locations", "devices", "slots", "readings", "decisions", "events"} {
+	for _, table := range []string{"locations", "devices", "slots", "readings", "decisions", "events", "telemetry_batches", "telemetry_records", "telemetry_batch_records"} {
 		var found string
 		err := db.QueryRowContext(context.Background(), "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", table).Scan(&found)
 		if err != nil {
@@ -100,11 +100,11 @@ func TestOpenMigrationIsIdempotent(t *testing.T) {
 	defer second.Close()
 
 	var count int
-	if err := second.QueryRow("SELECT COUNT(*) FROM schema_migrations WHERE name IN ('001_initial.sql', '002_normalized_reading.sql', '003_history_reading_time_index.sql', '004_device_research_trace.sql')").Scan(&count); err != nil {
+	if err := second.QueryRow("SELECT COUNT(*) FROM schema_migrations WHERE name IN ('001_initial.sql', '002_normalized_reading.sql', '003_history_reading_time_index.sql', '004_device_research_trace.sql', '005_telemetry_archive.sql')").Scan(&count); err != nil {
 		t.Fatalf("read migration metadata: %v", err)
 	}
-	if count != 4 {
-		t.Fatalf("migration count = %d, want 4", count)
+	if count != 5 {
+		t.Fatalf("migration count = %d, want 5", count)
 	}
 
 	rows, err := second.Query("PRAGMA table_info(decisions)")

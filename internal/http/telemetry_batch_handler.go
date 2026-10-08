@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"github.com/RayaSatriatama/IoT-Trashcan/internal/telemetry"
+	"github.com/RayaSatriatama/IoT-Trashcan/internal/telemetryarchive"
 )
 
 // TelemetryBatchService is the narrow persistence boundary for telemetry-v3
@@ -70,14 +71,15 @@ func NewTelemetryBatchHandler(service TelemetryBatchService) http.Handler {
 		}
 		ack, err := service.IngestTelemetryBatch(r.Context(), token, raw)
 		if err != nil {
+			var contractErr *telemetry.ContractError
 			switch {
-			case errors.Is(err, ErrTelemetryUnauthorized):
+			case errors.Is(err, ErrTelemetryUnauthorized), errors.Is(err, telemetryarchive.ErrUnauthorized):
 				writeError(w, http.StatusUnauthorized, "unauthorized")
-			case errors.Is(err, ErrTelemetryConflict):
+			case errors.Is(err, ErrTelemetryConflict), errors.Is(err, telemetryarchive.ErrConflict):
 				writeError(w, http.StatusConflict, "conflicting telemetry replay")
-			case errors.Is(err, ErrTelemetryInvalid):
+			case errors.Is(err, ErrTelemetryInvalid), errors.As(err, &contractErr):
 				writeError(w, http.StatusBadRequest, "invalid telemetry batch")
-			case errors.Is(err, ErrTelemetryPersistence):
+			case errors.Is(err, ErrTelemetryPersistence), errors.Is(err, telemetryarchive.ErrPersistence):
 				writeError(w, http.StatusServiceUnavailable, "telemetry archive unavailable")
 			default:
 				writeError(w, http.StatusInternalServerError, "internal server error")

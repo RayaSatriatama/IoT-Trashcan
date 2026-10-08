@@ -10,6 +10,8 @@ CREATE TABLE telemetry_batches (
     deduplicated_count INTEGER NOT NULL CHECK (deduplicated_count >= 0 AND deduplicated_count <= record_count),
     status TEXT NOT NULL CHECK (status = 'DURABLE'),
     created_at TEXT NOT NULL,
+    acked_at TEXT,
+    FOREIGN KEY (device_id) REFERENCES devices(device_code),
     PRIMARY KEY (device_id, batch_id),
     UNIQUE (device_id, batch_id, body_hash)
 );
@@ -22,6 +24,7 @@ CREATE TABLE telemetry_records (
     record_bytes BLOB NOT NULL,
     first_batch_id TEXT NOT NULL,
     created_at TEXT NOT NULL,
+    FOREIGN KEY (device_id) REFERENCES devices(device_code),
     PRIMARY KEY (device_id, record_id),
     UNIQUE (device_id, record_id, record_hash)
 );

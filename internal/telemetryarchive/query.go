@@ -6,6 +6,7 @@ package telemetryarchive
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -28,15 +29,15 @@ var (
 // Body bytes are intentionally not part of this type so a list operation
 // cannot unexpectedly allocate a large request body per item.
 type BatchManifest struct {
-	DeviceID          string
-	BatchID           string
-	BodyHash          string
-	RecordCount       uint32
-	StoredCount       uint32
-	DeduplicatedCount uint32
-	BodyBytes         uint32
-	CreatedAt         string
-	AckedAt           *string
+	DeviceID          string  `json:"device_id"`
+	BatchID           string  `json:"batch_id"`
+	BodyHash          string  `json:"body_hash"`
+	RecordCount       uint32  `json:"record_count"`
+	StoredCount       uint32  `json:"stored_count"`
+	DeduplicatedCount uint32  `json:"deduplicated_count"`
+	BodyBytes         uint32  `json:"body_bytes"`
+	CreatedAt         string  `json:"created_at"`
+	AckedAt           *string `json:"acked_at"`
 }
 
 // StoredBatch is a manifest together with the exact request bytes committed
@@ -45,6 +46,15 @@ type BatchManifest struct {
 type StoredBatch struct {
 	Manifest BatchManifest
 	Body     []byte
+}
+
+// CurrentSnapshot is a bounded read projection over the most recent archived
+// sample and result for each stream. The values are the exact persisted JSON;
+// this endpoint does not recalculate MCU decisions.
+type CurrentSnapshot struct {
+	DeviceID string                     `json:"device_id"`
+	Samples  map[string]json.RawMessage `json:"samples"`
+	Results  map[string]json.RawMessage `json:"results"`
 }
 
 // ArchiveQuery performs bounded, parameterized archive reads.
@@ -165,6 +175,57 @@ func LoadBatch(ctx context.Context, db *sql.DB, deviceID, batchID string) (Store
 		return StoredBatch{}, err
 	}
 	return query.LoadBatch(ctx, deviceID, batchID)
+}
+
+// Current returns the newest archived sample and result per stream, bounded by
+// the number of known telemetry streams and the archive hot-cache limit.
+func (q *ArchiveQuery) Current(ctx context.Context, deviceID string) (CurrentSnapshot, error) {
+	if q == nil || q.db == nil || strings.TrimSpace(deviceID) == "" {
+		return CurrentSnapshot{}, fmt.Errorf("%w: device_id is required", ErrInvalidQuery)
+	}
+	snapshot := CurrentSnapshot{DeviceID: deviceID, Samples: map[string]json.RawMessage{}, Results: map[string]json.RawMessage{}}
+	rows, err := q.db.QueryContext(ctx, `
+SELECT kind, record_bytes
+FROM telemetry_records
+WHERE device_id = ? AND kind IN ('sample', 'result')
+ORDER BY created_at DESC, rowid DESC
+LIMIT ?`, deviceID, MaxBatchPageSize)
+	if err != nil {
+		return CurrentSnapshot{}, fmt.Errorf("query current telemetry: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var kind string
+		var raw []byte
+		if err := rows.Scan(&kind, &raw); err != nil {
+			return CurrentSnapshot{}, fmt.Errorf("scan current telemetry: %w", err)
+		}
+		var fields struct {
+			Stream string `json:"stream"`
+		}
+		if err := json.Unmarshal(raw, &fields); err != nil || fields.Stream == "" {
+			continue
+		}
+		target := snapshot.Samples
+		if kind == "result" {
+			target = snapshot.Results
+		}
+		if _, exists := target[fields.Stream]; !exists {
+			target[fields.Stream] = append(json.RawMessage(nil), raw...)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return CurrentSnapshot{}, fmt.Errorf("iterate current telemetry: %w", err)
+	}
+	return snapshot, nil
+}
+
+func Current(ctx context.Context, db *sql.DB, deviceID string) (CurrentSnapshot, error) {
+	query, err := NewArchiveQuery(db)
+	if err != nil {
+		return CurrentSnapshot{}, err
+	}
+	return query.Current(ctx, deviceID)
 }
 
 type manifestScanner interface {

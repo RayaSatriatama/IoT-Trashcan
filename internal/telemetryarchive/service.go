@@ -38,6 +38,33 @@ type Service struct {
 // NewService composes the archive service over an already migrated database.
 func NewService(db *sql.DB) *Service { return &Service{db: db, now: time.Now} }
 
+// IngestTelemetryBatch matches the HTTP boundary without exposing the
+// archive-specific result wrapper to callers.
+func (s *Service) IngestTelemetryBatch(ctx context.Context, bearerToken string, body []byte) (telemetry.Ack, error) {
+	result, err := s.Ingest(ctx, bearerToken, body)
+	if err != nil {
+		return telemetry.Ack{}, err
+	}
+	return result.Ack, nil
+}
+
+// AuthorizeDevice protects read-side archive export with the same device
+// credential boundary as batch ingestion.
+func (s *Service) AuthorizeDevice(ctx context.Context, deviceID, bearerToken string) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("%w: database is unavailable", ErrPersistence)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("%w: begin: %v", ErrPersistence, err)
+	}
+	defer tx.Rollback()
+	if err := authenticate(ctx, tx, deviceID, bearerToken); err != nil {
+		return err
+	}
+	return nil
+}
+
 // Ingest authenticates the batch owner, validates the complete contract, and
 // atomically stores its exact body plus each typed record. Replays of an exact
 // batch are durable deduplications; a reused batch ID with different bytes is a
