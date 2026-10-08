@@ -61,6 +61,9 @@ struct Transport final : IHttpTransport {
   std::string_view response_body{};
   uint32_t timeout_ms{0U};
   uint16_t record_count{0U};
+  uint32_t pending_polls{0U};
+  uint32_t start_calls{0U};
+  uint32_t poll_calls{0U};
   TransportResult post_batch(std::string_view bytes,
                              std::string_view token, uint16_t count,
                              uint32_t timeout,
@@ -81,6 +84,25 @@ struct Transport final : IHttpTransport {
       response.body_size = response_body.size();
     }
     return result;
+  }
+  TransportResult start_batch(std::string_view bytes,
+                              std::string_view token, uint16_t count,
+                              uint32_t timeout,
+                              NetworkHttpResponse& response) noexcept override {
+    ++start_calls;
+    if (pending_polls != 0U) return TransportResult::Pending;
+    return post_batch(bytes, token, count, timeout, response);
+  }
+  TransportResult poll_response(NetworkHttpResponse& response) noexcept override {
+    ++poll_calls;
+    if (pending_polls != 0U) {
+      --pending_polls;
+      return TransportResult::Pending;
+    }
+    response.status_code = status;
+    response.ack_present = status == 200 && include_ack;
+    response.ack = ack;
+    return TransportResult::Response;
   }
 };
 
@@ -264,6 +286,55 @@ void test_server_errors_and_auth_are_observable() {
   TEST_ASSERT_EQUAL(static_cast<int>(NetworkState::AuthRequired),
                     static_cast<int>(worker.state()));
   TEST_ASSERT_TRUE(batches.pending);
+  const uint32_t calls = transport.calls;
+  TEST_ASSERT_EQUAL(static_cast<int>(NetworkOutcome::Unauthorized),
+                    static_cast<int>(worker.poll()));
+  TEST_ASSERT_EQUAL_UINT32(calls, transport.calls);
+  TEST_ASSERT_TRUE(worker.begin("token"));
+  TEST_ASSERT_EQUAL(static_cast<int>(NetworkOutcome::Unauthorized),
+                    static_cast<int>(worker.poll()));
+}
+
+void test_stalled_transport_keeps_batch_pending_while_other_work_progresses() {
+  Clock clock{};
+  Jitter jitter{};
+  Wifi wifi{};
+  Transport transport{};
+  Batches batches{};
+  make_batch(batches);
+  transport.pending_polls = 1U;
+  transport.ack = valid_ack(batches.batch);
+  NetworkWorker worker(policy(), clock, jitter, wifi, transport, batches);
+  TEST_ASSERT_TRUE(worker.begin("token"));
+  uint32_t acquisition_progress{0U};
+  TEST_ASSERT_EQUAL(static_cast<int>(NetworkOutcome::Waiting),
+                    static_cast<int>(worker.poll()));
+  ++acquisition_progress;
+  TEST_ASSERT_EQUAL(static_cast<int>(NetworkOutcome::Waiting),
+                    static_cast<int>(worker.poll()));
+  ++acquisition_progress;
+  TEST_ASSERT_EQUAL(static_cast<int>(NetworkOutcome::Delivered),
+                    static_cast<int>(worker.poll()));
+  TEST_ASSERT_EQUAL_UINT32(2U, acquisition_progress);
+  TEST_ASSERT_FALSE(batches.pending);
+  TEST_ASSERT_EQUAL_UINT32(1U, transport.start_calls);
+  TEST_ASSERT_EQUAL_UINT32(2U, transport.poll_calls);
+}
+
+void test_jitter_is_bounded_and_contributes_to_retry_deadline() {
+  Clock clock{};
+  Jitter jitter{};
+  jitter.value = 37U;
+  Wifi wifi{};
+  Transport transport{};
+  Batches batches{};
+  make_batch(batches);
+  NetworkWorker worker(policy(), clock, jitter, wifi, transport, batches);
+  TEST_ASSERT_TRUE(worker.begin("token"));
+  transport.result = TransportResult::Timeout;
+  TEST_ASSERT_EQUAL(static_cast<int>(NetworkOutcome::Timeout),
+                    static_cast<int>(worker.poll()));
+  TEST_ASSERT_EQUAL_UINT64(1037000ULL, worker.next_attempt_us());
 }
 
 void test_ack_decoder_is_bounded_and_strict() {
@@ -304,6 +375,8 @@ int main(int, char**) {
   RUN_TEST(test_ack_mismatch_never_marks_delivered);
   RUN_TEST(test_conflict_keeps_batch_pending);
   RUN_TEST(test_server_errors_and_auth_are_observable);
+  RUN_TEST(test_stalled_transport_keeps_batch_pending_while_other_work_progresses);
+  RUN_TEST(test_jitter_is_bounded_and_contributes_to_retry_deadline);
   RUN_TEST(test_ack_decoder_is_bounded_and_strict);
   return UNITY_END();
 }

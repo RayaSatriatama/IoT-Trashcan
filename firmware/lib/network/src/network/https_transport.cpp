@@ -26,88 +26,69 @@ bool https_endpoint(std::string_view endpoint) noexcept {
          endpoint.substr(0U, prefix.size()) == prefix;
 }
 
-bool find_field(std::string_view body, std::string_view name,
-                std::size_t& value_begin, std::size_t& value_end) noexcept {
-  std::size_t key{std::string_view::npos};
-  std::size_t cursor{0U};
-  while ((cursor = body.find(name, cursor)) != std::string_view::npos) {
-    const bool quoted = cursor > 0U && cursor + name.size() < body.size() &&
-                        body[cursor - 1U] == '"' &&
-                        body[cursor + name.size()] == '"';
-    if (quoted) {
-      if (key != std::string_view::npos) return false;
-      key = cursor;
+struct JsonCursor final {
+  std::string_view input{};
+  std::size_t position{0U};
+
+  void skip_space() noexcept {
+    while (position < input.size() &&
+           std::isspace(static_cast<unsigned char>(input[position])) != 0) {
+      ++position;
     }
-    cursor += name.size();
   }
-  if (key == std::string_view::npos) {
-    return false;
-  }
-  cursor = key + name.size() + 1U;
-  while (cursor < body.size() &&
-         std::isspace(static_cast<unsigned char>(body[cursor])) != 0) {
-    ++cursor;
-  }
-  if (cursor == body.size() || body[cursor] != ':') return false;
-  ++cursor;
-  while (cursor < body.size() &&
-         std::isspace(static_cast<unsigned char>(body[cursor])) != 0) {
-    ++cursor;
-  }
-  if (cursor == body.size()) return false;
-  if (body[cursor] == '"') {
-    value_begin = ++cursor;
-    while (cursor < body.size() && body[cursor] != '"') {
-      if (body[cursor] == '\\') return false;
-      ++cursor;
-    }
-    if (cursor == body.size()) return false;
-    value_end = cursor;
+
+  bool take(char expected) noexcept {
+    skip_space();
+    if (position >= input.size() || input[position] != expected) return false;
+    ++position;
     return true;
   }
-  value_begin = cursor;
-  while (cursor < body.size() && body[cursor] != ',' && body[cursor] != '}') {
-    ++cursor;
-  }
-  value_end = cursor;
-  while (value_end > value_begin &&
-         std::isspace(static_cast<unsigned char>(body[value_end - 1U])) != 0) {
-    --value_end;
-  }
-  return value_begin != value_end;
-}
 
-bool decode_uint16(std::string_view body, std::string_view name,
-                   uint16_t& output) noexcept {
-  std::size_t begin{0U};
-  std::size_t end{0U};
-  if (!find_field(body, name, begin, end) || begin == end) return false;
-  uint32_t value{0U};
-  for (std::size_t index = begin; index < end; ++index) {
-    const auto byte = static_cast<unsigned char>(body[index]);
-    if (byte < '0' || byte > '9') return false;
-    const uint32_t digit = static_cast<uint32_t>(byte - '0');
-    if (value > (std::numeric_limits<uint16_t>::max() - digit) / 10U) {
+  bool string(char* output, std::size_t capacity,
+              std::size_t& output_size) noexcept {
+    skip_space();
+    if (position >= input.size() || input[position] != '"' || capacity == 0U) {
       return false;
     }
-    value = value * 10U + digit;
+    ++position;
+    output_size = 0U;
+    while (position < input.size() && input[position] != '"') {
+      const auto byte = static_cast<unsigned char>(input[position]);
+      // The ACK contract uses plain bounded ASCII strings. Reject escapes and
+      // controls instead of attempting partial JSON unescaping.
+      if (byte < 0x20U || input[position] == '\\' ||
+          output_size + 1U >= capacity) {
+        return false;
+      }
+      output[output_size++] = input[position++];
+    }
+    if (position >= input.size()) return false;
+    ++position;
+    output[output_size] = '\0';
+    return true;
   }
-  output = static_cast<uint16_t>(value);
-  return true;
-}
 
-bool decode_string(std::string_view body, std::string_view name,
-                   char* output, std::size_t capacity,
-                   std::size_t& output_size) noexcept {
-  std::size_t begin{0U};
-  std::size_t end{0U};
-  if (!find_field(body, name, begin, end) || end - begin >= capacity) return false;
-  std::copy(body.begin() + static_cast<std::ptrdiff_t>(begin),
-            body.begin() + static_cast<std::ptrdiff_t>(end), output);
-  output_size = end - begin;
-  output[output_size] = '\0';
-  return true;
-}
+  bool uint16(uint16_t& output) noexcept {
+    skip_space();
+    if (position >= input.size() || input[position] < '0' ||
+        input[position] > '9') {
+      return false;
+    }
+    uint32_t value{0U};
+    const std::size_t begin = position;
+    while (position < input.size() && input[position] >= '0' &&
+           input[position] <= '9') {
+      const uint32_t digit = static_cast<uint32_t>(input[position++] - '0');
+      if (value > (std::numeric_limits<uint16_t>::max() - digit) / 10U) {
+        return false;
+      }
+      value = value * 10U + digit;
+    }
+    if (position - begin > 1U && input[begin] == '0') return false;
+    output = static_cast<uint16_t>(value);
+    return true;
+  }
+};
 
 uint8_t hex_nibble(char byte) noexcept {
   if (byte >= '0' && byte <= '9') return static_cast<uint8_t>(byte - '0');
@@ -187,6 +168,7 @@ bool decode_archive_ack(std::string_view body,
                         telemetry_archive::Ack& output) noexcept {
   output = telemetry_archive::Ack{};
   if (body.empty() || body.size() > kMaxResponseBodyBytes) return false;
+  char key[32]{};
   char device[telemetry_archive::kMaxBatchIdBytes]{};
   char batch[telemetry_archive::kMaxBatchIdBytes]{};
   char hash[telemetry_archive::kMaxBatchIdBytes]{};
@@ -195,10 +177,46 @@ bool decode_archive_ack(std::string_view body,
   std::size_t batch_size{0U};
   std::size_t hash_size{0U};
   std::size_t status_size{0U};
-  if (!decode_string(body, "device_id", device, sizeof(device), device_size) ||
-      !decode_string(body, "batch_id", batch, sizeof(batch), batch_size) ||
-      !decode_string(body, "body_hash", hash, sizeof(hash), hash_size) ||
-      !decode_string(body, "status", status, sizeof(status), status_size) ||
+  uint8_t seen{0U};
+  uint16_t record_count{0U};
+  uint16_t stored_count{0U};
+  uint16_t deduplicated_count{0U};
+  JsonCursor cursor{body};
+  if (!cursor.take('{')) return false;
+  cursor.skip_space();
+  if (cursor.position < body.size() && body[cursor.position] == '}') return false;
+  while (cursor.position < body.size()) {
+    std::size_t key_size{0U};
+    if (!cursor.string(key, sizeof(key), key_size) || !cursor.take(':')) return false;
+    const std::string_view field(key, key_size);
+    uint8_t bit{0U};
+    if (field == "device_id") bit = 1U;
+    else if (field == "batch_id") bit = 2U;
+    else if (field == "body_hash") bit = 4U;
+    else if (field == "record_count") bit = 8U;
+    else if (field == "stored_count") bit = 16U;
+    else if (field == "deduplicated_count") bit = 32U;
+    else if (field == "status") bit = 64U;
+    else return false;
+    if ((seen & bit) != 0U) return false;
+    seen = static_cast<uint8_t>(seen | bit);
+    switch (bit) {
+      case 1U: if (!cursor.string(device, sizeof(device), device_size)) return false; break;
+      case 2U: if (!cursor.string(batch, sizeof(batch), batch_size)) return false; break;
+      case 4U: if (!cursor.string(hash, sizeof(hash), hash_size)) return false; break;
+      case 64U: if (!cursor.string(status, sizeof(status), status_size)) return false; break;
+      case 8U: if (!cursor.uint16(record_count)) return false; break;
+      case 16U: if (!cursor.uint16(stored_count)) return false; break;
+      case 32U: if (!cursor.uint16(deduplicated_count)) return false; break;
+      default: return false;
+    }
+    cursor.skip_space();
+    if (cursor.position >= body.size()) return false;
+    if (body[cursor.position] == '}') { ++cursor.position; break; }
+    if (!cursor.take(',')) return false;
+  }
+  cursor.skip_space();
+  if (cursor.position != body.size() || seen != 127U ||
       std::string_view(status, status_size) != "DURABLE" ||
       hash_size != 71U || std::string_view(hash, 7U) != "sha256:") {
     return false;
@@ -213,10 +231,10 @@ bool decode_archive_ack(std::string_view body,
   std::copy(batch, batch + batch_size, output.batch_id.begin());
   output.batch_id_size = batch_size;
   output.device_id.present = true;
-  if (!decode_uint16(body, "record_count", output.record_count) ||
-      !decode_uint16(body, "stored_count", output.stored_count) ||
-      !decode_uint16(body, "deduplicated_count", output.deduplicated_count) ||
-      output.record_count == 0U || output.record_count > kMaxArchiveRecords ||
+  output.record_count = record_count;
+  output.stored_count = stored_count;
+  output.deduplicated_count = deduplicated_count;
+  if (output.record_count == 0U || output.record_count > kMaxArchiveRecords ||
       static_cast<uint32_t>(output.stored_count) + output.deduplicated_count !=
           output.record_count) {
     output = telemetry_archive::Ack{};
@@ -260,6 +278,65 @@ bool WiFiArchiveHttpTransport::set_endpoint(std::string_view endpoint) noexcept 
 
 bool WiFiArchiveHttpTransport::connected() const noexcept {
   return configured_ && WiFi.status() == WL_CONNECTED;
+}
+
+TransportResult WiFiArchiveHttpTransport::start_batch(
+    std::string_view exact_body, std::string_view bearer_token,
+    uint16_t record_count, uint32_t timeout_ms,
+    NetworkHttpResponse& response) noexcept {
+  response = NetworkHttpResponse{};
+  const HttpPostRequest request{
+      std::string_view(endpoint_.data()), bearer_token, exact_body, record_count};
+  if (!valid_archive_http_request(request) || task_active_ ||
+      task_complete_ || !configured_ || !connected() ||
+      ca_certificate_ == nullptr) {
+    return TransportResult::Failed;
+  }
+  task_body_ = exact_body.data();
+  task_body_size_ = exact_body.size();
+  task_token_ = bearer_token.data();
+  task_token_size_ = bearer_token.size();
+  task_record_count_ = record_count;
+  task_timeout_ms_ = timeout_ms;
+  task_response_ = NetworkHttpResponse{};
+  task_result_ = TransportResult::Failed;
+  task_cancelled_ = false;
+  task_complete_ = false;
+  task_active_ = true;
+  const auto created = xTaskCreate(
+      &WiFiArchiveHttpTransport::network_task, "sigap_net", 3072U, this,
+      1U, &task_handle_);
+  if (created != pdPASS) {
+    task_active_ = false;
+    return TransportResult::Failed;
+  }
+  return TransportResult::Pending;
+}
+
+TransportResult WiFiArchiveHttpTransport::poll_response(
+    NetworkHttpResponse& response) noexcept {
+  if (!task_complete_) return TransportResult::Pending;
+  response = task_response_;
+  const auto result = task_result_;
+  task_complete_ = false;
+  return result;
+}
+
+void WiFiArchiveHttpTransport::cancel_batch() noexcept {
+  task_cancelled_ = true;
+}
+
+void WiFiArchiveHttpTransport::network_task(void* context) noexcept {
+  auto& self = *static_cast<WiFiArchiveHttpTransport*>(context);
+  self.task_result_ = self.post_batch(
+      std::string_view(self.task_body_, self.task_body_size_),
+      std::string_view(self.task_token_, self.task_token_size_),
+      self.task_record_count_, self.task_timeout_ms_, self.task_response_);
+  if (self.task_cancelled_) self.task_result_ = TransportResult::Failed;
+  self.task_complete_ = true;
+  self.task_active_ = false;
+  self.task_handle_ = nullptr;
+  vTaskDelete(nullptr);
 }
 
 TransportResult WiFiArchiveHttpTransport::post_batch(
@@ -313,23 +390,34 @@ TransportResult WiFiArchiveHttpTransport::post_batch(
   response.body_truncated = false;
   Stream* stream = http.getStreamPtr();
   if (stream != nullptr) {
-    while (stream->available() > 0) {
+    const uint32_t started_ms = millis();
+    bool waiting_for_more = true;
+    while (waiting_for_more &&
+           millis() - started_ms < (timeout_ms == 0U ? kHttpTimeoutMs : timeout_ms)) {
       if (response_body_size_ == response_body_.size()) {
+        response.body_truncated = true;
         break;
       }
       const std::size_t available = static_cast<std::size_t>(stream->available());
-      const std::size_t capacity = response_body_.size() - response_body_size_;
-      const std::size_t amount = std::min(available, capacity);
-      const int read = stream->readBytes(response_body_.data() + response_body_size_,
-                                         amount);
-      if (read <= 0) break;
+      if (available == 0U) {
+        delay(1U);
+        continue;
+      }
+      const std::size_t amount = std::min(
+          available, response_body_.size() - response_body_size_);
+      const int read = stream->readBytes(
+          response_body_.data() + response_body_size_, amount);
+      if (read <= 0) {
+        delay(1U);
+        continue;
+      }
       response_body_size_ += static_cast<std::size_t>(read);
     }
     std::copy(response_body_.begin(),
               response_body_.begin() + static_cast<std::ptrdiff_t>(response_body_size_),
               response.body.begin());
     response.body_size = response_body_size_;
-    response.body_truncated = stream->available() > 0;
+    response.body_truncated = response.body_truncated || stream->available() > 0;
   }
   response.ack_present =
       status >= 200 && status < 300 &&

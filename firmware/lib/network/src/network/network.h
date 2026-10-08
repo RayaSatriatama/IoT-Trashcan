@@ -50,7 +50,7 @@ enum class NetworkOutcome : uint8_t {
   DeliveryFailure,
 };
 
-enum class TransportResult : uint8_t { Response, Timeout, Failed };
+enum class TransportResult : uint8_t { Response, Pending, Timeout, Failed };
 
 inline constexpr std::size_t kMaxAckBodyBytes{512U};
 
@@ -105,6 +105,22 @@ class IHttpTransport {
                                      uint16_t record_count,
                                      uint32_t timeout_ms,
                                      NetworkHttpResponse& response) noexcept = 0;
+
+  // The default implementation preserves the synchronous native seam. Target
+  // transports override these methods to move blocking I/O off the app loop.
+  virtual TransportResult start_batch(
+      std::string_view body, std::string_view device_token,
+      uint16_t record_count, uint32_t timeout_ms,
+      NetworkHttpResponse& response) noexcept {
+    return post_batch(body, device_token, record_count, timeout_ms, response);
+  }
+
+  virtual TransportResult poll_response(
+      NetworkHttpResponse&) noexcept {
+    return TransportResult::Failed;
+  }
+
+  virtual void cancel_batch() noexcept {}
 };
 
 enum class DeliveryStatus : uint8_t {
@@ -140,8 +156,15 @@ class NetworkWorker final {
       state_ = NetworkState::AuthRequired;
       return false;
     }
+    const bool token_changed =
+        token_size_ != device_token.size() ||
+        !std::equal(token_.begin(), token_.begin() + token_size_,
+                    device_token.begin());
     std::copy(device_token.begin(), device_token.end(), token_.begin());
     token_size_ = device_token.size();
+    if (state_ == NetworkState::AuthRequired && !token_changed) {
+      return true;
+    }
     state_ = NetworkState::Offline;
     retry_attempt_ = 0U;
     next_attempt_us_ = 0U;
@@ -150,6 +173,9 @@ class NetworkWorker final {
 
   NetworkOutcome poll() noexcept {
     const auto now = clock_.now_us();
+    if (state_ == NetworkState::AuthRequired) {
+      return NetworkOutcome::Unauthorized;
+    }
     const telemetry_archive::ImmutableBatch* batch = nullptr;
     if (!batches_.peek_pending(batch)) return NetworkOutcome::Idle;
     if (batch == nullptr || !batch->attempted ||
@@ -172,9 +198,24 @@ class NetworkWorker final {
     }
     state_ = NetworkState::Online;
     NetworkHttpResponse response{};
-    const auto result = transport_.post_batch(
-        batch->exact_body(), std::string_view(token_.data(), token_size_),
-        batch->record_count, policy_.request_timeout_ms, response);
+    TransportResult result{TransportResult::Failed};
+    if (transport_pending_) {
+      result = transport_.poll_response(response);
+      if (result == TransportResult::Pending) {
+        state_ = NetworkState::Online;
+        return NetworkOutcome::Waiting;
+      }
+      transport_pending_ = false;
+    } else {
+      result = transport_.start_batch(
+          batch->exact_body(), std::string_view(token_.data(), token_size_),
+          batch->record_count, policy_.request_timeout_ms, response);
+      if (result == TransportResult::Pending) {
+        transport_pending_ = true;
+        state_ = NetworkState::Online;
+        return NetworkOutcome::Waiting;
+      }
+    }
     if (result == TransportResult::Timeout) {
       schedule_retry(now, 0U);
       return NetworkOutcome::Timeout;
@@ -236,6 +277,7 @@ class NetworkWorker final {
   NetworkState state() const noexcept { return state_; }
   uint32_t retry_attempt() const noexcept { return retry_attempt_; }
   uint64_t next_attempt_us() const noexcept { return next_attempt_us_; }
+  bool transport_pending() const noexcept { return transport_pending_; }
 
  private:
   static constexpr std::size_t kMaxTokenBytes{128U};
@@ -275,6 +317,7 @@ class NetworkWorker final {
   NetworkState state_{NetworkState::Offline};
   uint32_t retry_attempt_{0U};
   uint64_t next_attempt_us_{0U};
+  bool transport_pending_{false};
 };
 
 }  // namespace sigap::network

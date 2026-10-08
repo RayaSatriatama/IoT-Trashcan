@@ -42,6 +42,8 @@ uint32_t parse_retry_after_ms(std::string_view value) noexcept;
 bool valid_archive_http_request(const HttpPostRequest& request) noexcept;
 
 #ifdef ARDUINO
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 class WiFiArchiveHttpTransport final : public IHttpTransport {
  public:
@@ -59,13 +61,35 @@ class WiFiArchiveHttpTransport final : public IHttpTransport {
                              uint16_t record_count,
                              uint32_t timeout_ms,
                              NetworkHttpResponse& response) noexcept override;
+  TransportResult start_batch(std::string_view exact_body,
+                              std::string_view bearer_token,
+                              uint16_t record_count,
+                              uint32_t timeout_ms,
+                              NetworkHttpResponse& response) noexcept override;
+  TransportResult poll_response(NetworkHttpResponse& response) noexcept override;
+  void cancel_batch() noexcept override;
 
  private:
+  static void network_task(void* context) noexcept;
   std::array<char, kMaxEndpointBytes + 1U> endpoint_{};
   std::array<char, kMaxResponseBodyBytes> response_body_{};
   std::size_t response_body_size_{0U};
   const char* ca_certificate_{nullptr};
   bool configured_{false};
+  volatile bool task_active_{false};
+  volatile bool task_complete_{false};
+  volatile bool task_cancelled_{false};
+  TransportResult task_result_{TransportResult::Failed};
+  NetworkHttpResponse task_response_{};
+  const char* task_body_{nullptr};
+  std::size_t task_body_size_{0U};
+  const char* task_token_{nullptr};
+  std::size_t task_token_size_{0U};
+  uint16_t task_record_count_{0U};
+  uint32_t task_timeout_ms_{0U};
+#ifdef ARDUINO
+  TaskHandle_t task_handle_{nullptr};
+#endif
 };
 
 #endif  // ARDUINO
