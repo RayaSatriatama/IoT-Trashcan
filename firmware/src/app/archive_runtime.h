@@ -267,6 +267,30 @@ class ArchiveRuntime final {
     return storage::AppendStatus::Retryable;
   }
 
+  // Run a bounded storage slice outside acquisition and processing callbacks.
+  // The one-record poll above remains the completion-aware path for audit
+  // events; this helper admits a larger byte budget without moving filesystem
+  // ownership into producer code.
+  std::size_t poll_storage_slice(
+      std::size_t record_budget,
+      std::size_t byte_budget = 32U * 1024U) noexcept {
+    std::size_t completed{0U};
+    while (completed < record_budget && worker_.queue().size() != 0U) {
+      const uint64_t before = worker_.stats().durable + worker_.stats().terminal;
+      const auto status = poll_storage();
+      if (status == storage::AppendStatus::Retryable) break;
+      const uint64_t after = worker_.stats().durable + worker_.stats().terminal;
+      if (after == before) break;
+      ++completed;
+      const auto* pending = worker_.queue().peek();
+      if (pending != nullptr && pending->record != nullptr &&
+          pending->record->size >= byte_budget) {
+        break;
+      }
+    }
+    return completed;
+  }
+
  private:
   static bool same_identity(const storage::ArchiveIdentity& left,
                             const storage::ArchiveIdentity& right) noexcept {

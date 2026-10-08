@@ -49,11 +49,28 @@ struct TerminalLog final {
   uint64_t sequence{0U};
 };
 
+struct CompletionLog final {
+  uint64_t durable{0U};
+  uint64_t terminal{0U};
+  uint64_t last_sequence{0U};
+};
+
 void terminal_gap(void* context, const ArchiveIdentity& identity,
                   GapReason) noexcept {
   auto& log = *static_cast<TerminalLog*>(context);
   ++log.count;
   log.sequence = identity.sequence;
+}
+
+void completion(void* context, const ArchiveIdentity* identity,
+                StorageWorkItem::CompletionStatus status) noexcept {
+  auto& log = *static_cast<CompletionLog*>(context);
+  if (status == StorageWorkItem::CompletionStatus::Durable) {
+    ++log.durable;
+  } else {
+    ++log.terminal;
+  }
+  if (identity != nullptr) log.last_sequence = identity->sequence;
 }
 
 void test_retry_keeps_frozen_item_and_durable_once() {
@@ -144,6 +161,29 @@ void test_owned_slot_applies_backpressure_without_overwriting_pending() {
   TEST_ASSERT_EQUAL_UINT64(41U, store.at(0U).identity.sequence);
 }
 
+void test_completion_ack_is_emitted_after_durable_append() {
+  MemoryArchiveStore<4U> store(64U * 1024U);
+  StorageWorker<2U> worker(&store);
+  CompletionLog log{};
+  const auto first = record(51U);
+  TEST_ASSERT_TRUE(worker.try_enqueue_copy(
+      first, nullptr, nullptr, &log, completion));
+  TEST_ASSERT_EQUAL_UINT64(0U, log.durable);
+  TEST_ASSERT_TRUE(worker.process_one());
+  TEST_ASSERT_EQUAL_UINT64(1U, log.durable);
+  TEST_ASSERT_EQUAL_UINT64(51U, log.last_sequence);
+}
+
+void test_process_slice_stops_at_record_budget() {
+  MemoryArchiveStore<8U> store(128U * 1024U);
+  StorageWorker<4U> worker(&store);
+  TEST_ASSERT_TRUE(worker.try_enqueue_copy(record(61U)));
+  TEST_ASSERT_FALSE(worker.try_enqueue_copy(record(62U)));
+  TEST_ASSERT_EQUAL_UINT32(1U, worker.process_slice(1U, 32U * 1024U));
+  TEST_ASSERT_EQUAL_UINT32(0U, worker.queue().size());
+  TEST_ASSERT_EQUAL_UINT64(1U, worker.stats().bytes_attempted > 0U);
+}
+
 }  // namespace
 
 int main() {
@@ -154,5 +194,7 @@ int main() {
   RUN_TEST(test_budget_does_not_process_more_than_requested);
   RUN_TEST(test_owned_copy_survives_source_reuse_and_short_write);
   RUN_TEST(test_owned_slot_applies_backpressure_without_overwriting_pending);
+  RUN_TEST(test_completion_ack_is_emitted_after_durable_append);
+  RUN_TEST(test_process_slice_stops_at_record_budget);
   return UNITY_END();
 }
