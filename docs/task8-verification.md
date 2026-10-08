@@ -32,6 +32,7 @@ deployment, and MCU sensor evidence are outside this slice.
 | Record/body golden hashes | PASS | `a3a2593618943cc7a1d5f8bc0c90216dc22eb4c3297fb874887c11b7b6ef6883`; `3620edf0548b8a15eb1638fc7d239b1995372a28982f7f1e194949160f166c7c` |
 | Runtime archive route | PASS | POST ingest, exact export, bounded manifest list, current projection, replay dedupe |
 | Firmware native suite | PASS | 365/365 on Task 8 worktree |
+| Firmware ASan/UBSan suite | PASS | 365/365 with address/undefined sanitizers |
 | Firmware cppcheck | PASS | no defects |
 | Firmware targets | PASS | `sigap_n16r8`, `sigap_n16r8_sd`, `sigap_n16r8_sd_spi`, `sigap_bench` |
 | Frontend/firmware regression | unchanged source | Task 7/6 firmware source was not modified by Task 8 |
