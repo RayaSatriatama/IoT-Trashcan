@@ -74,7 +74,7 @@ was not authorized in this batch.
 
 ## Fresh native evidence (final remediation run)
 
-The integrated native suite passed **320/320 tests**, including archive storage,
+The integrated native suite passed **326/326 tests**, including archive storage,
 archive runtime, immutable batch, ACK, failover, corrupt-tail, quota, 129-entry
 cache overflow, 4,684-record workload, migration adapter, gap reserve failover,
 producer-to-archive retry, typed metadata decode, and runtime batch/ACK tests.
@@ -85,7 +85,7 @@ contract tests passed their frozen canonical record and exact-body hash
 fixtures.
 
 The complete native suite was rerun with AddressSanitizer and UndefinedBehaviorSanitizer
-through a temporary native PlatformIO configuration: **320/320 tests**, with
+through a temporary native PlatformIO configuration: **326/326 tests**, with
 no sanitizer diagnostics. The sanitizer environment is temporary and is not part of the production
 PlatformIO configuration. The final regression is covered by the focused
 native run and the final full native run.
@@ -93,7 +93,7 @@ Cppcheck reported `No defects found`.
 
 Target compilation passed for `sigap_n16r8`, `sigap_n16r8_sd`, and
 `sigap_bench`. Final usage was 300,296 B RAM and 489,621 B flash for
-`sigap_n16r8`, 300,580 B RAM and 541,677 B flash for `sigap_n16r8_sd`, and
+`sigap_n16r8`, 300,580 B RAM and 541,825 B flash for `sigap_n16r8_sd`, and
 300,296 B RAM and 489,621 B flash for `sigap_bench`. The target composition
 uses one owned storage handoff slot; upstream typed rings retain additional
 records, keeping the SD variant below the internal DRAM limit. These are compilation
