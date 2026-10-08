@@ -4,10 +4,41 @@
 #include <unity.h>
 
 #include "acquisition/target_protocol.h"
+#include "sigap/board/sd_transport.h"
 
 namespace {
 
 using namespace sigap::acquisition;
+
+void test_sigap_sd_default_transport_remains_external_spi() {
+  const auto policy = sigap::board::kSdTransportPolicy;
+
+  TEST_ASSERT_EQUAL_UINT8(
+      static_cast<uint8_t>(sigap::board::SdTransport::ExternalSpi),
+      static_cast<uint8_t>(policy.transport));
+  TEST_ASSERT_EQUAL_UINT8(39U, policy.clk);
+  TEST_ASSERT_EQUAL_UINT8(40U, policy.cmd_or_miso);
+  TEST_ASSERT_EQUAL_UINT8(41U, policy.d0_or_mosi);
+  TEST_ASSERT_EQUAL_UINT8(43U, policy.cs);
+  TEST_ASSERT_FALSE(policy.format_if_mount_failed);
+  TEST_ASSERT_FALSE(sigap::board::sd_transport_conflicts_with_sensors(
+      sigap::board::kN16R8Pins, policy));
+}
+
+void test_onboard_sd_mmc_policy_uses_reference_topology() {
+  const auto policy = sigap::board::sd_mmc_1bit_policy();
+
+  TEST_ASSERT_EQUAL_UINT8(
+      static_cast<uint8_t>(sigap::board::SdTransport::SdMmc1Bit),
+      static_cast<uint8_t>(policy.transport));
+  TEST_ASSERT_EQUAL_UINT8(39U, policy.clk);
+  TEST_ASSERT_EQUAL_UINT8(38U, policy.cmd_or_miso);
+  TEST_ASSERT_EQUAL_UINT8(40U, policy.d0_or_mosi);
+  TEST_ASSERT_TRUE(policy.mode_1bit);
+  TEST_ASSERT_FALSE(policy.format_if_mount_failed);
+  TEST_ASSERT_FALSE(sigap::board::sd_transport_conflicts_with_sensors(
+      sigap::board::kN16R8Pins, policy));
+}
 
 void test_ds18b20_known_scratchpad_decodes_verified_85c() {
   const std::array<uint8_t, 9> scratchpad{
@@ -92,6 +123,8 @@ void tearDown() {}
 
 void setup() {
   UNITY_BEGIN();
+  RUN_TEST(test_sigap_sd_default_transport_remains_external_spi);
+  RUN_TEST(test_onboard_sd_mmc_policy_uses_reference_topology);
   RUN_TEST(test_ds18b20_known_scratchpad_decodes_verified_85c);
   RUN_TEST(test_ds18b20_bad_scratchpad_crc_is_rejected);
   RUN_TEST(test_ds18b20_rom_crc_fixture_is_valid);

@@ -5,6 +5,7 @@
 #include <string_view>
 
 #include "sigap/board/board_memory.h"
+#include "sigap/board/sd_transport.h"
 #include "sigap/build/build_config.h"
 #include "acquisition/provenance.h"
 #include "acquisition/arduino_adapters.h"
@@ -15,8 +16,12 @@
 #include <esp_system.h>
 #include <esp_timer.h>
 #ifdef SIGAP_USE_SD
+#ifdef SIGAP_SD_TRANSPORT_SDMMC_1BIT
+#include <SD_MMC.h>
+#else
 #include <SD.h>
 #include <SPI.h>
+#endif
 #endif
 #endif
 #ifdef ARDUINO
@@ -38,6 +43,45 @@ uint8_t reset_reason_code() noexcept {
     default: return 0U;
   }
 }
+
+#ifdef SIGAP_USE_SD
+bool begin_sd_transport() noexcept {
+  const auto& policy = board::kSdTransportPolicy;
+#ifdef SIGAP_SD_TRANSPORT_SDMMC_1BIT
+  SD_MMC.setPins(policy.clk, policy.cmd_or_miso, policy.d0_or_mosi);
+  return SD_MMC.begin(policy.mount_point, policy.mode_1bit,
+                      policy.format_if_mount_failed, SDMMC_FREQ_DEFAULT,
+                      policy.max_files);
+#else
+  SPI.begin(policy.clk, policy.cmd_or_miso, policy.d0_or_mosi, policy.cs);
+  return SD.begin(policy.cs, SPI, policy.spi_frequency_hz);
+#endif
+}
+
+fs::FS& sd_filesystem() noexcept {
+#ifdef SIGAP_SD_TRANSPORT_SDMMC_1BIT
+  return SD_MMC;
+#else
+  return SD;
+#endif
+}
+
+uint64_t sd_total_bytes() noexcept {
+#ifdef SIGAP_SD_TRANSPORT_SDMMC_1BIT
+  return SD_MMC.totalBytes();
+#else
+  return SD.totalBytes();
+#endif
+}
+
+uint64_t sd_used_bytes() noexcept {
+#ifdef SIGAP_SD_TRANSPORT_SDMMC_1BIT
+  return SD_MMC.usedBytes();
+#else
+  return SD.usedBytes();
+#endif
+}
+#endif
 }  // namespace
 
 maintenance::CommandStatus ArduinoSdProbe::run_sd_probe(
@@ -52,11 +96,12 @@ maintenance::CommandStatus ArduinoSdProbe::run_sd_probe(
   }();
   constexpr const char* kPath = "/sigap/task6_sd_probe.bin";
   const int64_t started_us = esp_timer_get_time();
-  if (!SD.begin(board::kSdCs, SPI, 20'000'000U)) {
+  if (!begin_sd_transport()) {
     return maintenance::CommandStatus::Rejected;
   }
-  (void)SD.remove(kPath);
-  File output = SD.open(kPath, FILE_WRITE);
+  fs::FS& sd = sd_filesystem();
+  (void)sd.remove(kPath);
+  File output = sd.open(kPath, FILE_WRITE);
   if (!output) return maintenance::CommandStatus::Failed;
   const bool written = output.write(kProbeBytes.data(), kProbeBytes.size()) ==
                        kProbeBytes.size();
@@ -64,13 +109,13 @@ maintenance::CommandStatus ArduinoSdProbe::run_sd_probe(
   const bool flushed = written;
   output.close();
   if (!flushed) {
-    (void)SD.remove(kPath);
+    (void)sd.remove(kPath);
     return maintenance::CommandStatus::Failed;
   }
-  File input = SD.open(kPath, FILE_READ);
+  File input = sd.open(kPath, FILE_READ);
   if (!input || input.size() != kProbeBytes.size()) {
     if (input) input.close();
-    (void)SD.remove(kPath);
+    (void)sd.remove(kPath);
     return maintenance::CommandStatus::Failed;
   }
   std::array<uint8_t, kProbeBytes.size()> readback{};
@@ -83,10 +128,10 @@ maintenance::CommandStatus ArduinoSdProbe::run_sd_probe(
       reinterpret_cast<const char*>(readback.data()), readback.size()));
   const bool hash_match = read && expected_hash == actual_hash &&
                           readback == kProbeBytes;
-  const bool removed = SD.remove(kPath);
+  const bool removed = sd.remove(kPath);
   if (!hash_match || !removed) return maintenance::CommandStatus::Failed;
-  const uint64_t total_bytes = SD.totalBytes();
-  const uint64_t used_bytes = SD.usedBytes();
+  const uint64_t total_bytes = sd_total_bytes();
+  const uint64_t used_bytes = sd_used_bytes();
   const uint64_t free_bytes = total_bytes >= used_bytes
                                   ? total_bytes - used_bytes
                                   : 0U;
@@ -101,6 +146,10 @@ maintenance::CommandStatus ArduinoSdProbe::run_sd_probe(
   };
   static constexpr char digits[] = "0123456789abcdef";
   if (!response.append("sd_probe=PASS\n") ||
+      !response.append("transport=") ||
+      !response.append(board::sd_transport_name(
+          board::kSdTransportPolicy.transport)) ||
+      !response.append("\n") ||
       !append_u64("bytes=", readback.size()) ||
       !response.append("\n") ||
       !response.append("hash=") ) {
@@ -270,10 +319,9 @@ void SigapApp::setup() noexcept {
     (void)ack_journal_.begin(LittleFS);
   }
 #ifdef SIGAP_USE_SD
-  SPI.begin(board::kSdSck, board::kSdMiso, board::kSdMosi, board::kSdCs);
-  if (SD.begin(board::kSdCs, SPI, 20'000'000U)) {
+  if (begin_sd_transport()) {
     (void)sd_store_.begin(
-        SD, config_manager_.active().storage.sd_pending_quota_bytes);
+        sd_filesystem(), config_manager_.active().storage.sd_pending_quota_bytes);
   }
 #endif
   (void)archive_store_.recover();

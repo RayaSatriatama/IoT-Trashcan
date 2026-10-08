@@ -88,9 +88,4 @@ static_assert(pins_are_unique(kN16R8Pins), "SIGAP board pins must be unique");
 static_assert(!uses_reserved_pin(kN16R8Pins),
               "SIGAP board pins must avoid reserved GPIOs");
 
-inline constexpr uint8_t kSdSck{39};
-inline constexpr uint8_t kSdMiso{40};
-inline constexpr uint8_t kSdMosi{41};
-inline constexpr uint8_t kSdCs{43};
-
 }  // namespace sigap::board

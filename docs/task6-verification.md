@@ -173,3 +173,29 @@ is available only after the new image is uploaded and rebooted. The precise
 next action for physical SD evidence is an explicitly authorized upload and
 controlled reboot, followed by that command over native USB. No format or
 destructive operation is required.
+
+## SD transport reconciliation
+
+The PKM KC reference is an ESP32-S3-N16R8 CAM design using SD_MMC 1-bit
+(`CLK=39`, `CMD=38`, `D0=40`, `format_if_fail=false`). SIGAP remains on the
+PRD/TSD DevKitC-1 profile with external SPI (`SCK=39`, `MISO=40`, `MOSI=41`,
+`CS=43`). The transport policy now represents both modes, but the default and
+selected build remain `ExternalSpi`. No available board descriptor, USB
+identity, wiring record, or schematic proves that the installed SIGAP board is
+the CAM topology. Therefore no SD_MMC upload image was produced or selected.
+A temporary opt-in SD_MMC build was evaluated after the reference comparison;
+the pinned Arduino SD_MMC library overflowed internal DRAM by 3,048 bytes, so
+that unconfirmed variant was not retained as a PlatformIO environment. The
+supported corrected image remains `sigap_n16r8_sd` with ExternalSpi.
+
+Fresh reconciliation verification on this working tree: native PlatformIO
+passed 326/326 tests; the serial ASan/UBSan run also passed 326/326. Cppcheck
+passed with `--fail-on-defect=low`. The corrected target images built with
+the pinned Arduino framework (`espressif32@7.1.3`, Arduino
+`4.20017.260907+sha.dcc1105b`): `sigap_n16r8` RAM 300,296 B / flash 489,621 B,
+`sigap_n16r8_sd` RAM 300,580 B / flash 541,825 B, and `sigap_bench` RAM
+300,296 B / flash 489,621 B. The temporary SD_MMC opt-in was not retained:
+its unconfirmed build exceeded internal DRAM by 3,048 B. Go/schema checks
+could not be rerun in this environment because no Go executable is installed;
+the previously recorded contract/golden evidence is unchanged and no Go or
+schema files were modified by this reconciliation.
