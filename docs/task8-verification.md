@@ -31,7 +31,15 @@ deployment, and MCU sensor evidence are outside this slice.
 | Schema and frozen fixture corpus | PASS | 14 schemas, 24 valid fixtures, 36 invalid fixtures |
 | Record/body golden hashes | PASS | `a3a2593618943cc7a1d5f8bc0c90216dc22eb4c3297fb874887c11b7b6ef6883`; `3620edf0548b8a15eb1638fc7d239b1995372a28982f7f1e194949160f166c7c` |
 | Runtime archive route | PASS | POST ingest, exact export, bounded manifest list, current projection, replay dedupe |
-| Frontend/firmware regression | unchanged | Task 7/6 source was not modified by Task 8 |
+| Firmware native suite | PASS | 365/365 on Task 8 worktree |
+| Firmware cppcheck | PASS | no defects |
+| Firmware targets | PASS | `sigap_n16r8`, `sigap_n16r8_sd`, `sigap_n16r8_sd_spi`, `sigap_bench` |
+| Frontend/firmware regression | unchanged source | Task 7/6 firmware source was not modified by Task 8 |
+
+The fresh target size probes are unchanged from the Task 7 merge because this
+branch only adds Go/migration/HTTP archive code: `sigap_n16r8` and `sigap_bench`
+use 49,496 B RAM and 1,073,557 B flash; `sigap_n16r8_sd` uses 50,036 B RAM and
+1,147,337 B flash; `sigap_n16r8_sd_spi` uses 49,792 B RAM and 1,126,773 B flash.
 
 The test database exercises migration 005, credential-bound ingestion,
 transactional manifest and record persistence, exact replay bytes, dedupe and
