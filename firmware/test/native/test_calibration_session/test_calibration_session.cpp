@@ -136,6 +136,177 @@ void test_calibrating_quality_accepts_only_physical_evidence() {
   TEST_ASSERT_EQUAL_UINT32(1U, session.stats().count);
 }
 
+void test_uncalibrated_raw_evidence_is_accepted_per_sensor_family() {
+  {
+    CalibrationSession session{};
+    TEST_ASSERT_TRUE(session.start(CalibrationTarget::Hx711Organic,
+                                   Hx711CaptureCriteria{1U, 10}, 0U));
+    TEST_ASSERT_TRUE(session.observe(
+        Hx711Trial{1000, SampleQuality::Uncalibrated, true, true}));
+    TEST_ASSERT_TRUE(session.observe_anchor(
+        Hx711Trial{1200, SampleQuality::Uncalibrated, true, true},
+        CalibrationAnchor::Reference));
+    TEST_ASSERT_TRUE(session.validate());
+  }
+  {
+    CalibrationSession session{};
+    TEST_ASSERT_TRUE(session.start(CalibrationTarget::UltrasonicOrganic,
+                                   DistanceCaptureCriteria{1U, 10.0F}, 0U));
+    TEST_ASSERT_TRUE(session.observe(UltrasonicTrial{
+        343.0F, SampleQuality::Uncalibrated, true, true}));
+    TEST_ASSERT_TRUE(session.observe_anchor(
+        UltrasonicTrial{100.0F, SampleQuality::Uncalibrated, true, true},
+        CalibrationAnchor::Full));
+    TEST_ASSERT_TRUE(session.validate());
+  }
+  {
+    CalibrationSession session{};
+    TEST_ASSERT_TRUE(session.start(CalibrationTarget::Mq4,
+                                   MqCaptureCriteria{1U, 10U, false}, 0U));
+    TEST_ASSERT_TRUE(session.observe(
+        MqTrial{100U, SampleQuality::Uncalibrated, true, true, true}));
+    TEST_ASSERT_TRUE(session.validate());
+  }
+  {
+    CalibrationSession session{};
+    TEST_ASSERT_TRUE(session.start(CalibrationTarget::Ds18b20B3,
+                                   Ds18b20CaptureCriteria{1U, 10, true}, 0U));
+    TEST_ASSERT_TRUE(session.observe(Ds18b20Trial{
+        2350, SampleQuality::Uncalibrated, true, true, true, true}));
+    TEST_ASSERT_TRUE(session.validate());
+  }
+  {
+    CalibrationSession session{};
+    TEST_ASSERT_TRUE(session.start(CalibrationTarget::Sht31_44,
+                                   Sht31CaptureCriteria{1U, 10, 10}, 0U));
+    TEST_ASSERT_TRUE(session.observe(Sht31Trial{
+        2350, 5000, SampleQuality::Uncalibrated, true, true, true, true}));
+    TEST_ASSERT_TRUE(session.validate());
+  }
+}
+
+void test_invalid_physical_evidence_is_rejected() {
+  {
+    CalibrationSession session{};
+    TEST_ASSERT_TRUE(session.start(CalibrationTarget::Hx711Organic,
+                                   Hx711CaptureCriteria{1U, 10}, 0U));
+    TEST_ASSERT_FALSE(session.observe(
+        Hx711Trial{1000, SampleQuality::Uncalibrated, true, false}));
+  }
+  {
+    CalibrationSession session{};
+    TEST_ASSERT_TRUE(session.start(CalibrationTarget::UltrasonicOrganic,
+                                   DistanceCaptureCriteria{1U, 10.0F}, 0U));
+    TEST_ASSERT_FALSE(session.observe(UltrasonicTrial{
+        343.0F, SampleQuality::Uncalibrated, false, true}));
+  }
+  {
+    CalibrationSession session{};
+    TEST_ASSERT_TRUE(session.start(CalibrationTarget::Mq7,
+                                   MqCaptureCriteria{1U, 10U, false}, 0U));
+    TEST_ASSERT_FALSE(session.observe(
+        MqTrial{100U, SampleQuality::Uncalibrated, false, true, true}));
+  }
+  {
+    CalibrationSession session{};
+    TEST_ASSERT_TRUE(session.start(CalibrationTarget::Sht31_44,
+                                   Sht31CaptureCriteria{1U, 10, 10}, 0U));
+    TEST_ASSERT_FALSE(session.observe(Sht31Trial{
+        2350, 5000, SampleQuality::CrcError, true, true, true, true}));
+  }
+  for (const auto quality : {SampleQuality::Timeout, SampleQuality::Disconnected,
+                             SampleQuality::Stale, SampleQuality::CrcError}) {
+    CalibrationSession session{};
+    TEST_ASSERT_TRUE(session.start(CalibrationTarget::Hx711Organic,
+                                   Hx711CaptureCriteria{1U, 10}, 0U));
+    TEST_ASSERT_FALSE(session.observe(Hx711Trial{1000, quality, true, true}));
+  }
+}
+
+void test_evidence_cache_requires_newer_sequence() {
+  CalibrationEvidenceCache cache{};
+  SampleRecord sample{};
+  sample.header.sensor = SensorId::Hx711Organic;
+  sample.header.kind = SampleKind::Hx711Counts;
+  sample.header.sequence = 10U;
+  sample.quality = SampleQuality::Uncalibrated;
+  sample.raw.present = true;
+  sample.raw.identity_valid = true;
+  sample.raw.signed_counts = 1000;
+  cache.observe(sample);
+
+  TrialObservation observation{};
+  uint64_t observed_sequence{0U};
+  TEST_ASSERT_FALSE(cache.latest(CalibrationTarget::Hx711Organic, 10U,
+                                observation, observed_sequence));
+  TEST_ASSERT_FALSE(cache.latest(CalibrationTarget::Hx711Organic, 11U,
+                                observation, observed_sequence));
+
+  sample.header.sequence = 9U;
+  sample.raw.signed_counts = 900;
+  cache.observe(sample);
+  TEST_ASSERT_FALSE(cache.latest(CalibrationTarget::Hx711Organic, 10U,
+                                observation, observed_sequence));
+}
+
+void test_ultrasonic_engineering_conversion_is_explicit_and_bounded() {
+  CalibrationEvidenceCache cache{};
+  TEST_ASSERT_FALSE(cache.set_ultrasonic_engineering_conversion(
+      CalibrationTarget::Hx711Organic, 0.343F));
+  TEST_ASSERT_FALSE(cache.set_ultrasonic_engineering_conversion(
+      CalibrationTarget::UltrasonicOrganic, 0.0F));
+  TEST_ASSERT_TRUE(cache.set_ultrasonic_engineering_conversion(
+      CalibrationTarget::UltrasonicOrganic, 0.343F));
+
+  SampleRecord sample{};
+  sample.header.sensor = SensorId::UltrasonicOrganic;
+  sample.header.kind = SampleKind::UltrasonicEcho;
+  sample.header.sequence = 1U;
+  sample.quality = SampleQuality::Uncalibrated;
+  sample.raw.present = true;
+  sample.raw.identity_valid = true;
+  sample.raw.distance_us = 1000U;
+  cache.observe(sample);
+
+  TrialObservation observation{};
+  uint64_t observed_sequence{0U};
+  TEST_ASSERT_TRUE(cache.latest(CalibrationTarget::UltrasonicOrganic, 0U,
+                               observation, observed_sequence));
+  const auto& trial = std::get<UltrasonicTrial>(observation);
+  TEST_ASSERT_FLOAT_WITHIN(0.001F, 343.0F, trial.distance_mm);
+  TEST_ASSERT_TRUE(trial.conversion_valid);
+  TEST_ASSERT_TRUE(trial.identity_valid);
+}
+
+void test_ds_wire_evidence_is_carried_without_invention() {
+  CalibrationEvidenceCache cache{};
+  SampleRecord sample{};
+  sample.header.sensor = SensorId::Ds18b20B3;
+  sample.header.kind = SampleKind::Ds18b20;
+  sample.header.sequence = 1U;
+  sample.quality = SampleQuality::Uncalibrated;
+  sample.raw.present = true;
+  sample.raw.identity_valid = true;
+  sample.raw.conversion_complete = true;
+  sample.raw.crc_valid = true;
+  sample.raw.ds_wire_evidence = true;
+  sample.raw.ds_rom = {0x28U, 1U, 2U, 3U, 4U, 5U, 6U, 0x9eU};
+  sample.raw.ds_scratchpad[0] = 0x50U;
+  sample.raw.ds_scratchpad[8] = 0x1cU;
+  sample.raw.ds_resolution_bits = 12U;
+  cache.observe(sample);
+
+  TrialObservation observation{};
+  uint64_t observed_sequence{0U};
+  TEST_ASSERT_TRUE(cache.latest(CalibrationTarget::Ds18b20B3, 0U,
+                               observation, observed_sequence));
+  const auto& trial = std::get<Ds18b20Trial>(observation);
+  TEST_ASSERT_TRUE(trial.wire_evidence);
+  TEST_ASSERT_EQUAL_HEX8(0x28U, trial.rom[0]);
+  TEST_ASSERT_EQUAL_HEX8(0x50U, trial.scratchpad[0]);
+  TEST_ASSERT_EQUAL_UINT8(12U, trial.resolution_bits);
+}
+
 void test_evidence_cache_maps_ds18b20_physical_flags_without_drift() {
   CalibrationEvidenceCache cache{};
   SampleRecord sample{};
@@ -299,6 +470,11 @@ void setup() {
   RUN_TEST(test_cancel_after_failed_session_returns_idle);
   RUN_TEST(test_protocol_trials_require_actual_evidence);
   RUN_TEST(test_calibrating_quality_accepts_only_physical_evidence);
+  RUN_TEST(test_uncalibrated_raw_evidence_is_accepted_per_sensor_family);
+  RUN_TEST(test_invalid_physical_evidence_is_rejected);
+  RUN_TEST(test_evidence_cache_requires_newer_sequence);
+  RUN_TEST(test_ultrasonic_engineering_conversion_is_explicit_and_bounded);
+  RUN_TEST(test_ds_wire_evidence_is_carried_without_invention);
   RUN_TEST(test_evidence_cache_maps_ds18b20_physical_flags_without_drift);
   RUN_TEST(test_evidence_cache_keeps_sht31_addresses_and_crc_fields_independent);
   RUN_TEST(test_evidence_cache_rejects_each_ds18b20_physical_failure);

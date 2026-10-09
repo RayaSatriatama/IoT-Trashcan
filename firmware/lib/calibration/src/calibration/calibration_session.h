@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <array>
+#include <cmath>
 #include <variant>
 
 #include "acquisition/acquisition_types.h"
@@ -111,12 +112,14 @@ struct Hx711Trial final {
   int64_t counts{0};
   acquisition::SampleQuality quality{acquisition::SampleQuality::Timeout};
   bool raw_present{true};
+  bool identity_valid{true};
 };
 
 struct UltrasonicTrial final {
   float distance_mm{0.0F};
   acquisition::SampleQuality quality{acquisition::SampleQuality::Timeout};
   bool conversion_valid{true};
+  bool identity_valid{true};
 };
 
 struct MqTrial final {
@@ -124,6 +127,7 @@ struct MqTrial final {
   acquisition::SampleQuality quality{acquisition::SampleQuality::Timeout};
   bool heater_ready{true};
   bool raw_present{true};
+  bool identity_valid{true};
 };
 
 struct Ds18b20Trial final {
@@ -133,6 +137,10 @@ struct Ds18b20Trial final {
   bool rom_match{false};
   bool conversion_complete{false};
   bool crc_valid{false};
+  bool wire_evidence{false};
+  std::array<uint8_t, 8> rom{};
+  std::array<uint8_t, 9> scratchpad{};
+  uint8_t resolution_bits{0U};
 };
 
 struct Sht31Trial final {
@@ -142,6 +150,7 @@ struct Sht31Trial final {
   bool raw_present{false};
   bool temperature_crc_valid{false};
   bool humidity_crc_valid{false};
+  bool identity_valid{true};
 };
 
 using TrialObservation = std::variant<Hx711Trial, UltrasonicTrial, MqTrial,
@@ -155,6 +164,17 @@ class ICalibrationEvidenceSource {
                       uint64_t& observed_sequence) const noexcept = 0;
 };
 
+// First-time ultrasonic setup may provide only the validated engineering
+// echo-to-distance conversion. Timing and fill calibration remain profile data
+// and are not inferred from this bounded cache setting.
+struct UltrasonicEngineeringConversion final {
+  float echo_mm_per_us{0.0F};
+
+  bool valid() const noexcept {
+    return std::isfinite(echo_mm_per_us) && echo_mm_per_us > 0.0F;
+  }
+};
+
 // A single latest observation per channel keeps calibration independent from
 // the future logger handoff and bounds RAM usage.
 class CalibrationEvidenceCache final
@@ -165,6 +185,8 @@ class CalibrationEvidenceCache final
   void set_profiles(const acquisition::TargetProfileSet* profiles) noexcept {
     profiles_ = profiles;
   }
+  bool set_ultrasonic_engineering_conversion(
+      CalibrationTarget target, float echo_mm_per_us) noexcept;
   bool latest(CalibrationTarget target, uint64_t after_sequence,
               TrialObservation& output,
               uint64_t& observed_sequence) const noexcept override;
@@ -174,6 +196,8 @@ class CalibrationEvidenceCache final
   std::array<TrialObservation, kTargetCount> observations_{};
   std::array<uint64_t, kTargetCount> sequences_{};
   std::array<bool, kTargetCount> present_{};
+  std::array<UltrasonicEngineeringConversion, 3U>
+      ultrasonic_engineering_conversion_{};
   const acquisition::TargetProfileSet* profiles_{nullptr};
 };
 
