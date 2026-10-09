@@ -11,6 +11,9 @@ import (
 	"github.com/RayaSatriatama/IoT-Trashcan/internal/database"
 )
 
+const testProfileHash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+const otherProfileHash = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
 func testStore(t *testing.T) (*Store, *sql.DB, time.Time) {
 	t.Helper()
 	db, err := database.Open(filepath.Join(t.TempDir(), "control.db"))
@@ -111,21 +114,93 @@ func TestTerminalResultReplayIsIdempotentAndConflictIsRejected(t *testing.T) {
 	if _, err := s.Claim(ctx, commit.DeviceID); err != nil {
 		t.Fatal(err)
 	}
-	result := ResultRequest{Status: Committed, SessionID: "session-1", Payload: []byte(`{"profile_key":"hx711_organic","profile_hash":"sha256:fixture","version":1}`)}
+	result := ResultRequest{Status: Committed, SessionID: "session-1", Payload: []byte(`{"profile_key":"hx711_organic","profile_hash":"` + testProfileHash + `","version":1}`)}
+	malformed := result
+	malformed.Payload = []byte(`{"profile_key":"hx711_organic","profile_hash":"sha256:not-a-digest","version":1}`)
+	if _, err := s.UpdateResult(ctx, commit.DeviceID, commit.ID, malformed); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("malformed committed profile hash err=%v", err)
+	}
+	malformed.Payload = []byte(`{"profile_key":"hx711_organic","profile_hash":"sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","version":1}`)
+	if _, err := s.UpdateResult(ctx, commit.DeviceID, commit.ID, malformed); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("noncanonical committed profile hash err=%v", err)
+	}
 	if _, err := s.UpdateResult(ctx, commit.DeviceID, commit.ID, result); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.UpdateResult(ctx, commit.DeviceID, commit.ID, result); err != nil {
 		t.Fatalf("identical replay: %v", err)
 	}
-	result.Payload = []byte(`{"profile_key":"hx711_organic","profile_hash":"sha256:other","version":2}`)
+	result.Payload = []byte(`{"profile_key":"hx711_organic","profile_hash":"` + otherProfileHash + `","version":2}`)
 	if _, err := s.UpdateResult(ctx, commit.DeviceID, commit.ID, result); !errors.Is(err, ErrConflict) {
 		t.Fatalf("conflict=%v", err)
 	}
-	result.Payload = []byte(`{"profile_key":"hx711_organic","profile_hash":"sha256:fixture","version":1}`)
+	result.Payload = []byte(`{"profile_key":"hx711_organic","profile_hash":"` + testProfileHash + `","version":1}`)
 	result.ErrorCode = "CHANGED"
 	if _, err := s.UpdateResult(ctx, commit.DeviceID, commit.ID, result); !errors.Is(err, ErrConflict) {
 		t.Fatalf("error-code replay conflict=%v", err)
+	}
+}
+
+func TestDeliveredCommitReconcilesAfterExpiryWithoutRevivingAnUnclaimedCommand(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	nowValue := now
+	s, db, _ := testStore(t)
+	s.WithClock(func() time.Time { return nowValue })
+	ctx := context.Background()
+
+	start := commandRequest(now)
+	if _, err := s.Enqueue(ctx, start); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Claim(ctx, start.DeviceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpdateResult(ctx, start.DeviceID, start.ID,
+		ResultRequest{Status: Accepted, SessionID: start.SessionID, Payload: []byte(`{"accepted":true}`)}); err != nil {
+		t.Fatal(err)
+	}
+
+	commit := start
+	commit.ID = "commit-expired-after-execution"
+	commit.Operation = "commit"
+	commit.Payload = []byte(`{"proposal_hash":"sha256:proposal","expected_profile_version":"1"}`)
+	commit.ExpiresAt = now.Add(time.Second)
+	if _, err := s.Enqueue(ctx, commit); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Claim(ctx, commit.DeviceID); err != nil {
+		t.Fatal(err)
+	}
+
+	// The device claimed this command while it was valid and durably committed
+	// before its POST response was delayed. Reconciliation must preserve the
+	// exact terminal result rather than relaunching the command.
+	nowValue = now.Add(2 * time.Second)
+	result := ResultRequest{Status: Committed, SessionID: commit.SessionID,
+		Payload: []byte(`{"profile_key":"hx711_organic","profile_hash":"` + testProfileHash + `","version":1}`)}
+	got, err := s.UpdateResult(ctx, commit.DeviceID, commit.ID, result)
+	if err != nil || got.Status != Committed {
+		t.Fatalf("late committed reconciliation=%+v err=%v", got, err)
+	}
+
+	// The durable result remains exact after a backend restart.
+	restarted := NewStore(db).WithClock(func() time.Time { return nowValue })
+	if got, err = restarted.UpdateResult(ctx, commit.DeviceID, commit.ID, result); err != nil || got.ResultHash != hashPayload(result.Payload) {
+		t.Fatalf("late replay after restart=%+v err=%v", got, err)
+	}
+
+	// A command never claimed before expiry is not revived by a late result.
+	unclaimed := start
+	unclaimed.ID = "unclaimed-expired"
+	unclaimed.SessionID = "new-session"
+	unclaimed.ExpiresAt = now.Add(3 * time.Second)
+	if _, err := restarted.Enqueue(ctx, unclaimed); err != nil {
+		t.Fatal(err)
+	}
+	nowValue = now.Add(4 * time.Second)
+	if _, err := restarted.UpdateResult(ctx, unclaimed.DeviceID, unclaimed.ID,
+		ResultRequest{Status: Accepted, SessionID: unclaimed.SessionID, Payload: []byte(`{"accepted":true}`)}); !errors.Is(err, ErrExpired) {
+		t.Fatalf("unclaimed expired command was revived: %v", err)
 	}
 }
 
@@ -244,7 +319,7 @@ func TestCommitCommandCanReturnCommittedWithoutReplayingSessionHistory(t *testin
 		t.Fatal(err)
 	}
 	result := ResultRequest{Status: Committed, SessionID: commit.SessionID,
-		Payload: []byte(`{"profile_key":"hx711_organic","profile_hash":"sha256:fixture","version":2}`)}
+		Payload: []byte(`{"profile_key":"hx711_organic","profile_hash":"` + testProfileHash + `","version":2}`)}
 	if got, err := s.UpdateResult(ctx, commit.DeviceID, commit.ID, result); err != nil || got.Status != Committed {
 		t.Fatalf("direct committed result=%+v err=%v", got, err)
 	}

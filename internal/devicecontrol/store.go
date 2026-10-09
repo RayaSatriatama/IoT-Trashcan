@@ -248,7 +248,16 @@ func validCommittedResult(payload []byte, sensorID string) bool {
 		return false
 	}
 	return strings.TrimSpace(value.ProfileKey) == sensorID &&
-		strings.TrimSpace(value.ProfileHash) != "" && value.Version > 0
+		validSHA256(value.ProfileHash) && value.Version > 0
+}
+
+func validSHA256(value string) bool {
+	const prefix = "sha256:"
+	if !strings.HasPrefix(value, prefix) || value != strings.ToLower(value) || len(value) != len(prefix)+sha256.Size*2 {
+		return false
+	}
+	_, err := hex.DecodeString(value[len(prefix):])
+	return err == nil
 }
 
 func (s *Store) Enqueue(ctx context.Context, req CreateRequest) (Command, error) {
@@ -406,7 +415,11 @@ func (s *Store) UpdateResult(ctx context.Context, deviceID, commandID string, re
 	}
 	now := s.now().UTC()
 	expires, _ := time.Parse(time.RFC3339Nano, exp)
-	if !expires.After(now) && !terminal(Status(status)) {
+	if !expires.After(now) && !terminal(Status(status)) &&
+		(Status(status) != Delivered || !validCommandResult(c.Operation, result.Status)) {
+		// A command that was never delivered must not be revived after expiry.
+		// A device may, however, reconcile the exact outcome of a command it
+		// received while valid when its result POST was delayed or lost.
 		return Command{}, ErrExpired
 	}
 	if requiresSession(c.Operation) && (result.SessionID == "" || result.SessionID != c.SessionID) {
