@@ -86,6 +86,32 @@ void test_record_preserves_time_quality_and_config_provenance() {
   TEST_ASSERT_FALSE(record.raw.present);
 }
 
+void test_record_factory_updates_device_identity_at_runtime() {
+  SequenceAllocator allocator;
+  RecordFactory factory(allocator, record_context());
+  DeviceId expected{};
+  expected.present = true;
+  expected.bytes[10U] = 0x98U;
+  expected.bytes[11U] = 0xA3U;
+  expected.bytes[12U] = 0x16U;
+  expected.bytes[13U] = 0xF5U;
+  expected.bytes[14U] = 0xC1U;
+  expected.bytes[15U] = 0x50U;
+  factory.set_device_id(expected);
+
+  SampleRecord record{};
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(DriverPollStatus::Produced),
+      static_cast<int>(factory.make(
+          10U, SensorId::Mq4, StreamId::Organic, SampleKind::MqAdc,
+          SampleQuality::Timeout, SampleReason::Timeout, RawObservation{},
+          ConvertedObservation{}, ProfileRef{}, record)));
+  TEST_ASSERT_TRUE(record.header.device_id.present);
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(expected.bytes.data(),
+                                record.header.device_id.bytes.data(),
+                                expected.bytes.size());
+}
+
 struct JobProbe {
   uint32_t calls{0};
   uint64_t last_now{0};
@@ -697,6 +723,7 @@ void setup() {
   UNITY_BEGIN();
   RUN_TEST(test_sequence_is_global_and_non_wrapping);
   RUN_TEST(test_record_preserves_time_quality_and_config_provenance);
+  RUN_TEST(test_record_factory_updates_device_identity_at_runtime);
   RUN_TEST(test_scheduler_is_monotonic_and_failure_isolated);
   RUN_TEST(test_bounded_handoff_reports_full_without_overwrite);
   RUN_TEST(test_profile_validity_gates_conversion);

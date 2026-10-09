@@ -7,6 +7,7 @@
 #include <unity.h>
 
 #include "storage/archive_media.h"
+#include "storage/sd_probe_path.h"
 #include "storage/media_migration.h"
 #include "telemetry_archive/ack_journal_store.h"
 #include "telemetry_archive/batch_store.h"
@@ -124,6 +125,19 @@ void test_target_archive_reclaims_non_head_probe_record() {
   TEST_ASSERT_TRUE(restarted.begin(filesystem, 1024U * 1024U));
   TEST_ASSERT_TRUE(restarted.contains(first.identity, first.hash));
   TEST_ASSERT_FALSE(restarted.contains(second.identity, second.hash));
+}
+
+void test_sd_probe_path_is_device_owned_and_bounded() {
+  char path[64U]{};
+  TEST_ASSERT_TRUE(sigap::storage::build_sd_probe_path(
+      0x98A316F5C150ULL, path, sizeof(path)));
+  TEST_ASSERT_EQUAL_STRING("/sigap/task9_sd_probe_16f5c150.bin", path);
+
+  char too_small[8U]{};
+  TEST_ASSERT_FALSE(sigap::storage::build_sd_probe_path(
+      0x98A316F5C150ULL, too_small, sizeof(too_small)));
+  TEST_ASSERT_FALSE(sigap::storage::build_sd_probe_path(
+      0x98A316F5C150ULL, nullptr, sizeof(path)));
 }
 
 void test_target_batch_and_ack_replay_preserve_exact_bytes_and_binding() {
@@ -279,6 +293,7 @@ int main() {
   UNITY_BEGIN();
   RUN_TEST(test_target_archive_failed_recovery_copy_is_restart_safe);
   RUN_TEST(test_target_archive_reclaims_non_head_probe_record);
+  RUN_TEST(test_sd_probe_path_is_device_owned_and_bounded);
   RUN_TEST(test_target_batch_and_ack_replay_preserve_exact_bytes_and_binding);
   RUN_TEST(test_target_ack_restart_does_not_reclaim_wrong_pending_batch);
   RUN_TEST(test_target_ack_short_frame_recovery_preserves_valid_prefix);

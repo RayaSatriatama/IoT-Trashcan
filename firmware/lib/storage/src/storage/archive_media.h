@@ -27,6 +27,10 @@ class LittleFsArchiveStore : public IArchiveStore {
 
 #ifdef ARDUINO
   bool begin(fs::FS& filesystem, uint64_t quota_bytes) noexcept {
+    if (filesystem_ == &filesystem && quota_bytes_ == quota_bytes &&
+        recovery_ready_) {
+      return true;
+    }
     filesystem_ = &filesystem;
     quota_bytes_ = quota_bytes;
     if (!filesystem_->exists("/sigap") && !filesystem_->mkdir("/sigap")) {
@@ -53,15 +57,22 @@ class LittleFsArchiveStore : public IArchiveStore {
       return *existing == record.hash ? AppendStatus::Durable
                                       : AppendStatus::Invalid;
     }
-    bool disk_read_ok = true;
-    config::ConfigHash disk_hash{};
-    if (find_on_disk(record.identity, SIZE_MAX, disk_hash, disk_read_ok)) {
-      return disk_hash == record.hash ? AppendStatus::Durable
-                                      : AppendStatus::Invalid;
-    }
-    if (!disk_read_ok) {
-      health_ = ArchiveHealth::Degraded;
-      return AppendStatus::Retryable;
+    const bool same_boot_sequence =
+        have_last_identity_ &&
+        record.identity.device_id.bytes == last_identity_.device_id.bytes &&
+        record.identity.boot_id.bytes == last_identity_.boot_id.bytes &&
+        record.identity.sequence > last_identity_.sequence;
+    if (!same_boot_sequence) {
+      bool disk_read_ok = true;
+      config::ConfigHash disk_hash{};
+      if (find_on_disk(record.identity, SIZE_MAX, disk_hash, disk_read_ok)) {
+        return disk_hash == record.hash ? AppendStatus::Durable
+                                        : AppendStatus::Invalid;
+      }
+      if (!disk_read_ok) {
+        health_ = ArchiveHealth::Degraded;
+        return AppendStatus::Retryable;
+      }
     }
     if (pending_bytes_ > quota_bytes_ ||
         record.size > quota_bytes_ - pending_bytes_) {
@@ -86,6 +97,8 @@ class LittleFsArchiveStore : public IArchiveStore {
       ++index_count_;
     }
     pending_bytes_ += record.size;
+    last_identity_ = record.identity;
+    have_last_identity_ = true;
     health_ = ArchiveHealth::Healthy;
     return AppendStatus::Durable;
 #else
@@ -105,7 +118,13 @@ class LittleFsArchiveStore : public IArchiveStore {
     probe_sample_.header.device_id.bytes[0U] = 0x53U;
     probe_sample_.header.boot_id.present = true;
     probe_sample_.header.boot_id.bytes[0U] = 0x44U;
-    probe_sample_.header.sequence = 0x53444750524F4245ULL;
+    // A maintenance probe is a distinct synthetic metadata attempt on every
+    // invocation. Use the observed monotonic time as its bounded identity so
+    // an interrupted prior probe cannot turn a later verification into a
+    // same-identity hash conflict.
+    probe_sample_.header.sequence = monotonic_us == 0U
+                                        ? 0x53444750524F4245ULL
+                                        : monotonic_us;
     probe_sample_.header.monotonic_us = monotonic_us;
     probe_sample_.header.sensor = acquisition::SensorId::Mq4;
     probe_sample_.header.stream = acquisition::StreamId::Organic;
@@ -220,6 +239,8 @@ class LittleFsArchiveStore : public IArchiveStore {
     pending_bytes_ = 0U;
     gap_bytes_ = 0U;
     gap_repair_pending_ = false;
+    have_last_identity_ = false;
+    last_identity_ = ArchiveIdentity{};
     bool marked_recovery{false};
     if (!recover_marked_quarantine(marked_recovery)) {
       health_ = ArchiveHealth::Degraded;
@@ -338,16 +359,31 @@ class LittleFsArchiveStore : public IArchiveStore {
         valid_bytes += record.size;
         continue;
       }
-      bool prior_read_ok = true;
-      config::ConfigHash prior_hash{};
-      if (find_on_disk(record.identity, valid_bytes, prior_hash, prior_read_ok)) {
-        if (prior_hash != record.hash) conflict_seen = true;
-        valid_bytes += record.size;
-        continue;
-      }
-      if (!prior_read_ok) {
-        tail_corrupt = true;
-        break;
+      // Normal production records use the shared monotonic sequence allocator
+      // and therefore arrive in sequence order. Avoid an O(n^2) full-prefix
+      // scan while rebuilding a large archive. Only an out-of-order sequence
+      // can be a late duplicate/conflict, so use the bounded on-disk lookup
+      // for that exceptional case.
+      const bool same_boot_sequence =
+          have_last_identity_ &&
+          record.identity.device_id.bytes == last_identity_.device_id.bytes &&
+          record.identity.boot_id.bytes == last_identity_.boot_id.bytes &&
+          record.identity.sequence > last_identity_.sequence;
+      if (!same_boot_sequence) {
+        bool prior_read_ok = true;
+        config::ConfigHash prior_hash{};
+        if (find_on_disk(record.identity, valid_bytes, prior_hash,
+                         prior_read_ok)) {
+          if (prior_hash != record.hash) conflict_seen = true;
+          valid_bytes += record.size;
+          last_identity_ = record.identity;
+          have_last_identity_ = true;
+          continue;
+        }
+        if (!prior_read_ok) {
+          tail_corrupt = true;
+          break;
+        }
       }
       if (index_count_ < index_.size()) {
         index_[index_count_] = record.identity;
@@ -356,6 +392,8 @@ class LittleFsArchiveStore : public IArchiveStore {
       }
       pending_bytes_ += record.size;
       valid_bytes += record.size;
+      last_identity_ = record.identity;
+      have_last_identity_ = true;
     }
     file.close();
     if (tail_corrupt && !quarantine_tail(valid_bytes)) {
@@ -892,6 +930,8 @@ class LittleFsArchiveStore : public IArchiveStore {
   std::array<uint8_t, 256U> copy_buffer_{};
   std::size_t index_count_{0U};
   bool recovery_ready_{false};
+  ArchiveIdentity last_identity_{};
+  bool have_last_identity_{false};
   ImmutableRecordBytes scan_record_{};
   ImmutableRecordBytes lookup_record_{};
   acquisition::SampleRecord probe_sample_{};

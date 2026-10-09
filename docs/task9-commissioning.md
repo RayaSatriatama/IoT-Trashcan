@@ -1,8 +1,10 @@
 # Task 9 commissioning and HIL procedure
 
-Status: **PREPARATION ONLY**. This document defines a bounded, reviewable
-procedure. No upload, reboot, BLE pairing, WiFi change, USB commissioning
-command, or SD write is authorized by this document.
+Status: **PREPARATION WITH ATTACHED SD PROBE COMPLETE**. The documented
+application-only upload and non-destructive SD probe were executed on the
+selected final image. BLE pairing, WiFi changes, USB passkey disclosure,
+sensor calibration, heater/actuator operation, and destructive tests remain
+outside this run.
 
 ## Preconditions and safety boundary
 
@@ -81,8 +83,17 @@ passwords in logs, fixtures, URLs, analytics, or browser local storage.
 
 ## SD and archive checklist
 
-Do not write the physical card during preflight. After explicit authorization,
-record a before-inventory of the dedicated test path and available capacity.
+The attached-only probe is complete. It mounted without auto-format, used the
+device-owned path `/sigap/task9_sd_probe_f516a398.bin`, wrote 256 bytes,
+flushed, closed, reopened, verified the exact SHA-256, removed only that path,
+and ran archive append/reopen/recovery/contains/reclaim. Result: `sd=PASS`,
+`bus=mmc1`, `n=256`, hash
+`f987a1b5e0b87fc9e660f09967563a78de60df01dec65236945120eea61d4c56`,
+`us=106507021`, total `31252201472`, used `8290304`, free `31243911168`.
+The probe image SHA-256 is
+`30def8246ef8f34df336f4865f15788ce331b87713db67a0fcb7d45958e1a66a`.
+No unrelated file was removed. For future runs, record a before-inventory of
+the dedicated test path and available capacity.
 Use the existing bounded self-cleaning probe location only, mount with
 `format_if_mount_failed=false`, and never format or remove unrelated files.
 
@@ -127,4 +138,3 @@ For every case record: case ID, timestamp with timezone, firmware SHA, board
 and interface identity, exact bounded action, redacted output, expected result,
 actual result, and classification. Keep secrets and raw passkeys outside the
 repository. A missing prerequisite is `BLOCKED` or `NOT RUN`, never PASS.
-

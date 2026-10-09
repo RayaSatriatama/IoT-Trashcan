@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <type_traits>
 #include "acquisition/profiles.h"
@@ -161,6 +162,14 @@ struct ProcessedResult final {
   SourceSampleIds<SourceCapacity> source_sample_ids{};
   ProcessedValues processed{};
 };
+
+template <std::size_t SourceCapacity>
+inline void clear_processed_result(
+    ProcessedResult<SourceCapacity>& output) noexcept {
+  static_assert(std::is_trivially_copyable<ProcessedResult<SourceCapacity>>::value,
+                "processed result must remain a bounded value type");
+  std::memset(&output, 0, sizeof(output));
+}
 enum class ProcessStatus : uint8_t {
   Produced,
   InvalidSnapshot,
@@ -269,7 +278,7 @@ class SlotProcessor final {
       const SampleWindow<WindowCapacity>& window,
       const ProcessingSnapshot& snapshot,
       ProcessedResult<SourceCapacity>& output) noexcept {
-    output = ProcessedResult<SourceCapacity>{};
+    clear_processed_result(output);
     if (!snapshot.present()) return ProcessStatus::InvalidSnapshot;
     if (window.overflowed()) return ProcessStatus::WindowOverflow;
     output.stream = snapshot.stream();
@@ -280,11 +289,11 @@ class SlotProcessor final {
         !collect_fill(window, snapshot, output) ||
         !collect_temperature(window, snapshot, output) ||
         !collect_mq(window, snapshot, output)) {
-      output = ProcessedResult<SourceCapacity>{};
+      clear_processed_result(output);
       return ProcessStatus::SourceCapacityExceeded;
     }
     if (!collect_profile_refs(snapshot, output.profile_refs)) {
-      output = ProcessedResult<SourceCapacity>{};
+      clear_processed_result(output);
       return ProcessStatus::ProfileCapacityExceeded;
     }
     normalize_weight(snapshot, output.processed);
@@ -732,6 +741,11 @@ struct ProcessingWorkspace final {
   fuzzy::FisResult fuzzy_result{};
   safety::SafetyResult safety_result{};
 };
+
+template <typename FuzzyResult, typename SafetyResult,
+          std::size_t SourceCapacity>
+inline void clear_evaluated_result(
+    EvaluatedResult<FuzzyResult, SafetyResult, SourceCapacity>& output) noexcept;
 template <std::size_t WindowCapacity, std::size_t SourceCapacity>
 class ProcessingPipeline final {
  public:
@@ -754,7 +768,7 @@ class ProcessingPipeline final {
         SlotProcessor<WindowCapacity, SourceCapacity>::process(
             window, snapshot, processed);
     if (process_status != ProcessStatus::Produced) {
-      output = Result{};
+      clear_evaluated_result(output);
       return process_status;
     }
     if (fis_profile != nullptr) {
@@ -765,11 +779,11 @@ class ProcessingPipeline final {
                                       : models::ModelTarget::FisB3;
       if (fis_profile->manifest.kind != acquisition::ProfileKind::Fis ||
           fis_profile->manifest.target_id != static_cast<uint32_t>(expected)) {
-        output = Result{};
+        clear_evaluated_result(output);
         return ProcessStatus::InvalidSnapshot;
       }
       if (!add_profile(fis_profile->ref(), processed.profile_refs)) {
-        output = Result{};
+        clear_evaluated_result(output);
         return ProcessStatus::ProfileCapacityExceeded;
       }
     }
@@ -778,11 +792,11 @@ class ProcessingPipeline final {
           safety_profile->manifest.kind != acquisition::ProfileKind::Safety ||
           safety_profile->manifest.target_id !=
               static_cast<uint32_t>(models::ModelTarget::SafetyB3)) {
-        output = Result{};
+        clear_evaluated_result(output);
         return ProcessStatus::InvalidSnapshot;
       }
       if (!add_profile(safety_profile->ref(), processed.profile_refs)) {
-        output = Result{};
+        clear_evaluated_result(output);
         return ProcessStatus::ProfileCapacityExceeded;
       }
     }
@@ -791,7 +805,7 @@ class ProcessingPipeline final {
     if (fis_profile != nullptr) {
       fis_inputs.count = fis_profile->input_count;
       if (fis_inputs.count > fis_inputs.values.size()) {
-        output = Result{};
+        clear_evaluated_result(output);
         return ProcessStatus::InvalidSnapshot;
       }
       for (std::size_t index = 0U; index < fis_inputs.count; ++index) {
@@ -812,7 +826,7 @@ class ProcessingPipeline final {
     hazard_inputs = {};
     if (safety_profile != nullptr) {
       if (safety_profile->channel_count > hazard_inputs.values.size()) {
-        output = Result{};
+        clear_evaluated_result(output);
         return ProcessStatus::InvalidSnapshot;
       }
       for (std::size_t index = 0U; index < safety_profile->channel_count;
@@ -838,7 +852,9 @@ class ProcessingPipeline final {
                                   ? safety_evaluator.evaluate(safety_profile,
                                                                hazard_inputs)
                                   : safety::SafetyResult{};
-    output = Result{processed, workspace.fuzzy_result, workspace.safety_result};
+    output.processing = processed;
+    output.fuzzy.assign(workspace.fuzzy_result);
+    output.safety.assign(workspace.safety_result);
     return ProcessStatus::Produced;
   }
 
@@ -873,6 +889,16 @@ struct EvaluatedResult final {
         fuzzy(fuzzy_result),
         safety(safety_result) {}
 };
+
+template <typename FuzzyResult, typename SafetyResult,
+          std::size_t SourceCapacity>
+inline void clear_evaluated_result(
+    EvaluatedResult<FuzzyResult, SafetyResult, SourceCapacity>& output) noexcept {
+  static_assert(std::is_trivially_copyable<
+                    EvaluatedResult<FuzzyResult, SafetyResult, SourceCapacity>>::value,
+                "evaluated result must remain a bounded value type");
+  std::memset(&output, 0, sizeof(output));
+}
 struct ResultRecordContext final {
   acquisition::DeviceId device_id{};
   acquisition::BootId boot_id{};

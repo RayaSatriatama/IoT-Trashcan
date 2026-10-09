@@ -10,6 +10,7 @@
 #include "sigap/build/build_config.h"
 #include "acquisition/provenance.h"
 #include "acquisition/arduino_adapters.h"
+#include "storage/sd_probe_path.h"
 
 #ifdef ARDUINO
 #include <Arduino.h>
@@ -108,7 +109,10 @@ maintenance::CommandStatus ArduinoSdProbe::run_sd_probe(
     }
     return value;
   }();
-  constexpr const char* kPath = "/sigap/task6_sd_probe.bin";
+  char probe_path[64U]{};
+  const uint64_t device_id = ESP.getEfuseMac();
+  if (!storage::build_sd_probe_path(device_id, probe_path, sizeof(probe_path)))
+    return maintenance::CommandStatus::Failed;
   const int64_t started_us = esp_timer_get_time();
   if (!begin_sd_transport()) {
     return maintenance::CommandStatus::Rejected;
@@ -135,24 +139,34 @@ maintenance::CommandStatus ArduinoSdProbe::run_sd_probe(
                        archive_store_->reclaim_pending(archive_identity_,
                                                        archive_hash_) &&
                        !archive_store_->contains(archive_identity_, archive_hash_);
-    if (!archive_verified) return maintenance::CommandStatus::Failed;
+    if (!archive_verified) {
+      return maintenance::CommandStatus::Failed;
+    }
   }
-  (void)sd.remove(kPath);
-  File output = sd.open(kPath, FILE_WRITE);
-  if (!output) return maintenance::CommandStatus::Failed;
+  // A pre-existing path may be a leftover from an interrupted run or an
+  // unrelated file. Never remove or overwrite it as part of a probe.
+  File existing = sd.open(probe_path, FILE_READ);
+  if (existing) {
+    existing.close();
+    return maintenance::CommandStatus::Failed;
+  }
+  File output = sd.open(probe_path, FILE_WRITE);
+  if (!output) {
+    return maintenance::CommandStatus::Failed;
+  }
   const bool written = output.write(kProbeBytes.data(), kProbeBytes.size()) ==
                        kProbeBytes.size();
   if (written) output.flush();
   const bool flushed = written;
   output.close();
   if (!flushed) {
-    (void)sd.remove(kPath);
+    (void)sd.remove(probe_path);
     return maintenance::CommandStatus::Failed;
   }
-  File input = sd.open(kPath, FILE_READ);
+  File input = sd.open(probe_path, FILE_READ);
   if (!input || input.size() != kProbeBytes.size()) {
     if (input) input.close();
-    (void)sd.remove(kPath);
+    (void)sd.remove(probe_path);
     return maintenance::CommandStatus::Failed;
   }
   input.close();
@@ -161,11 +175,13 @@ maintenance::CommandStatus ArduinoSdProbe::run_sd_probe(
   config::ConfigHash actual_hash{};
   const bool hash_match = archive_store_ != nullptr &&
                           archive_store_->verify_probe_file(
-                              sd, kPath, kProbeBytes.data(), kProbeBytes.size(),
+                              sd, probe_path, kProbeBytes.data(), kProbeBytes.size(),
                               actual_hash) &&
                           expected_hash == actual_hash;
-  const bool removed = sd.remove(kPath);
-  if (!hash_match || !removed) return maintenance::CommandStatus::Failed;
+  const bool removed = sd.remove(probe_path);
+  if (!hash_match || !removed) {
+    return maintenance::CommandStatus::Failed;
+  }
   const uint64_t total_bytes = sd_total_bytes();
   const uint64_t used_bytes = sd_used_bytes();
   const uint64_t free_bytes = total_bytes >= used_bytes
@@ -310,6 +326,15 @@ void SigapApp::setup() noexcept {
   (void)wifi_manager_.begin();
   char ble_name[32]{};
   const uint64_t device_mac = ESP.getEfuseMac();
+  acquisition::DeviceId device_identity{};
+  device_identity.present = true;
+  for (std::size_t index = 0U; index < sizeof(device_mac); ++index) {
+    device_identity.bytes[device_identity.bytes.size() - sizeof(device_mac) + index] =
+        static_cast<uint8_t>(device_mac >>
+                             ((sizeof(device_mac) - 1U - index) * 8U));
+  }
+  record_context_.device_id = device_identity;
+  record_factory_.set_device_id(device_identity);
   (void)std::snprintf(ble_name, sizeof(ble_name), "SIGAP-%04llX",
                       static_cast<unsigned long long>(device_mac & 0xffffU));
 #if defined(SIGAP_NETWORK_ENDPOINT) && defined(SIGAP_NETWORK_CA_CERT)
@@ -414,7 +439,8 @@ void SigapApp::setup() noexcept {
                               network_secrets.device_token.size());
   }
 #ifdef ARDUINO
-  if (LittleFS.begin(false)) {
+  const bool littlefs_mounted = LittleFS.begin(false);
+  if (littlefs_mounted) {
     (void)migration_journal_.begin(LittleFS);
     (void)littlefs_store_.begin(
         LittleFS, config_manager_.active().storage.flash_pending_quota_bytes);
@@ -423,18 +449,19 @@ void SigapApp::setup() noexcept {
     (void)ack_journal_.begin(LittleFS);
   }
 #ifdef SIGAP_USE_SD
-  if (begin_sd_transport()) {
+  const bool sd_mounted = begin_sd_transport();
+  if (sd_mounted) {
     (void)sd_store_.begin(
         sd_filesystem(), config_manager_.active().storage.sd_pending_quota_bytes);
   }
 #endif
-  (void)archive_store_.recover();
 #else
   (void)littlefs_store_.begin(
       config_manager_.active().storage.flash_pending_quota_bytes);
   (void)sd_store_.begin(
       config_manager_.active().storage.sd_pending_quota_bytes);
 #endif
+
   const processing::ResultRecordContext result_context{
       record_context_.device_id,
       record_context_.boot_id,
@@ -465,9 +492,10 @@ void SigapApp::setup() noexcept {
         0U
 #endif
     );
-    if (metadata_status == storage::AppendStatus::Queued) {
-      (void)archive_runtime_.poll_storage();
-    }
+    // Keep filesystem I/O out of setup and the USB commissioning boundary.
+    // The owned storage worker drains this queued metadata record from the
+    // bounded loop slice after all runtime services are available.
+    (void)metadata_status;
   }
 }
 

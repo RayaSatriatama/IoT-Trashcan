@@ -1,5 +1,11 @@
 # Task 9 staging backend procedure
 
+Attached-only SD validation is recorded separately in
+`docs/task9-verification.md`. It passed on the final `sigap_n16r8_sd` image
+without formatting, erasing, or touching unrelated files. This staging
+document still describes loopback HTTPS software evidence; no physical ESP32
+HTTPS transmission or production endpoint was used.
+
 This procedure is for a disposable, loopback-only Go backend. It does not
 deploy an endpoint and does not contain a certificate, device token, or other
 secret. The staging database must be separate from any production database.

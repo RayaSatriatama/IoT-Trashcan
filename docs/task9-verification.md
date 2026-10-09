@@ -1,5 +1,72 @@
 # Task 9 verification ledger
 
+## Fresh final remediation evidence (`e01a81e` source -> final image)
+
+This section supersedes stale hardware-boundary statements below while
+preserving historical ledgers. Source verification was rerun on the current
+working tree. The selected SD image was uploaded only to the application
+range `0x10000..0x130fff`; NVS, partition metadata, and the SD card were
+preserved.
+
+Fresh software results:
+
+```text
+pio test -e native --without-uploading                         PASS 432/432
+pio check -e native --fail-on-defect=low                        PASS, no defects
+pio run -e sigap_n16r8                                          PASS RAM 49,496; flash 1,106,633
+pio run -e sigap_n16r8_sd                                       PASS RAM 50,036; flash 1,179,893
+pio run -e sigap_n16r8_sd_spi                                   PASS RAM 49,792; flash 1,159,409
+pio run -e sigap_bench                                          PASS RAM 49,496; flash 1,106,633
+pio run -e sigap_n16r8_https_compile                            PASS RAM 51,824; flash 1,300,573
+go test -count=1 ./...                                          PASS
+go test -race -count=1 ./...                                    PASS
+go vet ./...                                                    PASS
+go test -count=1 -v ./internal/telemetry                       PASS 14 schemas / 24 valid / 36 invalid / golden hashes
+npm test -- --run                                              PASS 21 files / 109 tests
+npm run typecheck                                               PASS
+npm run export:web                                              PASS
+git diff --check                                                PASS
+```
+
+Go used the user-owned verified Go 1.27.1 executable at
+`/home/raya/.local/opt/go1.27.1/bin/go`, without changing `go.mod` or
+`go.sum`. No sanitizer environment is defined in this checkout, so ASan/UBSan
+is BLOCKED for this source revision rather than relabeled from older evidence.
+
+The SD image SHA-256 is
+`30def8246ef8f34df336f4865f15788ce331b87713db67a0fcb7d45958e1a66a`.
+Selected-target disassembly reports a 32-byte `SlotProcessor::process` frame
+and a `0xa40` (2,624-byte) `ProcessingPipeline::evaluate` frame; the former
+1,664-byte and 5,376-byte frames no longer occur. These are compiler
+estimates, not runtime high-water measurements.
+
+Attached-only SD evidence on the ESP32-S3 N16R8 (MAC suffix `f5c150`) used
+SD_MMC 1-bit, CLK=39, CMD=38, D0=40, and `format_if_mount_failed=false`:
+
+```text
+sd=PASS
+bus=mmc1
+n=256
+hash=f987a1b5e0b87fc9e660f09967563a78de60df01dec65236945120eea61d4c56
+us=106507021
+t=31252201472
+u=8290304
+f=31243911168
+a=PASS
+OK
+mode=RUN
+config_version=1
+config_hash=8872dc3107056e6ec4f0c1502e078454092fda2c2cf87e1db45d571841d9e540
+```
+
+The probe created and removed only its device-owned path
+`/sigap/task9_sd_probe_f516a398.bin`. Archive append, reopen, recovery,
+contains, reclaim, and exact file hash verification passed. This is attached
+SD I/O evidence, not endurance, power-loss, or sensor evidence. LittleFS
+reported a pre-existing corrupted directory pair and was not formatted or
+erased. BLE pairing, WiFi association, HTTPS transmission, physical sensors,
+heater, actuators, and power-loss tests remain NOT RUN or BLOCKED.
+
 Status: **OPEN FOR INDEPENDENT REVIEW**. The branch contains software-test
 coverage and integration evidence only. The current preflight added the
 commissioning runbooks in `docs/task9-commissioning.md` and
