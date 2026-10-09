@@ -8,7 +8,7 @@ destructive hardware operation was performed.
 
 - Task 8 merge SHA: `6269b6c2532d25a93ac6b12454106613e17af911`.
 - Task 9 branch: `feat/full-integration-hil-validation`.
-- Final verification source before this report update: `985de586375c601968f18354475618f5106fc291`.
+- Final Task 9 HEAD: `701431011402669f88a8d8a4e7a4e7c89cb5c428`.
 - Hardware: ESP32-S3 N16R8 with onboard FAT32 microSD; no sensors, heater, or actuators.
 - No firmware upload, reboot, SD mutation, NVS erase, unplug, power-cycle,
   power-cut, or physical commissioning was performed.
