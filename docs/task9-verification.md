@@ -11,6 +11,7 @@ commissioning or destructive hardware operation was performed.
 - Task 8 merge SHA: `6269b6c2532d25a93ac6b12454106613e17af911`.
 - Task 9 branch: `feat/full-integration-hil-validation`.
 - Reviewed Task 9 final source baseline before this remediation: `df5f5ec`.
+- Final sensor-readiness verification commit: `0e7986bc625c7ba5fd6658bcf0570e90c026200b`.
 - Hardware: ESP32-S3 N16R8 with onboard FAT32 microSD; no sensors, heater, or actuators.
 - No firmware upload, reboot, SD mutation, NVS erase, unplug, power-cycle,
   power-cut, or physical commissioning was performed.
