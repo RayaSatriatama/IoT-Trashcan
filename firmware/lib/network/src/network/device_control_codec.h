@@ -21,6 +21,16 @@ struct DeviceControlWireBody final {
   }
 };
 
+// Decimal strings are used for uint64 values crossing the browser boundary.
+// Numeric JSON tokens are intentionally not accepted because JavaScript cannot
+// represent every uint64 value exactly.
+bool parse_canonical_uint64(std::string_view value,
+                            uint64_t& output) noexcept;
+
+bool parse_json_canonical_uint64_field(std::string_view payload,
+                                       std::string_view key,
+                                       uint64_t& output) noexcept;
+
 // The backend supplies expires_in_ms from its own claimed lease.  The absolute
 // expires_at is retained for audit but is not used as a device deadline unless
 // a trusted wall-clock anchor exists.

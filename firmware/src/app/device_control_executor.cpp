@@ -7,6 +7,8 @@
 #include <cstdio>
 #include <cstring>
 
+#include "network/device_control_codec.h"
+
 namespace sigap {
 namespace {
 
@@ -180,7 +182,9 @@ bool ApplicationCalibrationExecutor::append_result_json(
     const calibration::CalibrationResultEnvelope& source, std::string_view sensor,
     network::DeviceControlResult& output) noexcept {
   output.payload_size = 0U;
-  if (source.status == calibration::CalibrationCommandStatus::Committed) {
+  if ((source.status == calibration::CalibrationCommandStatus::Committed ||
+       source.status == calibration::CalibrationCommandStatus::Replayed) &&
+      source.profile.present && source.profile.version != 0U) {
     char version[24]{};
     const auto converted = std::to_chars(version, version + sizeof(version), source.profile.version);
     if (converted.ec != std::errc{} ||
@@ -279,21 +283,23 @@ bool ApplicationCalibrationExecutor::execute(
 
   const std::string_view payload(reinterpret_cast<const char*>(command.payload.data()), command.payload_size);
   std::string_view expected_hash{};
-  int64_t expected_version{0};
-  if (json_string(payload, "expected_profile_hash", expected_hash) ||
-      json_number(payload, "expected_profile_version", expected_version) ||
-      ([&]() noexcept {
-        std::string_view text{};
-        if (!json_string(payload, "expected_profile_version", text)) return false;
-        const auto parsed = std::from_chars(text.data(), text.data() + text.size(), expected_version);
-        return parsed.ec == std::errc{} && parsed.ptr == text.data() + text.size();
-      })()) {
+  const bool has_expected_hash =
+      payload.find("\"expected_profile_hash\"") != std::string_view::npos;
+  const bool has_expected_version =
+      payload.find("\"expected_profile_version\"") != std::string_view::npos;
+  if (has_expected_hash != has_expected_version ||
+      (envelope.operation == calibration::CalibrationOperation::Commit &&
+       !has_expected_hash)) {
+    return false;
+  }
+  if (has_expected_hash) {
+    uint64_t expected_version{0U};
     if (!json_string(payload, "expected_profile_hash", expected_hash) ||
-        !json_number(payload, "expected_profile_version", expected_version) ||
-        expected_version <= 0 ||
+        !network::parse_json_canonical_uint64_field(
+            payload, "expected_profile_version", expected_version) ||
         !parse_sha256(expected_hash, envelope.expected_profile.hash)) return false;
     envelope.expected_profile.present = true;
-    envelope.expected_profile.version = static_cast<uint64_t>(expected_version);
+    envelope.expected_profile.version = expected_version;
     envelope.expected_profile_present = true;
   }
   if (envelope.operation == calibration::CalibrationOperation::SetCriteria) {

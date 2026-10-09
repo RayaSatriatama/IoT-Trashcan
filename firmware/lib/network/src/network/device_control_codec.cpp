@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstring>
 #include <limits>
+#include <charconv>
 
 namespace sigap::network {
 namespace {
@@ -207,6 +208,71 @@ const char* result_status(DeviceControlStatus status) noexcept {
 }
 
 }  // namespace
+
+bool parse_canonical_uint64(std::string_view value,
+                            uint64_t& output) noexcept {
+  if (value.empty() || value.size() > 20U ||
+      (value.size() > 1U && value.front() == '0')) {
+    return false;
+  }
+  for (const char byte : value) {
+    if (byte < '0' || byte > '9') return false;
+  }
+  uint64_t parsed{0U};
+  const auto result = std::from_chars(value.data(), value.data() + value.size(),
+                                      parsed);
+  if (result.ec != std::errc{} || result.ptr != value.data() + value.size() ||
+      parsed == 0U) {
+    return false;
+  }
+  output = parsed;
+  return true;
+}
+
+bool parse_json_canonical_uint64_field(std::string_view payload,
+                                       std::string_view key,
+                                       uint64_t& output) noexcept {
+  if (key.empty()) return false;
+  const auto find_key = [&](std::size_t start) noexcept {
+    for (std::size_t quote = payload.find('"', start);
+         quote != std::string_view::npos;
+         quote = payload.find('"', quote + 1U)) {
+      const std::size_t begin = quote + 1U;
+      if (begin + key.size() + 1U <= payload.size() &&
+          payload.substr(begin, key.size()) == key &&
+          payload[begin + key.size()] == '"') {
+        return quote;
+      }
+    }
+    return std::string_view::npos;
+  };
+  const auto first = find_key(0U);
+  if (first == std::string_view::npos ||
+      find_key(first + key.size() + 2U) != std::string_view::npos) {
+    return false;
+  }
+  std::size_t cursor = first + key.size() + 2U;
+  while (cursor < payload.size() &&
+         (payload[cursor] == ' ' || payload[cursor] == '\t' ||
+          payload[cursor] == '\n' || payload[cursor] == '\r')) {
+    ++cursor;
+  }
+  if (cursor >= payload.size() || payload[cursor] != ':') return false;
+  ++cursor;
+  while (cursor < payload.size() &&
+         (payload[cursor] == ' ' || payload[cursor] == '\t' ||
+          payload[cursor] == '\n' || payload[cursor] == '\r')) {
+    ++cursor;
+  }
+  if (cursor >= payload.size() || payload[cursor] != '"') return false;
+  const std::size_t begin = ++cursor;
+  const std::size_t end = payload.find('"', begin);
+  if (end == std::string_view::npos || end == begin ||
+      payload.substr(begin, end - begin).find('\\') != std::string_view::npos) {
+    return false;
+  }
+  return parse_canonical_uint64(payload.substr(begin, end - begin), output);
+}
 
 bool decode_device_control_command(std::string_view wire, uint64_t now_us,
                                    DeviceControlCommand& output) noexcept {

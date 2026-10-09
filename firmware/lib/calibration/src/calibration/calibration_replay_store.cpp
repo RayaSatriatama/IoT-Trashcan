@@ -24,7 +24,8 @@ uint32_t NvsCalibrationReplayStore::checksum(const Record& record) noexcept {
 
 bool NvsCalibrationReplayStore::encode(
     const CalibrationCommandEnvelope& command,
-    const CalibrationResultEnvelope& result, Record& output) noexcept {
+    const CalibrationResultEnvelope& result, Record& output,
+    bool prepared) noexcept {
   output = Record{};
   output.magic = kMagic;
   output.version = kVersion;
@@ -41,7 +42,8 @@ bool NvsCalibrationReplayStore::encode(
   output.target = static_cast<uint8_t>(command.target);
   output.anchor = static_cast<uint8_t>(command.anchor);
   output.flags = static_cast<uint8_t>((command.criteria_present ? 1U : 0U) |
-                                      (command.expected_profile_present ? 2U : 0U));
+                                      (command.expected_profile_present ? 2U : 0U) |
+                                      (prepared ? 4U : 0U));
   output.expected_version = command.expected_profile.version;
   output.expected_hash = command.expected_profile.hash;
   output.payload_digest = command.payload_digest;
@@ -86,17 +88,21 @@ bool NvsCalibrationReplayStore::encode(
   if (command.criteria_present && output.criteria_kind == 0U) criteria_ok = false;
   if (!criteria_ok) return false;
   output.checksum = checksum(output);
-  return command.request_id != 0U && result.status == CalibrationCommandStatus::Committed;
+  return command.request_id != 0U &&
+         (prepared || result.status == CalibrationCommandStatus::Committed);
 }
 
 bool NvsCalibrationReplayStore::decode(
     const Record& record, CalibrationCommandEnvelope& command,
-    CalibrationResultEnvelope& result) noexcept {
+    CalibrationResultEnvelope& result, bool require_prepared) noexcept {
+  const bool prepared = (record.flags & 4U) != 0U;
   if (record.magic != kMagic || record.version != kVersion ||
       record.size != sizeof(Record) || record.checksum != checksum(record) ||
       record.request_id == 0U ||
       record.operation != static_cast<uint8_t>(CalibrationOperation::Commit) ||
-      record.result_status != static_cast<uint8_t>(CalibrationCommandStatus::Committed)) {
+      prepared != require_prepared ||
+      (!prepared && record.result_status !=
+                        static_cast<uint8_t>(CalibrationCommandStatus::Committed))) {
     return false;
   }
   command = CalibrationCommandEnvelope{};
@@ -147,13 +153,15 @@ bool NvsCalibrationReplayStore::decode(
   }
   result = CalibrationResultEnvelope{};
   result.protocol_version = command.protocol_version;
-  result.request_id = record.result_request_id;
-  result.session_id = record.result_session_id;
-  result.status = CalibrationCommandStatus::Committed;
-  result.profile.present = record.result_profile_present != 0U;
-  result.profile.version = record.result_profile_version;
-  result.profile.hash = record.result_profile_hash;
-  return result.profile.present;
+  result.request_id = prepared ? command.request_id : record.result_request_id;
+  result.session_id = prepared ? command.session_id : record.result_session_id;
+  result.status = prepared ? CalibrationCommandStatus::Failed
+                            : CalibrationCommandStatus::Committed;
+  result.profile.present = !prepared && record.result_profile_present != 0U;
+  result.profile.version = prepared ? 0U : record.result_profile_version;
+  result.profile.hash = prepared ? std::array<uint8_t, 32U>{}
+                                  : record.result_profile_hash;
+  return prepared || result.profile.present;
 }
 
 bool NvsCalibrationReplayStore::load(
@@ -170,11 +178,41 @@ bool NvsCalibrationReplayStore::load(
          record.request_id == request_id && decode(record, command, result);
 }
 
+bool NvsCalibrationReplayStore::prepare(
+    const CalibrationCommandEnvelope& command) noexcept {
+  Record record{};
+  CalibrationResultEnvelope empty{};
+  if (!encode(command, empty, record, true)) return false;
+  nvs_handle_t handle{};
+  if (nvs_open(kNamespace, NVS_READWRITE, &handle) != ESP_OK) return false;
+  const esp_err_t write = nvs_set_blob(handle, kKey, &record, sizeof(record));
+  const esp_err_t committed = write == ESP_OK ? nvs_commit(handle) : write;
+  nvs_close(handle);
+  return committed == ESP_OK;
+}
+
+bool NvsCalibrationReplayStore::load_prepared(
+    uint64_t request_id, CalibrationCommandEnvelope& command) const noexcept {
+  if (request_id == 0U) return false;
+  nvs_handle_t handle{};
+  if (nvs_open(kNamespace, NVS_READONLY, &handle) != ESP_OK) return false;
+  Record record{};
+  std::size_t size = sizeof(record);
+  const esp_err_t status = nvs_get_blob(handle, kKey, &record, &size);
+  nvs_close(handle);
+  if (status != ESP_OK || size != sizeof(record) ||
+      record.request_id != request_id) {
+    return false;
+  }
+  CalibrationResultEnvelope ignored{};
+  return decode(record, command, ignored, true);
+}
+
 bool NvsCalibrationReplayStore::save(
     const CalibrationCommandEnvelope& command,
     const CalibrationResultEnvelope& result) noexcept {
   Record record{};
-  if (!encode(command, result, record)) return false;
+  if (!encode(command, result, record, false)) return false;
   nvs_handle_t handle{};
   if (nvs_open(kNamespace, NVS_READWRITE, &handle) != ESP_OK) return false;
   const esp_err_t write = nvs_set_blob(handle, kKey, &record, sizeof(record));

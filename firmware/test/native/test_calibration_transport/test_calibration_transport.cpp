@@ -61,6 +61,7 @@ class FakeWorkflow final : public ICalibrationTransportWorkflow {
     status_.state = CalibrationState::Idle;
     profile.present = true;
     ++profile.version;
+    ++commit_calls;
     return true;
   }
   bool cancel() noexcept override {
@@ -79,6 +80,7 @@ class FakeWorkflow final : public ICalibrationTransportWorkflow {
   DiagnosticEvidence evidence_{};
   bool evidence_available_{true};
   uint32_t start_calls{0U};
+  uint32_t commit_calls{0U};
   uint32_t cancel_calls{0U};
 };
 
@@ -216,7 +218,7 @@ void test_expiry_and_device_binding_are_rejected() {
                         static_cast<int>(result.status));
 }
 
-void test_request_id_reuse_with_changed_payload_is_conflict() {
+void test_local_deadline_is_not_replay_identity() {
   FakeWorkflow workflow{};
   AllowAuthorizer authorizer{};
   CalibrationTransportController controller(workflow, 0x1234U, &authorizer);
@@ -225,10 +227,60 @@ void test_request_id_reuse_with_changed_payload_is_conflict() {
   start.expires_at_us = 1000U;
   TEST_ASSERT_TRUE(controller.execute(start, 1U, result));
   start.expires_at_us = 2000U;
-  TEST_ASSERT_FALSE(controller.execute(start, 2U, result));
-  TEST_ASSERT_EQUAL_INT(static_cast<int>(CalibrationCommandStatus::Conflict),
+  TEST_ASSERT_TRUE(controller.execute(start, 2U, result));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CalibrationCommandStatus::Replayed),
                         static_cast<int>(result.status));
   TEST_ASSERT_EQUAL_UINT32(1U, workflow.start_calls);
+}
+
+void test_failed_replay_persistence_is_reconciled_without_second_commit() {
+  MemoryCalibrationReplayStore replay_store{};
+  AllowAuthorizer authorizer{};
+  FakeWorkflow workflow{};
+  CalibrationTransportController controller(workflow, 0x1234U, &authorizer,
+                                             &replay_store);
+  CalibrationResultEnvelope result{};
+  auto start = command(CalibrationOperation::Start,
+                       CalibrationTransport::Https, 80U);
+  TEST_ASSERT_TRUE(controller.execute(start, 1U, result));
+  auto commit = command(CalibrationOperation::Commit,
+                        CalibrationTransport::Https, 81U, result.session_id);
+  workflow.proposal.present = true;
+  workflow.proposal.version = 1U;
+  commit.expected_profile_present = true;
+  commit.expected_profile = workflow.proposal;
+  replay_store.fail_save = true;
+  TEST_ASSERT_FALSE(controller.execute(commit, 2U, result));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CalibrationCommandStatus::Failed),
+                        static_cast<int>(result.status));
+  TEST_ASSERT_EQUAL_UINT32(1U, workflow.commit_calls);
+
+  replay_store.fail_save = false;
+  CalibrationResultEnvelope replayed{};
+  TEST_ASSERT_TRUE(controller.execute(commit, 3U, replayed));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CalibrationCommandStatus::Replayed),
+                        static_cast<int>(replayed.status));
+  TEST_ASSERT_EQUAL_UINT32(1U, workflow.commit_calls);
+  TEST_ASSERT_TRUE(replayed.profile.present);
+}
+
+void test_failed_prepare_does_not_activate_profile() {
+  MemoryCalibrationReplayStore replay_store{};
+  replay_store.fail_prepare = true;
+  AllowAuthorizer authorizer{};
+  FakeWorkflow workflow{};
+  CalibrationTransportController controller(workflow, 0x1234U, &authorizer,
+                                             &replay_store);
+  CalibrationResultEnvelope result{};
+  auto start = command(CalibrationOperation::Start,
+                       CalibrationTransport::Https, 82U);
+  TEST_ASSERT_TRUE(controller.execute(start, 1U, result));
+  auto commit = command(CalibrationOperation::Commit,
+                        CalibrationTransport::Https, 83U, result.session_id);
+  TEST_ASSERT_FALSE(controller.execute(commit, 2U, result));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CalibrationCommandStatus::Failed),
+                        static_cast<int>(result.status));
+  TEST_ASSERT_EQUAL_UINT32(0U, workflow.commit_calls);
 }
 
 void test_committed_replay_survives_controller_recreation() {
@@ -315,7 +367,9 @@ void setup() {
   RUN_TEST(test_expected_profile_conflict_and_preview);
   RUN_TEST(test_remote_transport_requires_authorization);
   RUN_TEST(test_expiry_and_device_binding_are_rejected);
-  RUN_TEST(test_request_id_reuse_with_changed_payload_is_conflict);
+  RUN_TEST(test_local_deadline_is_not_replay_identity);
+  RUN_TEST(test_failed_replay_persistence_is_reconciled_without_second_commit);
+  RUN_TEST(test_failed_prepare_does_not_activate_profile);
   RUN_TEST(test_commit_returns_terminal_status_and_profile_identity);
   RUN_TEST(test_request_id_reuse_with_changed_payload_digest_is_conflict);
   RUN_TEST(test_committed_replay_survives_controller_recreation);

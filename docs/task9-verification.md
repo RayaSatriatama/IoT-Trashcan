@@ -6,6 +6,21 @@ commissioning runbooks in `docs/task9-commissioning.md` and
 `docs/task9-sensor-commissioning.md`; no physical
 commissioning or destructive hardware operation was performed.
 
+## Latest remediation under review
+
+Starting source: `c09c4663b3cf91082d711bbc7ef389cd019bd79b`.
+The remediation at the final source head adds a durable COMMIT intent record before
+profile activation. A lost result persistence is therefore retryable and can
+be reconciled against the already active profile without running activation a
+second time. The local monotonic deadline is no longer part of replay
+identity; the authenticated backend request hash remains the stable identity.
+The Arduino executor now requires `expected_profile_version` as a canonical
+positive decimal string and emits the original profile identity for both first
+and replayed COMMIT results. The compile-only
+`sigap_n16r8_https_compile` environment checks the endpoint-enabled
+composition with an invalid placeholder endpoint and empty CA, so it cannot
+produce a usable runtime connection or expose credentials.
+
 ## Baseline and safety boundary
 
 - Task 8 merge SHA: `6269b6c2532d25a93ac6b12454106613e17af911`.
@@ -33,11 +48,11 @@ commissioning or destructive hardware operation was performed.
 | Frontend dependency triage | PASS (bounded remediation) | Three narrow lockfile-backed overrides remove the production critical finding; remaining findings are documented toolchain/development risk and were not force-upgraded. |
 | Backend ingest and current projection | PASS (software only) | Fresh Go `internal/e2e` and full tests cover durable ACK, replay dedupe, conflict, auth, export, late backlog, and filtered cursor; no staging process or device transmission was started. |
 | Schemas and frozen hashes | PASS | Fresh Go semantic run compiled 14 schemas, checked 24 valid fixtures, rejected 36 invalid fixtures, and preserved both frozen hashes. |
-| Firmware native suite | PASS | Fresh PlatformIO suite completed 402/402 test cases across 38 folders. |
-| Firmware sanitizer suite | PASS | Fresh ASan/UBSan run completed 402/402 cases with no diagnostics. |
+| Firmware native suite | PASS | Fresh PlatformIO suite completed 428/428 test cases across 41 folders. |
+| Firmware sanitizer suite | PASS | Fresh ASan/UBSan run completed 428/428 cases with no diagnostics. |
 | Cppcheck | PASS | `pio check -e native --fail-on-defect=low`, no defects. |
-| Target builds | PASS | `sigap_n16r8`, `sigap_n16r8_sd`, `sigap_n16r8_sd_spi`, and `sigap_bench`. |
-| Frontend | PASS | 19 files/92 Vitest tests, TypeScript typecheck, and Expo web export pass. |
+| Target builds | PASS | `sigap_n16r8`, `sigap_n16r8_sd`, `sigap_n16r8_sd_spi`, `sigap_bench`, and compile-only `sigap_n16r8_https_compile`. |
+| Frontend | PASS | 21 files/107 Vitest tests, TypeScript typecheck, and Expo web export pass. |
 | Sensor software readiness | PASS (synthetic native) | All 13 channel adapters retain typed evidence and failure reasons; first-time profile paths are covered by native fakes. No physical coefficients are claimed. |
 | Sensor physical calibration/safety | BLOCKED | No physical sensors, MQ-7 heater, or actuators are connected. |
 | Physical BLE/WiFi commissioning | BLOCKED | Requires authorized target run, browser secure context, test network, and secure one-shot passkey handoff on the display-less board. Procedure: `docs/task9-commissioning.md`. |
@@ -54,16 +69,17 @@ go1.27.1 test -count=1 ./...                  PASS
 go1.27.1 test -race -count=1 ./...           PASS
 go1.27.1 vet ./...                            PASS
 go1.27.1 test ./internal/telemetry            PASS (14 schemas, 24 valid, 36 invalid, golden hashes)
-npm test                                      PASS (19 files, 92 tests)
+npm test                                      PASS (21 files, 107 tests)
 npm run typecheck                             PASS
 npm run export:web                            PASS
-pio test -e native                            PASS (402/402)
-ASan/UBSan native folders                    PASS (402/402 cases, 38 folders, 0 failed)
+pio test -e native                            PASS (428/428)
+ASan/UBSan native folders                    PASS (428/428 cases, 41 folders, 0 failed)
 pio check -e native --fail-on-defect=low     PASS (no defects)
-pio run -e sigap_n16r8                       PASS (RAM 49,496; flash 1,082,737)
-pio run -e sigap_n16r8_sd                    PASS (RAM 50,036; flash 1,156,193)
-pio run -e sigap_n16r8_sd_spi                PASS (RAM 49,792; flash 1,135,801)
-pio run -e sigap_bench                       PASS (RAM 49,496; flash 1,082,737)
+pio run -e sigap_n16r8                       PASS (RAM 49,496; flash 1,104,309)
+pio run -e sigap_n16r8_sd                    PASS (RAM 50,036; flash 1,177,409)
+pio run -e sigap_n16r8_sd_spi                PASS (RAM 49,792; flash 1,156,897)
+pio run -e sigap_bench                       PASS (RAM 49,496; flash 1,104,309)
+pio run -e sigap_n16r8_https_compile         PASS (compile-only; RAM 51,824; flash 1,298,181)
 git diff --check                             PASS
 ```
 
@@ -246,9 +262,8 @@ HTTPS staging transmission was run, no browser Web Bluetooth pairing was run,
 and no physical sensor/NVS/SD operation was performed. Operator auth is
 fail-closed in the backend but the current browser journey still supplies
 short-lived bearer/CSRF values in memory rather than using a deployed operator
-identity provider. The NVS replay record is persisted after a successful profile
-commit, but a power-loss window between profile activation and replay-record
-persistence still requires the documented atomic persistence follow-up. No
-commit or push was performed in this verification batch;
-the branch remains at the reviewed baseline with local changes only. Task 10
-was not started.
+identity provider. The NVS replay intent is persisted before profile activation
+and the terminal profile identity afterward; a fault between those boundaries
+is reconciled only when active identity matches the intent. Physical power-loss
+execution remains untested. This remediation remains pending final commit/push
+and independent review. Task 10 was not started.

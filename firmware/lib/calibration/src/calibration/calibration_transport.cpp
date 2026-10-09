@@ -57,7 +57,6 @@ bool CalibrationTransportController::same_identity(
          left.device_id == right.device_id &&
          left.principal_id == right.principal_id &&
          left.session_id == right.session_id &&
-         left.expires_at_us == right.expires_at_us &&
          left.transport == right.transport && left.operation == right.operation &&
          left.target == right.target && left.criteria_present == right.criteria_present &&
          (!left.criteria_present || criteria_equal(left.criteria, right.criteria)) &&
@@ -71,7 +70,7 @@ bool CalibrationTransportController::same_identity(
 
 bool CalibrationTransportController::find_replay(
     const CalibrationCommandEnvelope& command,
-    CalibrationResultEnvelope& output) const noexcept {
+    CalibrationResultEnvelope& output) noexcept {
   for (const auto& entry : replay_) {
     if (entry.valid && entry.command.request_id == command.request_id) {
       if (!same_identity(entry.command, command)) {
@@ -100,22 +99,55 @@ bool CalibrationTransportController::find_replay(
       output.status = CalibrationCommandStatus::Replayed;
       return true;
     }
+    CalibrationCommandEnvelope prepared_command{};
+    if (replay_store_->load_prepared(command.request_id, prepared_command)) {
+      if (!same_identity(prepared_command, command)) {
+        output = CalibrationResultEnvelope{};
+        output.request_id = command.request_id;
+        output.status = CalibrationCommandStatus::Conflict;
+        return true;
+      }
+      CalibrationProfileRef active{};
+      if (command.operation != CalibrationOperation::Commit ||
+          !command.expected_profile_present ||
+          !workflow_.active_profile(command.target, active) ||
+          !active.present || !active.equals(command.expected_profile)) {
+        output = CalibrationResultEnvelope{};
+        output.request_id = command.request_id;
+        output.status = CalibrationCommandStatus::Failed;
+        return true;
+      }
+      output = CalibrationResultEnvelope{};
+      output.protocol_version = command.protocol_version;
+      output.request_id = command.request_id;
+      output.session_id = command.session_id;
+      output.status = CalibrationCommandStatus::Committed;
+      output.profile = active;
+      if (!replay_store_->save(command, output)) {
+        output.status = CalibrationCommandStatus::Failed;
+        return true;
+      }
+      output.status = CalibrationCommandStatus::Replayed;
+      return true;
+    }
   }
   return false;
 }
 
-void CalibrationTransportController::remember(
+bool CalibrationTransportController::remember(
     const CalibrationCommandEnvelope& command,
     const CalibrationResultEnvelope& result) noexcept {
+  if (replay_store_ != nullptr &&
+      command.operation == CalibrationOperation::Commit &&
+      result.status == CalibrationCommandStatus::Committed &&
+      !replay_store_->save(command, result)) {
+    return false;
+  }
   replay_[replay_next_].command = command;
   replay_[replay_next_].result = result;
   replay_[replay_next_].valid = true;
   replay_next_ = (replay_next_ + 1U) % replay_.size();
-  if (replay_store_ != nullptr &&
-      command.operation == CalibrationOperation::Commit &&
-      result.status == CalibrationCommandStatus::Committed) {
-    (void)replay_store_->save(command, result);
-  }
+  return true;
 }
 
 void CalibrationTransportController::fill(
@@ -248,9 +280,14 @@ bool CalibrationTransportController::execute(
       output.preview_available = ok;
       break;
     case CalibrationOperation::Commit:
+      if (replay_store_ != nullptr && !replay_store_->prepare(command)) {
+        output.status = CalibrationCommandStatus::Failed;
+        return false;
+      }
       ok = workflow_.commit();
       if (ok) {
-        (void)workflow_.active_profile(command.target, output.profile);
+        ok = workflow_.active_profile(command.target, output.profile) &&
+             output.profile.present;
         owner_active_ = false;
         session_id_ = 0U;
         principal_id_ = 0U;
@@ -277,7 +314,11 @@ bool CalibrationTransportController::execute(
     output.status = ok ? CalibrationCommandStatus::Accepted
                        : CalibrationCommandStatus::Failed;
   }
-  if (command.request_id != 0U) remember(command, output);
+  if (command.request_id != 0U &&
+      !remember(command, output)) {
+    output.status = CalibrationCommandStatus::Failed;
+    return false;
+  }
   return ok;
 }
 

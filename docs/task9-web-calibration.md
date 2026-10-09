@@ -12,6 +12,25 @@ firmware calibration session and evidence cache. USB maintenance remains the
 secondary local recovery path. A transport cannot submit raw sensor readings,
 coefficients, NVS commands, reset commands, GPIO changes, or heater commands.
 
+## Commit protocol contract
+
+`expected_profile_version` is a positive canonical decimal JSON string across
+the browser, Go queue, and Arduino executor. Numeric JSON versions, zero,
+negative values, leading zeroes, overflow, missing values, and hash/version
+mismatches are rejected. The request hash covers the complete authenticated
+command, including the server expiry, so the device's delivery-local
+monotonic deadline is not used as durable replay identity.
+
+COMMIT writes a bounded NVS replay intent before profile activation. The
+successful result is persisted with the exact profile key, version, and hash.
+If the response or final result write is lost, a retry verifies the active
+profile against the intent and persists the terminal result without activating
+again. The native regression covers failed result persistence and proves the
+second attempt does not call the workflow commit twice. The endpoint-enabled
+Arduino composition is compiled by `sigap_n16r8_https_compile` with an invalid
+non-production endpoint and empty CA; a usable endpoint and trusted CA remain
+out-of-tree commissioning inputs.
+
 ## Workflow
 
 1. Select a device and one of the 13 channels.
@@ -112,14 +131,15 @@ following areas:
   preview. The current UI still accepts operator bearer/CSRF values supplied
   by the caller; production operator-session deployment is not claimed.
 
-Fresh source-only evidence for this revision is 424/424 native tests,
-424/424 ASan/UBSan tests using a temporary non-production PlatformIO config,
+Fresh source-only evidence for this revision is 428/428 native tests,
+428/428 ASan/UBSan tests using a temporary non-production PlatformIO config,
 21 frontend files/107 tests, TypeScript and web export passes, Go full/race/
 vet passes, and all four target builds. The controller also persists committed
 request identity and profile readback through the replay-store boundary, with
 native recreation coverage. Physical BLE pairing, a browser-driven
 preview-to-commit journey, and an endpoint-enabled ESP32 HTTPS run remain
-unexecuted. The replay record is written after profile activation, so atomic
-power-loss recovery across that final persistence boundary remains a documented
-follow-up. Task 9 stays HOLD until those integrated paths are exercised with an
-authorized non-production deployment.
+unexecuted. A replay intent is now written before profile activation and the
+terminal profile identity is persisted afterward; a fault between those
+boundaries is reconciled only when active identity matches the intent. Physical
+power-loss execution remains untested. Task 9 stays HOLD until those integrated
+paths are exercised with an authorized non-production deployment.

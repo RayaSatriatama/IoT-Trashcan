@@ -12,6 +12,15 @@ namespace sigap::calibration {
 class MemoryCalibrationReplayStore final
     : public ICalibrationTransportReplayStore {
  public:
+  bool prepare(const CalibrationCommandEnvelope& command) noexcept override {
+    if (fail_prepare || command.request_id == 0U) return false;
+    command_ = command;
+    result_ = CalibrationResultEnvelope{};
+    prepared_ = true;
+    valid_ = false;
+    return true;
+  }
+
   bool load(uint64_t request_id, CalibrationCommandEnvelope& command,
             CalibrationResultEnvelope& result) const noexcept override {
     if (!valid_ || request_id == 0U || command_.request_id != request_id) {
@@ -22,11 +31,22 @@ class MemoryCalibrationReplayStore final
     return true;
   }
 
+  bool load_prepared(uint64_t request_id,
+                    CalibrationCommandEnvelope& command) const noexcept override {
+    if (!prepared_ || request_id == 0U || command_.request_id != request_id) {
+      return false;
+    }
+    command = command_;
+    return true;
+  }
+
   bool save(const CalibrationCommandEnvelope& command,
             const CalibrationResultEnvelope& result) noexcept override {
+    if (fail_save || command.request_id == 0U) return false;
     command_ = command;
     result_ = result;
     valid_ = true;
+    prepared_ = false;
     return true;
   }
 
@@ -34,12 +54,17 @@ class MemoryCalibrationReplayStore final
     command_ = CalibrationCommandEnvelope{};
     result_ = CalibrationResultEnvelope{};
     valid_ = false;
+    prepared_ = false;
   }
+
+  bool fail_prepare{false};
+  bool fail_save{false};
 
  private:
   CalibrationCommandEnvelope command_{};
   CalibrationResultEnvelope result_{};
   bool valid_{false};
+  bool prepared_{false};
 };
 
 #ifdef ARDUINO
@@ -53,6 +78,9 @@ class NvsCalibrationReplayStore final
  public:
   bool load(uint64_t request_id, CalibrationCommandEnvelope& command,
             CalibrationResultEnvelope& result) const noexcept override;
+  bool prepare(const CalibrationCommandEnvelope& command) noexcept override;
+  bool load_prepared(uint64_t request_id,
+                    CalibrationCommandEnvelope& command) const noexcept override;
   bool save(const CalibrationCommandEnvelope& command,
             const CalibrationResultEnvelope& result) noexcept override;
 
@@ -100,10 +128,11 @@ class NvsCalibrationReplayStore final
   static uint32_t checksum(const Record& record) noexcept;
   static bool encode(const CalibrationCommandEnvelope& command,
                      const CalibrationResultEnvelope& result,
-                     Record& output) noexcept;
+                     Record& output, bool prepared = false) noexcept;
   static bool decode(const Record& record,
                      CalibrationCommandEnvelope& command,
-                     CalibrationResultEnvelope& result) noexcept;
+                     CalibrationResultEnvelope& result,
+                     bool require_prepared = false) noexcept;
 };
 
 #endif  // ARDUINO

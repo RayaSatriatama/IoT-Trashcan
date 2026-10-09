@@ -274,6 +274,33 @@ void test_wire_result_rejects_oversized_or_invalid_payload() {
   TEST_ASSERT_FALSE(encode_device_control_result(result, body));
 }
 
+void test_canonical_uint64_profile_versions_are_exact() {
+  uint64_t value{0U};
+  TEST_ASSERT_TRUE(parse_canonical_uint64("18446744073709551615", value));
+  TEST_ASSERT_EQUAL_UINT64(UINT64_MAX, value);
+  TEST_ASSERT_TRUE(parse_canonical_uint64("1", value));
+  TEST_ASSERT_EQUAL_UINT64(1U, value);
+  TEST_ASSERT_FALSE(parse_canonical_uint64("0", value));
+  TEST_ASSERT_FALSE(parse_canonical_uint64("01", value));
+  TEST_ASSERT_FALSE(parse_canonical_uint64("-1", value));
+  TEST_ASSERT_FALSE(parse_canonical_uint64("18446744073709551616", value));
+  TEST_ASSERT_FALSE(parse_canonical_uint64("1.0", value));
+}
+
+void test_executor_profile_version_field_requires_one_json_string() {
+  uint64_t value{0U};
+  TEST_ASSERT_TRUE(parse_json_canonical_uint64_field(
+      R"({"expected_profile_version":"18446744073709551615"})",
+      "expected_profile_version", value));
+  TEST_ASSERT_EQUAL_UINT64(UINT64_MAX, value);
+  TEST_ASSERT_FALSE(parse_json_canonical_uint64_field(
+      R"({"expected_profile_version":18446744073709551615})",
+      "expected_profile_version", value));
+  TEST_ASSERT_FALSE(parse_json_canonical_uint64_field(
+      R"({"expected_profile_version":"1","expected_profile_version":"2"})",
+      "expected_profile_version", value));
+}
+
 }  // namespace
 
 void setup() {
@@ -286,6 +313,8 @@ void setup() {
   RUN_TEST(test_oversized_command_never_reaches_executor);
   RUN_TEST(test_wire_command_requires_bounded_relative_expiry);
   RUN_TEST(test_wire_result_rejects_oversized_or_invalid_payload);
+  RUN_TEST(test_canonical_uint64_profile_versions_are_exact);
+  RUN_TEST(test_executor_profile_version_field_requires_one_json_string);
   UNITY_END();
 }
 

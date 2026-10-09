@@ -119,9 +119,22 @@ class ICalibrationTransportAuthorizer {
 class ICalibrationTransportReplayStore {
  public:
   virtual ~ICalibrationTransportReplayStore() = default;
+  // COMMIT writes a durable intent before profile activation.  If the
+  // response is lost after activation, the intent lets a later retry verify
+  // the active profile without running the side effect again.
+  virtual bool prepare(const CalibrationCommandEnvelope&) noexcept {
+    return true;
+  }
   virtual bool load(uint64_t request_id,
                     CalibrationCommandEnvelope& command,
                     CalibrationResultEnvelope& result) const noexcept = 0;
+  virtual bool load_prepared(
+      uint64_t request_id,
+      CalibrationCommandEnvelope& command) const noexcept {
+    (void)request_id;
+    (void)command;
+    return false;
+  }
   virtual bool save(const CalibrationCommandEnvelope& command,
                     const CalibrationResultEnvelope& result) noexcept = 0;
 };
@@ -189,8 +202,8 @@ class CalibrationTransportController final {
   static bool same_identity(const CalibrationCommandEnvelope& left,
                             const CalibrationCommandEnvelope& right) noexcept;
   bool find_replay(const CalibrationCommandEnvelope& command,
-                   CalibrationResultEnvelope& output) const noexcept;
-  void remember(const CalibrationCommandEnvelope& command,
+                   CalibrationResultEnvelope& output) noexcept;
+  bool remember(const CalibrationCommandEnvelope& command,
                 const CalibrationResultEnvelope& result) noexcept;
 
   static constexpr std::size_t kReplayEntries{4U};
