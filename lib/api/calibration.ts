@@ -141,8 +141,16 @@ export function createCalibrationApi(
   }
 
   return {
-    getDiagnostics: (deviceId: string, sensorId: CalibrationSensorId, signal?: AbortSignal) =>
-      get<CalibrationResponse>(`/api/device-control/commands/${encodeURIComponent(deviceId)}/diagnostics?sensor_id=${encodeURIComponent(sensorId)}`, signal),
+    getDiagnostics: async (deviceId: string, sensorId: CalibrationSensorId, signal?: AbortSignal) => {
+      const body = await get<CalibrationResponse | SensorDiagnostic>(
+        `/api/device-control/commands/${encodeURIComponent(deviceId)}/diagnostics?sensor_id=${encodeURIComponent(sensorId)}`,
+        signal,
+      );
+      if (typeof body === 'object' && body !== null && 'diagnostic' in body) {
+        return body as CalibrationResponse;
+      }
+      return { diagnostic: body as SensorDiagnostic };
+    },
     getCapabilities: (deviceId: string, sensorId: CalibrationSensorId, signal?: AbortSignal) =>
       get<CalibrationResponse>(`/api/device-control/commands/${encodeURIComponent(deviceId)}/capabilities?sensor_id=${encodeURIComponent(sensorId)}`, signal),
     submit: (request: CalibrationCommandRequest, signal?: AbortSignal) => {

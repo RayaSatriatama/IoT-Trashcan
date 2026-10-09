@@ -133,3 +133,57 @@ mutation, or SD write was performed. Task 10 was not started.
 This branch is ready for independent review of the software evidence. The
 physical BLE/WiFi/HTTPS commissioning, sensor and heater evidence, physical
 SD recovery, and endurance gates remain explicitly blocked rather than passed.
+
+## Unified web calibration remediation
+
+Fresh source head for this remediation is recorded by Git after the focused
+BLE, backend, and web changes are integrated. The website now uses an
+in-memory operator bearer token for authenticated device-control diagnostics
+and commands. The token is never persisted in browser storage or sent to a
+legacy research endpoint. The diagnostics endpoint returns the exact persisted
+device result body; the web client accepts that raw body without reserializing
+it and keeps the typed wrapper at the UI boundary. Capabilities are bounded
+and sensor-specific, with units but no production thresholds.
+
+The firmware BLE adapter translates `CAL` requests to the existing maintenance
+grammar. Kriteria are applied as one authoritative `field value` command per
+bounded `key=value` argument. Capture requires an explicit `tare`, `reference`,
+`empty`, or `full` anchor. Validate, preview, and commit require the selected
+sensor to remain the active session target. A BLE disconnect cancels only a
+session started by that BLE adapter; it cannot cancel a USB-owned session.
+Unsupported capability/history/rollback operations are rejected rather than
+fabricating a response until the typed workflow API exposes those operations.
+
+Fresh software evidence:
+
+```text
+pio test -e native                                      PASS 409/409
+focused BLE/calibration tests                          PASS 18/18
+pio check -e native --fail-on-defect=low                PASS
+sigap_n16r8                                              PASS RAM 49,496; flash 1,087,001
+sigap_n16r8_sd                                           PASS RAM 50,036; flash 1,160,389
+sigap_n16r8_sd_spi                                       PASS RAM 49,792; flash 1,140,017
+sigap_bench                                              PASS RAM 49,496; flash 1,087,001
+go test -count=1 ./...                                   PASS
+go test -race -count=1 ./...                             PASS
+go vet ./...                                             PASS
+npm test -- --run                                       PASS 21 files / 101 tests
+npm run typecheck                                        PASS
+npm run export:web                                       PASS
+telemetry schemas/fixtures/golden hashes                 PASS 14/24/36 and unchanged
+git diff --check                                         PASS
+```
+
+The repository does not define a sanitizer PlatformIO environment in this
+checkout, so a new ASan/UBSan run was not executable without introducing an
+unreviewed build configuration. Historical sanitizer evidence is not relabeled
+as fresh. Physical BLE pairing, WiFi change/reconnect, HTTPS device polling,
+operator-provider deployment, sensor evidence, heater operation, NVS, SD, and
+power tests remain blocked by the explicit hardware boundary.
+
+The remaining software integration gate is firmware-side HTTPS polling of the
+Go command queue. The queue, authenticated operator/device endpoints, exact
+diagnostic body, idempotent command persistence, expiry, and native tests are
+implemented. No firmware network worker currently claims remote calibration
+commands, so WEB-CAL remote delivery is not marked complete until that adapter
+is wired and tested with the existing nonblocking network boundary.

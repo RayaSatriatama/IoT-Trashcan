@@ -21,7 +21,7 @@ export type CalibrationWizardProps = {
 export type BleCalibrationAdapter = {
   calibrationStart: (sensor: string) => Promise<string>;
   calibrationCriteria: (sensor: string, parameters: Record<string, string | number | boolean>) => Promise<string>;
-  calibrationCapture: (sensor: string) => Promise<string>;
+  calibrationCapture: (sensor: string, anchor: 'tare' | 'reference' | 'empty' | 'full') => Promise<string>;
   calibrationValidate: (sensor: string) => Promise<string>;
   calibrationPreview: (sensor: string) => Promise<string>;
   calibrationCommit: (sensor: string) => Promise<string>;
@@ -42,6 +42,7 @@ export function CalibrationWizard({ deviceId, sensorId, diagnostic, api, apiFact
   const [error, setError] = useState<string | null>(null);
   const [reference, setReference] = useState('');
   const [criteria, setCriteria] = useState('');
+  const [anchor, setAnchor] = useState('');
   const [preview, setPreview] = useState<CalibrationPreview | null>(null);
   const [operatorToken, setOperatorToken] = useState('');
   const [sessionState, setSessionState] = useState(initialWizardStatus(diagnostic).state);
@@ -69,7 +70,7 @@ export function CalibrationWizard({ deviceId, sensorId, diagnostic, api, apiFact
       if (transport === 'ble' && bleClient) {
         const output = operation === 'START' ? await bleClient.calibrationStart(sensorId)
           : operation === 'SET_CRITERIA' ? await bleClient.calibrationCriteria(sensorId, extra.criteria ?? {})
-          : operation === 'CAPTURE' ? await bleClient.calibrationCapture(sensorId)
+          : operation === 'CAPTURE' ? await bleClient.calibrationCapture(sensorId, anchor as 'tare' | 'reference' | 'empty' | 'full')
           : operation === 'VALIDATE' ? await bleClient.calibrationValidate(sensorId)
           : operation === 'PREVIEW' ? await bleClient.calibrationPreview(sensorId)
           : operation === 'COMMIT' ? await bleClient.calibrationCommit(sensorId)
@@ -119,7 +120,8 @@ export function CalibrationWizard({ deviceId, sensorId, diagnostic, api, apiFact
         <XStack gap="$2" flexWrap="wrap">
           {step === 'diagnostics' ? <AppButton onPress={start} disabled={busy || !ready} ariaLabel="Mulai kalibrasi">Mulai</AppButton> : null}
           {step === 'criteria' ? <AppButton onPress={configure} disabled={busy} ariaLabel="Simpan kriteria">Simpan kriteria</AppButton> : null}
-          {step === 'capture' || step === 'validate' ? <AppButton onPress={() => void submit(step === 'capture' ? 'CAPTURE' : 'VALIDATE')} disabled={busy} ariaLabel={step === 'capture' ? 'Ambil sampel' : 'Validasi sampel'}>{step === 'capture' ? 'Ambil sampel' : 'Validasi'}</AppButton> : null}
+          {step === 'capture' ? <YStack gap="$2" minWidth={180}><Text color="$color" fontWeight="700">Anchor</Text><Input value={anchor} onChangeText={setAnchor} placeholder="tare/reference/empty/full" aria-label="Anchor kalibrasi" maxLength={16} /></YStack> : null}
+          {step === 'capture' || step === 'validate' ? <AppButton onPress={() => void submit(step === 'capture' ? 'CAPTURE' : 'VALIDATE')} disabled={busy || (step === 'capture' && !['tare', 'reference', 'empty', 'full'].includes(anchor))} ariaLabel={step === 'capture' ? 'Ambil sampel' : 'Validasi sampel'}>{step === 'capture' ? 'Ambil sampel' : 'Validasi'}</AppButton> : null}
           {step === 'preview' ? <AppButton onPress={() => void submit('PREVIEW')} disabled={busy} ariaLabel="Buat preview">Buat preview</AppButton> : null}
           {step === 'commit' ? <AppButton onPress={() => void submit('COMMIT', { expected_profile_hash: preview?.proposal_hash })} disabled={busy || !preview} ariaLabel="Commit profil">Commit profil</AppButton> : null}
           {step !== 'done' ? <AppButton variant="danger" onPress={() => void submit('CANCEL')} disabled={busy || !sessionId} ariaLabel="Batalkan kalibrasi">Batalkan</AppButton> : null}

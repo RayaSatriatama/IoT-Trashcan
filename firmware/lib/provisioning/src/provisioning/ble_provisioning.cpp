@@ -228,7 +228,7 @@ BleParseStatus BleCommandParser::parse(std::string_view frame,
     }
     if (command.size() >= output.calibration_arguments.size() ||
         has_control(command)) {
-      return command.size() > output.calibration_arguments.size()
+      return command.size() >= output.calibration_arguments.size()
                  ? BleParseStatus::Oversized
                  : BleParseStatus::Invalid;
     }
@@ -236,10 +236,9 @@ BleParseStatus BleCommandParser::parse(std::string_view frame,
     output.calibration_arguments_size = command.size();
     output.calibration_arguments[command.size()] = '\0';
     // Commands that need a target/criteria must carry one.  CAPABILITIES,
-    // HISTORY and CANCEL are valid without an argument because the shared
-    // controller resolves the active session/target in that case.
+    // STATUS, HISTORY and CANCEL are valid without an argument because the
+    // shared controller resolves the active session/target in that case.
     const bool requires_argument =
-        output.kind == BleCommandKind::CalibrationStatus ||
         output.kind == BleCommandKind::CalibrationEvidence ||
         output.kind == BleCommandKind::CalibrationStart ||
         output.kind == BleCommandKind::CalibrationCriteria ||

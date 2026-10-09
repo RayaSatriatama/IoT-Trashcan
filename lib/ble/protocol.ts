@@ -166,6 +166,17 @@ export function encodeCalibrationCommand(
   if (!BLE_CALIBRATION_OPERATIONS.includes(operation)) throw new Error('Operasi kalibrasi tidak valid');
   const tokens = [`CAL`, operation];
   if (sensor !== undefined) tokens.push(calibrationToken(sensor));
+  if (operation === 'CAPTURE') {
+    const anchor = parameters.anchor;
+    if (typeof anchor !== 'string' || !['tare', 'reference', 'empty', 'full'].includes(anchor)) {
+      throw new Error('Anchor kalibrasi wajib dipilih');
+    }
+    tokens.push(calibrationToken(anchor));
+    return encodeBleCommand('', tokens.join(' '));
+  }
+  if (operation === 'VALIDATE' || operation === 'PREVIEW' || operation === 'COMMIT') {
+    return encodeBleCommand('', tokens.join(' '));
+  }
   Object.keys(parameters).sort().forEach((key) => {
     const safeKey = calibrationToken(key);
     const value = calibrationToken(String(parameters[key]));

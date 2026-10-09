@@ -320,7 +320,7 @@ void test_calibration_commands_use_shared_bounded_backend() {
       BleCommandParser::parse("CAL STATUS ds18b20_b3", command));
   TEST_ASSERT_EQUAL_INT(BleCommandKind::CalibrationStatus, command.kind);
   TEST_ASSERT_EQUAL_INT(
-      BleParseStatus::Invalid,
+      BleParseStatus::Accepted,
       BleCommandParser::parse("CAL STATUS", command));
   TEST_ASSERT_EQUAL_INT(
       BleParseStatus::Accepted,

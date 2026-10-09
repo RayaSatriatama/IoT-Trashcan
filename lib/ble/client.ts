@@ -181,8 +181,8 @@ export class BleProvisioningClient {
     return this.calibration('CRITERIA', sensor, parameters);
   }
 
-  async calibrationCapture(sensor: string): Promise<string> {
-    return this.calibration('CAPTURE', sensor);
+  async calibrationCapture(sensor: string, anchor: 'tare' | 'reference' | 'empty' | 'full'): Promise<string> {
+    return this.calibration('CAPTURE', sensor, { anchor });
   }
 
   async calibrationValidate(sensor: string): Promise<string> {

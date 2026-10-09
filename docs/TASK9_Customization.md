@@ -69,3 +69,22 @@ private keys, and test identities remain outside the repository.
 Dependency remediation is documented in `docs/task9-dependency-audit.md` and
 uses only lockfile-backed, narrow overrides. It does not create a second
 runtime configuration system.
+
+## Web calibration ownership
+
+| Variable | Type and bound | Owner | Persistence/apply policy | Test |
+| --- | --- | --- | --- | --- |
+| Device-control payload | bounded JSON bytes, max 16 KiB | Go `devicecontrol.Store` | SQLite transaction before queue acknowledgement | `internal/devicecontrol` store tests |
+| Command lease | typed duration, default 30 s | Go `devicecontrol.Store` instance | runtime lease; expiry closes the session | claim/expiry tests |
+| Command expiry | RFC3339 timestamp supplied by operator client | command row | rejected when expired; no device mutation | expiry tests |
+| Allowed operator origin | process configuration | injected `HTTPOptions` | request boundary only; mismatch fails closed | HTTP origin tests |
+| Sensor capability units | bounded typed response | device-control handler | static contract metadata, no scientific threshold | capability endpoint test |
+| BLE calibration frame | fixed protocol bound from BLE policy | firmware BLE adapter | compile-time framing; oversized input rejected | BLE parser tests |
+| Calibration anchor | enum `tare/reference/empty/full` | firmware `CommandRouter` session | explicit per capture, discarded on cancel/timeout | BLE adapter and maintenance tests |
+| Browser operator token | in-memory string, max 512 chars | website component state | never persisted; cleared with component/session | API and wizard tests |
+
+The remote queue is a command boundary, not a calibration engine. Firmware
+evidence, profile construction, validation, preview, and commit remain the
+authoritative operations. The production composition must inject a real
+operator authorizer and wire a nonblocking firmware HTTPS polling adapter
+before remote calibration is enabled. Nil authorizers fail closed.

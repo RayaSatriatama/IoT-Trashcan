@@ -19,6 +19,7 @@
 #include "processing_runtime.h"
 #include "models/model_lifecycle.h"
 #include "maintenance/model_runtime.h"
+#include "maintenance/ble_calibration_backend.h"
 #include "storage/archive_media.h"
 #include "archive_runtime.h"
 #include "telemetry_archive/ack_journal_store.h"
@@ -82,7 +83,8 @@ class ApplicationNetworkClock final : public network::IMonotonicClock {
 #ifdef ARDUINO
 class ApplicationProvisioningClock final
     : public provisioning::IProvisioningClock,
-      public provisioning::BleProvisioningClock {
+      public provisioning::BleProvisioningClock,
+      public maintenance::ICalibrationClock {
  public:
   uint64_t now_us() const noexcept override { return now_us_; }
   void set_now(uint64_t value) noexcept { now_us_ = value; }
@@ -279,6 +281,9 @@ class SigapApp final {
   ArduinoSdProbe sd_probe_{};
 #endif
   maintenance::CommandRouter maintenance_router_;
+#ifdef ARDUINO
+  maintenance::CommandRouterBleCalibrationBackend ble_calibration_backend_;
+#endif
   maintenance::MaintenanceService maintenance_service_;
   uint32_t profile_generation_{0U};
 

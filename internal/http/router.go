@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"net/http"
 
+	"github.com/RayaSatriatama/IoT-Trashcan/internal/devicecontrol"
 	"github.com/RayaSatriatama/IoT-Trashcan/internal/ingest"
 	"github.com/RayaSatriatama/IoT-Trashcan/internal/telemetryarchive"
 )
@@ -22,8 +23,16 @@ type routerConfig struct {
 	telemetryArchive    http.Handler
 	telemetryCurrent    http.Handler
 	telemetryRecords    http.Handler
+	deviceControl       http.Handler
 	simulation          bool
 	simulationIndicator bool
+}
+
+// WithDeviceControl installs the authenticated remote calibration command
+// boundary.  Both authorizers are mandatory at runtime; a nil authorizer
+// deliberately yields unauthorized responses rather than an open endpoint.
+func WithDeviceControl(store *devicecontrol.Store, options devicecontrol.HTTPOptions) RouterOption {
+	return func(config *routerConfig) { config.deviceControl = devicecontrol.NewHandler(store, options) }
 }
 
 type runtimeMetadata struct {
@@ -98,6 +107,13 @@ func NewRouter(service IngestService, options ...RouterOption) http.Handler {
 		mux.Handle("GET /api/devices/{id}/research", http.HandlerFunc(config.readAPI.Research))
 		mux.Handle("GET /api/history", http.HandlerFunc(config.readAPI.History))
 		mux.Handle("GET /api/export.csv", http.HandlerFunc(config.readAPI.ExportCSV))
+	}
+	if config.deviceControl != nil {
+		mux.Handle("POST /api/device-control/commands/{device_id}", config.deviceControl)
+		mux.Handle("GET /api/device-control/commands/{device_id}/{command_id}", config.deviceControl)
+		mux.Handle("DELETE /api/device-control/commands/{device_id}/{command_id}", config.deviceControl)
+		mux.Handle("GET /api/device-control/device/{device_id}/next", config.deviceControl)
+		mux.Handle("POST /api/device-control/device/{device_id}/{command_id}/result", config.deviceControl)
 	}
 	mux.Handle("GET /api/runtime", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, runtimeMetadata{

@@ -224,6 +224,9 @@ SigapApp::SigapApp() noexcept
 #else
                           nullptr),
 #endif
+#ifdef ARDUINO
+      ble_calibration_backend_(maintenance_router_, provisioning_clock_),
+#endif
       network_source_(batch_runtime_),
 #ifdef ARDUINO
       wifi_manager_(secret_store_, wifi_station_, provisioning_clock_),
@@ -326,6 +329,9 @@ void SigapApp::setup() noexcept {
   refresh_model_profiles();
   profile_generation_ = profile_manager_.generation();
   maintenance_router_.refresh_mode();
+#ifdef ARDUINO
+  ble_session_.set_calibration_backend(&ble_calibration_backend_);
+#endif
   if (!config_manager_.runtime_ready()) {
     acquisition_.disable();
     return;

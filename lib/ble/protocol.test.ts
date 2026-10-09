@@ -55,6 +55,8 @@ describe('BLE provisioning protocol', () => {
     expect(new TextDecoder().decode(bytes)).toBe(
       'CAL CRITERIA ds18b20_b3 reference_c=25.5 stable_samples=8\n',
     );
+    expect(new TextDecoder().decode(encodeCalibrationCommand('CAPTURE', 'ds18b20_b3', { anchor: 'reference' })))
+      .toBe('CAL CAPTURE ds18b20_b3 reference\n');
     expect(() => encodeCalibrationCommand('START', 'sensor with spaces')).toThrow();
     expect(() => encodeCalibrationCommand('START', 'ds18b20_b3', { note: 'x y' })).toThrow();
   });
