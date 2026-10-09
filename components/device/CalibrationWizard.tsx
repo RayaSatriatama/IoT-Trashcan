@@ -45,7 +45,21 @@ export function CalibrationWizard({ deviceId, sensorId, diagnostic, api, apiFact
   const [preview, setPreview] = useState<CalibrationPreview | null>(null);
   const [operatorToken, setOperatorToken] = useState('');
   const [sessionState, setSessionState] = useState(initialWizardStatus(diagnostic).state);
-  const ready = canBeginCalibration(diagnostic);
+  const [securedDiagnostic, setSecuredDiagnostic] = useState<SensorDiagnostic | null>(null);
+  const activeDiagnostic = securedDiagnostic ?? diagnostic;
+  const ready = canBeginCalibration(activeDiagnostic);
+
+  const loadSecuredDiagnostic = async () => {
+    const client = api ?? (operatorToken.trim() ? apiFactory({ bearerToken: operatorToken.trim() }) : null);
+    if (!client) { setError('Masukkan token sesi operator untuk memuat diagnostik terautentikasi.'); return; }
+    setBusy(true); setError(null);
+    try {
+      const response = await client.getDiagnostics(deviceId, sensorId);
+      if (!response.diagnostic) throw new Error('Diagnostik terautentikasi tidak tersedia');
+      setSecuredDiagnostic(response.diagnostic);
+    } catch (cause) { setError(redactCalibrationError(cause)); }
+    finally { setBusy(false); }
+  };
 
   const submit = async (operation: CalibrationCommandRequest['operation'], extra: Partial<CalibrationCommandRequest> = {}) => {
     const client = api ?? (transport === 'https' && operatorToken.trim() ? apiFactory({ bearerToken: operatorToken.trim() }) : null);
@@ -71,7 +85,7 @@ export function CalibrationWizard({ deviceId, sensorId, diagnostic, api, apiFact
       const response = await client.submit({ device_id: deviceId, sensor_id: sensorId, operation, session_id: sessionId ?? undefined, ...extra });
       if (response.session_id) setSessionId(response.session_id);
       if (response.preview) setPreview(response.preview);
-      const commandState = response.command?.state ?? 'IDLE';
+      const commandState = response.command?.status ?? response.command?.state ?? 'IDLE';
       setSessionState(commandState);
       const next = nextStep(commandState, step);
       setStep(next);
@@ -97,9 +111,9 @@ export function CalibrationWizard({ deviceId, sensorId, diagnostic, api, apiFact
       <XStack justifyContent="space-between" alignItems="center" gap="$3"><YStack flex={1} gap="$1"><Text color="$color" fontSize="$5" fontWeight="800">Kalibrasi {sensorId}</Text><Text color="$colorMuted" fontSize="$2">Perangkat {deviceId} · transport {transport === 'ble' ? 'BLE lokal' : 'HTTPS Wi-Fi'}</Text></YStack><AppButton variant="ghost" size="sm" onPress={() => setOpen(false)} ariaLabel="Tutup wizard kalibrasi">Tutup</AppButton></XStack>
       <Text color="$colorMuted" fontSize="$2">Langkah: {step} · {calibrationStateLabel(sessionState)}</Text>
       {transport === 'ble' && !bleConnected ? <YStack gap="$2"><Text color="$statusWaspada">BLE belum terhubung. Browser harus mendukung Web Bluetooth pada HTTPS.</Text><AppButton onPress={() => void onConnectBle?.()} disabled={busy || !onConnectBle} ariaLabel="Hubungkan BLE kalibrasi">Hubungkan BLE</AppButton></YStack> : null}
-      {!diagnostic ? <Text color="$colorMuted">Diagnostik belum tersedia. Tidak ada bukti sintetis yang digunakan.</Text> : <>
+      {transport === 'https' && !api ? <YStack gap="$2"><Text color="$color" fontWeight="700">Sesi operator</Text><Input value={operatorToken} onChangeText={(value) => { setOperatorToken(value); setSecuredDiagnostic(null); }} placeholder="Token sesi operator (tidak disimpan)" secureTextEntry aria-label="Token sesi operator" maxLength={512} autoCapitalize="none" /><AppButton variant="secondary" size="sm" onPress={() => void loadSecuredDiagnostic()} disabled={busy || !operatorToken.trim()} ariaLabel="Muat diagnostik terautentikasi">Muat diagnostik terautentikasi</AppButton></YStack> : null}
+      {!activeDiagnostic ? <Text color="$colorMuted">Diagnostik belum tersedia. Tidak ada bukti sintetis yang digunakan.</Text> : <>
         <Text color={ready ? '$statusNormal' : '$statusWaspada'}>{ready ? 'Bukti raw segar tersedia untuk validasi.' : 'Bukti belum layak untuk capture. Periksa quality, CRC, identitas, dan freshness.'}</Text>
-        {transport === 'https' && !api ? <YStack gap="$2"><Text color="$color" fontWeight="700">Sesi operator</Text><Input value={operatorToken} onChangeText={setOperatorToken} placeholder="Token sesi operator (tidak disimpan)" secureTextEntry aria-label="Token sesi operator" maxLength={512} autoCapitalize="none" /></YStack> : null}
         <YStack gap="$2"><Text color="$color" fontWeight="700">Referensi fisik</Text><Input value={reference} onChangeText={setReference} placeholder="Nilai referensi dengan unit terdokumentasi" keyboardType="numeric" aria-label="Nilai referensi fisik" maxLength={32} /></YStack>
         {(step === 'criteria' || step === 'capture' || step === 'validate' || step === 'preview' || step === 'commit') ? <YStack gap="$2"><Text color="$color" fontWeight="700">Kriteria eksplisit</Text><Input value={criteria} onChangeText={setCriteria} placeholder="Window/stabilitas sesuai kemampuan sensor" keyboardType="numeric" aria-label="Kriteria stabilitas" maxLength={32} /></YStack> : null}
         <XStack gap="$2" flexWrap="wrap">

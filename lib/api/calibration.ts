@@ -58,7 +58,8 @@ export type CalibrationCommand = {
   device_id: string;
   sensor_id: CalibrationSensorId;
   operation: string;
-  state: CalibrationState;
+  status: CalibrationState;
+  state?: CalibrationState;
   expires_at: string;
   accepted_at?: string;
   error?: string;
@@ -75,10 +76,12 @@ export type CalibrationPreview = {
 };
 
 export type CalibrationCommandRequest = {
+  command_id?: string;
   device_id: string;
   sensor_id: CalibrationSensorId;
   operation: 'START' | 'SET_CRITERIA' | 'CAPTURE' | 'VALIDATE' | 'PREVIEW' | 'COMMIT' | 'CANCEL' | 'ROLLBACK';
   session_id?: string;
+  payload?: Record<string, unknown>;
   parameters?: Record<string, number | string | boolean>;
   references?: Record<string, number>;
   criteria?: Record<string, number>;
@@ -96,6 +99,12 @@ type CalibrationResponse = {
 };
 
 export type CalibrationApi = ReturnType<typeof createCalibrationApi>;
+
+function requestId(): string {
+  const cryptoValue = (globalThis as unknown as { crypto?: { randomUUID?: () => string } }).crypto;
+  if (cryptoValue?.randomUUID) return cryptoValue.randomUUID();
+  return `web-${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
+}
 
 export function createCalibrationApi(
   auth: OperatorAuthorization,
@@ -133,13 +142,29 @@ export function createCalibrationApi(
 
   return {
     getDiagnostics: (deviceId: string, sensorId: CalibrationSensorId, signal?: AbortSignal) =>
-      get<CalibrationResponse>(`/api/devices/${encodeURIComponent(deviceId)}/calibration/diagnostics?sensor_id=${encodeURIComponent(sensorId)}`, signal),
+      get<CalibrationResponse>(`/api/device-control/commands/${encodeURIComponent(deviceId)}/diagnostics?sensor_id=${encodeURIComponent(sensorId)}`, signal),
     getCapabilities: (deviceId: string, sensorId: CalibrationSensorId, signal?: AbortSignal) =>
-      get<CalibrationResponse>(`/api/devices/${encodeURIComponent(deviceId)}/calibration/capabilities?sensor_id=${encodeURIComponent(sensorId)}`, signal),
-    submit: (request: CalibrationCommandRequest, signal?: AbortSignal) =>
-      post<CalibrationResponse>('/api/device-control/commands', request, signal),
+      get<CalibrationResponse>(`/api/device-control/commands/${encodeURIComponent(deviceId)}/capabilities?sensor_id=${encodeURIComponent(sensorId)}`, signal),
+    submit: (request: CalibrationCommandRequest, signal?: AbortSignal) => {
+      const commandPayload = {
+        ...(request.payload ?? {}),
+        ...(request.parameters ? { parameters: request.parameters } : {}),
+        ...(request.references ? { references: request.references } : {}),
+        ...(request.criteria ? { criteria: request.criteria } : {}),
+        ...(request.expected_profile_hash ? { expected_profile_hash: request.expected_profile_hash } : {}),
+        ...(request.expected_profile_version ? { expected_profile_version: request.expected_profile_version } : {}),
+      };
+      return post<CalibrationResponse>(`/api/device-control/commands/${encodeURIComponent(request.device_id)}`, {
+        command_id: request.command_id ?? requestId(),
+        session_id: request.session_id ?? '',
+        sensor_id: request.sensor_id,
+        operation: request.operation.toLowerCase(),
+        payload: commandPayload,
+        expires_at: request.expires_at ?? new Date(Date.now() + 120_000).toISOString(),
+      }, signal);
+    },
     getCommand: (deviceId: string, commandId: string, signal?: AbortSignal) =>
-      get<CalibrationResponse>(`/api/device-control/commands/${encodeURIComponent(commandId)}?device_id=${encodeURIComponent(deviceId)}`, signal),
+      get<CalibrationResponse>(`/api/device-control/commands/${encodeURIComponent(deviceId)}/${encodeURIComponent(commandId)}`, signal),
   };
 }
 
@@ -149,4 +174,3 @@ function configuredBaseUrl(): string {
   }
   return '';
 }
-

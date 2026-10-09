@@ -22,23 +22,25 @@ describe('operator calibration API client', () => {
     });
 
     await expect(client.getDiagnostics('SIGAP 01', 'sht31_44')).resolves.toMatchObject({ diagnostic });
-    expect(requestUrl).toBe('/api/devices/SIGAP%2001/calibration/diagnostics?sensor_id=sht31_44');
+    expect(requestUrl).toBe('/api/device-control/commands/SIGAP%2001/diagnostics?sensor_id=sht31_44');
     expect(new Headers(requestInit?.headers).get('authorization')).toBe('Bearer test-only-token');
     expect(requestInit?.body).toBeUndefined();
   });
 
   it('uses device-bound command body and surfaces an authorization failure', async () => {
+    let requestUrl = '';
     let payload = '';
-    const client = createCalibrationApi({ bearerToken: 'operator-session' }, async (_input, init) => {
+    const client = createCalibrationApi({ bearerToken: 'operator-session' }, async (input, init) => {
+      requestUrl = String(input);
       payload = String(init?.body ?? '');
-      return jsonResponse({ command: { command_id: 'c1', state: 'CAPTURING' } });
+      return jsonResponse({ command: { command_id: 'c1', status: 'CAPTURING', state: 'CAPTURING' } });
     });
     await expect(client.submit({ device_id: 'SIGAP-01', sensor_id: 'hx711_organic', operation: 'START', parameters: { reference_mass_kg: 2 } })).resolves.toMatchObject({ command: { command_id: 'c1' } });
-    expect(JSON.parse(payload)).toMatchObject({ device_id: 'SIGAP-01', sensor_id: 'hx711_organic', operation: 'START' });
+    expect(requestUrl).toBe('/api/device-control/commands/SIGAP-01');
+    expect(JSON.parse(payload)).toMatchObject({ sensor_id: 'hx711_organic', operation: 'start', payload: { parameters: { reference_mass_kg: 2 } } });
   });
 
   it('requires a non-empty operator token', () => {
     expect(() => createCalibrationApi({ bearerToken: ' ' })).toThrow('Operator authorization is required');
   });
 });
-
