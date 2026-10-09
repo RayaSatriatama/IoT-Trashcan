@@ -107,7 +107,7 @@ implementation and shared calibration executor are not yet bound into
 `SigapApp`. Production operator authorization also requires deployment
 configuration. This document therefore does not claim Task 9 complete.
 
-## Current integration delta at `2b3827023b5d087669e89c23d3a73be51be571a0`
+## Current integration delta at `8995590`
 
 The operator command status route is now distinct from the firmware delivery
 wire format and returns persisted result/status/timestamp fields. The
@@ -132,6 +132,21 @@ When `SIGAP_NETWORK_ENDPOINT` and `SIGAP_NETWORK_CA_CERT` are supplied, the
 existing `SigapApp` composition owns the HTTPS transport, executor, and poller;
 the default image remains fail-closed without those build inputs. This source
 path was compile-verified, but no endpoint transmission was authorized.
+
+## Fresh final verification at `8995590`
+
+The final source was verified with native 430/430 tests and a temporary
+ASan/UBSan build of the same 430 tests. Cppcheck reported no defects. The
+standard targets and the HTTPS composition target built successfully. Go
+full, race, vet, telemetry schema/fixture/hash checks, and the 108-test web
+suite passed. BLE START now carries the typed first-time setup fields from
+the wizard, SHT31 address values are checked against the selected channel,
+and invalid controller commands return bounded CAL1 error envelopes.
+
+This closes the software-side gaps covered by the current source change. It
+does not turn the physical or deployment gates into PASS: browser pairing,
+endpoint transmission, operator identity provisioning, sensor evidence,
+NVS/SD mutation, and power-loss execution remain BLOCKED or NOT RUN.
 
 ## Independent review closure at `75f9634`
 

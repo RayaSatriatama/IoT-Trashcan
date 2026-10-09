@@ -293,7 +293,7 @@ is reconciled only when active identity matches the intent. Physical power-loss
 execution remains untested. This remediation remains pending final commit/push
 and independent review. Task 10 was not started.
 
-## Current cross-layer remediation at `2b3827023b5d087669e89c23d3a73be51be571a0`
+## Current cross-layer remediation at `8995590`
 
 This section supersedes the earlier diagnostic and operator-status notes.
 The operator command read route now returns a dedicated durable status
@@ -330,3 +330,35 @@ Native and HTTPS-enabled builds remain software evidence only. No physical
 BLE pairing, WiFi change, endpoint transmission, sensor calibration, NVS/SD
 mutation, or power-loss test was performed. A staging endpoint and operator
 identity provider still require external provisioning and remain BLOCKED.
+
+## Fresh final verification at `8995590`
+
+The final integrated working tree was verified serially after the BLE setup,
+SHT31 address validation, and structured rejection fixes:
+
+```text
+pio test -e native --without-uploading                         PASS 430/430
+temporary ASan/UBSan PlatformIO config                         PASS 430/430
+pio check -e native --fail-on-defect=low                        PASS, no defects
+pio run -e sigap_n16r8                                          PASS RAM 49,496; flash 1,107,045
+pio run -e sigap_n16r8_sd                                       PASS RAM 50,036; flash 1,180,105
+pio run -e sigap_n16r8_sd_spi                                   PASS RAM 49,792; flash 1,159,605
+pio run -e sigap_bench                                          PASS RAM 49,496; flash 1,107,045
+pio run -e sigap_n16r8_https_compile                            PASS RAM 51,824; flash 1,300,933
+go test -count=1 ./...                                          PASS
+go test -race -count=1 ./...                                    PASS
+go vet ./...                                                    PASS
+npm test -- --run                                              PASS 21 files / 108 tests
+npm run typecheck                                               PASS
+npm run export:web                                              PASS
+go test -count=1 -v ./internal/telemetry                       PASS 14 schemas / 24 valid / 36 invalid / golden hashes
+git diff --check                                                PASS
+```
+
+The native BLE adapter regression covers sensor-specific START setup,
+SHT31 address binding, mandatory preview identity for COMMIT, structured
+rejection, and shared-controller ownership. Go HTTP tests cover durable
+operator status readback and the telemetry-only diagnostic source. These are
+software and synthetic evidence; live BLE, private HTTPS transmission,
+operator-provider provisioning, physical sensors, NVS/SD writes, and power
+loss remain BLOCKED or NOT RUN under the hardware boundary.
