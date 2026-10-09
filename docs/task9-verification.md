@@ -1,66 +1,96 @@
 # Task 9 verification ledger
 
-Status: **NOT STARTED**. This ledger is prepared for the Task 9 branch and
-must be populated with fresh command output. Historical Task 6-8 results are
-not reused as Task 9 PASS evidence.
+Status: **OPEN FOR INDEPENDENT REVIEW**. The branch contains software-test
+coverage and integration evidence only. No physical commissioning or
+destructive hardware operation was performed.
 
 ## Baseline and safety boundary
 
-- Task 8 merge SHA: record the actual merge commit before beginning Task 9.
+- Task 8 merge SHA: `6269b6c2532d25a93ac6b12454106613e17af911`.
 - Task 9 branch: `feat/full-integration-hil-validation`.
-- Available hardware: ESP32-S3 N16R8 and onboard FAT32 microSD.
-- Sensors, MQ-7 heater, and actuators: not connected.
-- No flash, reboot, SD format, NVS erase, power-cut, or destructive recovery
-  is permitted without separate authorization.
+- Final verification source before this report update: `985de586375c601968f18354475618f5106fc291`.
+- Hardware: ESP32-S3 N16R8 with onboard FAT32 microSD; no sensors, heater, or actuators.
+- No firmware upload, reboot, SD mutation, NVS erase, unplug, power-cycle,
+  power-cut, or physical commissioning was performed.
+- Native fixtures use synthetic records and are not physical sensor evidence.
 
 ## Evidence matrix
 
-| Area | Required observation | Result | Evidence/limitation |
-| --- | --- | --- | --- |
-| Firmware archive path | acquisition -> processing -> immutable archive | NOT RUN | Native producer integration required |
-| Archive recovery | corrupt tail, fallback, no premature reclaim | NOT RUN | Native fault injection plus target adapter path |
-| SD_MMC | mount, bounded I/O, recovery, capacity | BLOCKED | Attached card exists; physical I/O needs explicit authorization |
-| ACK lifecycle | exact bytes, valid ACK, conflict/malformed ACK, reclaim | NOT RUN | Use injected ACK fixtures; no synthetic server claim |
-| WiFi | association, timeout, backoff, reconnect | NOT RUN | Requires target image and authorized test network |
-| HTTPS | staging POST, durable ACK, dedupe, conflict, auth | BLOCKED | Non-production endpoint, CA, device token required |
-| BLE | advertising, secure session, scan, candidate credential test | BLOCKED | Browser/device HIL not executed |
-| Web UI | gesture, secure context, scan/select/password/retry | BLOCKED | Browser Web Bluetooth environment not available |
-| Current projection | late backlog cannot replace newer evidence | NOT RUN | Reuse Task 8 tests only as baseline, rerun on Task 9 integration |
-| Schemas/golden hashes | 14 schemas, 24 valid, 36 invalid, frozen hashes | NOT RUN | Must execute on final Task 9 HEAD |
-| Resource budget | RAM/flash/stack/heap, queue high-water, latency | NOT RUN | Target build and runtime probes required |
-| Sensor/calibration | physical evidence and safety behavior | BLOCKED | No sensors/heater/actuators connected |
-| Endurance | 24 h operation and 72 h SD capacity gate | BLOCKED | Physical soak not authorized |
+| Area | Result | Fresh evidence and limitation |
+| --- | --- | --- |
+| Acquisition to processing/archive boundary | PASS (synthetic native) | `test_task9_integration`: attempt reaches processing/archive without stealing acquisition handoff. |
+| Immutable batch and ACK lifecycle | PASS (synthetic native) | Exact bytes remain pending across retry; valid ACK reclaims; malformed ACK does not. |
+| Archive recovery and fallback | PASS (existing native regression) | Full native and sanitizer suites include fault-injected archive paths; physical media recovery remains untested. |
+| SD_MMC 1-bit | BUILD PASS | `sigap_n16r8_sd` compiles the confirmed GPIO39/38/40 policy; no physical SD I/O was run in this batch. |
+| WiFi state machine | PASS (native tests) | Existing bounded reconnect/backoff tests remain green; no target association was attempted. |
+| HTTPS boundary | PASS (native/backend tests) | Backend round-trip test uses an in-process authenticated service and exact bytes; no staging endpoint credentials were available. |
+| BLE provisioning | PASS (web/native contract tests) | Browser protocol, secure-context, gesture, privacy, and disconnect tests pass; physical advertising/pairing was not run. |
+| Backend ingest and current projection | PASS (synthetic integration) | `internal/e2e` exercises durable ACK, replay dedupe, conflict, auth, export, late backlog, and filtered cursor. |
+| Schemas and frozen hashes | PASS | 14 schemas compile; 24 valid and 36 invalid fixtures; frozen record/body hashes unchanged. |
+| Firmware native suite | PASS | 370/370 test cases on final Task 9 source. |
+| Firmware sanitizer suite | PASS | ASan/UBSan configuration ran all 37 native test folders, 0 failures. |
+| Cppcheck | PASS | `pio check -e native --fail-on-defect=low`, no defects. |
+| Target builds | PASS | `sigap_n16r8`, `sigap_n16r8_sd`, `sigap_n16r8_sd_spi`, and `sigap_bench`. |
+| Frontend | PASS | 19 files/92 Vitest tests, TypeScript typecheck, and Expo web export pass. |
+| Sensors/calibration/safety | BLOCKED | No physical sensors, MQ-7 heater, or actuators are connected. |
+| Physical BLE/WiFi commissioning | BLOCKED | Requires authorized target run, browser secure context, and test network. |
+| Physical SD I/O, endurance, 24 h/72 h soak | BLOCKED | Requires explicit hardware authorization and timestamped reconciliation. |
 
-## Required fresh commands
+## Fresh command results
+
+Toolchain: Go `go1.27.1 linux/amd64`; PlatformIO supplied by `uv tool run`;
+Node/npm dependencies installed from the repository lockfile.
 
 ```text
-go test ./...
-go test -race ./...
-go vet ./...
-uv tool run --from platformio pio test -e native
-uv tool run --from platformio pio check -e native --fail-on-defect=low
-uv tool run --from platformio pio run -e sigap_n16r8
-uv tool run --from platformio pio run -e sigap_n16r8_sd
-uv tool run --from platformio pio run -e sigap_n16r8_sd_spi
-uv tool run --from platformio pio run -e sigap_bench
-git diff --check
+go test -count=1 ./...                         PASS
+go test -race -count=1 ./...                  PASS
+go vet ./...                                  PASS
+go test ./internal/telemetry (schema/golden)  PASS (14/24/36)
+npm test                                      PASS (19 files, 92 tests)
+npm run typecheck                             PASS
+npm run export:web                            PASS
+pio test -e native                            PASS (370/370)
+ASan/UBSan native folders                    PASS (37 folders, 0 failed)
+pio check -e native --fail-on-defect=low     PASS (no defects)
+pio run -e sigap_n16r8                       PASS (RAM 49,496; flash 1,073,557)
+pio run -e sigap_n16r8_sd                    PASS (RAM 50,036; flash 1,147,337)
+pio run -e sigap_n16r8_sd_spi                PASS (RAM 49,792; flash 1,126,773)
+pio run -e sigap_bench                       PASS (RAM 49,496; flash 1,073,557)
+git diff --check                             PASS
 ```
 
-Record command, exact commit, toolchain version, duration, and raw result for
-each check. Schema output must state the 14/24/36 corpus counts and the frozen
-record/body hashes. Firmware output must distinguish target compilation from
-physical board execution.
+The frozen golden hashes remain:
 
-## Hardware evidence rules
+```text
+record_hash sha256:a3a2593618943cc7a1d5f8bc0c90216dc22eb4c3297fb874887c11b7b6ef6883
+body_hash   sha256:3620edf0548b8a15eb1638fc7d239b1995372a28982f7f1e194949160f166c7c
+```
 
-Use redacted timestamped logs. A successful build, mock, host filesystem, or
-SD card presence is not proof of physical SD I/O, radio coexistence, sensor
-accuracy, power-loss recovery, or endurance. If authorization or hardware is
-missing, retain `BLOCKED` or `NOT TESTED` and name the exact prerequisite.
+The frontend install reports 41 npm audit findings in transitive packages
+(1 low, 11 moderate, 26 high, 3 critical). No `npm audit fix` was run and no
+lockfile or production dependency was changed.
 
-## Completion gate
+## Task 9 additions
 
-Task 9 requires an independent review after implementation. Do not merge the
-Task 9 PR automatically. The final report must include the actual Task 8 merge
-SHA, Task 9 HEAD/PR, changed files, evidence matrix, resource measurements,
-physical limitations, and unresolved risks.
+- `lib/ble/task9_integration.test.ts` covers Web Bluetooth capability and
+  secure-context gating, user-gesture connection, bounded scan/retry/status,
+  credential privacy, and disconnect recovery.
+- `internal/e2e/task9_roundtrip_test.go` exercises the real migrated SQLite,
+  telemetry archive service, authenticated HTTP router, exact replay, conflict,
+  auth rejection, export, late backlog, and stable cursor behavior.
+- `firmware/test/native/test_task9_integration/test_task9_integration.cpp`
+  covers synthetic acquisition-to-archive flow, exact immutable retry, valid
+  and malformed ACK behavior, bounded worker progress, and SD_MMC policy.
+- `tasks/plan-full-integration-hil-validation.md` and
+  `docs/TASK9_Customization.md` define ownership, policy bounds, and physical
+  evidence limits.
+
+No production credentials, WiFi passwords, bearer tokens, or sensor readings
+were added. Task 10 and all excluded durable/network migration work were not
+started.
+
+## Review gate
+
+This branch is ready for independent review of the software evidence. The
+physical BLE/WiFi/HTTPS commissioning, sensor and heater evidence, physical
+SD recovery, and endurance gates remain explicitly blocked rather than passed.
