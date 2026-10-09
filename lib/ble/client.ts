@@ -225,6 +225,7 @@ export class BleProvisioningClient {
   }
 
   private async requestCalibration(command: Uint8Array): Promise<BleCalibrationResponse> {
+    if (this.pending) throw new Error('Permintaan BLE sebelumnya masih berjalan');
     const control = this.control;
     if (!control) throw new Error('Hubungkan perangkat BLE terlebih dahulu');
     const requestId = String(this.nextRequestId++);
@@ -256,6 +257,7 @@ export class BleProvisioningClient {
   }
 
   private async request(command: string, payload: Record<string, unknown> = {}, accept: (response: ReturnType<typeof decodeBleResponse>) => boolean = () => true): Promise<ReturnType<typeof decodeBleResponse>> {
+    if (this.pending) throw new Error('Permintaan BLE sebelumnya masih berjalan');
     const control = this.control;
     if (!control) throw new Error('Hubungkan perangkat BLE terlebih dahulu');
     const value = encodeBleCommand('', command, payload);

@@ -262,8 +262,10 @@ export function CalibrationWizard({ deviceId, sensorId, diagnostic, api, apiFact
 
   useEffect(() => {
     if (open && transport === 'ble' && bleConnected) {
-      void loadBleCapabilities();
-      void loadBleDiagnostic();
+      void (async () => {
+        await loadBleCapabilities();
+        await loadBleDiagnostic();
+      })();
     }
   // The adapter and connection flags intentionally define the physical read boundary.
   // eslint-disable-next-line react-hooks/exhaustive-deps

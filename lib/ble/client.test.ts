@@ -179,6 +179,35 @@ describe('BLE provisioning client', () => {
     expect(control.writes.every((frame) => frame.byteLength <= 20)).toBe(true);
   });
 
+  it('rejects a concurrent request without replacing the pending response', async () => {
+    let control: FakeCharacteristic;
+    let events: FakeCharacteristic;
+    let firstRequestId = '';
+    control = new FakeCharacteristic((requestFrames) => {
+      const first = decodeBleFrame(requestFrames[0]);
+      const command = new TextDecoder().decode(assembleBleFrames(requestFrames.map(decodeBleFrame), 'F1')).trim();
+      if (command === 'GET_STATUS' && !firstRequestId) firstRequestId = first.requestId;
+    });
+    events = new FakeCharacteristic();
+    const server = new FakeServer(control, events);
+    Object.defineProperty(globalThis, 'isSecureContext', { configurable: true, value: true });
+    Object.defineProperty(globalThis, 'navigator', {
+      configurable: true,
+      value: { bluetooth: { requestDevice: async () => ({ gatt: { connect: async () => server }, addEventListener: () => {} }) } },
+    });
+
+    const client = new BleProvisioningClient({ requestTimeoutMs: 100 });
+    await client.connect();
+    const first = client.status();
+    await Promise.resolve();
+
+    await expect(client.status()).rejects.toThrow('Permintaan BLE sebelumnya masih berjalan');
+    expect(firstRequestId).toMatch(/^\d+$/u);
+    encodeBleFrames(firstRequestId, new TextEncoder().encode('OK STATUS state=CONNECTED ssid=TestNetwork'), 'R1')
+      .forEach((frame) => events.emit(frame));
+    await expect(first).resolves.toEqual({ state: 'CONNECTED', ssid: 'TestNetwork' });
+  });
+
   it('delivers first-time calibration setup parameters with START', async () => {
     let control: FakeCharacteristic;
     let events: FakeCharacteristic;
