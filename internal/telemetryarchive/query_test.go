@@ -14,7 +14,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-func queryTestDB(t *testing.T) *sql.DB {
+func queryTestDB(t testing.TB) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("sqlite", "file:telemetry-archive-query?mode=memory&cache=private")
 	if err != nil {
@@ -53,6 +53,45 @@ CREATE TABLE telemetry_records (
   created_at TEXT NOT NULL,
   PRIMARY KEY (device_id, record_id)
 );
+CREATE TABLE telemetry_current_candidates (
+  device_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  stream TEXT NOT NULL,
+  sensor_id TEXT NOT NULL DEFAULT '',
+  boot_id TEXT NOT NULL,
+  record_id TEXT NOT NULL,
+  record_hash TEXT NOT NULL,
+  sequence_sort TEXT NOT NULL,
+  monotonic_us TEXT NOT NULL,
+  recorded_at TEXT,
+  time_quality TEXT NOT NULL,
+  record_bytes BLOB NOT NULL,
+  first_record_rowid INTEGER NOT NULL,
+  PRIMARY KEY (device_id, kind, stream, sensor_id, boot_id)
+);
+CREATE TRIGGER telemetry_records_current_candidate
+AFTER INSERT ON telemetry_records
+WHEN NEW.kind IN ('sample', 'result') AND NEW.stream IS NOT NULL
+BEGIN
+  INSERT INTO telemetry_current_candidates
+    (device_id,kind,stream,sensor_id,boot_id,record_id,record_hash,
+     sequence_sort,monotonic_us,recorded_at,time_quality,record_bytes,
+     first_record_rowid)
+  VALUES (NEW.device_id,NEW.kind,NEW.stream,COALESCE(NEW.sensor_id,''),
+    NEW.boot_id,NEW.record_id,NEW.record_hash,NEW.sequence_sort,
+    NEW.monotonic_us,NEW.recorded_at,NEW.time_quality,NEW.record_bytes,NEW.rowid)
+  ON CONFLICT(device_id,kind,stream,sensor_id,boot_id) DO UPDATE SET
+    record_id=excluded.record_id, record_hash=excluded.record_hash,
+    sequence_sort=excluded.sequence_sort, monotonic_us=excluded.monotonic_us,
+    recorded_at=excluded.recorded_at, time_quality=excluded.time_quality,
+    record_bytes=excluded.record_bytes
+  WHERE excluded.sequence_sort > telemetry_current_candidates.sequence_sort
+     OR (excluded.sequence_sort = telemetry_current_candidates.sequence_sort
+         AND excluded.monotonic_us > telemetry_current_candidates.monotonic_us)
+     OR (excluded.sequence_sort = telemetry_current_candidates.sequence_sort
+         AND excluded.monotonic_us = telemetry_current_candidates.monotonic_us
+         AND excluded.record_id > telemetry_current_candidates.record_id);
+END;
 `)
 	if err != nil {
 		t.Fatal(err)
@@ -336,5 +375,82 @@ func TestCurrentScansBeyondTwoHundredRowsForSparseSensor(t *testing.T) {
 	}
 	if len(snapshot.Samples["organic"]) != 2 {
 		t.Fatalf("sparse source was lost: %v", snapshot.Samples["organic"])
+	}
+}
+
+func TestCurrentProjectionRetainsOnlyPerBootCandidates(t *testing.T) {
+	db := queryTestDB(t)
+	for i := 1; i <= 5000; i++ {
+		insertQueryRecord(t, db, "sample", "mq4", "organic", "boot-a", fmt.Sprint(i), fmt.Sprint(i), "", "UNSYNCED")
+	}
+	var candidates int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM telemetry_current_candidates`).Scan(&candidates); err != nil {
+		t.Fatal(err)
+	}
+	if candidates != 1 {
+		t.Fatalf("candidate projection retained %d rows for one source/boot, want 1", candidates)
+	}
+	query, err := NewArchiveQuery(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := query.Current(context.Background(), "device-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var current map[string]any
+	if err := json.Unmarshal(snapshot.Samples["organic"]["mq4"], &current); err != nil {
+		t.Fatal(err)
+	}
+	if current["sequence"] != "5000" {
+		t.Fatalf("projection current=%v, want sequence 5000", current["sequence"])
+	}
+}
+
+func seedProjectionBenchmarkRows(tb testing.TB, db *sql.DB, count int) {
+	tb.Helper()
+	tx, err := db.Begin()
+	if err != nil {
+		tb.Fatal(err)
+	}
+	for i := 1; i <= count; i++ {
+		sequence := fmt.Sprint(i)
+		sortKey, err := telemetry.SequenceSortKey(sequence)
+		if err != nil {
+			tx.Rollback()
+			tb.Fatal(err)
+		}
+		raw := []byte(fmt.Sprintf(`{"stream":"organic","sensor_id":"mq4","boot_id":"boot-a","sequence":"%s","monotonic_us":"%s","recorded_at":null,"time_quality":"UNSYNCED"}`, sequence, sequence))
+		if _, err := tx.Exec(`INSERT INTO telemetry_records
+ (device_id,record_id,record_hash,kind,boot_id,sequence_decimal,sequence_sort,monotonic_us,recorded_at,time_quality,stream,sensor_id,quality,record_bytes,first_batch_id,created_at)
+ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, "device-1", "device-1/boot-a/"+sequence,
+			"sha256:"+strings.Repeat("0", 64), "sample", "boot-a", sequence, sortKey,
+			sequence, nil, "UNSYNCED", "organic", "mq4", "READY", raw, "batch", "2026-01-01T00:00:00Z"); err != nil {
+			tx.Rollback()
+			tb.Fatal(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		tb.Fatal(err)
+	}
+}
+
+func BenchmarkCurrentProjectionScalesWithCandidateCount(b *testing.B) {
+	for _, count := range []int{100, 1000, 10000} {
+		b.Run(fmt.Sprintf("records_%d", count), func(b *testing.B) {
+			db := queryTestDB(b)
+			seedProjectionBenchmarkRows(b, db, count)
+			query, err := NewArchiveQuery(db)
+			if err != nil {
+				b.Fatal(err)
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if _, err := query.Current(context.Background(), "device-1"); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }

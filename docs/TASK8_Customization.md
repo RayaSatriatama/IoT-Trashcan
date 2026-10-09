@@ -12,6 +12,7 @@ calibration profiles.
 | record export body | bytes | streamed; does not buffer the complete archive | `ArchiveQuery`/HTTP read boundary | per request |
 | device credential | secret bytes | existing `SecretStore`/digest | device auth | before archive mutation |
 | exact batch bytes | SQLite BLOB | one immutable body per `(device_id,batch_id)` | migration 005 | committed transaction |
+| current candidate projection | one row per source/boot | durable SQLite trigger projection; full archive remains authoritative | migration 005 | transactionally updated with record insert |
 
 Migration `005_telemetry_archive.sql` is additive. It stores the exact request
 body, durable batch manifest, record identity/hash bindings, and exact record
@@ -43,6 +44,23 @@ Current samples are keyed by both stream and sensor identity. For example,
 independent entries under `organic`; one sensor cannot overwrite another.
 Results remain independently keyed by stream. Quality, reason, raw/converted
 nullability, provenance, source IDs, and original record identity are retained.
+
+Current reads use `telemetry_current_candidates`, an indexed durable projection
+containing only the newest sequence/monotonic candidate for each
+`(device, kind, stream, sensor, boot)`. This removes the old global candidate
+scan without dropping archival rows. Cross-boot comparison still occurs in the
+read layer because monotonic time is not comparable across boots and missing or
+untrusted UTC remains explicitly unresolved. The projection is updated by an
+SQLite trigger in the same ingest transaction and may be rebuilt from the
+authoritative record table if recovery tooling requires it.
+
+Synthetic benchmark on the repository test SQLite backend (AMD Ryzen 3 5300U,
+Go 1.27.1, one benchmark iteration) measured current reads over 100, 1,000,
+and 10,000 retained records for one source/boot at approximately 177 us,
+84 us, and 96 us respectively. The 1,000 and 10,000 cases each used 8.3 KiB
+and 43 allocations per read, demonstrating that read cost follows the bounded
+candidate projection rather than total retained history. These are host-side
+measurements, not production database latency or hardware endurance claims.
 
 Record reads are exposed at `/api/telemetry/records/{device_id}` and
 `/api/telemetry/records/{device_id}/export`. They use a stable decimal-uint64

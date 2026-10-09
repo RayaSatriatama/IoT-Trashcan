@@ -191,8 +191,10 @@ func LoadBatch(ctx context.Context, db *sql.DB, deviceID, batchID string) (Store
 }
 
 // Current returns the newest archived sample for every sensor in each stream
-// and the newest result per stream. Records are scanned from the complete
-// retained archive; only the bounded projection is retained in memory.
+// and the newest result per stream. The durable candidate projection contains
+// only the newest record for each source and boot, so this read scales with
+// retained boots rather than scanning the complete archive. The record table
+// remains authoritative and is never rewritten by this projection.
 func (q *ArchiveQuery) Current(ctx context.Context, deviceID string) (CurrentSnapshot, error) {
 	if q == nil || q.db == nil || strings.TrimSpace(deviceID) == "" {
 		return CurrentSnapshot{}, fmt.Errorf("%w: device_id is required", ErrInvalidQuery)
@@ -200,9 +202,9 @@ func (q *ArchiveQuery) Current(ctx context.Context, deviceID string) (CurrentSna
 	snapshot := CurrentSnapshot{DeviceID: deviceID, Samples: map[string]map[string]json.RawMessage{}, Results: map[string]json.RawMessage{}}
 	rows, err := q.db.QueryContext(ctx, `
 	SELECT kind, record_bytes
-FROM telemetry_records
-WHERE device_id = ? AND kind IN ('sample', 'result')
-ORDER BY rowid ASC`, deviceID)
+FROM telemetry_current_candidates
+WHERE device_id = ?
+ORDER BY first_record_rowid ASC`, deviceID)
 	if err != nil {
 		return CurrentSnapshot{}, fmt.Errorf("query current telemetry: %w", err)
 	}
