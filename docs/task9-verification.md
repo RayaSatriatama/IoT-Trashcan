@@ -368,3 +368,25 @@ chronology-aware telemetry current projection instead of insertion order. This
 preserves same-boot ordering and explicit cross-boot unknown ordering for the
 diagnostic response. Focused device-control, archive-query, e2e, and HTTP
 tests, followed by full Go, race, and vet runs, passed after this change.
+
+## Fresh integrated journey evidence at `5906474` plus local changes
+
+The current working changes add production-composition integration regressions
+without changing firmware source. Journey B is exercised through an ephemeral
+TLS server, the migrated SQLite schema, the real operator/device authorizers,
+command lease, six lifecycle commands, durable operator readback, exact
+COMMIT replay, changed-result conflict, and CSRF rejection:
+
+```text
+go test -count=1 ./internal/e2e -run TestTask9RemoteCalibrationLoopbackJourney -v  PASS
+  6 lifecycle subtests; ephemeral TLS; isolated SQLite; no external network
+npm test -- --run lib/ble/task9_integration.test.ts                         PASS
+  6 tests, including synthetic CAL1 START -> SET_CRITERIA -> CAPTURE ->
+  VALIDATE -> PREVIEW -> COMMIT with exact preview identity and wizard DONE
+```
+
+The Journey B device is an explicit synthetic wire-contract seam, and the
+Journey A GATT server is an in-process fake. They prove software contracts,
+not ESP32 HTTPS transmission or physical Web Bluetooth pairing. The full
+fresh suite listed above remains applicable because these changes are tests and
+documentation only; a final serial rerun is required after commit.

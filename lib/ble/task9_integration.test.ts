@@ -7,6 +7,7 @@ import {
   isWebBluetoothAvailable,
 } from './protocol';
 import { BleProvisioningClient } from './client';
+import { hasValidatedPreview, nextStepAfterOperation, type CalibrationWizardStep } from '../calibration/wizard';
 
 type Listener = (event: { target?: { value?: DataView } }) => void;
 type DisconnectListener = () => void;
@@ -129,6 +130,96 @@ afterEach(() => {
 });
 
 describe('Task 9 Web Bluetooth provisioning boundary', () => {
+  it('completes the synthetic calibration journey through the real BLE client and CAL1 codec', async () => {
+    const sensor = 'mq4';
+    const session = '42';
+    const proposalHash = 'sha256:' + 'a'.repeat(64);
+    const evidenceHash = 'sha256:' + 'b'.repeat(64);
+    const commands: string[] = [];
+    const harness = installBluetooth((command, _requestId, emit) => {
+      commands.push(command);
+      const tokens = command.split(/\s+/u);
+      expect(tokens[0]).toBe('CAL');
+      const operation = tokens[1];
+      expect(tokens[2]).toBe(sensor);
+      const respond = (data: string) => emit(`CAL1|op=${operation}|status=ACCEPTED|session=${session}|sensor=${sensor}|data=${data}`);
+      switch (operation) {
+        case 'CAPABILITIES':
+          respond('references=reference_mv:mV;criteria=samples:count,max_span_counts:counts;engineering=reference_mv:mV,full_scale_counts:counts,divider_numerator:ratio,divider_denominator:ratio');
+          break;
+        case 'START':
+          expect(command).toContain('reference_mv=500');
+          expect(command).toContain('full_scale_counts=4095');
+          respond('state=ACTIVE');
+          break;
+        case 'CRITERIA':
+          expect(command).toContain('max_span_counts=20');
+          expect(command).toContain('samples=3');
+          respond('state=CRITERIA_SET');
+          break;
+        case 'CAPTURE':
+          expect(command).toContain('reference');
+          respond('state=CAPTURING;evidence_count=3;evidence_hash=' + evidenceHash);
+          break;
+        case 'VALIDATE':
+          respond('state=VALIDATED;evidence_count=3;evidence_hash=' + evidenceHash);
+          break;
+        case 'PREVIEW':
+          respond(`proposal_hash=${proposalHash};profile_version=7;evidence_count=3;evidence_hash=${evidenceHash};expires_in_ms=60000`);
+          break;
+        case 'COMMIT':
+          expect(command).toContain('expected_profile_hash=' + proposalHash);
+          expect(command).toContain('expected_profile_version=7');
+          respond(`state=COMMITTED;profile_key=${sensor};profile_hash=${proposalHash};profile_version=7`);
+          break;
+        default:
+          throw new Error(`unexpected calibration operation ${operation}`);
+      }
+    }, () => {});
+    const client = new BleProvisioningClient({ requestTimeoutMs: 200 });
+    await client.connect();
+
+    const capabilities = await client.calibrationCapabilities(sensor);
+    expect(capabilities.sensor).toBe(sensor);
+    expect(capabilities.data.engineering).toContain('reference_mv:mV');
+    const start = await client.calibrationStart(sensor, {
+      reference_mv: 500, full_scale_counts: 4095, divider_numerator: 1, divider_denominator: 1,
+    });
+    expect(start.data.state).toBe('ACTIVE');
+    const criteria = await client.calibrationCriteria(sensor, { samples: 3, max_span_counts: 20 });
+    expect(criteria.data.state).toBe('CRITERIA_SET');
+    const capture = await client.calibrationCapture(sensor, 'reference');
+    expect(capture.data.evidence_hash).toBe(evidenceHash);
+    const validated = await client.calibrationValidate(sensor);
+    expect(validated.data.state).toBe('VALIDATED');
+    const previewResponse = await client.calibrationPreview(sensor);
+    const preview = {
+      sensor_id: sensor as 'mq4', proposal_hash: previewResponse.data.proposal_hash,
+      profile_version: previewResponse.data.profile_version, evidence_count: Number(previewResponse.data.evidence_count),
+      evidence_hash: previewResponse.data.evidence_hash, expires_at: new Date(Date.now() + 60_000).toISOString(), parameters: {},
+    };
+    expect(hasValidatedPreview(preview, sensor as 'mq4')).toBe(true);
+    const committed = await client.calibrationCommit(sensor, {
+      expected_profile_hash: preview.proposal_hash, expected_profile_version: preview.profile_version,
+    });
+    expect(committed.data.state).toBe('COMMITTED');
+    expect(committed.data.profile_hash).toBe(proposalHash);
+    expect(commands).toHaveLength(7);
+
+    let step: CalibrationWizardStep = 'diagnostics';
+    step = nextStepAfterOperation('START', 'ACCEPTED', step);
+    expect(step).toBe('criteria');
+    step = nextStepAfterOperation('SET_CRITERIA', 'ACCEPTED', step);
+    expect(step).toBe('capture');
+    step = nextStepAfterOperation('CAPTURE', 'CAPTURING', step);
+    expect(step).toBe('validate');
+    step = nextStepAfterOperation('VALIDATE', 'VALIDATED', step);
+    expect(step).toBe('preview');
+    step = nextStepAfterOperation('PREVIEW', 'PREVIEW_READY', step);
+    expect(step).toBe('commit');
+    expect(nextStepAfterOperation('COMMIT', 'COMMITTED', step)).toBe('done');
+  });
+
   it('gates unsupported and insecure browser contexts before device selection', async () => {
     Object.defineProperty(globalThis, 'isSecureContext', { configurable: true, value: false });
     Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { bluetooth: { requestDevice: async () => { throw new Error('must not be called'); } } } });

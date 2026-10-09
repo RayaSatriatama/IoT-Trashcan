@@ -13,6 +13,31 @@ secret. The staging database must be separate from any production database.
 - The firmware endpoint and CA are configured separately in the authorized
   commissioning build. They are never committed to this repository.
 
+## Fresh loopback calibration staging evidence
+
+The software-only staging path has an executable isolated HTTPS regression.
+`internal/e2e/task9_calibration_journey_test.go` opens the same migrated
+SQLite schema used by the server, provisions disposable operator and device
+digests, starts an ephemeral `httptest.NewTLSServer`, and drives the production
+router through START, SET_CRITERIA, CAPTURE, VALIDATE, PREVIEW, and COMMIT.
+The synthetic device consumes the actual delivery envelope and posts typed
+results through the production result endpoint. Operator readback, missing
+CSRF rejection, exact COMMIT replay, and changed-result conflict are asserted.
+The profile readback in this test is an explicit synthetic durable profile
+seam, not physical ESP32 evidence.
+
+Fresh command:
+
+```text
+go test -count=1 ./internal/e2e -run TestTask9RemoteCalibrationLoopbackJourney -v
+PASS (6 lifecycle subtests; ephemeral TLS; isolated SQLite; no external network)
+```
+
+The test certificate and all credentials exist only in process memory. This
+does not prove ESP32 HTTPS reachability, private-LAN hostname routing,
+firmware task scheduling, or physical profile persistence. Those remain
+separate commissioning gates.
+
 ## Loopback launch
 
 Generate or obtain `cert.pem` and `key.pem` outside the repository, then run:
