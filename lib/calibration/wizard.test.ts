@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { canBeginCalibration, calibrationStateLabel, commandSessionState, hasValidatedPreview, initialWizardStatus, nextStep, redactCalibrationError } from './wizard';
+import { canBeginCalibration, calibrationStateLabel, commandSessionState, hasValidatedPreview, initialWizardStatus, nextStep, nextStepAfterOperation, redactCalibrationError } from './wizard';
 import type { CalibrationCommand, CalibrationPreview, SensorDiagnostic } from '../api/calibration';
 
 const diagnostic: SensorDiagnostic = {
@@ -28,6 +28,13 @@ describe('calibration wizard contract', () => {
     expect(calibrationStateLabel('EXPIRED')).toBe('Kedaluwarsa');
     expect(calibrationStateLabel('QUEUED')).toBe('Menunggu perangkat');
     expect(nextStep('DELIVERED', 'criteria')).toBe('criteria');
+    expect(nextStepAfterOperation('START', 'ACCEPTED', 'diagnostics')).toBe('criteria');
+    expect(nextStepAfterOperation('SET_CRITERIA', 'ACCEPTED', 'criteria')).toBe('capture');
+    expect(nextStepAfterOperation('CAPTURE', 'CAPTURING', 'capture')).toBe('validate');
+    expect(nextStepAfterOperation('VALIDATE', 'VALIDATED', 'validate')).toBe('preview');
+    expect(nextStepAfterOperation('PREVIEW', 'PREVIEW_READY', 'preview')).toBe('commit');
+    expect(nextStepAfterOperation('COMMIT', 'COMMITTED', 'commit')).toBe('done');
+    expect(nextStepAfterOperation('START', 'FAILED', 'diagnostics')).toBe('diagnostics');
   });
 
   it('redacts secret-shaped error details', () => {

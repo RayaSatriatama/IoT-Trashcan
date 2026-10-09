@@ -57,9 +57,16 @@ describe('BLE provisioning protocol', () => {
     );
     expect(new TextDecoder().decode(encodeCalibrationCommand('CAPTURE', 'ds18b20_b3', { anchor: 'reference' })))
       .toBe('CAL CAPTURE ds18b20_b3 reference\n');
-    expect(() => encodeCalibrationCommand('START', 'sensor with spaces')).toThrow();
-    expect(() => encodeCalibrationCommand('START', 'ds18b20_b3', { note: 'x y' })).toThrow();
-  });
+  expect(() => encodeCalibrationCommand('START', 'sensor with spaces')).toThrow();
+  expect(() => encodeCalibrationCommand('START', 'ds18b20_b3', { note: 'x y' })).toThrow();
+  expect(new TextDecoder().decode(encodeCalibrationCommand('START', 'hx711_organic', {
+    reference_mass_mg: 2000,
+  }))).toContain('CAL START hx711_organic reference_mass_mg=2000');
+  expect(new TextDecoder().decode(encodeCalibrationCommand('COMMIT', 'hx711_organic', {
+    expected_profile_version: '18446744073709551615',
+    expected_profile_hash: 'sha256:' + 'a'.repeat(64),
+  }))).toContain('expected_profile_version=18446744073709551615');
+});
 
   it('decodes calibration response text while preserving bounded errors', () => {
     expect(decodeBleResponse(new TextEncoder().encode(

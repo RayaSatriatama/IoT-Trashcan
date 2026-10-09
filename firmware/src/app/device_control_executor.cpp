@@ -31,6 +31,61 @@ bool append_hex(network::DeviceControlResult& output,
   return true;
 }
 
+// Locate exactly one key in the root JSON object. Substring lookup is not
+// sufficient for device control because a nested or duplicate field could
+// otherwise change the meaning of a command while retaining the same digest.
+bool root_key(std::string_view payload, std::string_view key,
+              std::size_t& value_start) noexcept {
+  std::size_t begin = 0U;
+  while (begin < payload.size() &&
+         (payload[begin] == ' ' || payload[begin] == '\t' ||
+          payload[begin] == '\r' || payload[begin] == '\n')) ++begin;
+  if (begin >= payload.size() || payload[begin] != '{') return false;
+  int depth{0};
+  bool in_string{false};
+  bool escaped{false};
+  bool found{false};
+  for (std::size_t index = begin; index < payload.size(); ++index) {
+    const char byte = payload[index];
+    if (in_string) {
+      if (escaped) escaped = false;
+      else if (byte == '\\') escaped = true;
+      else if (byte == '"') in_string = false;
+      continue;
+    }
+    if (byte == '"') {
+      const std::size_t token_begin = index + 1U;
+      std::size_t token_end = token_begin;
+      bool token_escaped = false;
+      for (; token_end < payload.size(); ++token_end) {
+        if (token_escaped) token_escaped = false;
+        else if (payload[token_end] == '\\') token_escaped = true;
+        else if (payload[token_end] == '"') break;
+      }
+      if (token_end >= payload.size()) return false;
+      std::size_t cursor = token_end + 1U;
+      while (cursor < payload.size() &&
+             (payload[cursor] == ' ' || payload[cursor] == '\t' ||
+              payload[cursor] == '\r' || payload[cursor] == '\n')) ++cursor;
+      if (depth == 1 && cursor < payload.size() && payload[cursor] == ':') {
+        if (payload.substr(token_begin, token_end - token_begin) == key) {
+          if (found) return false;
+          found = true;
+          value_start = cursor + 1U;
+        }
+      }
+      index = token_end;
+      continue;
+    }
+    if (byte == '{' || byte == '[') ++depth;
+    else if (byte == '}' || byte == ']') {
+      if (depth == 0) return false;
+      --depth;
+    }
+  }
+  return found && depth == 0;
+}
+
 }  // namespace
 
 uint64_t ApplicationCalibrationExecutor::stable_id(std::string_view value) noexcept {
@@ -71,38 +126,37 @@ bool ApplicationCalibrationExecutor::sensor_target(
 
 bool ApplicationCalibrationExecutor::json_number(
     std::string_view payload, std::string_view key, int64_t& output) noexcept {
-  const auto at = payload.find(key);
-  if (at == std::string_view::npos) return false;
-  if (at == 0U || payload[at - 1U] != '"' ||
-      at + key.size() >= payload.size() || payload[at + key.size()] != '"') return false;
-  auto cursor = payload.find(':', at + key.size() + 1U);
-  if (cursor == std::string_view::npos) return false;
-  ++cursor;
+  std::size_t cursor{0U};
+  if (!root_key(payload, key, cursor)) return false;
   while (cursor < payload.size() && (payload[cursor] == ' ' || payload[cursor] == '\t')) ++cursor;
   const auto begin = cursor;
   if (cursor < payload.size() && payload[cursor] == '-') ++cursor;
   while (cursor < payload.size() && payload[cursor] >= '0' && payload[cursor] <= '9') ++cursor;
   if (cursor == begin || (cursor == begin + 1U && payload[begin] == '-')) return false;
   const auto result = std::from_chars(payload.data() + begin, payload.data() + cursor, output);
-  return result.ec == std::errc{} && result.ptr == payload.data() + cursor;
+  if (result.ec != std::errc{} || result.ptr != payload.data() + cursor) return false;
+  while (cursor < payload.size() && (payload[cursor] == ' ' || payload[cursor] == '\t' ||
+                                     payload[cursor] == '\r' || payload[cursor] == '\n')) ++cursor;
+  return cursor < payload.size() && (payload[cursor] == ',' || payload[cursor] == '}');
 }
 
 bool ApplicationCalibrationExecutor::json_string(
     std::string_view payload, std::string_view key, std::string_view& output) noexcept {
-  const auto at = payload.find(key);
-  if (at == std::string_view::npos) return false;
-  if (at == 0U || payload[at - 1U] != '"' ||
-      at + key.size() >= payload.size() || payload[at + key.size()] != '"') return false;
-  auto cursor = payload.find(':', at + key.size() + 1U);
-  if (cursor == std::string_view::npos) return false;
-  ++cursor;
+  std::size_t cursor{0U};
+  if (!root_key(payload, key, cursor)) return false;
   while (cursor < payload.size() && (payload[cursor] == ' ' || payload[cursor] == '\t')) ++cursor;
   if (cursor >= payload.size() || payload[cursor] != '"') return false;
   const auto begin = ++cursor;
   const auto end = payload.find('"', begin);
   if (end == std::string_view::npos || end == begin) return false;
   output = payload.substr(begin, end - begin);
-  return output.find_first_of("\\\r\n") == std::string_view::npos;
+  if (output.find_first_of("\\\r\n") != std::string_view::npos) return false;
+  std::size_t cursor_after = end + 1U;
+  while (cursor_after < payload.size() &&
+         (payload[cursor_after] == ' ' || payload[cursor_after] == '\t' ||
+          payload[cursor_after] == '\r' || payload[cursor_after] == '\n')) ++cursor_after;
+  return cursor_after < payload.size() &&
+         (payload[cursor_after] == ',' || payload[cursor_after] == '}');
 }
 
 bool parse_sha256(std::string_view value,

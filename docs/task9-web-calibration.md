@@ -107,6 +107,32 @@ implementation and shared calibration executor are not yet bound into
 `SigapApp`. Production operator authorization also requires deployment
 configuration. This document therefore does not claim Task 9 complete.
 
+## Current integration delta at `2b3827023b5d087669e89c23d3a73be51be571a0`
+
+The operator command status route is now distinct from the firmware delivery
+wire format and returns persisted result/status/timestamp fields. The
+diagnostic route is backed by the telemetry-v3 sample projection only, so
+control responses cannot masquerade as sensor evidence. The device-control
+composition wires this source in the Go server.
+
+The BLE client sends the selected sensor with CAPABILITIES, forwards bounded
+START setup parameters, and binds COMMIT to the exact preview version/hash.
+The firmware adapter applies setup fields through the existing internal
+maintenance boundary and rejects missing or malformed COMMIT identity. The
+wizard transition table now uses operation plus device-confirmed status and
+cannot skip SET_CRITERIA or CAPTURE after QUEUED/DELIVERED responses.
+
+The production path remains software-only verified. Physical BLE pairing,
+private-network HTTPS staging, physical sensor evidence, NVS/SD mutation, and
+power-loss execution remain separate blocked gates. HISTORY and ROLLBACK remain
+explicitly unsupported because the current ProfileManager contract does not
+provide a web-safe history/rollback adapter.
+
+When `SIGAP_NETWORK_ENDPOINT` and `SIGAP_NETWORK_CA_CERT` are supplied, the
+existing `SigapApp` composition owns the HTTPS transport, executor, and poller;
+the default image remains fail-closed without those build inputs. This source
+path was compile-verified, but no endpoint transmission was authorized.
+
 ## Independent review closure at `75f9634`
 
 The current source binds the shared controller to the maintenance router.

@@ -178,4 +178,31 @@ describe('BLE provisioning client', () => {
     });
     expect(control.writes.every((frame) => frame.byteLength <= 20)).toBe(true);
   });
+
+  it('delivers first-time calibration setup parameters with START', async () => {
+    let control: FakeCharacteristic;
+    let events: FakeCharacteristic;
+    control = new FakeCharacteristic((requestFrames) => {
+      const first = decodeBleFrame(requestFrames[0]);
+      const command = new TextDecoder().decode(assembleBleFrames(requestFrames.map(decodeBleFrame), 'F1')).trim();
+      const response = command.startsWith('CAL START hx711_organic reference_mass_mg=2000000 tare_counts=12')
+        ? 'CAL1|op=START|status=ACCEPTED|session=9|sensor=hx711_organic|data=state=CAPTURING'
+        : 'ERR CAL_REJECTED';
+      encodeBleFrames(first.requestId, new TextEncoder().encode(response), 'R1').forEach((frame) => events.emit(frame));
+    });
+    events = new FakeCharacteristic();
+    const server = new FakeServer(control, events);
+    Object.defineProperty(globalThis, 'isSecureContext', { configurable: true, value: true });
+    Object.defineProperty(globalThis, 'navigator', {
+      configurable: true,
+      value: { bluetooth: { requestDevice: async () => ({ gatt: { connect: async () => server }, addEventListener: () => {} }) } },
+    });
+
+    const client = new BleProvisioningClient();
+    await client.connect();
+    await expect(client.calibrationStart('hx711_organic', {
+      reference_mass_mg: 2000000,
+      tare_counts: 12,
+    })).resolves.toMatchObject({ operation: 'START', status: 'ACCEPTED' });
+  });
 });

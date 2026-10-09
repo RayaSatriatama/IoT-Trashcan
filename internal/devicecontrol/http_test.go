@@ -83,7 +83,7 @@ func TestHTTPRejectsOriginAndUnauthorizedDevice(t *testing.T) {
 	_ = time.Now()
 }
 
-func TestHTTPDiagnosticsUsesOperatorAuthorizationAndExactResult(t *testing.T) {
+func TestHTTPDiagnosticsDoesNotReadCommandResults(t *testing.T) {
 	s, _, now := testStore(t)
 	req := commandRequest(now)
 	req.ID = "cmd-http-diagnostic"
@@ -102,8 +102,87 @@ func TestHTTPDiagnosticsUsesOperatorAuthorizationAndExactResult(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/api/device-control/commands/DEV-01/diagnostics?sensor_id=sht31_44", nil)
 	res := httptest.NewRecorder()
 	h.ServeHTTP(res, r)
-	if res.Code != http.StatusOK || res.Body.String() != payload {
-		t.Fatalf("status=%d body=%q", res.Code, res.Body.String())
+	if res.Code != http.StatusNotFound {
+		t.Fatalf("command result exposed as diagnostic: status=%d body=%q", res.Code, res.Body.String())
+	}
+}
+
+func TestHTTPDiagnosticsReadsTelemetrySampleProjection(t *testing.T) {
+	s, db, now := testStore(t)
+	const sample = `{"device_id":"DEV-01","sensor_id":"sht31_44","stream":"b3","quality":"UNCALIBRATED","reason":"UNCALIBRATED","raw":{"present":true},"converted":null,"sequence":"9","recorded_at":"2026-10-09T11:59:59Z","time_quality":"SYNCED","profile_refs":[]}`
+	if _, err := db.Exec(`INSERT INTO telemetry_current_candidates
+	(device_id,kind,stream,sensor_id,boot_id,record_id,record_hash,sequence_sort,monotonic_us,recorded_at,time_quality,record_bytes,first_record_rowid)
+	VALUES ('DEV-01','sample','b3','sht31_44','boot','DEV-01/boot/9','sha256:sample','00000000000000000009','9','2026-10-09T11:59:59Z','SYNCED',?,1)`, []byte(sample)); err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandler(s, HTTPOptions{Operator: operatorAuth{allow: true}, Diagnostics: s})
+	r := httptest.NewRequest(http.MethodGet, "/api/device-control/commands/DEV-01/diagnostics?sensor_id=sht31_44", nil)
+	res := httptest.NewRecorder()
+	h.ServeHTTP(res, r)
+	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"quality":"UNCALIBRATED"`) || strings.Contains(res.Body.String(), `proposal_hash`) {
+		t.Fatalf("unexpected diagnostic response: status=%d body=%q", res.Code, res.Body.String())
+	}
+	_ = now
+}
+
+func TestHTTPCommandReadbackReturnsPersistedStatusAndResult(t *testing.T) {
+	s, _, now := testStore(t)
+	req := commandRequest(now)
+	req.ID = "cmd-status-readback"
+	if _, err := s.Enqueue(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Claim(context.Background(), req.DeviceID); err != nil {
+		t.Fatal(err)
+	}
+	result := []byte(`{"accepted":true}`)
+	if _, err := s.UpdateResult(context.Background(), req.DeviceID, req.ID, ResultRequest{
+		Status: Accepted, SessionID: req.SessionID, Payload: result,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandler(s, HTTPOptions{Operator: operatorAuth{allow: true}})
+	r := httptest.NewRequest(http.MethodGet, "/api/device-control/commands/DEV-01/"+req.ID, nil)
+	res := httptest.NewRecorder()
+	h.ServeHTTP(res, r)
+	if res.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", res.Code, res.Body.String())
+	}
+	var body struct {
+		Status  Status          `json:"status"`
+		Result  json.RawMessage `json:"result"`
+		Command string          `json:"operation"`
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Status != Accepted || body.Command != req.Operation || string(body.Result) != string(result) {
+		t.Fatalf("unexpected status response: %s", res.Body.String())
+	}
+}
+
+func TestHTTPDiagnosticsDoesNotTreatCalibrationResultAsSensorEvidence(t *testing.T) {
+	s, _, now := testStore(t)
+	req := commandRequest(now)
+	req.ID = "cmd-preview-not-diagnostic"
+	if _, err := s.Enqueue(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Claim(context.Background(), req.DeviceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpdateResult(context.Background(), req.DeviceID, req.ID, ResultRequest{
+		Status: Accepted, SessionID: req.SessionID,
+		Payload: []byte(`{"accepted":true}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandler(s, HTTPOptions{Operator: operatorAuth{allow: true}})
+	r := httptest.NewRequest(http.MethodGet, "/api/device-control/commands/DEV-01/diagnostics?sensor_id="+req.SensorID, nil)
+	res := httptest.NewRecorder()
+	h.ServeHTTP(res, r)
+	if res.Code != http.StatusNotFound {
+		t.Fatalf("calibration result exposed as diagnostic: status=%d body=%s", res.Code, res.Body.String())
 	}
 }
 

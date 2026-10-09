@@ -83,6 +83,7 @@ func main() {
 		httpapi.WithDeviceControl(deviceControlStore, devicecontrol.HTTPOptions{
 			Operator:      deviceControlAuth,
 			Device:        deviceControlAuth,
+			Diagnostics:   deviceControlStore,
 			AllowedOrigin: os.Getenv("SIGAP_OPERATOR_ORIGIN"),
 		}),
 	)

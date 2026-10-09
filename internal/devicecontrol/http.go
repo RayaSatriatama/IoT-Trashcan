@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // OperatorAuthorizer is deliberately injected.  A nil authorizer never
@@ -18,10 +19,42 @@ type OperatorAuthorizer interface {
 type DeviceAuthorizer interface {
 	AuthorizeDevice(context.Context, *http.Request, string) error
 }
+type DiagnosticSource interface {
+	LatestDiagnostic(context.Context, string, string) (json.RawMessage, error)
+}
 type HTTPOptions struct {
 	Operator      OperatorAuthorizer
 	Device        DeviceAuthorizer
+	Diagnostics   DiagnosticSource
 	AllowedOrigin string
+}
+
+// OperatorCommandResponse is deliberately separate from deviceCommandWire.
+// The former is a durable readback contract for the operator UI; the latter
+// is the bounded delivery envelope sent to firmware.
+type OperatorCommandResponse struct {
+	CommandID string          `json:"command_id"`
+	DeviceID  string          `json:"device_id"`
+	SensorID  string          `json:"sensor_id"`
+	Operation string          `json:"operation"`
+	SessionID string          `json:"session_id,omitempty"`
+	Status    Status          `json:"status"`
+	Result    json.RawMessage `json:"result,omitempty"`
+	ErrorCode string          `json:"error_code,omitempty"`
+	ExpiresAt time.Time       `json:"expires_at"`
+	Attempt   int             `json:"attempt"`
+	CreatedAt time.Time       `json:"created_at"`
+	UpdatedAt time.Time       `json:"updated_at"`
+}
+
+func commandForOperator(c Command) OperatorCommandResponse {
+	return OperatorCommandResponse{
+		CommandID: c.ID, DeviceID: c.DeviceID, SensorID: c.SensorID,
+		Operation: c.Operation, SessionID: c.SessionID, Status: c.Status,
+		Result: append(json.RawMessage(nil), c.ResultPayload...), ErrorCode: c.ErrorCode,
+		ExpiresAt: c.ExpiresAt, Attempt: c.Attempt, CreatedAt: c.CreatedAt,
+		UpdatedAt: c.UpdatedAt,
+	}
 }
 
 type Handler struct {
@@ -100,7 +133,11 @@ func (h *Handler) operator(w http.ResponseWriter, r *http.Request, deviceID stri
 	commandID := parts[0]
 	if commandID == "diagnostics" && r.Method == http.MethodGet {
 		sensorID := strings.TrimSpace(r.URL.Query().Get("sensor_id"))
-		payload, err := h.store.LatestResult(r.Context(), deviceID, sensorID)
+		if h.options.Diagnostics == nil {
+			writeControlError(w, http.StatusNotFound, "diagnostic unavailable")
+			return
+		}
+		payload, err := h.options.Diagnostics.LatestDiagnostic(r.Context(), deviceID, sensorID)
 		if errors.Is(err, ErrNotFound) {
 			writeControlError(w, http.StatusNotFound, "diagnostic unavailable")
 			return
@@ -134,7 +171,7 @@ func (h *Handler) operator(w http.ResponseWriter, r *http.Request, deviceID stri
 			writeControlError(w, http.StatusInternalServerError, "internal server error")
 			return
 		}
-		writeControlJSON(w, http.StatusOK, commandForDevice(c, h.store.now().UTC()))
+		writeControlJSON(w, http.StatusOK, commandForOperator(c))
 		return
 	}
 	if len(parts) == 1 && r.Method == http.MethodDelete {

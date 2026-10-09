@@ -92,6 +92,66 @@ bool integer_argument(std::string_view arguments, std::string_view key,
   return parsed.ec == std::errc{} && parsed.ptr == token.data() + token.size();
 }
 
+bool u64_argument(std::string_view arguments, std::string_view key,
+                  uint64_t& value) noexcept {
+  const auto at = arguments.find(key);
+  if (at == std::string_view::npos ||
+      (at != 0U && arguments[at - 1U] != ' ') ||
+      at + key.size() >= arguments.size() || arguments[at + key.size()] != '=') {
+    return false;
+  }
+  const auto begin = at + key.size() + 1U;
+  const auto end = arguments.find(' ', begin);
+  const auto token = arguments.substr(
+      begin, end == std::string_view::npos ? arguments.size() - begin
+                                            : end - begin);
+  if (token.empty() || token.front() == '-') return false;
+  const auto parsed = std::from_chars(token.data(), token.data() + token.size(), value);
+  return parsed.ec == std::errc{} && parsed.ptr == token.data() + token.size();
+}
+
+bool sha256_argument(std::string_view arguments, std::string_view key,
+                     std::array<uint8_t, 32U>& output) noexcept {
+  const auto at = arguments.find(key);
+  if (at == std::string_view::npos ||
+      (at != 0U && arguments[at - 1U] != ' ') ||
+      at + key.size() >= arguments.size() || arguments[at + key.size()] != '=') {
+    return false;
+  }
+  const auto begin = at + key.size() + 1U;
+  const auto end = arguments.find(' ', begin);
+  const auto token = arguments.substr(
+      begin, end == std::string_view::npos ? arguments.size() - begin
+                                            : end - begin);
+  constexpr std::string_view prefix{"sha256:"};
+  if (token.substr(0U, prefix.size()) != prefix ||
+      token.size() != prefix.size() + output.size() * 2U) return false;
+  auto nibble = [](char value) noexcept -> int {
+    if (value >= '0' && value <= '9') return value - '0';
+    if (value >= 'a' && value <= 'f') return value - 'a' + 10;
+    if (value >= 'A' && value <= 'F') return value - 'A' + 10;
+    return -1;
+  };
+  for (std::size_t index = 0U; index < output.size(); ++index) {
+    const int high = nibble(token[prefix.size() + index * 2U]);
+    const int low = nibble(token[prefix.size() + index * 2U + 1U]);
+    if (high < 0 || low < 0) return false;
+    output[index] = static_cast<uint8_t>((high << 4U) | low);
+  }
+  return true;
+}
+
+bool setup_key(std::string_view key) noexcept {
+  constexpr std::array<std::string_view, 13U> keys{{
+      "reference_mass_mg", "reference_temperature_centi_c",
+      "reference_humidity_centi_pct", "resolution_bits", "echo_mm_per_us_milli",
+      "echo_timeout_us", "inter_sensor_gap_us", "overshoot_tolerance_mm_milli",
+      "reference_mv", "full_scale_counts", "divider_numerator", "address",
+      "divider_denominator"}};
+  for (const auto value : keys) if (value == key) return true;
+  return false;
+}
+
 bool append_envelope(char* output, std::size_t capacity, std::size_t& size,
                      std::string_view operation, bool accepted,
                      std::string_view sensor, uint64_t session_id,
@@ -223,8 +283,15 @@ bool CommandRouterBleCalibrationBackend::execute(
       operation != "EVIDENCE" && operation != "CAPABILITIES" &&
       operation != "ACTIVE_PROFILE" && operation != "HISTORY" &&
       operation != "ROLLBACK") {
-    return execute_controller(operation, arguments, response, capacity,
-                              response_size);
+    const bool accepted = execute_controller(operation, arguments, response,
+                                             capacity, response_size);
+    if (!accepted && response_size == 0U) {
+      std::string_view sensor{};
+      (void)sensor_from_arguments(arguments, sensor);
+      (void)append_error_envelope(response, capacity, response_size, operation,
+                                  sensor, session_id_, "CAL_REJECTED");
+    }
+    return accepted;
   }
   constexpr std::string_view prefix{"calibration "};
 
@@ -425,6 +492,32 @@ bool CommandRouterBleCalibrationBackend::execute_controller(
   }
 
   if (operation == "START") {
+    // Validate all first-time setup fields before starting the session. The
+    // fields are applied through the router's internal typed boundary below,
+    // so BLE and HTTPS use the same ProfileManager-owned setup rules.
+    const auto sensor_end = arguments.find(' ');
+    const auto values = sensor_end == std::string_view::npos
+                            ? std::string_view{}
+                            : arguments.substr(sensor_end + 1U);
+    std::size_t cursor{0U};
+    while (cursor < values.size()) {
+      const auto end = values.find(' ', cursor);
+      const auto token = values.substr(
+          cursor, end == std::string_view::npos ? values.size() - cursor
+                                                : end - cursor);
+      const auto equals = token.find('=');
+      int64_t ignored{0};
+      if (equals == std::string_view::npos || equals == 0U ||
+          !setup_key(token.substr(0U, equals)) ||
+          !integer_argument(token, token.substr(0U, equals), ignored)) {
+        return false;
+      }
+      if (end == std::string_view::npos) break;
+      cursor = end + 1U;
+    }
+  }
+
+  if (operation == "START") {
     command.operation = calibration::CalibrationOperation::Start;
   } else if (operation == "CRITERIA") {
     command.operation = calibration::CalibrationOperation::SetCriteria;
@@ -480,6 +573,15 @@ bool CommandRouterBleCalibrationBackend::execute_controller(
     command.operation = calibration::CalibrationOperation::Preview;
   } else if (operation == "COMMIT") {
     command.operation = calibration::CalibrationOperation::Commit;
+    uint64_t expected_version{0U};
+    if (!u64_argument(arguments, "expected_profile_version", expected_version) ||
+        expected_version == 0U ||
+        !sha256_argument(arguments, "expected_profile_hash", command.expected_profile.hash)) {
+      return false;
+    }
+    command.expected_profile.version = expected_version;
+    command.expected_profile.present = true;
+    command.expected_profile_present = true;
   } else if (operation == "CANCEL") {
     command.operation = calibration::CalibrationOperation::Cancel;
   } else {
@@ -508,7 +610,13 @@ bool CommandRouterBleCalibrationBackend::execute_controller(
     const auto converted = std::to_chars(version, version + sizeof(version),
                                          result.profile.version);
     if (converted.ec != std::errc{} || !append_payload("profile_version=") ||
-        !append_payload(std::string_view(version, converted.ptr - version))) return false;
+        !append_payload(std::string_view(version, converted.ptr - version)) ||
+        !append_payload(";profile_hash=sha256:")) return false;
+    static constexpr char digits[] = "0123456789abcdef";
+    for (const auto byte : result.profile.hash) {
+      const char pair[2] = {digits[byte >> 4U], digits[byte & 0x0fU]};
+      if (!append_payload(std::string_view(pair, 2U))) return false;
+    }
   } else if (!succeeded) {
     if (!append_payload("FAILED")) return false;
   } else if (!append_payload(operation == "START" ? "state=CAPTURING" : "state=ACCEPTED")) {
@@ -518,6 +626,36 @@ bool CommandRouterBleCalibrationBackend::execute_controller(
   if (succeeded && operation == "START") {
     session_id_ = result.session_id;
     ble_session_owned_ = true;
+    const auto sensor_end = arguments.find(' ');
+    const auto values = sensor_end == std::string_view::npos
+                            ? std::string_view{}
+                            : arguments.substr(sensor_end + 1U);
+    std::size_t cursor{0U};
+    while (cursor < values.size()) {
+      const auto end = values.find(' ', cursor);
+      const auto token = values.substr(
+          cursor, end == std::string_view::npos ? values.size() - cursor
+                                                : end - cursor);
+      const auto equals = token.find('=');
+      MaintenanceCommand setup{};
+      setup.kind = CommandKind::CalibrationCriteria;
+      if (!setup.field.assign(token.substr(0U, equals)) ||
+          !integer_argument(token, token.substr(0U, equals), setup.numeric_value)) {
+        controller_->disconnect(calibration::CalibrationTransport::Ble);
+        ble_session_owned_ = false;
+        return false;
+      }
+      setup.has_numeric = true;
+      MaintenanceResponse ignored{};
+      if (router_.execute_calibration_internal(setup, clock_.now_us(), ignored) !=
+          CommandStatus::Accepted) {
+        controller_->disconnect(calibration::CalibrationTransport::Ble);
+        ble_session_owned_ = false;
+        return false;
+      }
+      if (end == std::string_view::npos) break;
+      cursor = end + 1U;
+    }
   }
   if (succeeded && (operation == "COMMIT" || operation == "CANCEL")) {
     ble_session_owned_ = false;

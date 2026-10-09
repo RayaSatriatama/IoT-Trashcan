@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Card, Input, Text, XStack, YStack } from 'tamagui';
 
 import { createCalibrationApi, type CalibrationApi, type CalibrationCapabilities, type CalibrationCommand, type CalibrationCommandRequest, type CalibrationPreview, type CalibrationSensorId, type CalibrationState, type SensorDiagnostic } from '../../lib/api/calibration';
-import { canBeginCalibration, calibrationStateLabel, commandSessionState, hasValidatedPreview, initialWizardStatus, nextStep, redactCalibrationError, type CalibrationWizardStep } from '../../lib/calibration/wizard';
+import { canBeginCalibration, calibrationStateLabel, commandSessionState, hasValidatedPreview, initialWizardStatus, nextStepAfterOperation, redactCalibrationError, type CalibrationWizardStep } from '../../lib/calibration/wizard';
 import { AppButton } from '../AppButton';
 import type { BleCalibrationResponse } from '../../lib/ble/protocol';
 
@@ -23,12 +23,12 @@ export type CalibrationWizardProps = {
 export type BleCalibrationAdapter = {
   calibrationCapabilities?: (sensor: string) => Promise<BleCalibrationResponse>;
   calibrationEvidence?: (sensor: string) => Promise<BleCalibrationResponse>;
-  calibrationStart: (sensor: string) => Promise<BleCalibrationResponse>;
+  calibrationStart: (sensor: string, parameters?: Record<string, string | number | boolean>) => Promise<BleCalibrationResponse>;
   calibrationCriteria: (sensor: string, parameters: Record<string, string | number | boolean>) => Promise<BleCalibrationResponse>;
   calibrationCapture: (sensor: string, anchor: 'tare' | 'reference' | 'empty' | 'full') => Promise<BleCalibrationResponse>;
   calibrationValidate: (sensor: string) => Promise<BleCalibrationResponse>;
   calibrationPreview: (sensor: string) => Promise<BleCalibrationResponse>;
-  calibrationCommit: (sensor: string) => Promise<BleCalibrationResponse>;
+  calibrationCommit: (sensor: string, expected?: Record<string, string | number | boolean>) => Promise<BleCalibrationResponse>;
   calibrationCancel: () => Promise<BleCalibrationResponse>;
 };
 
@@ -170,6 +170,16 @@ export function CalibrationWizard({ deviceId, sensorId, diagnostic, api, apiFact
   const ready = canBeginCalibration(activeDiagnostic) && capabilities !== null;
 
   useEffect(() => {
+    // A sensor/device/transport switch cannot reuse a proposal or session
+    // identity from another calibration context.
+    setPreview(null);
+    setStep('diagnostics');
+    setSessionState('IDLE');
+    setLastCommand(null);
+    setError(null);
+  }, [deviceId, sensorId, transport]);
+
+  useEffect(() => {
     if (typeof window === 'undefined') return;
     const value = window.sessionStorage.getItem(storageKey(deviceId, sensorId));
     if (!value) return;
@@ -241,7 +251,7 @@ export function CalibrationWizard({ deviceId, sensorId, diagnostic, api, apiFact
     const parsed = parsePreview(command.result);
     if (parsed && !parsed.expires_at && command.expires_at) parsed.expires_at = command.expires_at;
     if (parsed && hasValidatedPreview(parsed, sensorId)) setPreview(parsed);
-    const next = nextStep(command.status === 'COMMITTED' ? 'COMMITTED' : state, step);
+    const next = nextStepAfterOperation(command.operation, command.status === 'COMMITTED' ? 'COMMITTED' : state, step);
     setStep(next);
     if (TERMINAL_STATES.includes(command.status)) {
       if (command.status === 'COMMITTED' || command.status === 'CANCELLED') onDiagnosticRefresh?.();
@@ -254,7 +264,8 @@ export function CalibrationWizard({ deviceId, sensorId, diagnostic, api, apiFact
     for (const delay of POLL_DELAYS_MS) {
       latest = (await client.getCommand(deviceId, id)).command;
       applyCommand(latest);
-      if (TERMINAL_STATES.includes(latest.status) || latest.status === 'PREVIEW_READY') return latest;
+      if (TERMINAL_STATES.includes(latest.status) ||
+          (latest.status !== 'QUEUED' && latest.status !== 'DELIVERED')) return latest;
       await new Promise<void>((resolve) => globalThis.setTimeout(resolve, delay));
     }
     if (!latest) throw new Error('Status command tidak tersedia');
@@ -268,12 +279,18 @@ export function CalibrationWizard({ deviceId, sensorId, diagnostic, api, apiFact
     setError(null); setBusy(true); commandInFlight.current = true;
     try {
       if (transport === 'ble' && bleClient) {
-        const output = operation === 'START' ? await bleClient.calibrationStart(sensorId)
+        const output = operation === 'START' ? await bleClient.calibrationStart(sensorId, {
+            ...(extra.references ?? {}),
+            ...(extra.parameters ?? {}),
+          })
           : operation === 'SET_CRITERIA' ? await bleClient.calibrationCriteria(sensorId, extra.criteria ?? {})
           : operation === 'CAPTURE' ? await bleClient.calibrationCapture(sensorId, anchor as 'tare' | 'reference' | 'empty' | 'full')
           : operation === 'VALIDATE' ? await bleClient.calibrationValidate(sensorId)
           : operation === 'PREVIEW' ? await bleClient.calibrationPreview(sensorId)
-          : operation === 'COMMIT' ? await bleClient.calibrationCommit(sensorId)
+          : operation === 'COMMIT' ? await bleClient.calibrationCommit(sensorId, {
+              expected_profile_hash: extra.expected_profile_hash ?? preview?.proposal_hash ?? '',
+              expected_profile_version: extra.expected_profile_version ?? preview?.profile_version ?? '',
+            })
           : await bleClient.calibrationCancel();
         const parsed = parseBleResult(output);
         if (parsed.error) throw new Error(parsed.error);
@@ -282,7 +299,7 @@ export function CalibrationWizard({ deviceId, sensorId, diagnostic, api, apiFact
         const stateByOperation: Record<CalibrationCommandRequest['operation'], CalibrationState> = { START: 'CAPTURING', SET_CRITERIA: 'CAPTURING', CAPTURE: 'VALIDATING', VALIDATE: 'PREVIEW_READY', PREVIEW: 'PREVIEW_READY', COMMIT: 'COMMITTED', CANCEL: 'CANCELLED', ROLLBACK: 'FAILED' };
         const state = parsed.state ?? stateByOperation[operation];
         setSessionState(state);
-        setStep(nextStep(state, step));
+        setStep(nextStepAfterOperation(operation, state, step));
         if (state === 'COMMITTED' || state === 'CANCELLED') setPersistedCommand(null, null);
         await loadBleDiagnostic();
         onDiagnosticRefresh?.();

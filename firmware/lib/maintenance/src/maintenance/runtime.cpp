@@ -695,6 +695,14 @@ CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
                               mq_full_scale_counts_ != 0U &&
                               mq_divider_numerator_ != 0U &&
                               mq_divider_denominator_ != 0U;
+      } else if (field == "address") {
+        const int64_t expected =
+            pending_target_ == calibration::CalibrationTarget::Sht31_45 ? 0x45 : 0x44;
+        if ((pending_target_ != calibration::CalibrationTarget::Sht31_44 &&
+             pending_target_ != calibration::CalibrationTarget::Sht31_45) ||
+            command.numeric_value != expected) {
+          return CommandStatus::InvalidNumeric;
+        }
       } else if (field == "samples") {
         if (command.numeric_value <= 0) return CommandStatus::InvalidNumeric;
         if (command.numeric_value > UINT16_MAX) return CommandStatus::InvalidNumeric;

@@ -61,6 +61,9 @@ type Command struct {
 	ResultPayload json.RawMessage `json:"result,omitempty"`
 	ResultHash    string          `json:"result_hash,omitempty"`
 	ErrorCode     string          `json:"error_code,omitempty"`
+	CreatedAt     time.Time       `json:"created_at,omitempty"`
+	UpdatedAt     time.Time       `json:"updated_at,omitempty"`
+	LeaseUntil    *time.Time      `json:"lease_until,omitempty"`
 }
 
 type CreateRequest struct {
@@ -474,6 +477,20 @@ func (s *Store) Get(ctx context.Context, deviceID, commandID string) (Command, e
 	c.ResultPayload = result
 	c.Status = Status(status)
 	c.ExpiresAt, _ = time.Parse(time.RFC3339Nano, exp)
+	var created, updated string
+	var lease sql.NullString
+	if err := s.db.QueryRowContext(ctx, `SELECT created_at,updated_at,lease_until FROM device_control_commands WHERE device_id=? AND command_id=?`, deviceID, commandID).Scan(&created, &updated, &lease); err != nil {
+		return Command{}, err
+	}
+	c.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+	c.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updated)
+	if lease.Valid {
+		value, parseErr := time.Parse(time.RFC3339Nano, lease.String)
+		if parseErr != nil {
+			return Command{}, parseErr
+		}
+		c.LeaseUntil = &value
+	}
 	return c, nil
 }
 
@@ -497,6 +514,92 @@ func (s *Store) LatestResult(ctx context.Context, deviceID, sensorID string) (js
 		return nil, err
 	}
 	return append(json.RawMessage(nil), payload...), nil
+}
+
+// LatestDiagnostic reads only the durable telemetry-v3 sample projection.
+// Device-control command results are intentionally excluded: PREVIEW, START,
+// and COMMIT payloads are control evidence, not live sensor observations.
+func (s *Store) LatestDiagnostic(ctx context.Context, deviceID, sensorID string) (json.RawMessage, error) {
+	if s == nil || s.db == nil || strings.TrimSpace(deviceID) == "" || strings.TrimSpace(sensorID) == "" {
+		return nil, ErrInvalid
+	}
+	var raw []byte
+	err := s.db.QueryRowContext(ctx, `
+		SELECT record_bytes FROM telemetry_current_candidates
+		WHERE device_id=? AND kind='sample' AND sensor_id=?
+		ORDER BY first_record_rowid DESC LIMIT 1`, deviceID, sensorID).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return diagnosticFromSample(raw, s.now().UTC())
+}
+
+func diagnosticFromSample(raw []byte, now time.Time) (json.RawMessage, error) {
+	var sample struct {
+		DeviceID    string          `json:"device_id"`
+		SensorID    string          `json:"sensor_id"`
+		Stream      string          `json:"stream"`
+		Quality     string          `json:"quality"`
+		Reason      string          `json:"reason"`
+		Raw         json.RawMessage `json:"raw"`
+		Converted   json.RawMessage `json:"converted"`
+		Sequence    string          `json:"sequence"`
+		RecordedAt  *string         `json:"recorded_at"`
+		TimeQuality string          `json:"time_quality"`
+		Profiles    []struct {
+			Target  string `json:"target"`
+			Version string `json:"version"`
+			Hash    string `json:"hash"`
+		} `json:"profile_refs"`
+	}
+	if err := json.Unmarshal(raw, &sample); err != nil || sample.SensorID == "" || sample.Stream == "" || sample.Sequence == "" {
+		return nil, ErrInvalid
+	}
+	profileVersion, profileHash := "", ""
+	for _, profile := range sample.Profiles {
+		if profile.Target == sample.SensorID || (profileVersion == "" && profile.Version != "") {
+			profileVersion, profileHash = profile.Version, profile.Hash
+		}
+	}
+	var age any
+	fresh := false
+	if sample.RecordedAt != nil && *sample.RecordedAt != "" && sample.TimeQuality != "UNSYNCED" {
+		if recorded, err := time.Parse(time.RFC3339Nano, *sample.RecordedAt); err == nil {
+			milliseconds := now.Sub(recorded).Milliseconds()
+			if milliseconds < 0 {
+				milliseconds = 0
+			}
+			age = milliseconds
+			fresh = sample.Quality != "STALE" && sample.Quality != "TIMEOUT" && sample.Quality != "DISCONNECTED" && sample.Quality != "CRC_ERROR" && sample.Quality != "INVALID"
+		}
+	}
+	if age == nil {
+		fresh = false
+	}
+	response := map[string]any{
+		"sensor_id": sample.SensorID, "stream": sample.Stream,
+		"quality": sample.Quality, "reason": sample.Reason,
+		"raw": json.RawMessage(sample.Raw), "converted_value": json.RawMessage(sample.Converted),
+		"converted_unit": nil, "fresh": fresh, "age_ms": age,
+		"last_sequence": sample.Sequence, "profile_present": profileVersion != "",
+		"profile_version": nullableString(profileVersion), "profile_hash": nullableString(profileHash),
+		"calibration_state": "IDLE", "accepted_samples": 0, "rejected_samples": 0,
+	}
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		return nil, err
+	}
+	return encoded, nil
+}
+
+func nullableString(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
 }
 
 func (s *Store) Cancel(ctx context.Context, deviceID, commandID, operatorID string) error {

@@ -150,6 +150,27 @@ void test_ble_mutations_use_shared_controller_owner() {
   TEST_ASSERT_TRUE(controller.active());
   backend.disconnect();
   TEST_ASSERT_FALSE(controller.active());
+
+  size = 0U;
+  TEST_ASSERT_TRUE(backend.execute(
+      "CAL START hx711_organic reference_mass_mg=2000", response,
+      sizeof(response), size));
+  TEST_ASSERT_TRUE(std::string_view(response, size).find(
+                       "sensor=hx711_organic") != std::string_view::npos);
+  size = 0U;
+  TEST_ASSERT_FALSE(backend.execute("CAL COMMIT hx711_organic", response,
+                                   sizeof(response), size));
+  TEST_ASSERT_TRUE(std::string_view(response, size).find(
+                       "status=ERROR") != std::string_view::npos);
+  backend.disconnect();
+  TEST_ASSERT_FALSE(controller.active());
+
+  size = 0U;
+  TEST_ASSERT_TRUE(backend.execute(
+      "CAL START sht31_44 address=68", response, sizeof(response), size));
+  TEST_ASSERT_TRUE(std::string_view(response, size).find(
+                       "sensor=sht31_44") != std::string_view::npos);
+  backend.disconnect();
 }
 
 }  // namespace

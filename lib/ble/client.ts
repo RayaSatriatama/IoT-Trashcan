@@ -159,8 +159,8 @@ export class BleProvisioningClient {
     throw new Error(`Koneksi Wi-Fi tidak selesai (status ${latest.state})`);
   }
 
-  async calibrationCapabilities(): Promise<BleCalibrationResponse> {
-    return this.calibration('CAPABILITIES');
+  async calibrationCapabilities(sensor: string): Promise<BleCalibrationResponse> {
+    return this.calibration('CAPABILITIES', sensor);
   }
 
   async calibrationStatus(sensor: string): Promise<BleCalibrationResponse> {
@@ -171,8 +171,11 @@ export class BleProvisioningClient {
     return this.calibration('EVIDENCE', sensor);
   }
 
-  async calibrationStart(sensor: string): Promise<BleCalibrationResponse> {
-    return this.calibration('START', sensor);
+  async calibrationStart(
+    sensor: string,
+    parameters: Record<string, string | number | boolean> = {},
+  ): Promise<BleCalibrationResponse> {
+    return this.calibration('START', sensor, parameters);
   }
 
   async calibrationCriteria(
@@ -194,8 +197,8 @@ export class BleProvisioningClient {
     return this.calibration('PREVIEW', sensor);
   }
 
-  async calibrationCommit(sensor: string): Promise<BleCalibrationResponse> {
-    return this.calibration('COMMIT', sensor);
+  async calibrationCommit(sensor: string, expected: Record<string, string | number | boolean> = {}): Promise<BleCalibrationResponse> {
+    return this.calibration('COMMIT', sensor, expected);
   }
 
   async calibrationCancel(): Promise<BleCalibrationResponse> {

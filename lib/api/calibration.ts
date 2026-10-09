@@ -16,7 +16,7 @@ export const CALIBRATION_SENSOR_IDS = [
 ] as const;
 export type CalibrationSensorId = typeof CALIBRATION_SENSOR_IDS[number];
 export type CalibrationTransport = 'ble' | 'https';
-export type CalibrationState = 'IDLE' | 'QUEUED' | 'DELIVERED' | 'ACCEPTED' | 'CAPTURING' | 'VALIDATING' | 'PREVIEW_READY' | 'COMMITTING' | 'COMMITTED' | 'CANCELLED' | 'EXPIRED' | 'FAILED';
+export type CalibrationState = 'IDLE' | 'QUEUED' | 'DELIVERED' | 'ACCEPTED' | 'CAPTURING' | 'VALIDATING' | 'VALIDATED' | 'PREVIEW_READY' | 'COMMITTING' | 'COMMITTED' | 'CANCELLED' | 'EXPIRED' | 'FAILED';
 export type CalibrationQuality = 'READY' | 'CALIBRATING' | 'UNCALIBRATED' | 'STALE' | 'TIMEOUT' | 'DISCONNECTED' | 'CRC_ERROR' | 'INVALID';
 
 export type RawEvidence = {

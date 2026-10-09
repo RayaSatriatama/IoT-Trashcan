@@ -154,7 +154,10 @@ export function encodeBleCommand(_id: string, command: string, payload: Record<s
       !normalizedBody.startsWith('CONNECT_WIFI ') && !normalizedBody.startsWith('CAL ')) {
     throw new Error('BLE command tidak dikenal');
   }
-  if (body.startsWith('CAL ') && (body.length > 135 || /[\r\n]/u.test(body))) {
+  // Firmware's bounded CAL line accepts up to 254 bytes. Keep a small
+  // margin for the terminating newline while allowing the full SHA-256
+  // preview identity to reach COMMIT.
+  if (body.startsWith('CAL ') && (body.length > 254 || /[\r\n]/u.test(body))) {
     throw new Error('Perintah kalibrasi tidak valid');
   }
   const encoded = new TextEncoder().encode(`${body}\n`);
@@ -185,7 +188,7 @@ export function encodeCalibrationCommand(
     tokens.push(calibrationToken(anchor));
     return encodeBleCommand('', tokens.join(' '));
   }
-  if (operation === 'VALIDATE' || operation === 'PREVIEW' || operation === 'COMMIT') {
+  if (operation === 'VALIDATE' || operation === 'PREVIEW' || operation === 'CANCEL') {
     return encodeBleCommand('', tokens.join(' '));
   }
   Object.keys(parameters).sort().forEach((key) => {

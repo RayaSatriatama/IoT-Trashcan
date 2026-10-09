@@ -292,3 +292,41 @@ and the terminal profile identity afterward; a fault between those boundaries
 is reconciled only when active identity matches the intent. Physical power-loss
 execution remains untested. This remediation remains pending final commit/push
 and independent review. Task 10 was not started.
+
+## Current cross-layer remediation at `2b3827023b5d087669e89c23d3a73be51be571a0`
+
+This section supersedes the earlier diagnostic and operator-status notes.
+The operator command read route now returns a dedicated durable status
+contract with command identity, sensor, session, status, result bytes, error
+code, expiry, attempt, and lifecycle timestamps. The firmware delivery
+envelope remains separate and does not expose operator readback fields.
+
+Diagnostics now read only the telemetry-v3 sample projection. START, PREVIEW,
+and COMMIT results cannot be returned as sensor evidence. The response keeps
+sensor, stream, quality, reason, raw and converted evidence, freshness, source
+sequence, and profile identity; an absent projection is unavailable.
+
+BLE capability requests require the selected sensor. START forwards bounded
+sensor setup parameters through the typed maintenance boundary used by HTTPS,
+and COMMIT requires the preview's exact profile version and SHA-256 identity.
+The BLE response includes the committed profile version and hash. The web
+wizard advances from device-confirmed operation outcomes through DIAGNOSTICS,
+START, SET_CRITERIA, CAPTURE, VALIDATE, PREVIEW, COMMIT, and DONE without
+treating queue delivery as calibration completion.
+
+Fresh focused evidence for this revision:
+
+```text
+Go device-control/http tests                         PASS
+Go internal/http, internal/e2e, cmd/sigap tests       PASS
+Frontend BLE protocol and wizard tests                PASS 19 tests
+Frontend typecheck                                     PASS
+PlatformIO native                                      PASS 430/430
+HTTPS-enabled Arduino composition build               PASS
+git diff --check                                       PASS
+```
+
+Native and HTTPS-enabled builds remain software evidence only. No physical
+BLE pairing, WiFi change, endpoint transmission, sensor calibration, NVS/SD
+mutation, or power-loss test was performed. A staging endpoint and operator
+identity provider still require external provisioning and remain BLOCKED.
