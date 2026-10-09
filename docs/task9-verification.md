@@ -10,7 +10,7 @@ commissioning or destructive hardware operation was performed.
 
 - Task 8 merge SHA: `6269b6c2532d25a93ac6b12454106613e17af911`.
 - Task 9 branch: `feat/full-integration-hil-validation`.
-- Reviewed Task 9 source HEAD before this verification: `8c104ed`.
+- Reviewed Task 9 final source commit: `b5caee3` (based on `8c104ed`).
 - Hardware: ESP32-S3 N16R8 with onboard FAT32 microSD; no sensors, heater, or actuators.
 - No firmware upload, reboot, SD mutation, NVS erase, unplug, power-cycle,
   power-cut, or physical commissioning was performed.
@@ -59,10 +59,10 @@ npm run export:web                            PASS
 pio test -e native                            PASS (389/389)
 ASan/UBSan native folders                    PASS (389/389 cases, 38 folders, 0 failed)
 pio check -e native --fail-on-defect=low     PASS (no defects)
-pio run -e sigap_n16r8                       PASS (RAM 49,496; flash 1,077,313)
-pio run -e sigap_n16r8_sd                    PASS (RAM 50,036; flash 1,150,993)
-pio run -e sigap_n16r8_sd_spi                PASS (RAM 49,792; flash 1,130,521)
-pio run -e sigap_bench                       PASS (RAM 49,496; flash 1,077,313)
+pio run -e sigap_n16r8                       PASS (RAM 49,496; flash 1,077,309)
+pio run -e sigap_n16r8_sd                    PASS (RAM 50,036; flash 1,150,989)
+pio run -e sigap_n16r8_sd_spi                PASS (RAM 49,792; flash 1,130,517)
+pio run -e sigap_bench                       PASS (RAM 49,496; flash 1,077,309)
 git diff --check                             PASS
 ```
 
@@ -105,6 +105,9 @@ this branch. The exact overrides and compatibility rationale are recorded in
 - `firmware/lib/maintenance` accepts bounded first-time engineering criteria
   and stages typed HX711, ultrasonic, MQ ADC, DS18B20, and SHT31 profiles only
   through validate/preview/commit.
+- `firmware/lib/maintenance/src/maintenance/runtime_calibration.cpp` owns the
+  calibration-profile builder so the command router source remains within the
+  repository file-size limit.
 - `firmware/test/native/test_sensor_commissioning` runs parser-to-profile
   persistence regressions for ultrasonic, MQ ADC, DS18B20, and SHT31 address
   semantics; the existing maintenance test covers HX711.
