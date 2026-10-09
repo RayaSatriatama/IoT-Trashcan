@@ -1,14 +1,15 @@
 # Task 9 verification ledger
 
 Status: **OPEN FOR INDEPENDENT REVIEW**. The branch contains software-test
-coverage and integration evidence only. No physical commissioning or
-destructive hardware operation was performed.
+coverage and integration evidence only. The current preflight added the
+commissioning runbook in `docs/task9-commissioning.md`; no physical
+commissioning or destructive hardware operation was performed.
 
 ## Baseline and safety boundary
 
 - Task 8 merge SHA: `6269b6c2532d25a93ac6b12454106613e17af911`.
 - Task 9 branch: `feat/full-integration-hil-validation`.
-- Final Task 9 HEAD: `028c75319e973f72b9f942ecbebda1dc69dc045e`.
+- Reviewed Task 9 HEAD: `546136f8584973cf6ab0062d866b6140e57c1a38`.
 - Hardware: ESP32-S3 N16R8 with onboard FAT32 microSD; no sensors, heater, or actuators.
 - No firmware upload, reboot, SD mutation, NVS erase, unplug, power-cycle,
   power-cut, or physical commissioning was performed.
@@ -33,7 +34,7 @@ destructive hardware operation was performed.
 | Target builds | PASS | `sigap_n16r8`, `sigap_n16r8_sd`, `sigap_n16r8_sd_spi`, and `sigap_bench`. |
 | Frontend | PASS | 19 files/92 Vitest tests, TypeScript typecheck, and Expo web export pass. |
 | Sensors/calibration/safety | BLOCKED | No physical sensors, MQ-7 heater, or actuators are connected. |
-| Physical BLE/WiFi commissioning | BLOCKED | Requires authorized target run, browser secure context, and test network. |
+| Physical BLE/WiFi commissioning | BLOCKED | Requires authorized target run, browser secure context, test network, and secure one-shot passkey handoff on the display-less board. Procedure: `docs/task9-commissioning.md`. |
 | Physical SD I/O, endurance, 24 h/72 h soak | BLOCKED | Requires explicit hardware authorization and timestamped reconciliation. |
 
 ## Fresh command results
