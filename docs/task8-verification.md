@@ -63,7 +63,7 @@ deployment, and MCU sensor evidence are outside this slice.
 | Schema and frozen fixture corpus | PASS | 14 schemas compile; 24 valid fixtures pass semantic schema validation; 36 invalid fixtures reject as expected |
 | Record/body golden hashes | PASS | `a3a2593618943cc7a1d5f8bc0c90216dc22eb4c3297fb874887c11b7b6ef6883`; `3620edf0548b8a15eb1638fc7d239b1995372a28982f7f1e194949160f166c7c` |
 | Runtime archive route | PASS | POST ingest, exact batch replay, bounded manifest list, materialized per-sensor current projection, chronology-safe late-backfill handling, authenticated record page/export, exact raw-record preservation, and replay dedupe |
-| Current projection benchmark | PASS | Host SQLite benchmark, 100 measured iterations: 100 records 21.4 us / 1,923 B / 32 allocs; 1,000 records 21.8 us / 1,976 B / 32 allocs; 10,000 records 20.7 us / 1,976 B / 32 allocs |
+| Current projection benchmark | PASS | Host SQLite benchmark, 100 measured iterations: 100 records 21.4 us / 1,976 B / 32 allocs; 1,000 records 20.9 us / 1,977 B / 32 allocs; 10,000 records 25.2 us / 1,988 B / 32 allocs |
 | Firmware native suite | PASS | 365/365 on Task 8 worktree |
 | Firmware ASan/UBSan suite | PASS | 365/365 with address/undefined sanitizers |
 | Firmware cppcheck | PASS | no defects |
