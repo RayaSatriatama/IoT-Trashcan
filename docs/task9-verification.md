@@ -10,7 +10,7 @@ commissioning or destructive hardware operation was performed.
 
 - Task 8 merge SHA: `6269b6c2532d25a93ac6b12454106613e17af911`.
 - Task 9 branch: `feat/full-integration-hil-validation`.
-- Reviewed Task 9 source HEAD before this verification: `539e251`.
+- Reviewed Task 9 source HEAD before this verification: `8c104ed`.
 - Hardware: ESP32-S3 N16R8 with onboard FAT32 microSD; no sensors, heater, or actuators.
 - No firmware upload, reboot, SD mutation, NVS erase, unplug, power-cycle,
   power-cut, or physical commissioning was performed.
@@ -32,8 +32,8 @@ commissioning or destructive hardware operation was performed.
 | Frontend dependency triage | PASS (bounded remediation) | Three narrow lockfile-backed overrides remove the production critical finding; remaining findings are documented toolchain/development risk and were not force-upgraded. |
 | Backend ingest and current projection | PASS (synthetic integration) | `internal/e2e` exercises durable ACK, replay dedupe, conflict, auth, export, late backlog, and filtered cursor. |
 | Schemas and frozen hashes | PASS | 14 schemas compile; 24 valid and 36 invalid fixtures; frozen record/body hashes unchanged. |
-| Firmware native suite | PASS | 385/385 test cases on the sensor-readiness source. |
-| Firmware sanitizer suite | PASS | Fresh ASan/UBSan run completed 385/385 cases with no diagnostics. |
+| Firmware native suite | PASS | 389/389 test cases on the sensor-readiness source. |
+| Firmware sanitizer suite | PASS | Fresh ASan/UBSan run completed 389/389 cases with no diagnostics. |
 | Cppcheck | PASS | `pio check -e native --fail-on-defect=low`, no defects. |
 | Target builds | PASS | `sigap_n16r8`, `sigap_n16r8_sd`, `sigap_n16r8_sd_spi`, and `sigap_bench`. |
 | Frontend | PASS | 19 files/92 Vitest tests, TypeScript typecheck, and Expo web export pass. |
@@ -55,8 +55,8 @@ go test ./internal/telemetry (schema/golden)  PASS (14/24/36)
 npm test                                      PASS (19 files, 92 tests)
 npm run typecheck                             PASS
 npm run export:web                            PASS
-pio test -e native                            PASS (385/385)
-ASan/UBSan native folders                    PASS (385/385 cases, 37 folders, 0 failed)
+pio test -e native                            PASS (389/389)
+ASan/UBSan native folders                    PASS (389/389 cases, 38 folders, 0 failed)
 pio check -e native --fail-on-defect=low     PASS (no defects)
 pio run -e sigap_n16r8                       PASS (RAM 49,496; flash 1,077,321)
 pio run -e sigap_n16r8_sd                    PASS (RAM 50,036; flash 1,151,001)
@@ -104,6 +104,9 @@ this branch. The exact overrides and compatibility rationale are recorded in
 - `firmware/lib/maintenance` accepts bounded first-time engineering criteria
   and stages typed HX711, ultrasonic, MQ ADC, DS18B20, and SHT31 profiles only
   through validate/preview/commit.
+- `firmware/test/native/test_sensor_commissioning` runs parser-to-profile
+  persistence regressions for ultrasonic, MQ ADC, DS18B20, and SHT31 address
+  semantics; the existing maintenance test covers HX711.
 - `docs/task9-sensor-commissioning.md` contains operator commands, physical
   reference requirements, diagnostics, and recovery steps.
 - `firmware/lib/provisioning` and `firmware/lib/maintenance` implement the
