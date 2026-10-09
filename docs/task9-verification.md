@@ -369,7 +369,7 @@ preserves same-boot ordering and explicit cross-boot unknown ordering for the
 diagnostic response. Focused device-control, archive-query, e2e, and HTTP
 tests, followed by full Go, race, and vet runs, passed after this change.
 
-## Fresh integrated journey evidence at `5906474` plus local changes
+## Fresh integrated journey evidence at `83f22a3`
 
 The current working changes add production-composition integration regressions
 without changing firmware source. Journey B is exercised through an ephemeral
