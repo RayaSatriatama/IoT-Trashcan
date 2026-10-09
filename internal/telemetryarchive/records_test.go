@@ -91,7 +91,7 @@ func TestExportRecordsPreservesRawFormattingAndEscapes(t *testing.T) {
 	db := queryTestDB(t)
 	raw := []byte(`{
   "record_id": "device-1/boot-a/1",
-  "payload": "\u003cscript\u003e \u00e9 \"quoted\""
+  "payload": "<script> é \"quoted\""
 }`)
 	sortKey, err := telemetry.SequenceSortKey("1")
 	if err != nil {

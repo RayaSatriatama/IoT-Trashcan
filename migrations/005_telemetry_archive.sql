@@ -106,7 +106,9 @@ BEGIN
        record_bytes = excluded.record_bytes
     WHERE excluded.sequence_sort > telemetry_current_candidates.sequence_sort
        OR (excluded.sequence_sort = telemetry_current_candidates.sequence_sort
-           AND excluded.monotonic_us > telemetry_current_candidates.monotonic_us)
+           AND (length(excluded.monotonic_us) > length(telemetry_current_candidates.monotonic_us)
+                OR (length(excluded.monotonic_us) = length(telemetry_current_candidates.monotonic_us)
+                    AND excluded.monotonic_us > telemetry_current_candidates.monotonic_us)))
        OR (excluded.sequence_sort = telemetry_current_candidates.sequence_sort
            AND excluded.monotonic_us = telemetry_current_candidates.monotonic_us
            AND excluded.record_id > telemetry_current_candidates.record_id);

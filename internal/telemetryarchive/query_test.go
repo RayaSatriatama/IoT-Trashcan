@@ -87,7 +87,9 @@ BEGIN
     record_bytes=excluded.record_bytes
   WHERE excluded.sequence_sort > telemetry_current_candidates.sequence_sort
      OR (excluded.sequence_sort = telemetry_current_candidates.sequence_sort
-         AND excluded.monotonic_us > telemetry_current_candidates.monotonic_us)
+         AND (length(excluded.monotonic_us) > length(telemetry_current_candidates.monotonic_us)
+              OR (length(excluded.monotonic_us) = length(telemetry_current_candidates.monotonic_us)
+                  AND excluded.monotonic_us > telemetry_current_candidates.monotonic_us)))
      OR (excluded.sequence_sort = telemetry_current_candidates.sequence_sort
          AND excluded.monotonic_us = telemetry_current_candidates.monotonic_us
          AND excluded.record_id > telemetry_current_candidates.record_id);
@@ -404,6 +406,44 @@ func TestCurrentProjectionRetainsOnlyPerBootCandidates(t *testing.T) {
 	}
 	if current["sequence"] != "5000" {
 		t.Fatalf("projection current=%v, want sequence 5000", current["sequence"])
+	}
+}
+
+func TestCurrentProjectionComparesMonotonicAsDecimalString(t *testing.T) {
+	db := queryTestDB(t)
+	sortKey, err := telemetry.SequenceSortKey("10")
+	if err != nil {
+		t.Fatal(err)
+	}
+	insert := func(recordID, monotonic string) {
+		t.Helper()
+		raw := []byte(fmt.Sprintf(`{"stream":"organic","sensor_id":"mq4","boot_id":"boot-a","sequence":"10","monotonic_us":"%s","recorded_at":null,"time_quality":"UNSYNCED"}`, monotonic))
+		if _, err := db.Exec(`INSERT INTO telemetry_records
+ (device_id,record_id,record_hash,kind,boot_id,sequence_decimal,sequence_sort,monotonic_us,recorded_at,time_quality,stream,sensor_id,quality,record_bytes,first_batch_id,created_at)
+ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, "device-1", recordID,
+			"sha256:"+strings.Repeat("0", 64), "sample", "boot-a", "10",
+			sortKey, monotonic, nil, "UNSYNCED", "organic", "mq4",
+			"READY", raw, "batch", "2026-01-01T00:00:00Z"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	insert("device-1/boot-a/10-a", "900")
+	insert("device-1/boot-a/10-b", "1000")
+
+	query, err := NewArchiveQuery(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := query.Current(context.Background(), "device-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var current map[string]any
+	if err := json.Unmarshal(snapshot.Samples["organic"]["mq4"], &current); err != nil {
+		t.Fatal(err)
+	}
+	if current["monotonic_us"] != "1000" {
+		t.Fatalf("projection compared monotonic lexically: %#v", current)
 	}
 }
 
