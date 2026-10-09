@@ -68,6 +68,7 @@ bool parse_tokens(const char* line, std::size_t length,
 const char* command_name(CommandKind command) noexcept {
   switch (command) {
     case CommandKind::Status: return "status";
+    case CommandKind::SensorStatus: return "sensor.status";
     case CommandKind::BlePasskey: return "ble.passkey";
     case CommandKind::MaintenanceEnter: return "maintenance.enter";
     case CommandKind::MaintenanceExit: return "maintenance.exit";
@@ -195,6 +196,10 @@ bool MaintenanceParser::emit_line(ParseEvent& event) noexcept {
 
   if (equals(line_.data(), tokens[0], "status") && count == 1U) {
     command.kind = CommandKind::Status;
+  } else if (equals(line_.data(), tokens[0], "sensor") && count == 3U &&
+             equals(line_.data(), tokens[1], "status")) {
+    command.kind = CommandKind::SensorStatus;
+    valid = copy_token(line_.data(), tokens[2], command.target);
   } else if (equals(line_.data(), tokens[0], "ble") && count == 2U &&
              equals(line_.data(), tokens[1], "passkey")) {
     command.kind = CommandKind::BlePasskey;

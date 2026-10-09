@@ -10,6 +10,7 @@
 #include "maintenance/storage_probe_response.h"
 #include <limits>
 #include "maintenance/runtime.h"
+#include "calibration/calibration_session.h"
 #include "acquisition/profile_manager.h"
 #include "acquisition/profile_store.h"
 #include "config/config_store.h"
@@ -156,6 +157,22 @@ CommandStatus run_router_line(CommandRouter& router, const char* line,
   TEST_ASSERT_TRUE(emitted);
   response = MaintenanceResponse{};
   return router.execute(event.command, now_us, response);
+}
+
+sigap::acquisition::SampleRecord diagnostic_sample(
+    sigap::acquisition::SensorId sensor,
+    sigap::acquisition::StreamId stream,
+    sigap::acquisition::SampleQuality quality,
+    sigap::acquisition::SampleReason reason,
+    uint64_t sequence, uint64_t monotonic_us) {
+  sigap::acquisition::SampleRecord sample{};
+  sample.header.sensor = sensor;
+  sample.header.stream = stream;
+  sample.header.sequence = sequence;
+  sample.header.monotonic_us = monotonic_us;
+  sample.quality = quality;
+  sample.reason = reason;
+  return sample;
 }
 
 struct FakePasskeyHandoff final
@@ -889,6 +906,183 @@ void test_command_router_keeps_draft_isolated_and_redacts_status() {
   TEST_ASSERT_TRUE(response.view().find("config_hash=") != std::string_view::npos);
 }
 
+void test_sensor_status_parser_requires_one_known_target() {
+  MaintenanceParser parser{};
+  ParseEvent event{};
+  bool emitted{false};
+  for (const char character : std::string("sensor status mq7\n")) {
+    emitted = parser.consume(character, event) || emitted;
+  }
+  TEST_ASSERT_TRUE(emitted);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),
+                        static_cast<int>(event.status));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandKind::SensorStatus),
+                        static_cast<int>(event.command.kind));
+  TEST_ASSERT_EQUAL_STRING("mq7", event.command.target.c_str());
+}
+
+void test_sensor_status_reports_missing_evidence_without_mutation() {
+  sigap::config::MemoryConfigStore config_store{};
+  sigap::config::ConfigManager config_manager(config_store, kValidationContext);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(sigap::config::ConfigBootResult::BootstrapDefaults),
+                        static_cast<int>(config_manager.begin()));
+  sigap::provisioning::MemorySecretBlobStore secret_backend{};
+  sigap::provisioning::PersistentSecretStore secrets(secret_backend);
+  sigap::calibration::CalibrationEvidenceCache evidence{};
+  CommandRouter router(config_manager, secrets, nullptr, &evidence);
+  MaintenanceResponse response{};
+
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),
+                        static_cast<int>(run_router_line(
+                            router, "sensor status mq7\n", 100U, response)));
+  TEST_ASSERT_NOT_EQUAL(std::string_view::npos, response.view().find("s=mq7\n"));
+  TEST_ASSERT_NOT_EQUAL(std::string_view::npos, response.view().find("av=0\n"));
+  TEST_ASSERT_NOT_EQUAL(std::string_view::npos, response.view().find("q=UNAVAILABLE\n"));
+  TEST_ASSERT_NOT_EQUAL(std::string_view::npos, response.view().find("c=IDLE\n"));
+  TEST_ASSERT_TRUE(response.size() <= kMaxResponseBytes);
+}
+
+void test_sensor_status_reports_uncalibrated_evidence_and_missing_profile() {
+  using namespace sigap::acquisition;
+  sigap::config::MemoryConfigStore config_store{};
+  sigap::config::ConfigManager config_manager(config_store, kValidationContext);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(sigap::config::ConfigBootResult::BootstrapDefaults),
+                        static_cast<int>(config_manager.begin()));
+  sigap::provisioning::MemorySecretBlobStore secret_backend{};
+  sigap::provisioning::PersistentSecretStore secrets(secret_backend);
+  MemoryProfileStore profile_store{};
+  ProfilePersistence persistence(profile_store);
+  ProfileManager profiles(persistence);
+  TEST_ASSERT_TRUE(profiles.load(ProfileTarget::Mq4));
+  sigap::calibration::CalibrationEvidenceCache evidence{};
+  auto sample = diagnostic_sample(SensorId::Mq4, StreamId::Organic,
+                                  SampleQuality::Uncalibrated,
+                                  SampleReason::ProfileMissing, 1U, 100U);
+  sample.raw.present = true;
+  sample.raw.identity_valid = true;
+  evidence.observe(sample);
+  CommandRouter router(config_manager, secrets, &profiles, &evidence);
+  MaintenanceResponse response{};
+
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),
+                        static_cast<int>(run_router_line(
+                            router, "sensor status mq4\n", 101U, response)));
+  TEST_ASSERT_NOT_EQUAL(std::string_view::npos, response.view().find("q=UNCALIBRATED\n"));
+  TEST_ASSERT_NOT_EQUAL(std::string_view::npos, response.view().find("r=PROFILE_MISSING\n"));
+  TEST_ASSERT_NOT_EQUAL(std::string_view::npos, response.view().find("p=0\n"));
+  TEST_ASSERT_NOT_EQUAL(std::string_view::npos, response.view().find("a=1\n"));
+}
+
+void test_sensor_status_reports_crc_failure_and_stale_evidence() {
+  using namespace sigap::acquisition;
+  sigap::config::MemoryConfigStore config_store{};
+  sigap::config::ConfigManager config_manager(config_store, kValidationContext);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(sigap::config::ConfigBootResult::BootstrapDefaults),
+                        static_cast<int>(config_manager.begin()));
+  sigap::provisioning::MemorySecretBlobStore secret_backend{};
+  sigap::provisioning::PersistentSecretStore secrets(secret_backend);
+  sigap::calibration::CalibrationEvidenceCache evidence{};
+  auto sample = diagnostic_sample(SensorId::Ds18b20B3, StreamId::B3,
+                                  SampleQuality::CrcError,
+                                  SampleReason::CrcError, 1U, 100U);
+  sample.raw.present = true;
+  sample.raw.identity_valid = true;
+  sample.raw.crc_valid = false;
+  sample.raw.conversion_complete = true;
+  sample.raw.ds_wire_evidence = true;
+  evidence.observe(sample);
+  CommandRouter router(config_manager, secrets, nullptr, &evidence);
+  MaintenanceResponse response{};
+
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),
+                        static_cast<int>(run_router_line(
+                            router, "sensor status ds18b20_b3\n", 5000101U,
+                            response)));
+  TEST_ASSERT_NOT_EQUAL(std::string_view::npos, response.view().find("q=CRC_ERROR\n"));
+  TEST_ASSERT_NOT_EQUAL(std::string_view::npos, response.view().find("fr=STALE\n"));
+  TEST_ASSERT_NOT_EQUAL(std::string_view::npos, response.view().find("f=id=1,crc=0,conv=1,wire=1\n"));
+  TEST_ASSERT_NOT_EQUAL(std::string_view::npos, response.view().find("x=1\n"));
+  TEST_ASSERT_TRUE(response.size() <= kMaxResponseBytes);
+}
+
+void test_sensor_status_reports_active_profile_and_isolates_channels() {
+  using namespace sigap::acquisition;
+  sigap::config::MemoryConfigStore config_store{};
+  sigap::config::ConfigManager config_manager(config_store, kValidationContext);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(sigap::config::ConfigBootResult::BootstrapDefaults),
+                        static_cast<int>(config_manager.begin()));
+  sigap::provisioning::MemorySecretBlobStore secret_backend{};
+  sigap::provisioning::PersistentSecretStore secrets(secret_backend);
+  MemoryProfileStore profile_store{};
+  ProfilePersistence persistence(profile_store);
+  ProfileCodec codec{};
+  EncodedProfile encoded{};
+  TEST_ASSERT_TRUE(codec.encode(make_profile(7U, 1000.0F), encoded));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileCommitResult::Committed),
+                        static_cast<int>(persistence.commit(ProfileTarget::Hx711Organic,
+                                                            encoded)));
+  ProfileManager profiles(persistence, codec);
+  TEST_ASSERT_TRUE(profiles.load(ProfileTarget::Hx711Organic));
+  sigap::calibration::CalibrationEvidenceCache evidence{};
+  auto hx = diagnostic_sample(SensorId::Hx711Organic, StreamId::Organic,
+                              SampleQuality::Ready, SampleReason::DataReady,
+                              3U, 1000U);
+  hx.raw.present = true;
+  hx.raw.identity_valid = true;
+  evidence.observe(hx);
+  auto other = diagnostic_sample(SensorId::Mq7, StreamId::B3,
+                                 SampleQuality::Timeout, SampleReason::Timeout,
+                                 4U, 1001U);
+  evidence.observe(other);
+  CommandRouter router(config_manager, secrets, &profiles, &evidence);
+  MaintenanceResponse response{};
+
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),
+                        static_cast<int>(run_router_line(
+                            router, "sensor status hx711_organic\n", 1002U,
+                            response)));
+  TEST_ASSERT_NOT_EQUAL(std::string_view::npos, response.view().find("st=organic\n"));
+  TEST_ASSERT_NOT_EQUAL(std::string_view::npos, response.view().find("q=READY\n"));
+  TEST_ASSERT_NOT_EQUAL(std::string_view::npos, response.view().find("p=1\n"));
+  TEST_ASSERT_NOT_EQUAL(std::string_view::npos, response.view().find("pv=7\n"));
+  TEST_ASSERT_NOT_EQUAL(std::string_view::npos, response.view().find("a=1\n"));
+  TEST_ASSERT_EQUAL(std::string_view::npos, response.view().find("mq7"));
+}
+
+void test_sensor_status_is_bounded_and_redacts_sensitive_or_raw_values() {
+  using namespace sigap::acquisition;
+  sigap::config::MemoryConfigStore config_store{};
+  sigap::config::ConfigManager config_manager(config_store, kValidationContext);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(sigap::config::ConfigBootResult::BootstrapDefaults),
+                        static_cast<int>(config_manager.begin()));
+  sigap::provisioning::MemorySecretBlobStore secret_backend{};
+  sigap::provisioning::PersistentSecretStore secrets(secret_backend);
+  TEST_ASSERT_TRUE(secrets.rotate_device_token("diagnostic-secret"));
+  sigap::calibration::CalibrationEvidenceCache evidence{};
+  auto sample = diagnostic_sample(SensorId::Sht31_45, StreamId::B3,
+                                  SampleQuality::Ready, SampleReason::DataReady,
+                                  1U, 100U);
+  sample.raw.present = true;
+  sample.raw.identity_valid = true;
+  sample.raw.temperature_crc_valid = true;
+  sample.raw.humidity_crc_valid = true;
+  sample.raw.temperature_centi_c = 12345;
+  sample.raw.humidity_centi_pct = 54321;
+  evidence.observe(sample);
+  CommandRouter router(config_manager, secrets, nullptr, &evidence);
+  MaintenanceResponse response{};
+
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),
+                        static_cast<int>(run_router_line(
+                            router, "sensor status sht31_45\n", 101U,
+                            response)));
+  TEST_ASSERT_TRUE(response.size() <= kMaxResponseBytes);
+  TEST_ASSERT_EQUAL(std::string_view::npos,
+                    response.view().find("diagnostic-secret"));
+  TEST_ASSERT_EQUAL(std::string_view::npos, response.view().find("12345"));
+  TEST_ASSERT_EQUAL(std::string_view::npos, response.view().find("54321"));
+}
+
 void test_maintenance_memory_footprint_is_bounded() {
   std::printf("memory MaintenanceParser=%zu MaintenanceResponse=%zu "
               "CommandRouter=%zu MaintenanceService=%zu\n",
@@ -928,6 +1122,12 @@ void setup() {
   RUN_TEST(test_response_redacts_secret_and_stays_bounded);
   RUN_TEST(test_parser_failure_does_not_stop_later_commands);
   RUN_TEST(test_command_router_keeps_draft_isolated_and_redacts_status);
+  RUN_TEST(test_sensor_status_parser_requires_one_known_target);
+  RUN_TEST(test_sensor_status_reports_missing_evidence_without_mutation);
+  RUN_TEST(test_sensor_status_reports_uncalibrated_evidence_and_missing_profile);
+  RUN_TEST(test_sensor_status_reports_crc_failure_and_stale_evidence);
+  RUN_TEST(test_sensor_status_reports_active_profile_and_isolates_channels);
+  RUN_TEST(test_sensor_status_is_bounded_and_redacts_sensitive_or_raw_values);
   RUN_TEST(test_maintenance_memory_footprint_is_bounded);
   UNITY_END();
 }

@@ -156,12 +156,33 @@ struct Sht31Trial final {
 using TrialObservation = std::variant<Hx711Trial, UltrasonicTrial, MqTrial,
                                       Ds18b20Trial, Sht31Trial>;
 
+struct DiagnosticEvidence final {
+  bool available{false};
+  acquisition::SensorId sensor{acquisition::SensorId::Mq4};
+  acquisition::StreamId stream{acquisition::StreamId::Organic};
+  acquisition::SampleQuality quality{acquisition::SampleQuality::Timeout};
+  acquisition::SampleReason reason{acquisition::SampleReason::None};
+  bool raw_present{false};
+  bool identity_valid{false};
+  bool crc_valid{false};
+  bool conversion_complete{false};
+  bool temperature_crc_valid{false};
+  bool humidity_crc_valid{false};
+  bool heater_ready{false};
+  bool wire_evidence{false};
+  uint64_t observed_at_us{0U};
+  uint32_t accepted_count{0U};
+  uint32_t rejected_count{0U};
+};
+
 class ICalibrationEvidenceSource {
  public:
   virtual ~ICalibrationEvidenceSource() = default;
   virtual bool latest(CalibrationTarget target, uint64_t after_sequence,
                       TrialObservation& output,
                       uint64_t& observed_sequence) const noexcept = 0;
+  virtual bool diagnostic(CalibrationTarget,
+                          DiagnosticEvidence&) const noexcept { return false; }
   // Optional session-owned engineering setup for first-time ultrasonic
   // calibration. Sources that do not expose this setting return false.
   virtual bool set_ultrasonic_engineering_conversion(
@@ -194,12 +215,15 @@ class CalibrationEvidenceCache final
   bool latest(CalibrationTarget target, uint64_t after_sequence,
               TrialObservation& output,
               uint64_t& observed_sequence) const noexcept override;
+  bool diagnostic(CalibrationTarget target,
+                  DiagnosticEvidence& output) const noexcept override;
 
  private:
   static constexpr std::size_t kTargetCount{13U};
   std::array<TrialObservation, kTargetCount> observations_{};
   std::array<uint64_t, kTargetCount> sequences_{};
   std::array<bool, kTargetCount> present_{};
+  std::array<DiagnosticEvidence, kTargetCount> diagnostics_{};
   std::array<UltrasonicEngineeringConversion, 3U>
       ultrasonic_engineering_conversion_{};
   const acquisition::TargetProfileSet* profiles_{nullptr};

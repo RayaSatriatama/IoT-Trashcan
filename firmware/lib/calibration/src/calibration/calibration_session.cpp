@@ -165,6 +165,24 @@ void CalibrationEvidenceCache::observe(
   observations_[index] = observation;
   sequences_[index] = sample.header.sequence;
   present_[index] = true;
+  DiagnosticEvidence& diagnostic = diagnostics_[index];
+  diagnostic.available = true;
+  diagnostic.sensor = sample.header.sensor;
+  diagnostic.stream = sample.header.stream;
+  diagnostic.quality = sample.quality;
+  diagnostic.reason = sample.reason;
+  diagnostic.raw_present = sample.raw.present;
+  diagnostic.identity_valid = sample.raw.identity_valid;
+  diagnostic.crc_valid = sample.raw.crc_valid;
+  diagnostic.conversion_complete = sample.raw.conversion_complete;
+  diagnostic.temperature_crc_valid = sample.raw.temperature_crc_valid;
+  diagnostic.humidity_crc_valid = sample.raw.humidity_crc_valid;
+  diagnostic.heater_ready = sample.raw.heater_ready;
+  diagnostic.wire_evidence = sample.raw.ds_wire_evidence;
+  diagnostic.observed_at_us = sample.header.monotonic_us;
+  uint32_t& count = accepted_quality(sample.quality)
+                        ? diagnostic.accepted_count : diagnostic.rejected_count;
+  if (count != UINT32_MAX) ++count;
 }
 
 bool CalibrationEvidenceCache::latest(
@@ -175,6 +193,14 @@ bool CalibrationEvidenceCache::latest(
       sequences_[index] <= after_sequence) return false;
   output = observations_[index];
   observed_sequence = sequences_[index];
+  return true;
+}
+
+bool CalibrationEvidenceCache::diagnostic(
+    CalibrationTarget target, DiagnosticEvidence& output) const noexcept {
+  const auto index = target_index(target);
+  if (index >= diagnostics_.size() || !diagnostics_[index].available) return false;
+  output = diagnostics_[index];
   return true;
 }
 

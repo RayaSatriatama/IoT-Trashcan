@@ -116,6 +116,9 @@ class CommandRouter final : public IMaintenanceCommandSink,
       calibration::CalibrationTarget& target) noexcept;
   CommandStatus execute_config(const MaintenanceCommand& command,
                                MaintenanceResponse& response) noexcept;
+  CommandStatus sensor_status(const MaintenanceCommand& command,
+                              uint64_t now_us,
+                              MaintenanceResponse& response) noexcept;
   bool build_and_stage_calibration_profile(uint64_t now_us) noexcept;
   CommandStatus profile_transfer(const MaintenanceCommand& command,
                                  MaintenanceResponse& response) noexcept;

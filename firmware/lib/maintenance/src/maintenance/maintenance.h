@@ -38,6 +38,7 @@ struct FixedText final {
 enum class CommandKind : std::uint8_t {
   Unknown,
   Status,
+  SensorStatus,
   BlePasskey,
   MaintenanceEnter,
   MaintenanceExit,

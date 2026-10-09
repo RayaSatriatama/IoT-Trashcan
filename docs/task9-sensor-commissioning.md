@@ -158,8 +158,22 @@ are validated independently; one address failing does not disable the other.
 
 ## Diagnostics and recovery
 
+Use `sensor status <target>` for a bounded, read-only snapshot of one target.
+Targets are `hx711_organic`, `hx711_inorganic`, `hx711_b3`,
+`ultrasonic_organic`, `ultrasonic_inorganic`, `ultrasonic_b3`, `mq4`,
+`mq135`, `mq7`, `mq8`, `ds18b20_b3`, `sht31_44`, and `sht31_45`.
+
+The response has only bounded fields: `s` sensor, `st` stream, `av` evidence
+availability, `q` quality, `r` reason, `raw` raw presence, `age` monotonic
+age in microseconds, `fr` freshness, `f` family-relevant protocol flags, `p`
+profile presence, `pv` profile version, `c` calibration state, and `a`/`x`
+accepted/rejected evidence counts. It never prints raw values, ROM/scratchpad,
+profile hashes, Wi-Fi credentials, or device tokens. `fr=STALE` means the
+latest observation is marked stale or exceeds the fixed diagnostic window of
+5 seconds for HX711, ultrasonic, DS18B20, and SHT31, or 10 seconds for MQ.
+
 Use `calibration status`, `profile status <target>`, and the normal `status`
-command to inspect mode, target, quality, reason, and profile identity.
+for their respective lifecycle and device summaries.
 `calibration cancel` clears the target-local overlay. A timeout, transport
 loss, reboot, or failed commit also discards the draft. To retry, start a new
 session and provide all criteria again. Use the existing profile export and
