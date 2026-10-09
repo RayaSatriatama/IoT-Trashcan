@@ -88,7 +88,7 @@ implementation and shared calibration executor are not yet bound into
 `SigapApp`. Production operator authorization also requires deployment
 configuration. This document therefore does not claim Task 9 complete.
 
-## Current remediation status (`4fc5bddb830d4e0a4b50930227b2366421937cf2`)
+## Current remediation status (`bf37efcf0ea86ea9848d57d395f729f58b77b6ef`)
 
 The current source supersedes the older remediation note above in the
 following areas:

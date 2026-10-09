@@ -201,7 +201,7 @@ the Arduino HTTP implementation and shared calibration executor are still not
 bound into `SigapApp`. Operator authorization remains fail-closed and requires
 deployment provisioning. Task 9 therefore remains HOLD.
 
-## Fresh unified web calibration remediation (`4fc5bddb830d4e0a4b50930227b2366421937cf2`)
+## Fresh unified web calibration remediation (`bf37efcf0ea86ea9848d57d395f729f58b77b6ef`)
 
 The current source adds the production-side composition points that were
 missing from the previous ledger. `SigapApp` owns one calibration controller,
