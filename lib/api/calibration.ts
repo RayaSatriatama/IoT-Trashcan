@@ -1,0 +1,152 @@
+import { ApiError, type Fetcher } from './client';
+
+/** The website never persists this token. Keep the value in the caller's
+ * authenticated session and pass it to this short-lived client instance. */
+export type OperatorAuthorization = {
+  bearerToken: string;
+  operatorId?: string;
+};
+
+export const CALIBRATION_SENSOR_IDS = [
+  'hx711_organic', 'hx711_inorganic', 'hx711_b3',
+  'ultrasonic_organic', 'ultrasonic_inorganic', 'ultrasonic_b3',
+  'mq4', 'mq135', 'mq7', 'mq8', 'ds18b20_b3', 'sht31_44', 'sht31_45',
+] as const;
+export type CalibrationSensorId = typeof CALIBRATION_SENSOR_IDS[number];
+export type CalibrationTransport = 'ble' | 'https';
+export type CalibrationState = 'IDLE' | 'CAPTURING' | 'VALIDATING' | 'PREVIEW_READY' | 'COMMITTING' | 'COMMITTED' | 'CANCELLED' | 'EXPIRED' | 'FAILED';
+export type CalibrationQuality = 'READY' | 'CALIBRATING' | 'UNCALIBRATED' | 'STALE' | 'TIMEOUT' | 'DISCONNECTED' | 'CRC_ERROR' | 'INVALID';
+
+export type RawEvidence = {
+  present: boolean;
+  value?: number | null;
+  unit?: string;
+  identity_verified?: boolean;
+  crc_valid?: boolean;
+  conversion_complete?: boolean;
+  heater_ready?: boolean;
+};
+
+export type SensorDiagnostic = {
+  sensor_id: CalibrationSensorId;
+  stream: 'organic' | 'inorganic' | 'b3' | string;
+  quality: CalibrationQuality;
+  reason: string;
+  raw: RawEvidence;
+  converted_value: number | null;
+  converted_unit: string | null;
+  fresh: boolean;
+  age_ms: number | null;
+  last_sequence: string | null;
+  profile_present: boolean;
+  profile_version: string | null;
+  profile_hash: string | null;
+  calibration_state: CalibrationState;
+  accepted_samples: number;
+  rejected_samples: number;
+};
+
+export type CalibrationCapabilities = {
+  sensor_id: CalibrationSensorId;
+  references: Array<{ name: string; unit: string; required: boolean; min?: number; max?: number }>;
+  criteria: Array<{ name: string; unit: string; required: boolean; min?: number; max?: number }>;
+  engineering_parameters: Array<{ name: string; unit: string; required: boolean }>;
+};
+
+export type CalibrationCommand = {
+  command_id: string;
+  device_id: string;
+  sensor_id: CalibrationSensorId;
+  operation: string;
+  state: CalibrationState;
+  expires_at: string;
+  accepted_at?: string;
+  error?: string;
+};
+
+export type CalibrationPreview = {
+  sensor_id: CalibrationSensorId;
+  proposal_hash: string;
+  profile_version: string;
+  parameters: Record<string, number | string | boolean | null>;
+  evidence_count: number;
+  evidence_hash: string;
+  expires_at: string;
+};
+
+export type CalibrationCommandRequest = {
+  device_id: string;
+  sensor_id: CalibrationSensorId;
+  operation: 'START' | 'SET_CRITERIA' | 'CAPTURE' | 'VALIDATE' | 'PREVIEW' | 'COMMIT' | 'CANCEL' | 'ROLLBACK';
+  session_id?: string;
+  parameters?: Record<string, number | string | boolean>;
+  references?: Record<string, number>;
+  criteria?: Record<string, number>;
+  expected_profile_version?: string;
+  expected_profile_hash?: string;
+  expires_at?: string;
+};
+
+type CalibrationResponse = {
+  diagnostic?: SensorDiagnostic;
+  capabilities?: CalibrationCapabilities;
+  command?: CalibrationCommand;
+  preview?: CalibrationPreview;
+  session_id?: string;
+};
+
+export type CalibrationApi = ReturnType<typeof createCalibrationApi>;
+
+export function createCalibrationApi(
+  auth: OperatorAuthorization,
+  fetcher: Fetcher = fetch,
+  baseUrl = configuredBaseUrl(),
+) {
+  if (!auth.bearerToken.trim()) throw new Error('Operator authorization is required');
+
+  const path = (value: string) => `${baseUrl.replace(/\/$/u, '')}${value}`;
+  const headers = () => ({
+    Accept: 'application/json',
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${auth.bearerToken}`,
+  });
+
+  async function parse<T>(response: Response): Promise<T> {
+    const text = await response.text();
+    let body: unknown = null;
+    try { body = text ? JSON.parse(text) : null; }
+    catch { throw new ApiError('Server returned malformed JSON', response.status); }
+    if (!response.ok) {
+      const message = typeof body === 'object' && body !== null && 'error' in body && typeof body.error === 'string'
+        ? body.error : response.statusText || `Request failed with status ${response.status}`;
+      throw new ApiError(message, response.status);
+    }
+    return body as T;
+  }
+
+  async function get<T>(url: string, signal?: AbortSignal): Promise<T> {
+    return parse<T>(await fetcher(path(url), { method: 'GET', headers: headers(), signal }));
+  }
+  async function post<T>(url: string, payload: unknown, signal?: AbortSignal): Promise<T> {
+    return parse<T>(await fetcher(path(url), { method: 'POST', headers: headers(), body: JSON.stringify(payload), signal }));
+  }
+
+  return {
+    getDiagnostics: (deviceId: string, sensorId: CalibrationSensorId, signal?: AbortSignal) =>
+      get<CalibrationResponse>(`/api/devices/${encodeURIComponent(deviceId)}/calibration/diagnostics?sensor_id=${encodeURIComponent(sensorId)}`, signal),
+    getCapabilities: (deviceId: string, sensorId: CalibrationSensorId, signal?: AbortSignal) =>
+      get<CalibrationResponse>(`/api/devices/${encodeURIComponent(deviceId)}/calibration/capabilities?sensor_id=${encodeURIComponent(sensorId)}`, signal),
+    submit: (request: CalibrationCommandRequest, signal?: AbortSignal) =>
+      post<CalibrationResponse>('/api/device-control/commands', request, signal),
+    getCommand: (deviceId: string, commandId: string, signal?: AbortSignal) =>
+      get<CalibrationResponse>(`/api/device-control/commands/${encodeURIComponent(commandId)}?device_id=${encodeURIComponent(deviceId)}`, signal),
+  };
+}
+
+function configuredBaseUrl(): string {
+  if (typeof process !== 'undefined' && process.env.EXPO_PUBLIC_API_BASE_URL) {
+    return process.env.EXPO_PUBLIC_API_BASE_URL.replace(/\/$/u, '');
+  }
+  return '';
+}
+
