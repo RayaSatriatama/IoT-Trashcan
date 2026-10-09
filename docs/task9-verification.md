@@ -28,7 +28,7 @@ destructive hardware operation was performed.
 | Backend ingest and current projection | PASS (synthetic integration) | `internal/e2e` exercises durable ACK, replay dedupe, conflict, auth, export, late backlog, and filtered cursor. |
 | Schemas and frozen hashes | PASS | 14 schemas compile; 24 valid and 36 invalid fixtures; frozen record/body hashes unchanged. |
 | Firmware native suite | PASS | 370/370 test cases on final Task 9 source. |
-| Firmware sanitizer suite | PASS | ASan/UBSan configuration ran all 37 native test folders, 0 failures. |
+| Firmware sanitizer suite | PASS | ASan/UBSan configuration ran all 37 native test folders, 370/370 cases, 0 failures. |
 | Cppcheck | PASS | `pio check -e native --fail-on-defect=low`, no defects. |
 | Target builds | PASS | `sigap_n16r8`, `sigap_n16r8_sd`, `sigap_n16r8_sd_spi`, and `sigap_bench`. |
 | Frontend | PASS | 19 files/92 Vitest tests, TypeScript typecheck, and Expo web export pass. |
@@ -50,7 +50,7 @@ npm test                                      PASS (19 files, 92 tests)
 npm run typecheck                             PASS
 npm run export:web                            PASS
 pio test -e native                            PASS (370/370)
-ASan/UBSan native folders                    PASS (37 folders, 0 failed)
+ASan/UBSan native folders                    PASS (370/370 cases, 37 folders, 0 failed)
 pio check -e native --fail-on-defect=low     PASS (no defects)
 pio run -e sigap_n16r8                       PASS (RAM 49,496; flash 1,073,557)
 pio run -e sigap_n16r8_sd                    PASS (RAM 50,036; flash 1,147,337)
