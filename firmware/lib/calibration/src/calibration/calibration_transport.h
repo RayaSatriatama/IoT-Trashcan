@@ -2,6 +2,8 @@
 
 #include <array>
 #include <cstdint>
+#include <cstddef>
+#include <type_traits>
 
 #include "calibration/calibration_session.h"
 
@@ -101,6 +103,21 @@ class ICalibrationTransportAuthorizer {
   virtual bool authorize(const CalibrationCommandEnvelope& command) const noexcept = 0;
 };
 
+// Optional durable replay boundary.  A target may back this with the same
+// authenticated NVS/profile journal used by ProfileManager.  The controller
+// remains safe when no store is installed: retries are still compared against
+// the bounded in-memory replay ring, while a persistent implementation can
+// recover a lost COMMIT response after reboot.
+class ICalibrationTransportReplayStore {
+ public:
+  virtual ~ICalibrationTransportReplayStore() = default;
+  virtual bool load(uint64_t request_id,
+                    CalibrationCommandEnvelope& command,
+                    CalibrationResultEnvelope& result) const noexcept = 0;
+  virtual bool save(const CalibrationCommandEnvelope& command,
+                    const CalibrationResultEnvelope& result) noexcept = 0;
+};
+
 class ICalibrationTransportWorkflow {
  public:
   virtual ~ICalibrationTransportWorkflow() = default;
@@ -129,8 +146,10 @@ class CalibrationTransportController final {
   explicit CalibrationTransportController(
       ICalibrationTransportWorkflow& workflow,
       uint64_t device_id,
-      const ICalibrationTransportAuthorizer* authorizer = nullptr) noexcept
-      : workflow_(workflow), device_id_(device_id), authorizer_(authorizer) {}
+      const ICalibrationTransportAuthorizer* authorizer = nullptr,
+      ICalibrationTransportReplayStore* replay_store = nullptr) noexcept
+      : workflow_(workflow), device_id_(device_id), authorizer_(authorizer),
+        replay_store_(replay_store) {}
 
   bool execute(const CalibrationCommandEnvelope& command,
                uint64_t now_us,
@@ -148,17 +167,30 @@ class CalibrationTransportController final {
   bool expected_profile_matches(
       const CalibrationCommandEnvelope& command) const noexcept;
 
+  static bool same_identity(const CalibrationCommandEnvelope& left,
+                            const CalibrationCommandEnvelope& right) noexcept;
+  bool find_replay(const CalibrationCommandEnvelope& command,
+                   CalibrationResultEnvelope& output) const noexcept;
+  void remember(const CalibrationCommandEnvelope& command,
+                const CalibrationResultEnvelope& result) noexcept;
+
+  static constexpr std::size_t kReplayEntries{4U};
+  struct ReplayEntry final {
+    CalibrationCommandEnvelope command{};
+    CalibrationResultEnvelope result{};
+    bool valid{false};
+  };
+
   ICalibrationTransportWorkflow& workflow_;
   uint64_t device_id_{0U};
   const ICalibrationTransportAuthorizer* authorizer_{nullptr};
+  ICalibrationTransportReplayStore* replay_store_{nullptr};
   CalibrationTransport owner_{CalibrationTransport::Usb};
   bool owner_active_{false};
   uint64_t session_id_{0U};
   uint64_t next_session_id_{1U};
-  uint64_t last_request_id_{0U};
-  CalibrationCommandEnvelope last_command_{};
-  CalibrationResultEnvelope last_result_{};
-  bool last_result_valid_{false};
+  std::array<ReplayEntry, kReplayEntries> replay_{};
+  std::size_t replay_next_{0U};
 };
 
 }  // namespace sigap::calibration

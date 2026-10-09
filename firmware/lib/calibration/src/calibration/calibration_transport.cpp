@@ -3,11 +3,40 @@
 namespace sigap::calibration {
 namespace {
 
-bool same_request(const CalibrationCommandEnvelope& left,
-                 const CalibrationCommandEnvelope& right) noexcept {
-  return left.request_id != 0U && left.request_id == right.request_id &&
-         left.device_id == right.device_id &&
-         left.operation == right.operation && left.session_id == right.session_id;
+bool criteria_equal(const CaptureCriteria& left,
+                    const CaptureCriteria& right) noexcept {
+  if (left.index() != right.index()) return false;
+  return std::visit(
+      [](const auto& lhs, const auto& rhs) noexcept {
+        using L = std::decay_t<decltype(lhs)>;
+        using R = std::decay_t<decltype(rhs)>;
+        if constexpr (!std::is_same_v<L, R>) {
+          return false;
+        } else {
+          if constexpr (std::is_same_v<L, Hx711CaptureCriteria>) {
+            return lhs.required_samples == rhs.required_samples &&
+                   lhs.max_span_counts == rhs.max_span_counts;
+          } else if constexpr (std::is_same_v<L, DistanceCaptureCriteria>) {
+            return lhs.required_samples == rhs.required_samples &&
+                   lhs.max_span_mm == rhs.max_span_mm;
+          } else if constexpr (std::is_same_v<L, MqCaptureCriteria>) {
+            return lhs.required_samples == rhs.required_samples &&
+                   lhs.max_span_counts == rhs.max_span_counts &&
+                   lhs.require_low_detect == rhs.require_low_detect;
+          } else if constexpr (std::is_same_v<L, Ds18b20CaptureCriteria>) {
+            return lhs.required_samples == rhs.required_samples &&
+                   lhs.max_span_centi_c == rhs.max_span_centi_c &&
+                   lhs.require_rom_match == rhs.require_rom_match;
+          } else {
+            return lhs.required_samples == rhs.required_samples &&
+                   lhs.max_temperature_span_centi_c ==
+                       rhs.max_temperature_span_centi_c &&
+                   lhs.max_humidity_span_centi_pct ==
+                       rhs.max_humidity_span_centi_pct;
+          }
+        }
+      },
+      left, right);
 }
 
 bool read_only(CalibrationOperation operation) noexcept {
@@ -19,6 +48,69 @@ bool read_only(CalibrationOperation operation) noexcept {
 }
 
 }  // namespace
+
+bool CalibrationTransportController::same_identity(
+    const CalibrationCommandEnvelope& left,
+    const CalibrationCommandEnvelope& right) noexcept {
+  return left.request_id != 0U && left.request_id == right.request_id &&
+         left.protocol_version == right.protocol_version &&
+         left.device_id == right.device_id && left.session_id == right.session_id &&
+         left.expires_at_us == right.expires_at_us &&
+         left.transport == right.transport && left.operation == right.operation &&
+         left.target == right.target && left.criteria_present == right.criteria_present &&
+         (!left.criteria_present || criteria_equal(left.criteria, right.criteria)) &&
+         left.anchor == right.anchor &&
+         left.expected_profile_present == right.expected_profile_present &&
+         (!left.expected_profile_present ||
+          left.expected_profile.equals(right.expected_profile));
+}
+
+bool CalibrationTransportController::find_replay(
+    const CalibrationCommandEnvelope& command,
+    CalibrationResultEnvelope& output) const noexcept {
+  for (const auto& entry : replay_) {
+    if (entry.valid && entry.command.request_id == command.request_id) {
+      if (!same_identity(entry.command, command)) {
+        output = CalibrationResultEnvelope{};
+        output.request_id = command.request_id;
+        output.status = CalibrationCommandStatus::Conflict;
+        return true;
+      }
+      output = entry.result;
+      output.status = CalibrationCommandStatus::Replayed;
+      return true;
+    }
+  }
+  if (replay_store_ != nullptr) {
+    CalibrationCommandEnvelope persisted_command{};
+    CalibrationResultEnvelope persisted_result{};
+    if (replay_store_->load(command.request_id, persisted_command,
+                            persisted_result)) {
+      if (!same_identity(persisted_command, command)) {
+        output = CalibrationResultEnvelope{};
+        output.request_id = command.request_id;
+        output.status = CalibrationCommandStatus::Conflict;
+        return true;
+      }
+      output = persisted_result;
+      output.status = CalibrationCommandStatus::Replayed;
+      return true;
+    }
+  }
+  return false;
+}
+
+void CalibrationTransportController::remember(
+    const CalibrationCommandEnvelope& command,
+    const CalibrationResultEnvelope& result) noexcept {
+  replay_[replay_next_].command = command;
+  replay_[replay_next_].result = result;
+  replay_[replay_next_].valid = true;
+  replay_next_ = (replay_next_ + 1U) % replay_.size();
+  if (replay_store_ != nullptr) {
+    (void)replay_store_->save(command, result);
+  }
+}
 
 void CalibrationTransportController::fill(
     const CalibrationCommandEnvelope& command,
@@ -61,10 +153,16 @@ bool CalibrationTransportController::execute(
     const CalibrationCommandEnvelope& command, uint64_t now_us,
     CalibrationResultEnvelope& output) noexcept {
   expire(now_us);
-  if (last_result_valid_ && same_request(command, last_command_)) {
-    output = last_result_;
-    output.status = CalibrationCommandStatus::Replayed;
-    return true;
+  for (const auto& entry : replay_) {
+    if (entry.valid && entry.command.request_id == command.request_id &&
+        !same_identity(entry.command, command)) {
+      fill(command, output);
+      output.status = CalibrationCommandStatus::Conflict;
+      return false;
+    }
+  }
+  if (command.request_id != 0U && find_replay(command, output)) {
+    return output.status == CalibrationCommandStatus::Replayed;
   }
   fill(command, output);
   if (command.protocol_version != CalibrationCommandEnvelope::kProtocolVersion ||
@@ -156,11 +254,7 @@ bool CalibrationTransportController::execute(
   }
   output.status = ok ? CalibrationCommandStatus::Accepted
                      : CalibrationCommandStatus::Failed;
-  if (command.request_id != 0U) {
-    last_command_ = command;
-    last_result_ = output;
-    last_result_valid_ = true;
-  }
+  if (command.request_id != 0U) remember(command, output);
   return ok;
 }
 

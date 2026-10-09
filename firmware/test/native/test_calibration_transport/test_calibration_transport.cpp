@@ -193,6 +193,21 @@ void test_expiry_and_device_binding_are_rejected() {
                         static_cast<int>(result.status));
 }
 
+void test_request_id_reuse_with_changed_payload_is_conflict() {
+  FakeWorkflow workflow{};
+  AllowAuthorizer authorizer{};
+  CalibrationTransportController controller(workflow, 0x1234U, &authorizer);
+  CalibrationResultEnvelope result{};
+  auto start = command(CalibrationOperation::Start, CalibrationTransport::Ble, 40U);
+  start.expires_at_us = 1000U;
+  TEST_ASSERT_TRUE(controller.execute(start, 1U, result));
+  start.expires_at_us = 2000U;
+  TEST_ASSERT_FALSE(controller.execute(start, 2U, result));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CalibrationCommandStatus::Conflict),
+                        static_cast<int>(result.status));
+  TEST_ASSERT_EQUAL_UINT32(1U, workflow.start_calls);
+}
+
 }  // namespace
 
 void setup() {
@@ -202,6 +217,7 @@ void setup() {
   RUN_TEST(test_expected_profile_conflict_and_preview);
   RUN_TEST(test_remote_transport_requires_authorization);
   RUN_TEST(test_expiry_and_device_binding_are_rejected);
+  RUN_TEST(test_request_id_reuse_with_changed_payload_is_conflict);
   UNITY_END();
 }
 
