@@ -28,9 +28,9 @@ commissioning or destructive hardware operation was performed.
 | HTTPS boundary | PASS (native/backend tests) | Backend round-trip test uses an in-process authenticated service and exact bytes; no staging endpoint credentials were available. |
 | BLE provisioning | PASS (web/native contract tests) | Browser protocol, secure-context, gesture, privacy, disconnect, and one-shot passkey handoff tests pass; physical advertising/pairing was not run. |
 | USB passkey commissioning | PASS (native contract) | `maintenance enter` followed by `ble passkey` discloses the six-digit value once from the existing NVS-derived handoff; status/log/telemetry paths do not expose it. Hardware execution remains blocked. |
-| Loopback HTTPS staging | PASS (Go config/tests) | TLS-required configuration fails closed for incomplete/missing certificate pairs and supports an isolated SQLite path; no staging process or device transmission was started. |
+| Loopback HTTPS staging | PASS (historical; fresh Go blocked) | Historical Go tests cover fail-closed TLS configuration and isolated SQLite; no staging process or device transmission was started, and Go was unavailable for a fresh rerun. |
 | Frontend dependency triage | PASS (bounded remediation) | Three narrow lockfile-backed overrides remove the production critical finding; remaining findings are documented toolchain/development risk and were not force-upgraded. |
-| Backend ingest and current projection | PASS (synthetic integration) | `internal/e2e` exercises durable ACK, replay dedupe, conflict, auth, export, late backlog, and filtered cursor. |
+| Backend ingest and current projection | PASS (historical; fresh Go blocked) | Historical `internal/e2e` evidence covers durable ACK, replay dedupe, conflict, auth, export, late backlog, and filtered cursor; fresh Go execution was blocked by the missing executable. |
 | Schemas and frozen hashes | BLOCKED (fresh Go gate) | Historical evidence covers 14 schemas, 24 valid fixtures, 36 invalid fixtures, and unchanged frozen hashes; the current environment has no Go executable for a fresh semantic run. |
 | Firmware native suite | PASS | 389/389 test cases on the sensor-readiness source. |
 | Firmware sanitizer suite | PASS | Fresh ASan/UBSan run completed 389/389 cases with no diagnostics. |
