@@ -3,6 +3,8 @@
 This document records the backend telemetry-v3 archive slice. It is updated
 with fresh command output before the Task 8 PR is reviewed.
 
+Verification source HEAD: `3fec3fc913cdfcbd5a112fb061e24c505733651d`.
+
 ## Implemented boundary
 
 - `POST /api/telemetry/batches` validates the frozen v3 envelope before any
