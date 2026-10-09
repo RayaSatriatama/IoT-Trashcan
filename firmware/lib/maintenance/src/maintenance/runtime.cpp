@@ -927,6 +927,10 @@ CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
           (!reference_temperature_set_ || !reference_humidity_set_)) {
         return CommandStatus::Accepted;
       }
+      // Criteria may be completed incrementally after the capture state has
+      // been entered. Reference values and engineering fields remain session
+      // owned; do not attempt to configure the CalibrationSession twice.
+      if (criteria_set_) return CommandStatus::Accepted;
       if (pending_target_ >= calibration::CalibrationTarget::Mq4 &&
           pending_target_ <= calibration::CalibrationTarget::Mq8 &&
           criteria_span_ > std::numeric_limits<uint16_t>::max()) {

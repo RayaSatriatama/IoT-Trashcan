@@ -513,6 +513,12 @@ void CalibrationSession::touch(uint64_t now_us) noexcept {
 
 bool CalibrationSession::observe_anchor(const TrialObservation& trial,
                                         CalibrationAnchor anchor) noexcept {
+  // Non-two-point sensors use the operator's "reference" capture as their
+  // primary observation. Only HX711 and ultrasonic sessions need a distinct
+  // secondary anchor.
+  if (anchor == CalibrationAnchor::Reference && !secondary_required_) {
+    return observe(trial);
+  }
   if (anchor == CalibrationAnchor::Primary ||
       anchor == CalibrationAnchor::Tare ||
       anchor == CalibrationAnchor::Empty) {
