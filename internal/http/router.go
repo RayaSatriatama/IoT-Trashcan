@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/RayaSatriatama/IoT-Trashcan/internal/ingest"
+	"github.com/RayaSatriatama/IoT-Trashcan/internal/telemetryarchive"
 )
 
 // IngestService is the narrow dependency required by the ingestion handler.
@@ -17,6 +18,10 @@ type IngestService interface {
 
 type routerConfig struct {
 	readAPI             *ReadAPI
+	telemetryBatch      http.Handler
+	telemetryArchive    http.Handler
+	telemetryCurrent    http.Handler
+	telemetryRecords    http.Handler
 	simulation          bool
 	simulationIndicator bool
 }
@@ -53,6 +58,17 @@ func WithSimulationIndicatorEnabled(enabled bool) RouterOption {
 	return func(config *routerConfig) { config.simulationIndicator = enabled }
 }
 
+// WithTelemetryArchive installs the additive telemetry-v3 write and read
+// surfaces. The legacy summary ingest route is not changed.
+func WithTelemetryArchive(service *telemetryarchive.Service, query *telemetryarchive.ArchiveQuery) RouterOption {
+	return func(config *routerConfig) {
+		config.telemetryBatch = NewTelemetryBatchHandler(service)
+		config.telemetryArchive = NewTelemetryArchiveQueryHandler(query, service)
+		config.telemetryCurrent = newTelemetryCurrentHandler(query, service)
+		config.telemetryRecords = newTelemetryRecordArchiveHandler(query, service)
+	}
+}
+
 // NewRouter creates the HTTP router for the currently implemented API surface.
 func NewRouter(service IngestService, options ...RouterOption) http.Handler {
 	config := routerConfig{simulationIndicator: true}
@@ -63,6 +79,16 @@ func NewRouter(service IngestService, options ...RouterOption) http.Handler {
 	}
 	mux := http.NewServeMux()
 	mux.Handle("POST /api/ingest", NewIngestHandler(service))
+	if config.telemetryBatch != nil {
+		mux.Handle("POST /api/telemetry/batches", config.telemetryBatch)
+	}
+	if config.telemetryArchive != nil {
+		mux.Handle("GET /api/telemetry/batches/{device_id}", config.telemetryArchive)
+		mux.Handle("GET /api/telemetry/batches/{device_id}/{batch_id...}", config.telemetryArchive)
+		mux.Handle("GET /api/telemetry/current/{device_id}", config.telemetryCurrent)
+		mux.Handle("GET /api/telemetry/records/{device_id}", config.telemetryRecords)
+		mux.Handle("GET /api/telemetry/records/{device_id}/export", config.telemetryRecords)
+	}
 	if config.readAPI != nil {
 		mux.Handle("GET /api/overview", http.HandlerFunc(config.readAPI.Overview))
 		mux.Handle("GET /api/locations", http.HandlerFunc(config.readAPI.Locations))
