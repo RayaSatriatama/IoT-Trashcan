@@ -444,6 +444,7 @@ class TargetDs18b20Reader final : public IDs18b20Reader {
     configured_ = false;
     conversion_requested_ = false;
     completion_observed_ = false;
+    discovery_mode_ = false;
     if (profile_ != nullptr && profile_->valid_for_acquisition() &&
         profile_matches(profile_->manifest, SensorId::Ds18b20B3) &&
         profile_->rom[0] == 0x28U &&
@@ -486,6 +487,40 @@ class TargetDs18b20Reader final : public IDs18b20Reader {
     return begin();
   }
 
+  Ds18b20DiscoveryStatus discover() noexcept override {
+    // Discovery is deliberately separate from begin(): begin() is the
+    // strict profile-bound path, while this path is enabled only by an
+    // explicit calibration owner in Ds18b20Acquirer.
+    if (profile_ != nullptr) {
+      return Ds18b20DiscoveryStatus::Unavailable;
+    }
+    if (!reset_presence()) {
+      return Ds18b20DiscoveryStatus::Disconnected;
+    }
+
+    // This data pin is a dedicated single-device bus. READ ROM is therefore
+    // safe and keeps the bounded adapter independent from a stored profile.
+    write_byte(0x33U);
+    std::array<uint8_t, 8> rom{};
+    for (uint8_t& byte : rom) byte = read_byte();
+    if (rom[0] != 0x28U || ds18b20_crc8(rom.data(), 7U) != rom[7]) {
+      expected_rom_ = {};
+      expected_rom_valid_ = false;
+      configured_ = false;
+      discovery_mode_ = false;
+      return Ds18b20DiscoveryStatus::InvalidRom;
+    }
+
+    expected_rom_ = rom;
+    last_rom_ = rom;
+    expected_rom_valid_ = true;
+    configured_ = true;
+    discovery_mode_ = true;
+    conversion_requested_ = false;
+    completion_observed_ = false;
+    return Ds18b20DiscoveryStatus::Ready;
+  }
+
   bool request_conversion() noexcept override {
     if (!configured_ || !expected_rom_valid_ || conversion_requested_ ||
         !reset_presence()) {
@@ -521,8 +556,12 @@ class TargetDs18b20Reader final : public IDs18b20Reader {
     if (!result.present) return result;
     result.crc_valid = scratchpad.crc_valid;
     result.identity_valid = verify_rom_identity();
-    result.resolution_matches = ds18b20_resolution_matches(
-        scratchpad, profile_ != nullptr ? profile_->resolution_bits : 0U);
+    result.resolution_matches =
+        profile_ != nullptr
+            ? ds18b20_resolution_matches(scratchpad,
+                                         profile_->resolution_bits)
+            : (discovery_mode_ &&
+               ds18b20_resolution_from_config(scratchpad.config) != 0U);
     result.temperature_centi_c = static_cast<int32_t>(scratchpad.raw_temperature) *
                                  625 / 100;
     result.conversion_complete = true;
@@ -630,6 +669,7 @@ class TargetDs18b20Reader final : public IDs18b20Reader {
   bool configured_{false};
   bool conversion_requested_{false};
   bool completion_observed_{false};
+  bool discovery_mode_{false};
 };
 
 class TargetSht31Reader final : public ISht31Reader {
@@ -729,6 +769,9 @@ class TargetDs18b20Reader final : public IDs18b20Reader {
  public:
   explicit TargetDs18b20Reader(uint8_t, const Ds18b20Profile* = nullptr) noexcept {}
   void set_profile(const Ds18b20Profile*) noexcept {}
+  Ds18b20DiscoveryStatus discover() noexcept override {
+    return Ds18b20DiscoveryStatus::Unavailable;
+  }
   bool request_conversion() noexcept override { return false; }
   Ds18b20ReadResult read_conversion() noexcept override { return Ds18b20ReadResult{}; }
 };

@@ -22,6 +22,17 @@ struct Ds18b20ReadResult {
   uint8_t resolution_bits{0U};
 };
 
+// ROM discovery is deliberately a separate operation from the normal
+// profile-bound acquisition path.  A target adapter must only enter this
+// mode when an explicit calibration session owns the channel; the normal
+// missing-profile path must never touch the one-wire bus.
+enum class Ds18b20DiscoveryStatus : uint8_t {
+  Unavailable,
+  Ready,
+  Disconnected,
+  InvalidRom,
+};
+
 enum class DsChannelState : uint8_t {
   ProfileMissing,
   ProfileInvalid,
@@ -37,6 +48,9 @@ class IDs18b20Reader {
   // represents a configured device.
   virtual bool begin() noexcept { return true; }
   virtual bool apply_profile(const Ds18b20Profile*) noexcept { return true; }
+  virtual Ds18b20DiscoveryStatus discover() noexcept {
+    return Ds18b20DiscoveryStatus::Unavailable;
+  }
   virtual bool request_conversion() noexcept = 0;
   // The default keeps native seams source-compatible while target adapters
   // can report the actual one-wire conversion-complete state.
@@ -71,10 +85,31 @@ class Ds18b20Acquirer final {
       profile_ = pending_profile_;
       channel_state_ = profile_ready ? pending_channel_state_
                                      : DsChannelState::ProfileApplyFailed;
+      discovery_ready_ = false;
       profile_update_pending_ = false;
     }
+    const bool discovery_allowed =
+        profile_ == nullptr && calibration_ != nullptr &&
+        calibration_->is_calibrating(SensorId::Ds18b20B3);
     if (channel_state_ == DsChannelState::ProfileMissing) {
-      return make_profile_record(now_us, SampleReason::ProfileMissing, out);
+      if (!discovery_allowed) {
+        return make_profile_record(now_us, SampleReason::ProfileMissing, out);
+      }
+      if (!discovery_ready_) {
+        const Ds18b20DiscoveryStatus status = source_.discover();
+        if (status != Ds18b20DiscoveryStatus::Ready) {
+          const bool disconnected =
+              status == Ds18b20DiscoveryStatus::Disconnected;
+          return make_profile_record(
+              now_us,
+              disconnected ? SampleReason::Disconnected
+                           : SampleReason::InvalidProfile,
+              out,
+              disconnected ? SampleQuality::Disconnected
+                           : SampleQuality::Uncalibrated);
+        }
+        discovery_ready_ = true;
+      }
     }
     if (channel_state_ == DsChannelState::ProfileInvalid ||
         channel_state_ == DsChannelState::ProfileApplyFailed) {
@@ -152,19 +187,19 @@ class Ds18b20Acquirer final {
     } else if (!result.identity_valid) {
       quality = SampleQuality::Uncalibrated;
       reason = SampleReason::InvalidProfile;
-    } else if (!result.resolution_matches) {
+    } else if (active_profile != nullptr && !result.resolution_matches) {
       quality = SampleQuality::Uncalibrated;
       reason = SampleReason::InvalidProfile;
     } else if (active_profile != nullptr &&
                !profile_matches(active_profile->manifest, SensorId::Ds18b20B3)) {
       quality = SampleQuality::Uncalibrated;
       reason = SampleReason::InvalidProfile;
-    } else if (active_profile == nullptr || !active_profile->valid_for_conversion()) {
-      quality = SampleQuality::Uncalibrated;
-      reason = SampleReason::InvalidProfile;
     } else if (calibration_ != nullptr &&
                calibration_->is_calibrating(SensorId::Ds18b20B3)) {
       quality = SampleQuality::Calibrating;
+      reason = SampleReason::InvalidProfile;
+    } else if (active_profile == nullptr || !active_profile->valid_for_conversion()) {
+      quality = SampleQuality::Uncalibrated;
       reason = SampleReason::InvalidProfile;
     } else {
       quality = SampleQuality::Ready;
@@ -225,6 +260,7 @@ class Ds18b20Acquirer final {
   const Ds18b20Profile* pending_profile_{nullptr};
   DsChannelState pending_channel_state_{DsChannelState::ProfileMissing};
   bool profile_update_pending_{false};
+  bool discovery_ready_{false};
 };
 
 }  // namespace sigap::acquisition
