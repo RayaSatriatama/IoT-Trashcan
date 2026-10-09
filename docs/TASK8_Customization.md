@@ -56,8 +56,8 @@ authoritative record table if recovery tooling requires it.
 
 Synthetic benchmark on the repository test SQLite backend (AMD Ryzen 3 5300U,
 Go 1.27.1, 100 measured iterations) measured current reads over 100, 1,000,
-and 10,000 retained records for one source/boot at 23.5 us, 20.9 us, and
-25.5 us respectively. Allocation stayed near 2.0 KiB and 32 allocations per
+and 10,000 retained records for one source/boot at 21.4 us, 21.8 us, and
+20.7 us respectively. Allocation stayed near 2.0 KiB and 32 allocations per
 read, demonstrating that read cost follows the bounded candidate projection
 rather than total retained history. These are host-side measurements, not
 production database latency or hardware endurance claims.
