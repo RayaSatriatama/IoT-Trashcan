@@ -240,6 +240,32 @@ void test_ble_passkey_parser_and_unavailable_path_do_not_leak() {
   TEST_ASSERT_TRUE(response.view().find("654321") == std::string_view::npos);
 }
 
+void test_ble_passkey_authorization_survives_config_required_refresh() {
+  sigap::config::MemoryConfigStore config_store{};
+  config_store.set_provisioned(true);
+  sigap::config::ConfigManager config_manager(config_store, kValidationContext);
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(sigap::config::ConfigBootResult::ConfigRequired),
+      static_cast<int>(config_manager.begin()));
+  sigap::provisioning::MemorySecretBlobStore secret_backend{};
+  sigap::provisioning::PersistentSecretStore secrets(secret_backend);
+  FakePasskeyHandoff handoff{};
+  CommandRouter router(config_manager, secrets, nullptr, nullptr, nullptr,
+                       nullptr, nullptr, nullptr, nullptr, &handoff);
+
+  MaintenanceCommand enter{};
+  enter.kind = CommandKind::MaintenanceEnter;
+  MaintenanceResponse response{};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),
+                        static_cast<int>(router.execute(enter, 0U, response)));
+  MaintenanceCommand command{};
+  command.kind = CommandKind::BlePasskey;
+  response = MaintenanceResponse{};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),
+                        static_cast<int>(router.execute(command, 1U, response)));
+  TEST_ASSERT_EQUAL_STRING("ble_passkey=654321\n", response.c_str());
+}
+
 void test_service_polls_without_input_and_reports_disconnect_once() {
   FakeTransport transport{};
   FakeSink sink{};
@@ -726,6 +752,7 @@ void setup() {
   RUN_TEST(test_storage_sd_probe_command_is_bounded_and_explicit);
   RUN_TEST(test_ble_passkey_command_requires_maintenance_and_discloses_once);
   RUN_TEST(test_ble_passkey_parser_and_unavailable_path_do_not_leak);
+  RUN_TEST(test_ble_passkey_authorization_survives_config_required_refresh);
   RUN_TEST(test_service_polls_without_input_and_reports_disconnect_once);
   RUN_TEST(test_disconnect_discards_partial_parser_line);
   RUN_TEST(test_profile_import_round_trip_uses_real_router_and_explicit_activation);

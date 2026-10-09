@@ -204,10 +204,13 @@ void CommandRouter::refresh_mode() noexcept {
     mode_ = DeviceMode::Calibrating;
     return;
   }
+  if (maintenance_authorized_) {
+    mode_ = DeviceMode::Maintenance;
+    return;
+  }
   switch (config_.state()) {
     case config::ConfigState::Active:
-      mode_ = maintenance_authorized_ ? DeviceMode::Maintenance
-                                      : DeviceMode::Run;
+      mode_ = DeviceMode::Run;
       break;
     case config::ConfigState::RebootRequired: mode_ = DeviceMode::RebootRequired; break;
     case config::ConfigState::ConfigRequired: mode_ = DeviceMode::ConfigRequired; break;
