@@ -55,12 +55,67 @@ func TestEnqueueClaimReplayAndResultLifecycle(t *testing.T) {
 		t.Fatalf("claim=%+v", claimed)
 	}
 	for _, step := range []Status{Accepted, Capturing, Validated, PreviewReady, Committed} {
-		if _, err := s.UpdateResult(ctx, "DEV-01", "cmd-1", ResultRequest{Status: step, SessionID: "session-1", Payload: []byte(`{"ok":true}`)}); err != nil {
+		payload := []byte(`{"ok":true}`)
+		if step == Committed {
+			payload = []byte(`{"profile_key":"hx711_organic","profile_hash":"sha256:fixture","version":1}`)
+		}
+		if _, err := s.UpdateResult(ctx, "DEV-01", "cmd-1", ResultRequest{Status: step, SessionID: "session-1", Payload: payload}); err != nil {
 			t.Fatalf("step %s: %v", step, err)
 		}
 	}
 	if _, err := s.UpdateResult(ctx, "DEV-01", "cmd-1", ResultRequest{Status: Capturing}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("terminal replay err=%v", err)
+	}
+}
+
+func TestClaimRequeuesExpiredLeaseWithoutChangingIdentity(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	nowValue := now
+	s, _, _ := testStore(t)
+	s.WithLease(time.Second).WithClock(func() time.Time { return nowValue })
+	ctx := context.Background()
+	req := commandRequest(now)
+	if _, err := s.Enqueue(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	first, err := s.Claim(ctx, req.DeviceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nowValue = now.Add(2 * time.Second)
+	second, err := s.Claim(ctx, req.DeviceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.ID != first.ID || second.Status != Delivered || second.Attempt != 2 {
+		t.Fatalf("redelivery=%+v first=%+v", second, first)
+	}
+}
+
+func TestTerminalResultReplayIsIdempotentAndConflictIsRejected(t *testing.T) {
+	s, _, now := testStore(t)
+	ctx := context.Background()
+	if _, err := s.Enqueue(ctx, commandRequest(now)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Claim(ctx, "DEV-01"); err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range []Status{Accepted, Capturing, Validated, PreviewReady} {
+		if _, err := s.UpdateResult(ctx, "DEV-01", "cmd-1", ResultRequest{Status: step, SessionID: "session-1", Payload: []byte(`{"ok":true}`)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result := ResultRequest{Status: Committed, SessionID: "session-1", Payload: []byte(`{"profile_key":"hx711_organic","profile_hash":"sha256:fixture","version":1}`)}
+	if _, err := s.UpdateResult(ctx, "DEV-01", "cmd-1", result); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpdateResult(ctx, "DEV-01", "cmd-1", result); err != nil {
+		t.Fatalf("identical replay: %v", err)
+	}
+	result.Payload = []byte(`{"profile_key":"hx711_organic","profile_hash":"sha256:other","version":2}`)
+	if _, err := s.UpdateResult(ctx, "DEV-01", "cmd-1", result); !errors.Is(err, ErrConflict) {
+		t.Fatalf("conflict=%v", err)
 	}
 }
 

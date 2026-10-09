@@ -158,8 +158,8 @@ describe('BLE provisioning client', () => {
       const first = decodeBleFrame(requestFrames[0]);
       const command = new TextDecoder().decode(assembleBleFrames(requestFrames.map(decodeBleFrame), 'F1')).trim();
       const response = command === 'CAL STATUS ds18b20_b3'
-        ? 'OK CAL STATUS sensor=ds18b20_b3 state=IDLE'
-        : 'ERR CAL_REJECTED';
+        ? 'CAL1|op=STATUS|status=ACCEPTED|session=7|sensor=ds18b20_b3|data=state=IDLE'
+        : 'CAL1|op=STATUS|status=ERROR|session=7|sensor=ds18b20_b3|data=error=CAL_REJECTED';
       encodeBleFrames(first.requestId, new TextEncoder().encode(response), 'R1').forEach((frame) => events.emit(frame));
     });
     events = new FakeCharacteristic();
@@ -172,9 +172,10 @@ describe('BLE provisioning client', () => {
 
     const client = new BleProvisioningClient();
     await client.connect();
-    await expect(client.calibrationStatus('ds18b20_b3')).resolves.toBe(
-      'CAL STATUS sensor=ds18b20_b3 state=IDLE',
-    );
+    await expect(client.calibrationStatus('ds18b20_b3')).resolves.toEqual({
+      version: 'CAL1', operation: 'STATUS', status: 'ACCEPTED', sessionId: '7',
+      sensor: 'ds18b20_b3', data: { state: 'IDLE' },
+    });
     expect(control.writes.every((frame) => frame.byteLength <= 20)).toBe(true);
   });
 });

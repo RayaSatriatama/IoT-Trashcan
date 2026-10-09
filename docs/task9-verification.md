@@ -167,7 +167,7 @@ sigap_bench                                              PASS RAM 49,496; flash 
 go test -count=1 ./...                                   PASS
 go test -race -count=1 ./...                             PASS
 go vet ./...                                             PASS
-npm test -- --run                                       PASS 21 files / 101 tests
+npm test -- --run                                       PASS 21 files / 103 tests
 npm run typecheck                                        PASS
 npm run export:web                                       PASS
 telemetry schemas/fixtures/golden hashes                 PASS 14/24/36 and unchanged
@@ -187,3 +187,12 @@ diagnostic body, idempotent command persistence, expiry, and native tests are
 implemented. No firmware network worker currently claims remote calibration
 commands, so WEB-CAL remote delivery is not marked complete until that adapter
 is wired and tested with the existing nonblocking network boundary.
+
+The latest closure attempt adds a CAL1 typed response contract, typed BLE
+preview/profile identity handling, web command status polling with refresh
+recovery, database-backed operator sessions and per-device authorization,
+lease recovery, structured committed-result validation, and a bounded native
+`DeviceControlPoller` seam. The poller seam has focused native coverage, but
+the Arduino HTTP implementation and shared calibration executor are still not
+bound into `SigapApp`. Operator authorization remains fail-closed and requires
+deployment provisioning. Task 9 therefore remains HOLD.

@@ -80,6 +80,7 @@ runtime configuration system.
 | Allowed operator origin | process configuration | injected `HTTPOptions` | request boundary only; mismatch fails closed | HTTP origin tests |
 | Sensor capability units | bounded typed response | device-control handler | static contract metadata, no scientific threshold | capability endpoint test |
 | BLE calibration frame | fixed protocol bound from BLE policy | firmware BLE adapter | compile-time framing; oversized input rejected | BLE parser tests |
+| Maintenance response frame | fixed 240-byte payload bound | firmware maintenance protocol | compile-time; typed calibration previews reject truncation | maintenance and sensor commissioning tests |
 | Calibration anchor | enum `tare/reference/empty/full` | firmware `CommandRouter` session | explicit per capture, discarded on cancel/timeout | BLE adapter and maintenance tests |
 | Browser operator token | in-memory string, max 512 chars | website component state | never persisted; cleared with component/session | API and wizard tests |
 

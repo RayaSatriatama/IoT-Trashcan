@@ -4,6 +4,7 @@ import { Card, Input, Text, XStack, YStack } from 'tamagui';
 import { createCalibrationApi, type CalibrationApi, type CalibrationCapabilities, type CalibrationCommand, type CalibrationCommandRequest, type CalibrationPreview, type CalibrationSensorId, type CalibrationState, type SensorDiagnostic } from '../../lib/api/calibration';
 import { canBeginCalibration, calibrationStateLabel, initialWizardStatus, nextStep, redactCalibrationError, type CalibrationWizardStep } from '../../lib/calibration/wizard';
 import { AppButton } from '../AppButton';
+import type { BleCalibrationResponse } from '../../lib/ble/protocol';
 
 export type CalibrationWizardProps = {
   deviceId: string;
@@ -20,14 +21,14 @@ export type CalibrationWizardProps = {
 };
 
 export type BleCalibrationAdapter = {
-  calibrationEvidence?: (sensor: string) => Promise<string>;
-  calibrationStart: (sensor: string) => Promise<string>;
-  calibrationCriteria: (sensor: string, parameters: Record<string, string | number | boolean>) => Promise<string>;
-  calibrationCapture: (sensor: string, anchor: 'tare' | 'reference' | 'empty' | 'full') => Promise<string>;
-  calibrationValidate: (sensor: string) => Promise<string>;
-  calibrationPreview: (sensor: string) => Promise<string>;
-  calibrationCommit: (sensor: string) => Promise<string>;
-  calibrationCancel: () => Promise<string>;
+  calibrationEvidence?: (sensor: string) => Promise<BleCalibrationResponse>;
+  calibrationStart: (sensor: string) => Promise<BleCalibrationResponse>;
+  calibrationCriteria: (sensor: string, parameters: Record<string, string | number | boolean>) => Promise<BleCalibrationResponse>;
+  calibrationCapture: (sensor: string, anchor: 'tare' | 'reference' | 'empty' | 'full') => Promise<BleCalibrationResponse>;
+  calibrationValidate: (sensor: string) => Promise<BleCalibrationResponse>;
+  calibrationPreview: (sensor: string) => Promise<BleCalibrationResponse>;
+  calibrationCommit: (sensor: string) => Promise<BleCalibrationResponse>;
+  calibrationCancel: () => Promise<BleCalibrationResponse>;
 };
 
 function fieldValue(value: string): number | undefined {
@@ -56,26 +57,56 @@ function parsePreview(value: unknown): CalibrationPreview | null {
   };
 }
 
-function parseBleResult(text: string): { state?: CalibrationState; preview?: CalibrationPreview; session_id?: string; error?: string } {
+function parseBleResult(response: BleCalibrationResponse): { state?: CalibrationState; preview?: CalibrationPreview; session_id?: string; error?: string } {
   try {
-    const value = JSON.parse(text) as Record<string, unknown>;
-    return {
-      state: typeof value.state === 'string' ? value.state as CalibrationState : undefined,
-      session_id: typeof value.session_id === 'string' ? value.session_id : undefined,
-      preview: parsePreview(value) ?? undefined,
-      error: typeof value.error === 'string' ? value.error : undefined,
-    };
+    if (response.status === 'ERROR') return { error: response.error ?? response.data.error ?? 'Perangkat menolak permintaan' };
+    const data = response.data;
+    const state = typeof data.state === 'string' ? data.state as CalibrationState : undefined;
+    const preview = data.proposal_hash && data.profile_version
+      ? {
+          sensor_id: response.sensor as CalibrationSensorId,
+          proposal_hash: data.proposal_hash,
+          profile_version: data.profile_version,
+          parameters: Object.fromEntries(Object.entries(data).filter(([key]) => !['proposal_hash', 'profile_version', 'evidence_count', 'evidence_hash', 'expires_at'].includes(key))),
+          evidence_count: Number(data.evidence_count ?? 0),
+          evidence_hash: data.evidence_hash ?? '',
+          expires_at: data.expires_at ?? '',
+        } satisfies CalibrationPreview
+      : undefined;
+    return { state, session_id: response.sessionId, preview };
   } catch {
     return {};
   }
 }
 
-function parseBleDiagnostic(text: string, sensorId: CalibrationSensorId): SensorDiagnostic | null {
+function parseBleDiagnostic(response: BleCalibrationResponse, sensorId: CalibrationSensorId): SensorDiagnostic | null {
   try {
-    const value = JSON.parse(text) as Partial<SensorDiagnostic>;
-    if (value.sensor_id !== sensorId || typeof value.quality !== 'string' || typeof value.reason !== 'string' || typeof value.fresh !== 'boolean') return null;
-    if (!value.raw || typeof value.raw !== 'object') return null;
-    return value as SensorDiagnostic;
+    if (response.status === 'ERROR' || response.sensor !== sensorId) return null;
+    const data = response.data;
+    const flags = data.f ?? '';
+    const flag = (name: string) => new RegExp(`${name}=([01])`, 'u').exec(flags)?.[1] === '1';
+    const quality = data.q as SensorDiagnostic['quality'] | undefined;
+    const reason = data.r;
+    const fresh = data.fr === 'FRESH';
+    if (!quality || !reason || !data.s) return null;
+    return {
+      sensor_id: sensorId,
+      stream: data.st ?? 'unknown',
+      quality,
+      reason,
+      raw: { present: data.raw === '1', identity_verified: flag('id'), crc_valid: flag('crc'), conversion_complete: flag('conv'), heater_ready: flag('heat') },
+      converted_value: null,
+      converted_unit: null,
+      fresh,
+      age_ms: data.age ? Number(data.age) / 1000 : null,
+      last_sequence: null,
+      profile_present: data.p === '1',
+      profile_version: data.pv ?? null,
+      profile_hash: null,
+      calibration_state: (data.c as CalibrationState) ?? 'IDLE',
+      accepted_samples: Number(data.a ?? 0),
+      rejected_samples: Number(data.x ?? 0),
+    };
   } catch { return null; }
 }
 

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/RayaSatriatama/IoT-Trashcan/internal/database"
+	"github.com/RayaSatriatama/IoT-Trashcan/internal/devicecontrol"
 	httpapi "github.com/RayaSatriatama/IoT-Trashcan/internal/http"
 	"github.com/RayaSatriatama/IoT-Trashcan/internal/ingest"
 	"github.com/RayaSatriatama/IoT-Trashcan/internal/simulator"
@@ -71,12 +72,19 @@ func main() {
 	if err != nil {
 		log.Fatalf("configure telemetry archive query: %v", err)
 	}
+	deviceControlStore := devicecontrol.NewStore(db)
+	deviceControlAuth := devicecontrol.NewDatabaseAuthorizer(db)
 	apiHandler := httpapi.NewRouter(
 		service,
 		httpapi.WithReadDatabase(db, readOptions...),
 		httpapi.WithSimulationEnabled(simulationConfig.Enabled),
 		httpapi.WithSimulationIndicatorEnabled(simulationIndicatorEnabled),
 		httpapi.WithTelemetryArchive(archiveService, archiveQuery),
+		httpapi.WithDeviceControl(deviceControlStore, devicecontrol.HTTPOptions{
+			Operator:      deviceControlAuth,
+			Device:        deviceControlAuth,
+			AllowedOrigin: os.Getenv("SIGAP_OPERATOR_ORIGIN"),
+		}),
 	)
 	handler := webapp.Handler(apiHandler)
 	server := &http.Server{Addr: addr, Handler: handler}

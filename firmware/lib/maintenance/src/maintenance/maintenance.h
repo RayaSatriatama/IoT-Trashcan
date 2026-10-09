@@ -9,7 +9,10 @@ namespace sigap::maintenance {
 
 constexpr std::size_t kMaxCommandLineBytes{255U};
 constexpr std::size_t kMaxBytesPerPoll{32U};
-constexpr std::size_t kMaxResponseBytes{192U};
+// Calibration preview responses include the typed proposal identity and
+// sensor-specific engineering fields. Keep the wire bound fixed while
+// allowing the complete proposal to be returned without truncation.
+constexpr std::size_t kMaxResponseBytes{240U};
 
 template <std::size_t Capacity>
 struct FixedText final {

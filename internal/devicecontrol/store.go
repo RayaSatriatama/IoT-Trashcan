@@ -4,6 +4,7 @@
 package devicecontrol
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -129,6 +130,19 @@ func validTransition(from, to Status) bool {
 	}
 }
 
+func validCommittedResult(payload []byte) bool {
+	var value struct {
+		ProfileKey  string `json:"profile_key"`
+		ProfileHash string `json:"profile_hash"`
+		Version     uint64 `json:"version"`
+	}
+	if len(payload) == 0 || json.Unmarshal(payload, &value) != nil {
+		return false
+	}
+	return strings.TrimSpace(value.ProfileKey) != "" &&
+		strings.TrimSpace(value.ProfileHash) != "" && value.Version > 0
+}
+
 func (s *Store) Enqueue(ctx context.Context, req CreateRequest) (Command, error) {
 	if s == nil || s.db == nil || strings.TrimSpace(req.ID) == "" || strings.TrimSpace(req.DeviceID) == "" || strings.TrimSpace(req.OperatorID) == "" || strings.TrimSpace(req.SensorID) == "" || strings.TrimSpace(req.Operation) == "" || len(req.Payload) == 0 || len(req.Payload) > MaxPayloadBytes || req.ExpiresAt.IsZero() {
 		return Command{}, ErrInvalid
@@ -203,7 +217,11 @@ func (s *Store) Claim(ctx context.Context, deviceID string) (Command, error) {
 	defer tx.Rollback()
 	now := s.now().UTC()
 	nowText := now.Format(time.RFC3339Nano)
-	_, _ = tx.ExecContext(ctx, `UPDATE device_control_commands SET status='EXPIRED',updated_at=? WHERE device_id=? AND status IN ('QUEUED','DELIVERED') AND expires_at <= ?`, nowText, deviceID, nowText)
+	_, _ = tx.ExecContext(ctx, `UPDATE device_control_commands SET status='EXPIRED',lease_until=NULL,updated_at=? WHERE device_id=? AND status IN ('QUEUED','DELIVERED') AND expires_at <= ?`, nowText, deviceID, nowText)
+	// A delivered command whose lease elapsed is eligible for redelivery. It
+	// remains the same command identity and payload, and therefore cannot
+	// create a second calibration side effect by itself.
+	_, _ = tx.ExecContext(ctx, `UPDATE device_control_commands SET status='QUEUED',lease_until=NULL,updated_at=? WHERE device_id=? AND status='DELIVERED' AND lease_until IS NOT NULL AND lease_until <= ? AND expires_at > ?`, nowText, deviceID, nowText, nowText)
 	_, _ = tx.ExecContext(ctx, `UPDATE device_control_sessions SET state='CLOSED',updated_at=? WHERE device_id=? AND state='ACTIVE' AND expires_at <= ?`, nowText, deviceID, nowText)
 	var c Command
 	var payload []byte
@@ -235,6 +253,9 @@ func (s *Store) UpdateResult(ctx context.Context, deviceID, commandID string, re
 	if !validStatus(result.Status) || len(result.Payload) > MaxPayloadBytes {
 		return Command{}, ErrInvalid
 	}
+	if result.Status == Committed && !validCommittedResult(result.Payload) {
+		return Command{}, ErrInvalid
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Command{}, err
@@ -259,14 +280,30 @@ func (s *Store) UpdateResult(ctx context.Context, deviceID, commandID string, re
 	if result.SessionID != "" && result.SessionID != c.SessionID {
 		return Command{}, ErrConflict
 	}
+	resultHash := hashPayload(result.Payload)
 	if terminal(Status(status)) {
+		// Lost HTTP responses are safely replayable only when every result
+		// field and bytes match the durable terminal result.
+		var storedPayload []byte
+		var storedHash string
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(result_payload,''),COALESCE(result_hash,'') FROM device_control_commands WHERE command_id=?`, commandID).Scan(&storedPayload, &storedHash); err != nil {
+			return Command{}, err
+		}
+		if Status(status) == result.Status && storedHash == resultHash && bytes.Equal(storedPayload, result.Payload) {
+			c.Payload = payload
+			c.Status = Status(status)
+			c.ResultPayload = storedPayload
+			c.ResultHash = storedHash
+			c.ExpiresAt = expires
+			_ = tx.Rollback()
+			return c, nil
+		}
 		return Command{}, ErrConflict
 	}
 	if !validTransition(Status(status), result.Status) {
 		return Command{}, ErrInvalid
 	}
 	nowText := now.Format(time.RFC3339Nano)
-	resultHash := hashPayload(result.Payload)
 	_, err = tx.ExecContext(ctx, `UPDATE device_control_commands SET status=?,result_payload=?,result_hash=?,error_code=?,updated_at=? WHERE command_id=? AND status NOT IN ('COMMITTED','FAILED','EXPIRED','CANCELLED')`, result.Status, result.Payload, resultHash, result.ErrorCode, nowText, commandID)
 	if err != nil {
 		return Command{}, err

@@ -40,3 +40,27 @@ CREATE TABLE device_control_sessions (
     updated_at TEXT NOT NULL,
     FOREIGN KEY (device_id) REFERENCES devices(device_code)
 );
+
+-- Operator sessions are provisioned out-of-band. Only a SHA-256 digest of
+-- the bearer and CSRF tokens is persisted. Missing rows fail closed.
+CREATE TABLE device_control_operator_sessions (
+    session_id TEXT PRIMARY KEY,
+    operator_id TEXT NOT NULL,
+    token_digest TEXT NOT NULL UNIQUE,
+    csrf_digest TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    revoked_at TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE device_control_operator_permissions (
+    operator_id TEXT NOT NULL,
+    device_id TEXT NOT NULL,
+    expires_at TEXT,
+    revoked_at TEXT,
+    PRIMARY KEY (operator_id, device_id),
+    FOREIGN KEY (device_id) REFERENCES devices(device_code)
+);
+
+CREATE INDEX idx_device_control_operator_token
+  ON device_control_operator_sessions(token_digest, expires_at, revoked_at);

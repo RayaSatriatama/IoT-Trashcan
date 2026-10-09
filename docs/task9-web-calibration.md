@@ -66,18 +66,20 @@ missing a profile. Operational conversion remains unavailable in those states.
 | Requirement | Implementation | Fresh evidence | Result |
 | --- | --- | --- | --- |
 | Shared bounded lifecycle and owner arbitration | `calibration_transport.*` contract plus existing `CommandRouter` session/evidence/profile lifecycle | `test_calibration_transport`, maintenance regressions | PASS in native contract tests; controller still requires final composition wiring |
-| Local Web Bluetooth calibration | BLE F1/R1 parser, authenticated session, `BleProvisioningSession`, `CommandRouterBleCalibrationBackend`, TypeScript client | BLE protocol tests, adapter test, 409 native suite, 101 web tests | PASS software-only |
+| Local Web Bluetooth calibration | BLE F1/R1 parser, authenticated session, `BleProvisioningSession`, `CommandRouterBleCalibrationBackend`, TypeScript client | BLE protocol tests, adapter test, 415 native suite, 103 web tests | PASS software-only |
 | Authoritative criteria/capture grammar | Adapter translates key/value criteria and explicit anchors to maintenance commands | `test_calibration_ble_adapter`, protocol tests | PASS for supported maintenance operations |
 | Sensor diagnostics | Operator-authenticated device-control diagnostics returns exact stored device result body | device-control HTTP/store tests | PASS API contract; no live device evidence |
 | Typed capabilities | Bounded sensor-specific endpoint exposes units and required fields without thresholds | capabilities HTTP regression | PASS structural contract |
-| Remote command durability | SQLite queue, idempotency hash, lease, expiry, session ownership, device result transitions | device-control store/HTTP tests and Go race suite | PASS backend queue; firmware HTTPS polling not wired |
-| Website wizard | `CalibrationWizard`, diagnostics panel, operator token in memory, BLE and HTTPS paths | 21 Vitest files / 101 tests, typecheck, web export | PASS UI software; live operator provider unavailable |
+| Remote command durability | SQLite queue, idempotency hash, lease, expiry, session ownership, device result transitions | device-control store/HTTP tests and Go race suite | PASS backend queue; firmware poller seam tested, production transport/executor wiring remains open |
+| Website wizard | `CalibrationWizard`, diagnostics panel, bounded command polling, typed sensor capabilities, operator token in memory, BLE and HTTPS paths | 21 Vitest files / 103 tests, typecheck, web export | PASS UI software; live operator provider unavailable |
 | Exact evidence and no synthetic production readings | raw device result bytes preserved; native fixtures labelled synthetic | telemetry and device-control tests | PASS software boundary |
 | Physical commissioning | BLE pairing, WiFi, HTTPS device polling, sensor references, heater | no physical operations authorized | BLOCKED |
 
 The authoritative USB maintenance parser remains the recovery path. BLE
 capabilities/history/rollback requests are rejected until a typed workflow
 implementation exists for those operations; no fabricated response is used.
-Remote HTTPS commands are persisted and authenticated on the backend, but the
-firmware-side polling adapter is a remaining integration gate. This document
-therefore does not claim Task 9 complete.
+Remote HTTPS commands are persisted and authenticated on the backend. A
+bounded firmware poller seam and replay tests exist, but the Arduino HTTP
+implementation and shared calibration executor are not yet bound into
+`SigapApp`. Production operator authorization also requires deployment
+configuration. This document therefore does not claim Task 9 complete.
