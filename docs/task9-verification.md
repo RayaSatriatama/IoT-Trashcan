@@ -2,14 +2,15 @@
 
 Status: **OPEN FOR INDEPENDENT REVIEW**. The branch contains software-test
 coverage and integration evidence only. The current preflight added the
-commissioning runbook in `docs/task9-commissioning.md`; no physical
+commissioning runbooks in `docs/task9-commissioning.md` and
+`docs/task9-sensor-commissioning.md`; no physical
 commissioning or destructive hardware operation was performed.
 
 ## Baseline and safety boundary
 
 - Task 8 merge SHA: `6269b6c2532d25a93ac6b12454106613e17af911`.
 - Task 9 branch: `feat/full-integration-hil-validation`.
-- Reviewed Task 9 HEAD: `aba4e64212996f97fe28e64b21b354b1b17f213a`.
+- Reviewed Task 9 source HEAD before this verification: `0fe068a`.
 - Hardware: ESP32-S3 N16R8 with onboard FAT32 microSD; no sensors, heater, or actuators.
 - No firmware upload, reboot, SD mutation, NVS erase, unplug, power-cycle,
   power-cut, or physical commissioning was performed.
@@ -31,12 +32,13 @@ commissioning or destructive hardware operation was performed.
 | Frontend dependency triage | PASS (bounded remediation) | Three narrow lockfile-backed overrides remove the production critical finding; remaining findings are documented toolchain/development risk and were not force-upgraded. |
 | Backend ingest and current projection | PASS (synthetic integration) | `internal/e2e` exercises durable ACK, replay dedupe, conflict, auth, export, late backlog, and filtered cursor. |
 | Schemas and frozen hashes | PASS | 14 schemas compile; 24 valid and 36 invalid fixtures; frozen record/body hashes unchanged. |
-| Firmware native suite | PASS | 374/374 test cases on final Task 9 source. |
-| Firmware sanitizer suite | PASS | ASan/UBSan configuration ran all 37 native test folders, 374/374 cases, 0 failures. |
+| Firmware native suite | PASS | 385/385 test cases on the sensor-readiness source. |
+| Firmware sanitizer suite | PENDING FRESH RUN | Previous 374/374 evidence is historical and must be rerun after sensor-readiness changes. |
 | Cppcheck | PASS | `pio check -e native --fail-on-defect=low`, no defects. |
 | Target builds | PASS | `sigap_n16r8`, `sigap_n16r8_sd`, `sigap_n16r8_sd_spi`, and `sigap_bench`. |
 | Frontend | PASS | 19 files/92 Vitest tests, TypeScript typecheck, and Expo web export pass. |
-| Sensors/calibration/safety | BLOCKED | No physical sensors, MQ-7 heater, or actuators are connected. |
+| Sensor software readiness | PASS (synthetic native) | All 13 channel adapters retain typed evidence and failure reasons; first-time profile paths are covered by native fakes. No physical coefficients are claimed. |
+| Sensor physical calibration/safety | BLOCKED | No physical sensors, MQ-7 heater, or actuators are connected. |
 | Physical BLE/WiFi commissioning | BLOCKED | Requires authorized target run, browser secure context, test network, and secure one-shot passkey handoff on the display-less board. Procedure: `docs/task9-commissioning.md`. |
 | Physical SD I/O, endurance, 24 h/72 h soak | BLOCKED | Requires explicit hardware authorization and timestamped reconciliation. |
 
@@ -53,8 +55,8 @@ go test ./internal/telemetry (schema/golden)  PASS (14/24/36)
 npm test                                      PASS (19 files, 92 tests)
 npm run typecheck                             PASS
 npm run export:web                            PASS
-pio test -e native                            PASS (374/374)
-ASan/UBSan native folders                    PASS (374/374 cases, 37 folders, 0 failed)
+pio test -e native                            PASS (385/385)
+ASan/UBSan native folders                    PENDING FRESH RUN (previous 374/374 is historical)
 pio check -e native --fail-on-defect=low     PASS (no defects)
 pio run -e sigap_n16r8                       PASS (RAM 49,496; flash 1,074,473)
 pio run -e sigap_n16r8_sd                    PASS (RAM 50,036; flash 1,148,245)
@@ -90,6 +92,15 @@ this branch. The exact overrides and compatibility rationale are recorded in
 - `firmware/test/native/test_task9_integration/test_task9_integration.cpp`
   covers synthetic acquisition-to-archive flow, exact immutable retry, valid
   and malformed ACK behavior, bounded worker progress, and SD_MMC policy.
+- `firmware/lib/calibration` accepts `UNCALIBRATED` only with sensor-specific
+  physical evidence and retains bounded DS18B20 wire evidence.
+- `firmware/lib/acquisition` permits explicit calibration-only DS18B20 ROM
+  discovery and keeps missing-profile normal acquisition bus-free.
+- `firmware/lib/maintenance` accepts bounded first-time engineering criteria
+  and stages typed HX711, ultrasonic, MQ ADC, DS18B20, and SHT31 profiles only
+  through validate/preview/commit.
+- `docs/task9-sensor-commissioning.md` contains operator commands, physical
+  reference requirements, diagnostics, and recovery steps.
 - `firmware/lib/provisioning` and `firmware/lib/maintenance` implement the
   authorized `maintenance enter` then `ble passkey` one-shot handoff. The
   existing NVS-derived setup secret and BLE MITM settings are unchanged.
