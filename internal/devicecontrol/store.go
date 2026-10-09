@@ -14,6 +14,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/RayaSatriatama/IoT-Trashcan/internal/telemetryarchive"
 )
 
 // MaxPayloadBytes is the complete HTTP control envelope limit. It matches the
@@ -523,18 +525,16 @@ func (s *Store) LatestDiagnostic(ctx context.Context, deviceID, sensorID string)
 	if s == nil || s.db == nil || strings.TrimSpace(deviceID) == "" || strings.TrimSpace(sensorID) == "" {
 		return nil, ErrInvalid
 	}
-	var raw []byte
-	err := s.db.QueryRowContext(ctx, `
-		SELECT record_bytes FROM telemetry_current_candidates
-		WHERE device_id=? AND kind='sample' AND sensor_id=?
-		ORDER BY first_record_rowid DESC LIMIT 1`, deviceID, sensorID).Scan(&raw)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrNotFound
-	}
+	snapshot, err := telemetryarchive.Current(ctx, s.db, deviceID)
 	if err != nil {
 		return nil, err
 	}
-	return diagnosticFromSample(raw, s.now().UTC())
+	for _, sensors := range snapshot.Samples {
+		if raw, ok := sensors[sensorID]; ok {
+			return diagnosticFromSample(raw, s.now().UTC())
+		}
+	}
+	return nil, ErrNotFound
 }
 
 func diagnosticFromSample(raw []byte, now time.Time) (json.RawMessage, error) {

@@ -109,7 +109,7 @@ func TestHTTPDiagnosticsDoesNotReadCommandResults(t *testing.T) {
 
 func TestHTTPDiagnosticsReadsTelemetrySampleProjection(t *testing.T) {
 	s, db, now := testStore(t)
-	const sample = `{"device_id":"DEV-01","sensor_id":"sht31_44","stream":"b3","quality":"UNCALIBRATED","reason":"UNCALIBRATED","raw":{"present":true},"converted":null,"sequence":"9","recorded_at":"2026-10-09T11:59:59Z","time_quality":"SYNCED","profile_refs":[]}`
+	const sample = `{"device_id":"DEV-01","boot_id":"boot","sensor_id":"sht31_44","stream":"b3","quality":"UNCALIBRATED","reason":"UNCALIBRATED","raw":{"present":true},"converted":null,"sequence":"9","monotonic_us":"9","recorded_at":"2026-10-09T11:59:59Z","time_quality":"SYNCED","profile_refs":[]}`
 	if _, err := db.Exec(`INSERT INTO telemetry_current_candidates
 	(device_id,kind,stream,sensor_id,boot_id,record_id,record_hash,sequence_sort,monotonic_us,recorded_at,time_quality,record_bytes,first_record_rowid)
 	VALUES ('DEV-01','sample','b3','sht31_44','boot','DEV-01/boot/9','sha256:sample','00000000000000000009','9','2026-10-09T11:59:59Z','SYNCED',?,1)`, []byte(sample)); err != nil {
