@@ -41,6 +41,14 @@ humidity span fields for SHT31. The target must remain selected for the whole
 session. `calibration cancel` is safe before criteria are complete and removes
 the session overlay without changing the active profile.
 
+`calibration preview` is read-only. It returns the typed proposal calculated
+from captured evidence: HX711 tare and counts-per-kg; ultrasonic empty/full
+distances and echo parameters; MQ ADC reference and divider values; DS18B20
+ROM, resolution, and temperature offset; or SHT31 address and temperature /
+humidity offsets. Preview does not write NVS. Commit rechecks the evidence
+sequence and active profile identity, rejecting a stale proposal while leaving
+the previous active profile unchanged.
+
 ## Target-specific setup
 
 ### HX711 organic, inorganic, and B3
@@ -184,3 +192,21 @@ rollback commands before replacing a known-good profile.
 No physical sensor, heater, actuator, calibration reference, or power-loss
 result is claimed until the owner runs the documented setup and captures the
 corresponding evidence.
+
+## Software readiness matrix
+
+Native tests provide synthetic protocol and persistence evidence only. Physical
+state remains blocked until the specified wiring and reference instrument are
+available.
+
+| Channel | Software state | Physical state |
+| --- | --- | --- |
+| HX711 organic, inorganic, B3 | SOFTWARE READY | HARDWARE BLOCKED |
+| Ultrasonic organic, inorganic, B3 | SOFTWARE READY | HARDWARE BLOCKED |
+| MQ-4, MQ-135, MQ-7, MQ-8 | SOFTWARE READY | HARDWARE BLOCKED |
+| DS18B20 B3 | SOFTWARE READY | HARDWARE BLOCKED |
+| SHT31 0x44, SHT31 0x45 | SOFTWARE READY | HARDWARE BLOCKED |
+
+No channel is physically verified in this report. MQ-7 remains unavailable
+until an approved heater profile and safe driver wiring are present. TEST_ONLY
+fixtures in native tests are not calibration results.

@@ -10,7 +10,7 @@ commissioning or destructive hardware operation was performed.
 
 - Task 8 merge SHA: `6269b6c2532d25a93ac6b12454106613e17af911`.
 - Task 9 branch: `feat/full-integration-hil-validation`.
-- Reviewed Task 9 final source commit: `b5caee3` (based on `8c104ed`).
+- Reviewed Task 9 final source baseline before this remediation: `df5f5ec`.
 - Hardware: ESP32-S3 N16R8 with onboard FAT32 microSD; no sensors, heater, or actuators.
 - No firmware upload, reboot, SD mutation, NVS erase, unplug, power-cycle,
   power-cut, or physical commissioning was performed.
@@ -28,12 +28,12 @@ commissioning or destructive hardware operation was performed.
 | HTTPS boundary | PASS (native/backend tests) | Backend round-trip test uses an in-process authenticated service and exact bytes; no staging endpoint credentials were available. |
 | BLE provisioning | PASS (web/native contract tests) | Browser protocol, secure-context, gesture, privacy, disconnect, and one-shot passkey handoff tests pass; physical advertising/pairing was not run. |
 | USB passkey commissioning | PASS (native contract) | `maintenance enter` followed by `ble passkey` discloses the six-digit value once from the existing NVS-derived handoff; status/log/telemetry paths do not expose it. Hardware execution remains blocked. |
-| Loopback HTTPS staging | PASS (historical; fresh Go blocked) | Historical Go tests cover fail-closed TLS configuration and isolated SQLite; no staging process or device transmission was started, and Go was unavailable for a fresh rerun. |
+| Loopback HTTPS staging | PASS (software only) | Fresh Go 1.27.1 tests cover fail-closed TLS configuration and isolated SQLite; no staging process or device transmission was started. |
 | Frontend dependency triage | PASS (bounded remediation) | Three narrow lockfile-backed overrides remove the production critical finding; remaining findings are documented toolchain/development risk and were not force-upgraded. |
-| Backend ingest and current projection | PASS (historical; fresh Go blocked) | Historical `internal/e2e` evidence covers durable ACK, replay dedupe, conflict, auth, export, late backlog, and filtered cursor; fresh Go execution was blocked by the missing executable. |
-| Schemas and frozen hashes | BLOCKED (fresh Go gate) | Historical evidence covers 14 schemas, 24 valid fixtures, 36 invalid fixtures, and unchanged frozen hashes; the current environment has no Go executable for a fresh semantic run. |
-| Firmware native suite | PASS | 389/389 test cases on the sensor-readiness source. |
-| Firmware sanitizer suite | PASS | Fresh ASan/UBSan run completed 389/389 cases with no diagnostics. |
+| Backend ingest and current projection | PASS (software only) | Fresh Go `internal/e2e` and full tests cover durable ACK, replay dedupe, conflict, auth, export, late backlog, and filtered cursor; no staging process or device transmission was started. |
+| Schemas and frozen hashes | PASS | Fresh Go semantic run compiled 14 schemas, checked 24 valid fixtures, rejected 36 invalid fixtures, and preserved both frozen hashes. |
+| Firmware native suite | PASS | Fresh PlatformIO suite completed 402/402 test cases across 38 folders. |
+| Firmware sanitizer suite | PASS | Fresh ASan/UBSan run completed 402/402 cases with no diagnostics. |
 | Cppcheck | PASS | `pio check -e native --fail-on-defect=low`, no defects. |
 | Target builds | PASS | `sigap_n16r8`, `sigap_n16r8_sd`, `sigap_n16r8_sd_spi`, and `sigap_bench`. |
 | Frontend | PASS | 19 files/92 Vitest tests, TypeScript typecheck, and Expo web export pass. |
@@ -45,31 +45,31 @@ commissioning or destructive hardware operation was performed.
 ## Fresh command results
 
 Toolchain: PlatformIO supplied by `uv tool run`; Node/npm dependencies
-installed from the repository lockfile. Go is unavailable in this execution
-environment (`go: command not found`).
+installed from the repository lockfile. Go ran from the isolated official
+installation `/home/raya/.local/go1.27.1-verified/bin/go`.
 
 ```text
-go test -count=1 ./...                         BLOCKED (go unavailable)
-go test -race -count=1 ./...                  BLOCKED (go unavailable)
-go vet ./...                                  BLOCKED (go unavailable)
-go test ./internal/telemetry (schema/golden)  BLOCKED (go unavailable)
+go1.27.1 test -count=1 ./...                  PASS
+go1.27.1 test -race -count=1 ./...           PASS
+go1.27.1 vet ./...                            PASS
+go1.27.1 test ./internal/telemetry            PASS (14 schemas, 24 valid, 36 invalid, golden hashes)
 npm test                                      PASS (19 files, 92 tests)
 npm run typecheck                             PASS
 npm run export:web                            PASS
-pio test -e native                            PASS (389/389)
-ASan/UBSan native folders                    PASS (389/389 cases, 38 folders, 0 failed)
+pio test -e native                            PASS (402/402)
+ASan/UBSan native folders                    PASS (402/402 cases, 38 folders, 0 failed)
 pio check -e native --fail-on-defect=low     PASS (no defects)
-pio run -e sigap_n16r8                       PASS (RAM 49,496; flash 1,077,309)
-pio run -e sigap_n16r8_sd                    PASS (RAM 50,036; flash 1,150,989)
-pio run -e sigap_n16r8_sd_spi                PASS (RAM 49,792; flash 1,130,517)
-pio run -e sigap_bench                       PASS (RAM 49,496; flash 1,077,309)
+pio run -e sigap_n16r8                       PASS (RAM 49,496; flash 1,082,737)
+pio run -e sigap_n16r8_sd                    PASS (RAM 50,036; flash 1,156,193)
+pio run -e sigap_n16r8_sd_spi                PASS (RAM 49,792; flash 1,135,801)
+pio run -e sigap_bench                       PASS (RAM 49,496; flash 1,082,737)
 git diff --check                             PASS
 ```
 
-The current execution environment has no `go` executable on `PATH`, so the
-fresh Go test, race, vet, schema-conformance, and frozen-hash commands were
-not executable in this pass. The prior Go/schema/hash evidence remains
-historical and is not counted as fresh sensor-readiness verification.
+The official Go 1.27.1 toolchain was installed in a user-owned isolated
+directory after checksum verification against official download metadata.
+The commands above are fresh results from that executable; `go.mod` and
+`go.sum` were not changed.
 
 The frozen golden hashes remain:
 
@@ -106,7 +106,8 @@ this branch. The exact overrides and compatibility rationale are recorded in
   and stages typed HX711, ultrasonic, MQ ADC, DS18B20, and SHT31 profiles only
   through validate/preview/commit.
 - `firmware/lib/maintenance/src/maintenance/runtime_calibration.cpp` owns the
-  calibration-profile builder so the command router source remains within the
+  calibration-profile builder and `runtime_diagnostics.cpp` owns the bounded
+  sensor status formatter; the command router source remains below the
   repository file-size limit.
 - `firmware/test/native/test_sensor_commissioning` runs parser-to-profile
   persistence regressions for ultrasonic, MQ ADC, DS18B20, and SHT31 address
