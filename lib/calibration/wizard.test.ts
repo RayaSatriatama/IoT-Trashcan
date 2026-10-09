@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { canBeginCalibration, calibrationStateLabel, initialWizardStatus, nextStep, redactCalibrationError } from './wizard';
-import type { SensorDiagnostic } from '../api/calibration';
+import { canBeginCalibration, calibrationStateLabel, commandSessionState, hasValidatedPreview, initialWizardStatus, nextStep, redactCalibrationError } from './wizard';
+import type { CalibrationCommand, CalibrationPreview, SensorDiagnostic } from '../api/calibration';
 
 const diagnostic: SensorDiagnostic = {
   sensor_id: 'hx711_organic', stream: 'organic', quality: 'UNCALIBRATED', reason: 'PROFILE_MISSING',
@@ -32,5 +32,25 @@ describe('calibration wizard contract', () => {
 
   it('redacts secret-shaped error details', () => {
     expect(redactCalibrationError(new Error('token=abc password=hunter2'))).toBe('token=[REDACTED] password=[REDACTED]');
+  });
+
+  it('keeps command completion separate from the authoritative session state', () => {
+    const command: CalibrationCommand = {
+      command_id: 'commit-1', device_id: 'SIGAP-01', sensor_id: 'hx711_organic', operation: 'commit',
+      status: 'COMMITTED', state: 'PREVIEW_READY', expires_at: '2026-10-09T12:00:00Z',
+    };
+    expect(commandSessionState(command)).toBe('PREVIEW_READY');
+  });
+
+  it('requires a complete, fresh device proposal before enabling commit', () => {
+    const preview: CalibrationPreview = {
+      sensor_id: 'ds18b20_b3', proposal_hash: 'sha256:proposal', profile_version: '2',
+      parameters: { offset_centi_c: 10 }, evidence_count: 3, evidence_hash: 'sha256:evidence',
+      expires_at: '2030-01-01T00:00:00.000Z',
+    };
+    expect(hasValidatedPreview(preview, 'ds18b20_b3', Date.parse('2029-01-01T00:00:00.000Z'))).toBe(true);
+    expect(hasValidatedPreview({ ...preview, evidence_hash: '' }, 'ds18b20_b3', Date.parse('2029-01-01T00:00:00.000Z'))).toBe(false);
+    expect(hasValidatedPreview({ ...preview, expires_at: '2028-01-01T00:00:00.000Z' }, 'ds18b20_b3', Date.parse('2029-01-01T00:00:00.000Z'))).toBe(false);
+    expect(hasValidatedPreview(preview, 'sht31_44', Date.parse('2029-01-01T00:00:00.000Z'))).toBe(false);
   });
 });

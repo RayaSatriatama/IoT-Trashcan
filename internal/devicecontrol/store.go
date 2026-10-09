@@ -16,7 +16,11 @@ import (
 	"time"
 )
 
-const MaxPayloadBytes = 16 * 1024
+// MaxPayloadBytes is the complete HTTP control envelope limit. It matches the
+// firmware's bounded 4 KiB device-control payload workspace; command and
+// result envelopes are rejected before they can reach the device.
+const MaxPayloadBytes = 4 * 1024
+const MaxCommandLifetime = 120 * time.Second
 
 type Status string
 
@@ -101,6 +105,102 @@ func hashPayload(payload []byte) string {
 	sum := sha256.Sum256(payload)
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
+
+func normalizedOperation(operation string) string {
+	return strings.ToLower(strings.TrimSpace(operation))
+}
+
+func requiresSession(operation string) bool {
+	switch normalizedOperation(operation) {
+	case "set_criteria", "criteria", "capture", "validate", "preview", "commit", "cancel", "rollback":
+		return true
+	default:
+		return false
+	}
+}
+
+func commandRequestHash(req CreateRequest) (string, error) {
+	identity := struct {
+		DeviceID   string          `json:"device_id"`
+		OperatorID string          `json:"operator_id"`
+		SessionID  string          `json:"session_id"`
+		SensorID   string          `json:"sensor_id"`
+		Operation  string          `json:"operation"`
+		Payload    json.RawMessage `json:"payload"`
+		ExpiresAt  string          `json:"expires_at"`
+	}{
+		DeviceID: req.DeviceID, OperatorID: req.OperatorID,
+		SessionID: req.SessionID, SensorID: req.SensorID,
+		Operation: normalizedOperation(req.Operation), Payload: req.Payload,
+		ExpiresAt: req.ExpiresAt.UTC().Format(time.RFC3339Nano),
+	}
+	encoded, err := json.Marshal(identity)
+	if err != nil {
+		return "", err
+	}
+	return hashPayload(encoded), nil
+}
+
+func commandEnvelopeFits(req CreateRequest) bool {
+	requestHash, err := commandRequestHash(req)
+	if err != nil {
+		return false
+	}
+	wire := deviceCommandWire{ID: req.ID, DeviceID: req.DeviceID,
+		OperatorID: req.OperatorID, SessionID: req.SessionID, SensorID: req.SensorID,
+		Operation: normalizedOperation(req.Operation), Payload: req.Payload,
+		RequestHash: requestHash,
+		ExpiresAt:   req.ExpiresAt.UTC().Format(time.RFC3339Nano), ExpiresInMs: uint32(MaxCommandLifetime / time.Millisecond),
+		Attempt: int(^uint32(0))}
+	encoded, err := json.Marshal(wire)
+	return err == nil && len(encoded) <= MaxPayloadBytes
+}
+
+func resultEnvelopeFits(result ResultRequest) bool {
+	wire := struct {
+		Status    Status          `json:"status"`
+		SessionID string          `json:"session_id"`
+		Payload   json.RawMessage `json:"result"`
+		ErrorCode string          `json:"error_code,omitempty"`
+	}{result.Status, result.SessionID, result.Payload, result.ErrorCode}
+	encoded, err := json.Marshal(wire)
+	return err == nil && len(encoded) <= MaxPayloadBytes
+}
+
+// deviceCommandWire is the only command representation sent to firmware. It
+// carries the authenticated operator and complete request hash so firmware
+// replay identity matches the durable backend command.
+type deviceCommandWire struct {
+	ID          string          `json:"command_id"`
+	DeviceID    string          `json:"device_id"`
+	OperatorID  string          `json:"operator_id"`
+	SessionID   string          `json:"session_id"`
+	SensorID    string          `json:"sensor_id"`
+	Operation   string          `json:"operation"`
+	Payload     json.RawMessage `json:"payload"`
+	RequestHash string          `json:"request_hash,omitempty"`
+	ExpiresAt   string          `json:"expires_at"`
+	ExpiresInMs uint32          `json:"expires_in_ms"`
+	Attempt     int             `json:"attempt"`
+}
+
+func commandForDevice(c Command, now time.Time) deviceCommandWire {
+	remaining := uint64(0)
+	if c.ExpiresAt.After(now) {
+		remaining = uint64(c.ExpiresAt.Sub(now) / time.Millisecond)
+		if remaining == 0 {
+			remaining = 1
+		}
+	}
+	if remaining > uint64(^uint32(0)) {
+		remaining = uint64(^uint32(0))
+	}
+	return deviceCommandWire{ID: c.ID, DeviceID: c.DeviceID,
+		OperatorID: c.OperatorID, SessionID: c.SessionID, SensorID: c.SensorID,
+		Operation: c.Operation, Payload: c.Payload, RequestHash: c.RequestHash,
+		ExpiresAt:   c.ExpiresAt.UTC().Format(time.RFC3339Nano),
+		ExpiresInMs: uint32(remaining), Attempt: c.Attempt}
+}
 func validStatus(v Status) bool {
 	switch v {
 	case Accepted, Capturing, Validated, PreviewReady, Committed, Failed, Cancelled:
@@ -110,27 +210,29 @@ func validStatus(v Status) bool {
 }
 func terminal(v Status) bool { return v == Committed || v == Failed || v == Expired || v == Cancelled }
 
-func validTransition(from, to Status) bool {
-	if to == Failed || to == Cancelled {
-		return from == Delivered || from == Accepted || from == Capturing || from == Validated || from == PreviewReady
+func validCommandResult(operation string, status Status) bool {
+	if status == Failed {
+		return true
 	}
-	switch from {
-	case Delivered:
-		return to == Accepted || to == Capturing
-	case Accepted:
-		return to == Capturing
-	case Capturing:
-		return to == Validated
-	case Validated:
-		return to == PreviewReady
-	case PreviewReady:
-		return to == Committed
+	switch normalizedOperation(operation) {
+	case "start", "set_criteria", "criteria":
+		return status == Accepted
+	case "capture":
+		return status == Capturing
+	case "validate":
+		return status == Validated
+	case "preview":
+		return status == PreviewReady
+	case "commit", "rollback":
+		return status == Committed
+	case "cancel":
+		return status == Cancelled
 	default:
 		return false
 	}
 }
 
-func validCommittedResult(payload []byte) bool {
+func validCommittedResult(payload []byte, sensorID string) bool {
 	var value struct {
 		ProfileKey  string `json:"profile_key"`
 		ProfileHash string `json:"profile_hash"`
@@ -139,15 +241,17 @@ func validCommittedResult(payload []byte) bool {
 	if len(payload) == 0 || json.Unmarshal(payload, &value) != nil {
 		return false
 	}
-	return strings.TrimSpace(value.ProfileKey) != "" &&
+	return strings.TrimSpace(value.ProfileKey) == sensorID &&
 		strings.TrimSpace(value.ProfileHash) != "" && value.Version > 0
 }
 
 func (s *Store) Enqueue(ctx context.Context, req CreateRequest) (Command, error) {
-	if s == nil || s.db == nil || strings.TrimSpace(req.ID) == "" || strings.TrimSpace(req.DeviceID) == "" || strings.TrimSpace(req.OperatorID) == "" || strings.TrimSpace(req.SensorID) == "" || strings.TrimSpace(req.Operation) == "" || len(req.Payload) == 0 || len(req.Payload) > MaxPayloadBytes || req.ExpiresAt.IsZero() {
+	req.Operation = normalizedOperation(req.Operation)
+	if s == nil || s.db == nil || strings.TrimSpace(req.ID) == "" || strings.TrimSpace(req.DeviceID) == "" || strings.TrimSpace(req.OperatorID) == "" || strings.TrimSpace(req.SensorID) == "" || req.Operation == "" || len(req.Payload) == 0 || len(req.Payload) > MaxPayloadBytes || req.ExpiresAt.IsZero() || !commandEnvelopeFits(req) {
 		return Command{}, ErrInvalid
 	}
-	if req.ExpiresAt.Before(s.now().UTC()) {
+	now := s.now().UTC()
+	if req.ExpiresAt.Before(now) || req.ExpiresAt.After(now.Add(MaxCommandLifetime)) {
 		return Command{}, ErrExpired
 	}
 	var object any
@@ -155,7 +259,10 @@ func (s *Store) Enqueue(ctx context.Context, req CreateRequest) (Command, error)
 	if dec != nil {
 		return Command{}, ErrInvalid
 	}
-	hash := hashPayload(req.Payload)
+	hash, err := commandRequestHash(req)
+	if err != nil {
+		return Command{}, ErrInvalid
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Command{}, err
@@ -168,7 +275,7 @@ func (s *Store) Enqueue(ctx context.Context, req CreateRequest) (Command, error)
 	var status string
 	err = tx.QueryRowContext(ctx, `SELECT command_id,device_id,operator_id,COALESCE(session_id,''),sensor_id,operation,payload,request_hash,status,expires_at,attempt,COALESCE(result_payload,''),COALESCE(result_hash,''),COALESCE(error_code,'') FROM device_control_commands WHERE command_id=?`, req.ID).Scan(&existing.ID, &existing.DeviceID, &existing.OperatorID, &existing.SessionID, &existing.SensorID, &existing.Operation, &payload, &existing.RequestHash, &status, &exp, &existing.Attempt, &resultPayload, &existing.ResultHash, &existing.ErrorCode)
 	if err == nil {
-		if existing.RequestHash != hash || existing.DeviceID != req.DeviceID {
+		if existing.RequestHash != hash {
 			return Command{}, ErrConflict
 		}
 		existing.Payload = payload
@@ -180,12 +287,15 @@ func (s *Store) Enqueue(ctx context.Context, req CreateRequest) (Command, error)
 	if !errors.Is(err, sql.ErrNoRows) {
 		return Command{}, err
 	}
-	if strings.EqualFold(req.Operation, "start") {
+	if req.Operation == "start" {
+		if strings.TrimSpace(req.SessionID) == "" {
+			return Command{}, ErrInvalid
+		}
 		var sid, owner, state, oldExp string
 		err = tx.QueryRowContext(ctx, `SELECT session_id,operator_id,state,expires_at FROM device_control_sessions WHERE device_id=?`, req.DeviceID).Scan(&sid, &owner, &state, &oldExp)
 		if err == nil {
 			old, _ := time.Parse(time.RFC3339Nano, oldExp)
-			if state == "ACTIVE" && old.After(s.now().UTC()) && (owner != req.OperatorID || sid != req.SessionID) {
+			if state == "ACTIVE" && old.After(s.now().UTC()) {
 				return Command{}, ErrSessionBusy
 			}
 		}
@@ -197,9 +307,28 @@ func (s *Store) Enqueue(ctx context.Context, req CreateRequest) (Command, error)
 		if err != nil {
 			return Command{}, err
 		}
+	} else if requiresSession(req.Operation) {
+		if strings.TrimSpace(req.SessionID) == "" {
+			return Command{}, ErrInvalid
+		}
+		var sid, owner, sensor, state, sessionExpiry string
+		err = tx.QueryRowContext(ctx, `SELECT session_id,operator_id,sensor_id,state,expires_at FROM device_control_sessions WHERE device_id=?`, req.DeviceID).Scan(&sid, &owner, &sensor, &state, &sessionExpiry)
+		if errors.Is(err, sql.ErrNoRows) {
+			return Command{}, ErrSessionBusy
+		}
+		if err != nil {
+			return Command{}, err
+		}
+		expires, parseErr := time.Parse(time.RFC3339Nano, sessionExpiry)
+		if parseErr != nil || state != "ACTIVE" || !expires.After(s.now().UTC()) {
+			return Command{}, ErrSessionBusy
+		}
+		if sid != req.SessionID || owner != req.OperatorID || sensor != req.SensorID {
+			return Command{}, ErrSessionBusy
+		}
 	}
-	now := s.now().UTC().Format(time.RFC3339Nano)
-	_, err = tx.ExecContext(ctx, `INSERT INTO device_control_commands(command_id,device_id,operator_id,session_id,sensor_id,operation,payload,request_hash,status,expires_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,'QUEUED',?,?,?)`, req.ID, req.DeviceID, req.OperatorID, req.SessionID, req.SensorID, req.Operation, req.Payload, hash, req.ExpiresAt.UTC().Format(time.RFC3339Nano), now, now)
+	createdAt := s.now().UTC().Format(time.RFC3339Nano)
+	_, err = tx.ExecContext(ctx, `INSERT INTO device_control_commands(command_id,device_id,operator_id,session_id,sensor_id,operation,payload,request_hash,status,expires_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,'QUEUED',?,?,?)`, req.ID, req.DeviceID, req.OperatorID, req.SessionID, req.SensorID, req.Operation, req.Payload, hash, req.ExpiresAt.UTC().Format(time.RFC3339Nano), createdAt, createdAt)
 	if err != nil {
 		return Command{}, err
 	}
@@ -250,10 +379,7 @@ func (s *Store) Claim(ctx context.Context, deviceID string) (Command, error) {
 }
 
 func (s *Store) UpdateResult(ctx context.Context, deviceID, commandID string, result ResultRequest) (Command, error) {
-	if !validStatus(result.Status) || len(result.Payload) > MaxPayloadBytes {
-		return Command{}, ErrInvalid
-	}
-	if result.Status == Committed && !validCommittedResult(result.Payload) {
+	if !validStatus(result.Status) || len(result.Payload) > MaxPayloadBytes || !resultEnvelopeFits(result) {
 		return Command{}, ErrInvalid
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -277,30 +403,37 @@ func (s *Store) UpdateResult(ctx context.Context, deviceID, commandID string, re
 	if !expires.After(now) && !terminal(Status(status)) {
 		return Command{}, ErrExpired
 	}
-	if result.SessionID != "" && result.SessionID != c.SessionID {
+	if requiresSession(c.Operation) && (result.SessionID == "" || result.SessionID != c.SessionID) {
 		return Command{}, ErrConflict
+	}
+	if result.Status == Committed && !validCommittedResult(result.Payload, c.SensorID) {
+		return Command{}, ErrInvalid
 	}
 	resultHash := hashPayload(result.Payload)
 	if terminal(Status(status)) {
 		// Lost HTTP responses are safely replayable only when every result
 		// field and bytes match the durable terminal result.
 		var storedPayload []byte
-		var storedHash string
-		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(result_payload,''),COALESCE(result_hash,'') FROM device_control_commands WHERE command_id=?`, commandID).Scan(&storedPayload, &storedHash); err != nil {
+		var storedHash, storedError string
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(result_payload,''),COALESCE(result_hash,''),COALESCE(error_code,'') FROM device_control_commands WHERE command_id=?`, commandID).Scan(&storedPayload, &storedHash, &storedError); err != nil {
 			return Command{}, err
 		}
-		if Status(status) == result.Status && storedHash == resultHash && bytes.Equal(storedPayload, result.Payload) {
+		if Status(status) == result.Status && storedHash == resultHash && storedError == result.ErrorCode && bytes.Equal(storedPayload, result.Payload) {
 			c.Payload = payload
 			c.Status = Status(status)
 			c.ResultPayload = storedPayload
 			c.ResultHash = storedHash
+			c.ErrorCode = storedError
 			c.ExpiresAt = expires
 			_ = tx.Rollback()
 			return c, nil
 		}
 		return Command{}, ErrConflict
 	}
-	if !validTransition(Status(status), result.Status) {
+	// Command status is the outcome for this one immutable request, not a
+	// replay of the overall calibration-session history. A COMMIT command may
+	// therefore report COMMITTED directly after delivery.
+	if Status(status) != Delivered || !validCommandResult(c.Operation, result.Status) {
 		return Command{}, ErrInvalid
 	}
 	nowText := now.Format(time.RFC3339Nano)
@@ -366,14 +499,17 @@ func (s *Store) LatestResult(ctx context.Context, deviceID, sensorID string) (js
 	return append(json.RawMessage(nil), payload...), nil
 }
 
-func (s *Store) Cancel(ctx context.Context, deviceID, commandID string) error {
+func (s *Store) Cancel(ctx context.Context, deviceID, commandID, operatorID string) error {
+	if strings.TrimSpace(operatorID) == "" {
+		return ErrUnauthorized
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 	now := s.now().UTC().Format(time.RFC3339Nano)
-	result, err := tx.ExecContext(ctx, `UPDATE device_control_commands SET status='CANCELLED',updated_at=? WHERE device_id=? AND command_id=? AND status IN ('QUEUED','DELIVERED','ACCEPTED','CAPTURING','VALIDATED','PREVIEW_READY')`, now, deviceID, commandID)
+	result, err := tx.ExecContext(ctx, `UPDATE device_control_commands SET status='CANCELLED',updated_at=? WHERE device_id=? AND command_id=? AND operator_id=? AND status IN ('QUEUED','DELIVERED','ACCEPTED','CAPTURING','VALIDATED','PREVIEW_READY')`, now, deviceID, commandID, operatorID)
 	if err != nil {
 		return err
 	}

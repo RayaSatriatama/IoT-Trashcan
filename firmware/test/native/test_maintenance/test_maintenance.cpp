@@ -1225,7 +1225,7 @@ void test_maintenance_memory_footprint_is_bounded() {
               "CommandRouter=%zu MaintenanceService=%zu\n",
               sizeof(MaintenanceParser), sizeof(MaintenanceResponse),
               sizeof(CommandRouter), sizeof(MaintenanceService));
-  TEST_ASSERT_TRUE(sizeof(MaintenanceResponse) <= 256U);
+  TEST_ASSERT_TRUE(sizeof(MaintenanceResponse) <= 400U);
   TEST_ASSERT_TRUE(sizeof(MaintenanceService) <= 512U);
 }
 

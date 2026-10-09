@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Card, Input, Text, XStack, YStack } from 'tamagui';
 
 import { createCalibrationApi, type CalibrationApi, type CalibrationCapabilities, type CalibrationCommand, type CalibrationCommandRequest, type CalibrationPreview, type CalibrationSensorId, type CalibrationState, type SensorDiagnostic } from '../../lib/api/calibration';
-import { canBeginCalibration, calibrationStateLabel, initialWizardStatus, nextStep, redactCalibrationError, type CalibrationWizardStep } from '../../lib/calibration/wizard';
+import { canBeginCalibration, calibrationStateLabel, commandSessionState, hasValidatedPreview, initialWizardStatus, nextStep, redactCalibrationError, type CalibrationWizardStep } from '../../lib/calibration/wizard';
 import { AppButton } from '../AppButton';
 import type { BleCalibrationResponse } from '../../lib/ble/protocol';
 
@@ -21,6 +21,7 @@ export type CalibrationWizardProps = {
 };
 
 export type BleCalibrationAdapter = {
+  calibrationCapabilities?: (sensor: string) => Promise<BleCalibrationResponse>;
   calibrationEvidence?: (sensor: string) => Promise<BleCalibrationResponse>;
   calibrationStart: (sensor: string) => Promise<BleCalibrationResponse>;
   calibrationCriteria: (sensor: string, parameters: Record<string, string | number | boolean>) => Promise<BleCalibrationResponse>;
@@ -40,12 +41,19 @@ function fieldValue(value: string): number | undefined {
 const POLL_DELAYS_MS = [100, 200, 400, 800, 1200, 2000, 3000, 5000] as const;
 const TERMINAL_STATES: CalibrationState[] = ['COMMITTED', 'FAILED', 'EXPIRED', 'CANCELLED'];
 
+function newSessionId(): string {
+  if (typeof globalThis.crypto?.randomUUID === 'function') {
+    return globalThis.crypto.randomUUID();
+  }
+  return `cal-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
 function parsePreview(value: unknown): CalibrationPreview | null {
   if (!value || typeof value !== 'object') return null;
   const candidate = value as Record<string, unknown>;
   const preview = (candidate.preview && typeof candidate.preview === 'object' ? candidate.preview : candidate) as Record<string, unknown>;
   if (typeof preview.proposal_hash !== 'string' || typeof preview.profile_version !== 'string') return null;
-  if (typeof preview.evidence_count !== 'number' || typeof preview.evidence_hash !== 'string' || typeof preview.expires_at !== 'string') return null;
+  if (typeof preview.evidence_count !== 'number' || typeof preview.evidence_hash !== 'string') return null;
   return {
     sensor_id: typeof preview.sensor_id === 'string' ? preview.sensor_id as CalibrationSensorId : '' as CalibrationSensorId,
     proposal_hash: preview.proposal_hash,
@@ -53,7 +61,31 @@ function parsePreview(value: unknown): CalibrationPreview | null {
     parameters: typeof preview.parameters === 'object' && preview.parameters !== null ? preview.parameters as CalibrationPreview['parameters'] : {},
     evidence_count: preview.evidence_count,
     evidence_hash: preview.evidence_hash,
-    expires_at: preview.expires_at,
+    expires_at: typeof preview.expires_at === 'string' ? preview.expires_at :
+      (typeof preview.expires_in_ms === 'number' ? new Date(Date.now() + preview.expires_in_ms).toISOString() : ''),
+  };
+}
+
+function parseBleCapabilities(
+  response: BleCalibrationResponse,
+  sensorId: CalibrationSensorId,
+): CalibrationCapabilities | null {
+  if (response.status === 'ERROR' || response.sensor !== sensorId) return null;
+  const fields = (name: 'references' | 'criteria' | 'engineering') => {
+    const encoded = response.data[name];
+    if (encoded === undefined) return [];
+    if (encoded === 'none') return [];
+    return encoded.split(',').map((entry) => {
+      const separator = entry.indexOf(':');
+      if (separator <= 0 || separator === entry.length - 1) return null;
+      return { name: entry.slice(0, separator), unit: entry.slice(separator + 1), required: true };
+    }).filter((field): field is { name: string; unit: string; required: boolean } => field !== null);
+  };
+  return {
+    sensor_id: sensorId,
+    references: fields('references'),
+    criteria: fields('criteria'),
+    engineering_parameters: fields('engineering'),
   };
 }
 
@@ -70,7 +102,9 @@ function parseBleResult(response: BleCalibrationResponse): { state?: Calibration
           parameters: Object.fromEntries(Object.entries(data).filter(([key]) => !['proposal_hash', 'profile_version', 'evidence_count', 'evidence_hash', 'expires_at'].includes(key))),
           evidence_count: Number(data.evidence_count ?? 0),
           evidence_hash: data.evidence_hash ?? '',
-          expires_at: data.expires_at ?? '',
+          expires_at: data.expires_at ?? (data.expires_in_ms
+            ? new Date(Date.now() + Number(data.expires_in_ms)).toISOString()
+            : ''),
         } satisfies CalibrationPreview
       : undefined;
     return { state, session_id: response.sessionId, preview };
@@ -123,6 +157,7 @@ export function CalibrationWizard({ deviceId, sensorId, diagnostic, api, apiFact
   const [anchor, setAnchor] = useState('');
   const [preview, setPreview] = useState<CalibrationPreview | null>(null);
   const [operatorToken, setOperatorToken] = useState('');
+  const [csrfToken, setCsrfToken] = useState('');
   const [capabilities, setCapabilities] = useState<CalibrationCapabilities | null>(null);
   const [fields, setFields] = useState<Record<string, string>>({});
   const [commandId, setCommandId] = useState<string | null>(null);
@@ -132,7 +167,7 @@ export function CalibrationWizard({ deviceId, sensorId, diagnostic, api, apiFact
   const [securedDiagnostic, setSecuredDiagnostic] = useState<SensorDiagnostic | null>(null);
   const [bleDiagnostic, setBleDiagnostic] = useState<SensorDiagnostic | null>(null);
   const activeDiagnostic = transport === 'https' ? securedDiagnostic : (bleDiagnostic ?? (diagnosticAuthoritative ? diagnostic : null));
-  const ready = canBeginCalibration(activeDiagnostic);
+  const ready = canBeginCalibration(activeDiagnostic) && capabilities !== null;
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -161,7 +196,7 @@ export function CalibrationWizard({ deviceId, sensorId, diagnostic, api, apiFact
   };
 
   const loadSecuredDiagnostic = async () => {
-    const client = api ?? (operatorToken.trim() ? apiFactory({ bearerToken: operatorToken.trim() }) : null);
+    const client = api ?? (operatorToken.trim() ? apiFactory({ bearerToken: operatorToken.trim(), csrfToken: csrfToken.trim() }) : null);
     if (!client) { setError('Masukkan token sesi operator untuk memuat diagnostik terautentikasi.'); return; }
     setBusy(true); setError(null);
     try {
@@ -181,18 +216,32 @@ export function CalibrationWizard({ deviceId, sensorId, diagnostic, api, apiFact
     } catch (cause) { setError(redactCalibrationError(cause)); }
   };
 
+  const loadBleCapabilities = async () => {
+    if (!bleClient?.calibrationCapabilities) return;
+    try {
+      const value = parseBleCapabilities(await bleClient.calibrationCapabilities(sensorId), sensorId);
+      if (!value) throw new Error('Kapabilitas perangkat tidak valid');
+      setCapabilities(value);
+    } catch (cause) { setError(redactCalibrationError(cause)); }
+  };
+
   useEffect(() => {
-    if (open && transport === 'ble' && bleConnected) void loadBleDiagnostic();
+    if (open && transport === 'ble' && bleConnected) {
+      void loadBleCapabilities();
+      void loadBleDiagnostic();
+    }
   // The adapter and connection flags intentionally define the physical read boundary.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, transport, bleConnected, sensorId]);
 
   const applyCommand = (command: CalibrationCommand) => {
     setLastCommand(command);
-    setSessionState(command.status);
+    const state = commandSessionState(command);
+    setSessionState(state);
     const parsed = parsePreview(command.result);
-    if (parsed) setPreview(parsed);
-    const next = nextStep(command.status, step);
+    if (parsed && !parsed.expires_at && command.expires_at) parsed.expires_at = command.expires_at;
+    if (parsed && hasValidatedPreview(parsed, sensorId)) setPreview(parsed);
+    const next = nextStep(command.status === 'COMMITTED' ? 'COMMITTED' : state, step);
     setStep(next);
     if (TERMINAL_STATES.includes(command.status)) {
       if (command.status === 'COMMITTED' || command.status === 'CANCELLED') onDiagnosticRefresh?.();
@@ -213,7 +262,7 @@ export function CalibrationWizard({ deviceId, sensorId, diagnostic, api, apiFact
   };
 
   const submit = async (operation: CalibrationCommandRequest['operation'], extra: Partial<CalibrationCommandRequest> = {}) => {
-    const client = api ?? (transport === 'https' && operatorToken.trim() ? apiFactory({ bearerToken: operatorToken.trim() }) : null);
+    const client = api ?? (transport === 'https' && operatorToken.trim() ? apiFactory({ bearerToken: operatorToken.trim(), csrfToken: csrfToken.trim() }) : null);
     if (!client && !bleClient) { setError('Sesi operator diperlukan untuk mode HTTPS, atau hubungkan BLE lokal.'); return; }
     if (commandInFlight.current && transport === 'https') return;
     setError(null); setBusy(true); commandInFlight.current = true;
@@ -229,7 +278,7 @@ export function CalibrationWizard({ deviceId, sensorId, diagnostic, api, apiFact
         const parsed = parseBleResult(output);
         if (parsed.error) throw new Error(parsed.error);
         if (parsed.session_id) setPersistedCommand(null, parsed.session_id);
-        if (parsed.preview) setPreview(parsed.preview);
+        if (parsed.preview && hasValidatedPreview(parsed.preview, sensorId)) setPreview(parsed.preview);
         const stateByOperation: Record<CalibrationCommandRequest['operation'], CalibrationState> = { START: 'CAPTURING', SET_CRITERIA: 'CAPTURING', CAPTURE: 'VALIDATING', VALIDATE: 'PREVIEW_READY', PREVIEW: 'PREVIEW_READY', COMMIT: 'COMMITTED', CANCEL: 'CANCELLED', ROLLBACK: 'FAILED' };
         const state = parsed.state ?? stateByOperation[operation];
         setSessionState(state);
@@ -240,10 +289,13 @@ export function CalibrationWizard({ deviceId, sensorId, diagnostic, api, apiFact
         return;
       }
       if (!client) throw new Error('Operator session is unavailable');
-      const response = await client.submit({ device_id: deviceId, sensor_id: sensorId, operation, session_id: sessionId ?? undefined, ...extra });
+      const effectiveSessionId = operation === 'START' ? (sessionId ?? newSessionId()) : sessionId;
+      const response = await client.submit({ device_id: deviceId, sensor_id: sensorId, operation, session_id: effectiveSessionId ?? undefined, ...extra });
       const returnedId = response.command?.command_id ?? null;
-      if (returnedId || response.session_id) setPersistedCommand(returnedId ?? commandId, response.session_id ?? sessionId);
-      if (response.preview) setPreview(response.preview);
+      if (returnedId || response.session_id || effectiveSessionId) {
+        setPersistedCommand(returnedId ?? commandId, response.session_id ?? effectiveSessionId ?? null);
+      }
+      if (response.preview && hasValidatedPreview(response.preview, sensorId)) setPreview(response.preview);
       const command = response.command;
       if (!command) throw new Error('Respons command tidak tersedia');
       applyCommand(command);
@@ -253,8 +305,8 @@ export function CalibrationWizard({ deviceId, sensorId, diagnostic, api, apiFact
   };
 
   const recoverCommand = async () => {
-    if (!commandId || !operatorToken.trim() || commandInFlight.current) return;
-    const client = api ?? apiFactory({ bearerToken: operatorToken.trim() });
+    if (!commandId || (!api && !operatorToken.trim()) || commandInFlight.current) return;
+    const client = api ?? apiFactory({ bearerToken: operatorToken.trim(), csrfToken: csrfToken.trim() });
     commandInFlight.current = true; setBusy(true); setError(null);
     try { await pollCommand(client, commandId); }
     catch (cause) { setError(redactCalibrationError(cause)); }
@@ -262,7 +314,8 @@ export function CalibrationWizard({ deviceId, sensorId, diagnostic, api, apiFact
   };
 
   const start = () => {
-    const refs = capabilities?.references ?? [{ name: 'primary', unit: 'typed', required: true }];
+    if (!capabilities) { setError('Kapabilitas sensor belum dikonfirmasi oleh perangkat.'); return; }
+    const refs = capabilities.references;
     const references: Record<string, number> = {};
     for (const field of refs.filter((value) => value.required)) {
       const parsed = fieldValue(fields[field.name] ?? (field.name === 'primary' ? reference : ''));
@@ -270,7 +323,7 @@ export function CalibrationWizard({ deviceId, sensorId, diagnostic, api, apiFact
       references[field.name] = parsed;
     }
     const parameters: Record<string, number | string | boolean> = {};
-    for (const field of (capabilities?.engineering_parameters ?? []).filter((value) => value.required)) {
+    for (const field of capabilities.engineering_parameters.filter((value) => value.required)) {
       const raw = (fields[field.name] ?? '').trim();
       if (!raw) { setError(`Parameter ${field.name} wajib diisi (${field.unit}).`); return; }
       const parsed = Number(raw);
@@ -279,8 +332,9 @@ export function CalibrationWizard({ deviceId, sensorId, diagnostic, api, apiFact
     void submit('START', { references, parameters });
   };
   const configure = () => {
+    if (!capabilities) { setError('Kapabilitas sensor belum dikonfirmasi oleh perangkat.'); return; }
     const criteriaValues: Record<string, number> = {};
-    for (const field of (capabilities?.criteria ?? [{ name: 'stability_window', unit: 'samples', required: true }]).filter((value) => value.required)) {
+    for (const field of capabilities.criteria.filter((value) => value.required)) {
       const parsed = fieldValue(fields[field.name] ?? (field.name === 'stability_window' ? criteria : ''));
       if (parsed === undefined) { setError(`Kriteria ${field.name} wajib diisi (${field.unit}).`); return; }
       criteriaValues[field.name] = parsed;
@@ -294,20 +348,20 @@ export function CalibrationWizard({ deviceId, sensorId, diagnostic, api, apiFact
       <XStack justifyContent="space-between" alignItems="center" gap="$3"><YStack flex={1} gap="$1"><Text color="$color" fontSize="$5" fontWeight="800">Kalibrasi {sensorId}</Text><Text color="$colorMuted" fontSize="$2">Perangkat {deviceId} · transport {transport === 'ble' ? 'BLE lokal' : 'HTTPS Wi-Fi'}</Text></YStack><AppButton variant="ghost" size="sm" onPress={() => setOpen(false)} ariaLabel="Tutup wizard kalibrasi">Tutup</AppButton></XStack>
       <Text color="$colorMuted" fontSize="$2">Langkah: {step} · {calibrationStateLabel(sessionState)}</Text>
       {transport === 'ble' && !bleConnected ? <YStack gap="$2"><Text color="$statusWaspada">BLE belum terhubung. Browser harus mendukung Web Bluetooth pada HTTPS.</Text><AppButton onPress={() => void onConnectBle?.()} disabled={busy || !onConnectBle} ariaLabel="Hubungkan BLE kalibrasi">Hubungkan BLE</AppButton></YStack> : null}
-      {transport === 'https' && !api ? <YStack gap="$2"><Text color="$color" fontWeight="700">Sesi operator</Text><Input value={operatorToken} onChangeText={(value) => { setOperatorToken(value); setSecuredDiagnostic(null); }} placeholder="Token sesi operator (tidak disimpan)" secureTextEntry aria-label="Token sesi operator" maxLength={512} autoCapitalize="none" /><AppButton variant="secondary" size="sm" onPress={() => void loadSecuredDiagnostic()} disabled={busy || !operatorToken.trim()} ariaLabel="Muat diagnostik terautentikasi">Muat diagnostik terautentikasi</AppButton></YStack> : null}
-      {transport === 'https' && commandId ? <YStack gap="$2"><Text color="$colorMuted" fontSize="$2">Perintah {commandId} · status {lastCommand?.status ?? sessionState}</Text><AppButton variant="ghost" size="sm" onPress={() => void recoverCommand()} disabled={busy || !operatorToken.trim()} ariaLabel="Pulihkan status perintah">Pulihkan status perintah</AppButton></YStack> : null}
+      {transport === 'https' && !api ? <YStack gap="$2"><Text color="$color" fontWeight="700">Sesi operator</Text><Input value={operatorToken} onChangeText={(value) => { setOperatorToken(value); setSecuredDiagnostic(null); }} placeholder="Token sesi operator (tidak disimpan)" secureTextEntry aria-label="Token sesi operator" maxLength={512} autoCapitalize="none" /><Input value={csrfToken} onChangeText={setCsrfToken} placeholder="Token CSRF sesi (tidak disimpan)" secureTextEntry aria-label="Token CSRF sesi operator" maxLength={512} autoCapitalize="none" /><AppButton variant="secondary" size="sm" onPress={() => void loadSecuredDiagnostic()} disabled={busy || !operatorToken.trim()} ariaLabel="Muat diagnostik terautentikasi">Muat diagnostik terautentikasi</AppButton></YStack> : null}
+      {transport === 'https' && commandId ? <YStack gap="$2"><Text color="$colorMuted" fontSize="$2">Perintah {commandId} · status {lastCommand?.status ?? sessionState}</Text><AppButton variant="ghost" size="sm" onPress={() => void recoverCommand()} disabled={busy || (!api && !operatorToken.trim())} ariaLabel="Pulihkan status perintah">Pulihkan status perintah</AppButton></YStack> : null}
       {!activeDiagnostic ? <Text color="$colorMuted">Diagnostik belum tersedia. Tidak ada bukti sintetis yang digunakan.</Text> : <>
-        <Text color={ready ? '$statusNormal' : '$statusWaspada'}>{ready ? 'Bukti raw segar tersedia untuk validasi.' : 'Bukti belum layak untuk capture. Periksa quality, CRC, identitas, dan freshness.'}</Text>
-        <YStack gap="$2"><Text color="$color" fontWeight="700">Referensi fisik</Text>{(capabilities?.references ?? [{ name: 'primary', unit: 'typed', required: true }]).map((field) => <Input key={field.name} value={fields[field.name] ?? (field.name === 'primary' ? reference : '')} onChangeText={(value) => { setFields((previous) => ({ ...previous, [field.name]: value })); if (field.name === 'primary') setReference(value); }} placeholder={`${field.name} (${field.unit})${field.required ? ' wajib' : ''}`} keyboardType="numeric" aria-label={`Referensi ${field.name}`} maxLength={32} />)}</YStack>
-        {(step === 'criteria' || step === 'capture' || step === 'validate' || step === 'preview' || step === 'commit') ? <YStack gap="$2"><Text color="$color" fontWeight="700">Kriteria eksplisit</Text>{(capabilities?.criteria ?? [{ name: 'stability_window', unit: 'samples', required: true }]).map((field) => <Input key={field.name} value={fields[field.name] ?? (field.name === 'stability_window' ? criteria : '')} onChangeText={(value) => { setFields((previous) => ({ ...previous, [field.name]: value })); if (field.name === 'stability_window') setCriteria(value); }} placeholder={`${field.name} (${field.unit})${field.required ? ' wajib' : ''}`} keyboardType="numeric" aria-label={`Kriteria ${field.name}`} maxLength={32} />)}</YStack> : null}
-        {capabilities?.engineering_parameters.length ? <YStack gap="$2"><Text color="$color" fontWeight="700">Parameter engineering</Text>{capabilities.engineering_parameters.map((field) => <Input key={field.name} value={fields[field.name] ?? ''} onChangeText={(value) => setFields((previous) => ({ ...previous, [field.name]: value }))} placeholder={`${field.name} (${field.unit})${field.required ? ' wajib' : ''}`} maxLength={64} aria-label={`Parameter ${field.name}`} />)}</YStack> : null}
+        <Text color={ready ? '$statusNormal' : '$statusWaspada'}>{ready ? 'Bukti raw segar tersedia untuk validasi.' : 'Bukti atau kapabilitas perangkat belum layak untuk capture. Periksa quality, CRC, identitas, freshness, dan kapabilitas.'}</Text>
+        {capabilities ? <><YStack gap="$2"><Text color="$color" fontWeight="700">Referensi fisik</Text>{capabilities.references.map((field) => <Input key={field.name} value={fields[field.name] ?? (field.name === 'primary' ? reference : '')} onChangeText={(value) => { setFields((previous) => ({ ...previous, [field.name]: value })); if (field.name === 'primary') setReference(value); }} placeholder={`${field.name} (${field.unit})${field.required ? ' wajib' : ''}`} keyboardType="numeric" aria-label={`Referensi ${field.name}`} maxLength={32} />)}</YStack>
+        {(step === 'criteria' || step === 'capture' || step === 'validate' || step === 'preview' || step === 'commit') ? <YStack gap="$2"><Text color="$color" fontWeight="700">Kriteria eksplisit</Text>{capabilities.criteria.map((field) => <Input key={field.name} value={fields[field.name] ?? (field.name === 'stability_window' ? criteria : '')} onChangeText={(value) => { setFields((previous) => ({ ...previous, [field.name]: value })); if (field.name === 'stability_window') setCriteria(value); }} placeholder={`${field.name} (${field.unit})${field.required ? ' wajib' : ''}`} keyboardType="numeric" aria-label={`Kriteria ${field.name}`} maxLength={32} />)}</YStack> : null}
+        {capabilities.engineering_parameters.length ? <YStack gap="$2"><Text color="$color" fontWeight="700">Parameter engineering</Text>{capabilities.engineering_parameters.map((field) => <Input key={field.name} value={fields[field.name] ?? ''} onChangeText={(value) => setFields((previous) => ({ ...previous, [field.name]: value }))} placeholder={`${field.name} (${field.unit})${field.required ? ' wajib' : ''}`} maxLength={64} aria-label={`Parameter ${field.name}`} />)}</YStack> : null}</> : <Text color="$colorMuted">Menunggu kapabilitas sensor dari perangkat.</Text>}
         <XStack gap="$2" flexWrap="wrap">
           {step === 'diagnostics' ? <AppButton onPress={start} disabled={busy || !ready} ariaLabel="Mulai kalibrasi">Mulai</AppButton> : null}
           {step === 'criteria' ? <AppButton onPress={configure} disabled={busy} ariaLabel="Simpan kriteria">Simpan kriteria</AppButton> : null}
           {step === 'capture' ? <YStack gap="$2" minWidth={180}><Text color="$color" fontWeight="700">Anchor</Text><Input value={anchor} onChangeText={setAnchor} placeholder="tare/reference/empty/full" aria-label="Anchor kalibrasi" maxLength={16} /></YStack> : null}
           {step === 'capture' || step === 'validate' ? <AppButton onPress={() => void submit(step === 'capture' ? 'CAPTURE' : 'VALIDATE')} disabled={busy || (step === 'capture' && !['tare', 'reference', 'empty', 'full'].includes(anchor))} ariaLabel={step === 'capture' ? 'Ambil sampel' : 'Validasi sampel'}>{step === 'capture' ? 'Ambil sampel' : 'Validasi'}</AppButton> : null}
           {step === 'preview' ? <AppButton onPress={() => void submit('PREVIEW')} disabled={busy} ariaLabel="Buat preview">Buat preview</AppButton> : null}
-          {step === 'commit' ? <AppButton onPress={() => void submit('COMMIT', { expected_profile_hash: preview?.proposal_hash })} disabled={busy || !preview} ariaLabel="Commit profil">Commit profil</AppButton> : null}
+          {step === 'commit' ? <AppButton onPress={() => void submit('COMMIT', { expected_profile_hash: preview?.proposal_hash, expected_profile_version: preview?.profile_version })} disabled={busy || !hasValidatedPreview(preview, sensorId)} ariaLabel="Commit profil">Commit profil</AppButton> : null}
           {step !== 'done' ? <AppButton variant="danger" onPress={() => void submit('CANCEL')} disabled={busy || !sessionId} ariaLabel="Batalkan kalibrasi">Batalkan</AppButton> : null}
           <AppButton variant="ghost" onPress={onDiagnosticRefresh} disabled={busy} ariaLabel="Perbarui bukti sensor">Perbarui bukti</AppButton>
         </XStack>

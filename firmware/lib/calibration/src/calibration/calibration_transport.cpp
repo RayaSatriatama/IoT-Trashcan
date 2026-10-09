@@ -54,7 +54,9 @@ bool CalibrationTransportController::same_identity(
     const CalibrationCommandEnvelope& right) noexcept {
   return left.request_id != 0U && left.request_id == right.request_id &&
          left.protocol_version == right.protocol_version &&
-         left.device_id == right.device_id && left.session_id == right.session_id &&
+         left.device_id == right.device_id &&
+         left.principal_id == right.principal_id &&
+         left.session_id == right.session_id &&
          left.expires_at_us == right.expires_at_us &&
          left.transport == right.transport && left.operation == right.operation &&
          left.target == right.target && left.criteria_present == right.criteria_present &&
@@ -62,7 +64,9 @@ bool CalibrationTransportController::same_identity(
          left.anchor == right.anchor &&
          left.expected_profile_present == right.expected_profile_present &&
          (!left.expected_profile_present ||
-          left.expected_profile.equals(right.expected_profile));
+          left.expected_profile.equals(right.expected_profile)) &&
+         left.payload_size == right.payload_size &&
+         left.payload_digest == right.payload_digest;
 }
 
 bool CalibrationTransportController::find_replay(
@@ -107,7 +111,9 @@ void CalibrationTransportController::remember(
   replay_[replay_next_].result = result;
   replay_[replay_next_].valid = true;
   replay_next_ = (replay_next_ + 1U) % replay_.size();
-  if (replay_store_ != nullptr) {
+  if (replay_store_ != nullptr &&
+      command.operation == CalibrationOperation::Commit &&
+      result.status == CalibrationCommandStatus::Committed) {
     (void)replay_store_->save(command, result);
   }
 }
@@ -125,7 +131,7 @@ void CalibrationTransportController::fill(
 bool CalibrationTransportController::owns(
     const CalibrationCommandEnvelope& command) const noexcept {
   return owner_active_ && command.session_id == session_id_ &&
-         command.transport == owner_;
+         command.transport == owner_ && command.principal_id == principal_id_;
 }
 
 void CalibrationTransportController::expire(uint64_t now_us) noexcept {
@@ -139,11 +145,19 @@ void CalibrationTransportController::expire(uint64_t now_us) noexcept {
   (void)workflow_.cancel();
   owner_active_ = false;
   session_id_ = 0U;
+  principal_id_ = 0U;
 }
 
 bool CalibrationTransportController::expected_profile_matches(
     const CalibrationCommandEnvelope& command) const noexcept {
   if (!command.expected_profile_present) return true;
+  if (command.operation == CalibrationOperation::Commit) {
+    CalibrationProfileRef proposed{};
+    if (workflow_.proposed_profile(proposed) && proposed.present &&
+        proposed.equals(command.expected_profile)) {
+      return true;
+    }
+  }
   CalibrationProfileRef active{};
   if (!workflow_.active_profile(command.target, active)) return false;
   return active.equals(command.expected_profile);
@@ -214,7 +228,9 @@ bool CalibrationTransportController::execute(
       if (ok) {
         owner_ = command.transport;
         owner_active_ = true;
-        session_id_ = next_session_id_++;
+        session_id_ = command.session_id != 0U ? command.session_id
+                                                : next_session_id_++;
+        principal_id_ = command.principal_id;
         output.session_id = session_id_;
       }
       break;
@@ -234,8 +250,10 @@ bool CalibrationTransportController::execute(
     case CalibrationOperation::Commit:
       ok = workflow_.commit();
       if (ok) {
+        (void)workflow_.active_profile(command.target, output.profile);
         owner_active_ = false;
         session_id_ = 0U;
+        principal_id_ = 0U;
       }
       break;
     case CalibrationOperation::Cancel:
@@ -243,6 +261,7 @@ bool CalibrationTransportController::execute(
       if (ok) {
         owner_active_ = false;
         session_id_ = 0U;
+        principal_id_ = 0U;
       }
       break;
     case CalibrationOperation::History:
@@ -252,8 +271,12 @@ bool CalibrationTransportController::execute(
       ok = workflow_.rollback();
       break;
   }
-  output.status = ok ? CalibrationCommandStatus::Accepted
-                     : CalibrationCommandStatus::Failed;
+  if (ok && command.operation == CalibrationOperation::Commit) {
+    output.status = CalibrationCommandStatus::Committed;
+  } else {
+    output.status = ok ? CalibrationCommandStatus::Accepted
+                       : CalibrationCommandStatus::Failed;
+  }
   if (command.request_id != 0U) remember(command, output);
   return ok;
 }
@@ -268,6 +291,7 @@ void CalibrationTransportController::disconnect(
     (void)workflow_.cancel();
     owner_active_ = false;
     session_id_ = 0U;
+    principal_id_ = 0U;
   }
 }
 

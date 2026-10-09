@@ -225,7 +225,16 @@ SigapApp::SigapApp() noexcept
                           nullptr),
 #endif
 #ifdef ARDUINO
-      ble_calibration_backend_(maintenance_router_, provisioning_clock_),
+      calibration_controller_(maintenance_router_, 0U, &calibration_authorizer_,
+                              &calibration_replay_store_),
+      ble_calibration_backend_(maintenance_router_, provisioning_clock_,
+                               &calibration_controller_),
+#if defined(SIGAP_NETWORK_ENDPOINT) && defined(SIGAP_NETWORK_CA_CERT)
+      device_control_executor_(maintenance_router_, calibration_controller_),
+      device_control_poller_(
+          network::NetworkPolicy{1000U, 60000U, 10000U, 60000U, 250U},
+          network_clock_, device_control_transport_, device_control_executor_),
+#endif
 #endif
       network_source_(batch_runtime_),
 #ifdef ARDUINO
@@ -299,6 +308,13 @@ void SigapApp::setup() noexcept {
   const uint64_t device_mac = ESP.getEfuseMac();
   (void)std::snprintf(ble_name, sizeof(ble_name), "SIGAP-%04llX",
                       static_cast<unsigned long long>(device_mac & 0xffffU));
+#if defined(SIGAP_NETWORK_ENDPOINT) && defined(SIGAP_NETWORK_CA_CERT)
+  (void)std::snprintf(device_control_id_.data(), device_control_id_.size(),
+                      "%llX", static_cast<unsigned long long>(device_mac));
+  calibration_controller_.set_device_id(device_mac);
+  calibration_authorizer_.set_device_id(device_mac);
+  device_control_transport_.bind_clock(network_clock_);
+#endif
   (void)ble_service_.begin(ble_session_, std::string_view(ble_name));
 #endif
   const config::ConfigBootResult boot_result = config_manager_.begin();
@@ -369,6 +385,16 @@ void SigapApp::setup() noexcept {
     transport_ready = network_transport_.set_endpoint(SIGAP_NETWORK_ENDPOINT) &&
                       network_transport_.begin(network_secrets,
                                                SIGAP_NETWORK_CA_CERT);
+#if defined(SIGAP_NETWORK_ENDPOINT) && defined(SIGAP_NETWORK_CA_CERT)
+    const bool control_transport_ready =
+        device_control_transport_.set_endpoint(SIGAP_NETWORK_ENDPOINT) &&
+        device_control_transport_.begin(SIGAP_NETWORK_CA_CERT);
+    device_control_ready_ = control_transport_ready &&
+                            device_control_poller_.begin(
+                                std::string_view(device_control_id_.data()),
+                                std::string_view(network_secrets.device_token.data(),
+                                                 token_size));
+#endif
 #endif
 #else
     constexpr bool transport_ready{true};
@@ -470,6 +496,15 @@ void SigapApp::loop() noexcept {
   if (network_ready_ && network_worker_.has_value()) {
     (void)network_worker_->poll();
   }
+  // The shared controller owns session expiry for every transport, including
+  // BLE and USB builds that do not enable the optional HTTPS device-control
+  // endpoint.
+  calibration_controller_.poll(now_us);
+#if defined(SIGAP_NETWORK_ENDPOINT) && defined(SIGAP_NETWORK_CA_CERT)
+  if (device_control_ready_) {
+    (void)device_control_poller_.poll();
+  }
+#endif
   (void)archive_runtime_.poll_media_migration();
   maintenance_service_.poll(now_us);
 #ifdef ARDUINO

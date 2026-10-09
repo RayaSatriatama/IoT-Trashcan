@@ -1,4 +1,4 @@
-import type { CalibrationState, SensorDiagnostic } from '../api/calibration';
+import type { CalibrationCommand, CalibrationPreview, CalibrationSensorId, CalibrationState, SensorDiagnostic } from '../api/calibration';
 
 export type CalibrationWizardStep = 'diagnostics' | 'criteria' | 'capture' | 'validate' | 'preview' | 'commit' | 'done';
 
@@ -41,6 +41,25 @@ export function nextStep(state: CalibrationState, current: CalibrationWizardStep
   if (state === 'QUEUED' || state === 'DELIVERED' || state === 'ACCEPTED' || state === 'COMMITTING') return current;
   if (state === 'IDLE' && current === 'diagnostics') return 'criteria';
   return current;
+}
+
+/** A command result can be terminal while the calibrated session reports its
+ * own authoritative state. Keep those two protocol fields separate. */
+export function commandSessionState(command: CalibrationCommand): CalibrationState {
+  return command.state ?? command.status;
+}
+
+/** A browser may only request COMMIT for the exact unexpired proposal emitted
+ * by the selected device and sensor. */
+export function hasValidatedPreview(
+  preview: CalibrationPreview | null,
+  sensorId: CalibrationSensorId,
+  nowMs = Date.now(),
+): preview is CalibrationPreview {
+  if (!preview || preview.sensor_id !== sensorId || preview.evidence_count <= 0) return false;
+  if (!preview.proposal_hash.trim() || !preview.profile_version.trim() || !preview.evidence_hash.trim()) return false;
+  const expiresAt = Date.parse(preview.expires_at);
+  return Number.isFinite(expiresAt) && expiresAt > nowMs;
 }
 
 export function redactCalibrationError(error: unknown): string {

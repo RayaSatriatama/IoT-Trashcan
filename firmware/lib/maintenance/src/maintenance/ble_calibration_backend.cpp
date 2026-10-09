@@ -47,6 +47,51 @@ bool sensor_from_arguments(std::string_view arguments,
   return !sensor.empty();
 }
 
+bool target_from_sensor(std::string_view sensor,
+                        calibration::CalibrationTarget& target) noexcept {
+  constexpr std::array<std::pair<std::string_view,
+                                 calibration::CalibrationTarget>, 13U>
+      entries{{
+          {"hx711_organic", calibration::CalibrationTarget::Hx711Organic},
+          {"hx711_inorganic", calibration::CalibrationTarget::Hx711Inorganic},
+          {"hx711_b3", calibration::CalibrationTarget::Hx711B3},
+          {"ultrasonic_organic", calibration::CalibrationTarget::UltrasonicOrganic},
+          {"ultrasonic_inorganic", calibration::CalibrationTarget::UltrasonicInorganic},
+          {"ultrasonic_b3", calibration::CalibrationTarget::UltrasonicB3},
+          {"mq4", calibration::CalibrationTarget::Mq4},
+          {"mq135", calibration::CalibrationTarget::Mq135},
+          {"mq7", calibration::CalibrationTarget::Mq7},
+          {"mq8", calibration::CalibrationTarget::Mq8},
+          {"ds18b20_b3", calibration::CalibrationTarget::Ds18b20B3},
+          {"sht31_44", calibration::CalibrationTarget::Sht31_44},
+          {"sht31_45", calibration::CalibrationTarget::Sht31_45},
+      }};
+  for (const auto& entry : entries) {
+    if (entry.first == sensor) {
+      target = entry.second;
+      return true;
+    }
+  }
+  return false;
+}
+
+bool integer_argument(std::string_view arguments, std::string_view key,
+                      int64_t& value) noexcept {
+  const auto at = arguments.find(key);
+  if (at == std::string_view::npos ||
+      (at != 0U && arguments[at - 1U] != ' ') ||
+      at + key.size() >= arguments.size() ||
+      arguments[at + key.size()] != '=') return false;
+  const auto begin = at + key.size() + 1U;
+  const auto end = arguments.find(' ', begin);
+  const auto token = arguments.substr(
+      begin, end == std::string_view::npos ? arguments.size() - begin
+                                            : end - begin);
+  if (token.empty()) return false;
+  const auto parsed = std::from_chars(token.data(), token.data() + token.size(), value);
+  return parsed.ec == std::errc{} && parsed.ptr == token.data() + token.size();
+}
+
 bool append_envelope(char* output, std::size_t capacity, std::size_t& size,
                      std::string_view operation, bool accepted,
                      std::string_view sensor, uint64_t session_id,
@@ -174,6 +219,13 @@ bool CommandRouterBleCalibrationBackend::execute(
   const auto arguments = separator == std::string_view::npos
                              ? std::string_view{}
                              : command.substr(separator + 1U);
+  if (controller_ != nullptr && operation != "STATUS" &&
+      operation != "EVIDENCE" && operation != "CAPABILITIES" &&
+      operation != "ACTIVE_PROFILE" && operation != "HISTORY" &&
+      operation != "ROLLBACK") {
+    return execute_controller(operation, arguments, response, capacity,
+                              response_size);
+  }
   constexpr std::string_view prefix{"calibration "};
 
   std::string_view sensor{};
@@ -351,10 +403,143 @@ bool CommandRouterBleCalibrationBackend::execute(
   return accepted && encoded;
 }
 
+bool CommandRouterBleCalibrationBackend::execute_controller(
+    std::string_view operation, std::string_view arguments, char* response,
+    std::size_t capacity, std::size_t& response_size) noexcept {
+  std::string_view sensor{};
+  (void)sensor_from_arguments(arguments, sensor);
+  calibration::CalibrationTarget target{};
+  if (!target_from_sensor(sensor, target)) return false;
+
+  calibration::CalibrationCommandEnvelope command{};
+  command.request_id = next_request_id_++;
+  command.device_id = controller_->device_id();
+  command.principal_id = 1U;  // BLE authentication is established by GATT.
+  command.transport = calibration::CalibrationTransport::Ble;
+  command.target = target;
+  command.expires_at_us = clock_.now_us() + calibration::CalibrationSession::kSessionTimeoutUs;
+  command.session_id = operation == "START" ? 0U : session_id_;
+  command.payload_size = static_cast<uint16_t>(arguments.size());
+  for (std::size_t i = 0U; i < arguments.size() && i < command.payload_digest.size(); ++i) {
+    command.payload_digest[i] = static_cast<uint8_t>(arguments[i]);
+  }
+
+  if (operation == "START") {
+    command.operation = calibration::CalibrationOperation::Start;
+  } else if (operation == "CRITERIA") {
+    command.operation = calibration::CalibrationOperation::SetCriteria;
+    int64_t samples{0};
+    if (!integer_argument(arguments, "samples", samples) || samples <= 0 || samples > UINT16_MAX) return false;
+    if (target >= calibration::CalibrationTarget::UltrasonicOrganic &&
+        target <= calibration::CalibrationTarget::UltrasonicB3) {
+      int64_t span{0};
+      if (!integer_argument(arguments, "max_span_mm", span) || span <= 0) return false;
+      command.criteria = calibration::DistanceCaptureCriteria{
+          static_cast<uint16_t>(samples), static_cast<float>(span)};
+    } else if (target == calibration::CalibrationTarget::Ds18b20B3) {
+      int64_t span{0};
+      if (!integer_argument(arguments, "max_span_centi_c", span)) return false;
+      command.criteria = calibration::Ds18b20CaptureCriteria{
+          static_cast<uint16_t>(samples), static_cast<int32_t>(span), true};
+    } else if (target == calibration::CalibrationTarget::Sht31_44 ||
+               target == calibration::CalibrationTarget::Sht31_45) {
+      int64_t temperature{0};
+      int64_t humidity{0};
+      if (!integer_argument(arguments, "max_temperature_span_centi_c", temperature) ||
+          !integer_argument(arguments, "max_humidity_span_centi_pct", humidity)) return false;
+      command.criteria = calibration::Sht31CaptureCriteria{
+          static_cast<uint16_t>(samples), static_cast<int32_t>(temperature),
+          static_cast<int32_t>(humidity)};
+    } else if (target >= calibration::CalibrationTarget::Mq4 &&
+               target <= calibration::CalibrationTarget::Mq8) {
+      int64_t span{0};
+      if (!integer_argument(arguments, "max_span_counts", span) || span < 0 || span > UINT16_MAX) return false;
+      command.criteria = calibration::MqCaptureCriteria{
+          static_cast<uint16_t>(samples), static_cast<uint16_t>(span), target == calibration::CalibrationTarget::Mq7};
+    } else {
+      int64_t span{0};
+      if (!integer_argument(arguments, "max_span_counts", span)) return false;
+      command.criteria = calibration::Hx711CaptureCriteria{
+          static_cast<uint16_t>(samples), span};
+    }
+    command.criteria_present = true;
+  } else if (operation == "CAPTURE") {
+    const auto split = arguments.find(' ');
+    if (split == std::string_view::npos) return false;
+    const auto anchor = arguments.substr(split + 1U);
+    command.operation = anchor == "tare" ? calibration::CalibrationOperation::Capture :
+                        calibration::CalibrationOperation::Capture;
+    command.anchor = anchor == "tare" ? calibration::CalibrationAnchor::Tare :
+                     anchor == "reference" ? calibration::CalibrationAnchor::Reference :
+                     anchor == "empty" ? calibration::CalibrationAnchor::Empty :
+                     anchor == "full" ? calibration::CalibrationAnchor::Full :
+                     calibration::CalibrationAnchor::Primary;
+  } else if (operation == "VALIDATE") {
+    command.operation = calibration::CalibrationOperation::Validate;
+  } else if (operation == "PREVIEW") {
+    command.operation = calibration::CalibrationOperation::Preview;
+  } else if (operation == "COMMIT") {
+    command.operation = calibration::CalibrationOperation::Commit;
+  } else if (operation == "CANCEL") {
+    command.operation = calibration::CalibrationOperation::Cancel;
+  } else {
+    return false;
+  }
+
+  calibration::CalibrationResultEnvelope result{};
+  const bool accepted = controller_->execute(command, clock_.now_us(), result);
+  const bool committed = result.status == calibration::CalibrationCommandStatus::Committed;
+  const bool succeeded = accepted || committed;
+  std::array<char, kMaxResponseBytes> payload{};
+  std::size_t payload_size{0U};
+  const auto append_payload = [&](std::string_view value) noexcept {
+    if (payload_size + value.size() >= payload.size()) return false;
+    std::copy(value.begin(), value.end(), payload.begin() + payload_size);
+    payload_size += value.size();
+    payload[payload_size] = '\0';
+    return true;
+  };
+  if (operation == "PREVIEW" && succeeded) {
+    MaintenanceResponse preview{};
+    if (!router_.append_calibration_preview_response(preview) ||
+        !append_payload(preview.view())) return false;
+  } else if (committed && result.profile.present) {
+    char version[24]{};
+    const auto converted = std::to_chars(version, version + sizeof(version),
+                                         result.profile.version);
+    if (converted.ec != std::errc{} || !append_payload("profile_version=") ||
+        !append_payload(std::string_view(version, converted.ptr - version))) return false;
+  } else if (!succeeded) {
+    if (!append_payload("FAILED")) return false;
+  } else if (!append_payload(operation == "START" ? "state=CAPTURING" : "state=ACCEPTED")) {
+    return false;
+  }
+  const uint64_t result_session = operation == "START" ? result.session_id : session_id_;
+  if (succeeded && operation == "START") {
+    session_id_ = result.session_id;
+    ble_session_owned_ = true;
+  }
+  if (succeeded && (operation == "COMMIT" || operation == "CANCEL")) {
+    ble_session_owned_ = false;
+  }
+  const bool encoded = append_envelope(
+      response, capacity, response_size, operation, succeeded, sensor,
+      result_session, std::string_view(payload.data(), payload_size));
+  if (operation == "COMMIT" || operation == "CANCEL") {
+    session_id_ = 0U;
+    session_sensor_.fill('\0');
+  }
+  return succeeded && encoded;
+}
+
 void CommandRouterBleCalibrationBackend::disconnect() noexcept {
   parser_.reset();
   if (ble_session_owned_) {
-    router_.transport_lost();
+    if (controller_ != nullptr) {
+      controller_->disconnect(calibration::CalibrationTransport::Ble);
+    } else {
+      router_.transport_lost();
+    }
     ble_session_owned_ = false;
   }
   session_id_ = 0U;

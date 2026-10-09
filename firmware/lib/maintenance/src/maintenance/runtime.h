@@ -10,6 +10,7 @@
 #include "provisioning/secret_store.h"
 #include "provisioning/ble_provisioning.h"
 #include "calibration/calibration_session.h"
+#include "calibration/calibration_transport.h"
 
 namespace sigap::maintenance {
 
@@ -67,7 +68,8 @@ class NullRebootController final : public IRebootController {
 };
 
 class CommandRouter final : public IMaintenanceCommandSink,
-                            public acquisition::ICalibrationStateProvider {
+                            public acquisition::ICalibrationStateProvider,
+                            public calibration::ICalibrationTransportWorkflow {
  public:
   static constexpr uint64_t kTransferTimeoutUs{300000000ULL};
 
@@ -98,6 +100,28 @@ class CommandRouter final : public IMaintenanceCommandSink,
   bool reboot_requested() const noexcept { return reboot_requested_; }
   void poll(uint64_t now_us) noexcept override;
   void transport_lost() noexcept override;
+
+  // Typed transport workflow used by the shared USB/BLE/HTTPS controller.
+  bool status(calibration::CalibrationStatusSnapshot& output) const noexcept override;
+  bool evidence(calibration::CalibrationTarget target,
+                calibration::DiagnosticEvidence& output) const noexcept override;
+  bool active_profile(calibration::CalibrationTarget target,
+                      calibration::CalibrationProfileRef& output) const noexcept override;
+  bool proposed_profile(
+      calibration::CalibrationProfileRef& output) const noexcept override;
+  bool start(calibration::CalibrationTarget target, uint64_t now_us) noexcept override;
+  bool set_criteria(const calibration::CaptureCriteria& criteria,
+                    uint64_t now_us) noexcept override;
+  bool capture(calibration::CalibrationAnchor anchor,
+               uint64_t now_us) noexcept override;
+  bool validate() noexcept override;
+  bool preview(calibration::ValidationResult& output) noexcept override;
+  bool commit() noexcept override;
+  bool cancel() noexcept override;
+  bool history(calibration::CalibrationResultEnvelope& output) const noexcept override;
+  bool rollback() noexcept override;
+  bool append_calibration_preview_response(
+      MaintenanceResponse& response) const noexcept;
   void set_passkey_handoff(
       provisioning::ILocalPasskeyHandoff* handoff) noexcept {
     passkey_handoff_ = handoff;

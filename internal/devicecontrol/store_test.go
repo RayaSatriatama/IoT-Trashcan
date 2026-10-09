@@ -54,17 +54,13 @@ func TestEnqueueClaimReplayAndResultLifecycle(t *testing.T) {
 	if claimed.Status != Delivered || claimed.Attempt != 1 {
 		t.Fatalf("claim=%+v", claimed)
 	}
-	for _, step := range []Status{Accepted, Capturing, Validated, PreviewReady, Committed} {
-		payload := []byte(`{"ok":true}`)
-		if step == Committed {
-			payload = []byte(`{"profile_key":"hx711_organic","profile_hash":"sha256:fixture","version":1}`)
-		}
-		if _, err := s.UpdateResult(ctx, "DEV-01", "cmd-1", ResultRequest{Status: step, SessionID: "session-1", Payload: payload}); err != nil {
-			t.Fatalf("step %s: %v", step, err)
-		}
+	if _, err := s.UpdateResult(ctx, "DEV-01", "cmd-1", ResultRequest{
+		Status: Accepted, SessionID: "session-1", Payload: []byte(`{"accepted":true}`),
+	}); err != nil {
+		t.Fatalf("start result: %v", err)
 	}
-	if _, err := s.UpdateResult(ctx, "DEV-01", "cmd-1", ResultRequest{Status: Capturing}); !errors.Is(err, ErrConflict) {
-		t.Fatalf("terminal replay err=%v", err)
+	if _, err := s.UpdateResult(ctx, "DEV-01", "cmd-1", ResultRequest{Status: Capturing}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("per-command status err=%v", err)
 	}
 }
 
@@ -95,27 +91,41 @@ func TestClaimRequeuesExpiredLeaseWithoutChangingIdentity(t *testing.T) {
 func TestTerminalResultReplayIsIdempotentAndConflictIsRejected(t *testing.T) {
 	s, _, now := testStore(t)
 	ctx := context.Background()
-	if _, err := s.Enqueue(ctx, commandRequest(now)); err != nil {
+	start := commandRequest(now)
+	if _, err := s.Enqueue(ctx, start); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Claim(ctx, "DEV-01"); err != nil {
+	if _, err := s.Claim(ctx, start.DeviceID); err != nil {
 		t.Fatal(err)
 	}
-	for _, step := range []Status{Accepted, Capturing, Validated, PreviewReady} {
-		if _, err := s.UpdateResult(ctx, "DEV-01", "cmd-1", ResultRequest{Status: step, SessionID: "session-1", Payload: []byte(`{"ok":true}`)}); err != nil {
-			t.Fatal(err)
-		}
+	if _, err := s.UpdateResult(ctx, start.DeviceID, start.ID, ResultRequest{Status: Accepted, SessionID: start.SessionID, Payload: []byte(`{"accepted":true}`)}); err != nil {
+		t.Fatal(err)
+	}
+	commit := start
+	commit.ID = "cmd-commit"
+	commit.Operation = "commit"
+	commit.Payload = []byte(`{"proposal_hash":"sha256:proposal"}`)
+	if _, err := s.Enqueue(ctx, commit); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Claim(ctx, commit.DeviceID); err != nil {
+		t.Fatal(err)
 	}
 	result := ResultRequest{Status: Committed, SessionID: "session-1", Payload: []byte(`{"profile_key":"hx711_organic","profile_hash":"sha256:fixture","version":1}`)}
-	if _, err := s.UpdateResult(ctx, "DEV-01", "cmd-1", result); err != nil {
+	if _, err := s.UpdateResult(ctx, commit.DeviceID, commit.ID, result); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.UpdateResult(ctx, "DEV-01", "cmd-1", result); err != nil {
+	if _, err := s.UpdateResult(ctx, commit.DeviceID, commit.ID, result); err != nil {
 		t.Fatalf("identical replay: %v", err)
 	}
 	result.Payload = []byte(`{"profile_key":"hx711_organic","profile_hash":"sha256:other","version":2}`)
-	if _, err := s.UpdateResult(ctx, "DEV-01", "cmd-1", result); !errors.Is(err, ErrConflict) {
+	if _, err := s.UpdateResult(ctx, commit.DeviceID, commit.ID, result); !errors.Is(err, ErrConflict) {
 		t.Fatalf("conflict=%v", err)
+	}
+	result.Payload = []byte(`{"profile_key":"hx711_organic","profile_hash":"sha256:fixture","version":1}`)
+	result.ErrorCode = "CHANGED"
+	if _, err := s.UpdateResult(ctx, commit.DeviceID, commit.ID, result); !errors.Is(err, ErrConflict) {
+		t.Fatalf("error-code replay conflict=%v", err)
 	}
 }
 
@@ -197,7 +207,7 @@ func TestLatestResultReturnsExactDeviceEvidenceBody(t *testing.T) {
 		t.Fatal(err)
 	}
 	const payload = `{"sensor_id":"sht31_44","raw":{"present":true},"converted_value":null}`
-	if _, err := s.UpdateResult(context.Background(), req.DeviceID, req.ID, ResultRequest{Status: Capturing, SessionID: req.SessionID, Payload: []byte(payload)}); err != nil {
+	if _, err := s.UpdateResult(context.Background(), req.DeviceID, req.ID, ResultRequest{Status: Accepted, SessionID: req.SessionID, Payload: []byte(payload)}); err != nil {
 		t.Fatal(err)
 	}
 	got, err := s.LatestResult(context.Background(), req.DeviceID, req.SensorID)
@@ -206,5 +216,114 @@ func TestLatestResultReturnsExactDeviceEvidenceBody(t *testing.T) {
 	}
 	if string(got) != payload {
 		t.Fatalf("payload changed: %s", got)
+	}
+}
+
+func TestCommitCommandCanReturnCommittedWithoutReplayingSessionHistory(t *testing.T) {
+	s, _, now := testStore(t)
+	ctx := context.Background()
+	start := commandRequest(now)
+	if _, err := s.Enqueue(ctx, start); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Claim(ctx, start.DeviceID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpdateResult(ctx, start.DeviceID, start.ID,
+		ResultRequest{Status: Accepted, SessionID: start.SessionID, Payload: []byte(`{"accepted":true}`)}); err != nil {
+		t.Fatal(err)
+	}
+	commit := start
+	commit.ID = "cmd-commit"
+	commit.Operation = "commit"
+	commit.Payload = []byte(`{"proposal_hash":"sha256:proposal","expected_profile_version":"1"}`)
+	if _, err := s.Enqueue(ctx, commit); err != nil {
+		t.Fatalf("enqueue commit: %v", err)
+	}
+	if _, err := s.Claim(ctx, commit.DeviceID); err != nil {
+		t.Fatal(err)
+	}
+	result := ResultRequest{Status: Committed, SessionID: commit.SessionID,
+		Payload: []byte(`{"profile_key":"hx711_organic","profile_hash":"sha256:fixture","version":2}`)}
+	if got, err := s.UpdateResult(ctx, commit.DeviceID, commit.ID, result); err != nil || got.Status != Committed {
+		t.Fatalf("direct committed result=%+v err=%v", got, err)
+	}
+	// A lost response after the durable profile write is replayed exactly after
+	// a backend restart, without creating another profile revision.
+	restarted := NewStore(s.db).WithClock(func() time.Time { return now })
+	if got, err := restarted.UpdateResult(ctx, commit.DeviceID, commit.ID, result); err != nil || got.ResultHash != hashPayload(result.Payload) {
+		t.Fatalf("committed replay=%+v err=%v", got, err)
+	}
+}
+
+func TestCommandIDReplayBindsEveryCommandIdentityField(t *testing.T) {
+	s, _, now := testStore(t)
+	ctx := context.Background()
+	req := commandRequest(now)
+	if _, err := s.Enqueue(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func(*CreateRequest){
+		"operator":  func(v *CreateRequest) { v.OperatorID = "operator-2" },
+		"session":   func(v *CreateRequest) { v.SessionID = "session-2" },
+		"sensor":    func(v *CreateRequest) { v.SensorID = "mq4" },
+		"operation": func(v *CreateRequest) { v.Operation = "capture" },
+		"expiry":    func(v *CreateRequest) { v.ExpiresAt = v.ExpiresAt.Add(time.Second) },
+		"payload":   func(v *CreateRequest) { v.Payload = []byte(`{"reference_mass_kg":3}`) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := req
+			mutate(&changed)
+			if _, err := s.Enqueue(ctx, changed); !errors.Is(err, ErrConflict) {
+				t.Fatalf("changed %s replay err=%v", name, err)
+			}
+		})
+	}
+}
+
+func TestMutatingCommandsRequireTheLiveOwnedSession(t *testing.T) {
+	s, _, now := testStore(t)
+	ctx := context.Background()
+	withoutStart := commandRequest(now)
+	withoutStart.ID = "cmd-capture-without-session"
+	withoutStart.Operation = "capture"
+	withoutStart.SessionID = ""
+	if _, err := s.Enqueue(ctx, withoutStart); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("missing session err=%v", err)
+	}
+
+	start := commandRequest(now)
+	if _, err := s.Enqueue(ctx, start); err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func(*CreateRequest){
+		"operator": func(v *CreateRequest) { v.OperatorID = "operator-2" },
+		"session":  func(v *CreateRequest) { v.SessionID = "session-2" },
+		"sensor":   func(v *CreateRequest) { v.SensorID = "mq4" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			command := start
+			command.ID = "cmd-" + name
+			command.Operation = "capture"
+			mutate(&command)
+			if _, err := s.Enqueue(ctx, command); !errors.Is(err, ErrSessionBusy) {
+				t.Fatalf("foreign session mutation err=%v", err)
+			}
+		})
+	}
+}
+
+func TestCancelRequiresCommandOwner(t *testing.T) {
+	s, _, now := testStore(t)
+	ctx := context.Background()
+	req := commandRequest(now)
+	if _, err := s.Enqueue(ctx, req); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Cancel(ctx, req.DeviceID, req.ID, "operator-2"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("foreign cancel err=%v", err)
+	}
+	if err := s.Cancel(ctx, req.DeviceID, req.ID, req.OperatorID); err != nil {
+		t.Fatalf("owner cancel err=%v", err)
 	}
 }

@@ -22,6 +22,13 @@ class Clock final : public ICalibrationClock {
   uint64_t now{100U};
 };
 
+class Authorizer final : public sigap::calibration::ICalibrationTransportAuthorizer {
+ public:
+  bool authorize(const sigap::calibration::CalibrationCommandEnvelope& command) const noexcept override {
+    return command.transport == sigap::calibration::CalibrationTransport::Ble;
+  }
+};
+
 void test_ble_adapter_uses_authoritative_parser_and_router() {
   sigap::provisioning::BleCommand parsed{};
   TEST_ASSERT_EQUAL_INT(
@@ -104,12 +111,44 @@ void test_ble_calibration_envelope_and_typed_capabilities() {
       static_cast<int>(parsed.kind));
 }
 
+void test_ble_mutations_use_shared_controller_owner() {
+  sigap::config::MemoryConfigStore config_store{};
+  sigap::config::ConfigManager config(config_store, kContext);
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(sigap::config::ConfigBootResult::BootstrapDefaults),
+      static_cast<int>(config.begin()));
+  sigap::provisioning::MemorySecretBlobStore secret_store{};
+  sigap::provisioning::PersistentSecretStore secrets(secret_store);
+  CommandRouter router(config, secrets);
+  Clock clock{};
+  Authorizer authorizer{};
+  sigap::calibration::CalibrationTransportController controller(
+      router, 7U, &authorizer);
+  CommandRouterBleCalibrationBackend backend(router, clock, &controller);
+  char response[512]{};
+  std::size_t size{0U};
+
+  TEST_ASSERT_TRUE(backend.execute("CAL START hx711_organic", response,
+                                  sizeof(response), size));
+  TEST_ASSERT_TRUE(controller.active());
+  TEST_ASSERT_TRUE(std::string_view(response, size).find("status=ACCEPTED") !=
+                  std::string_view::npos);
+  size = 0U;
+  TEST_ASSERT_TRUE(backend.execute(
+      "CAL CRITERIA hx711_organic samples=2 max_span_counts=10", response,
+      sizeof(response), size));
+  TEST_ASSERT_TRUE(controller.active());
+  backend.disconnect();
+  TEST_ASSERT_FALSE(controller.active());
+}
+
 }  // namespace
 
 void setup() {
   UNITY_BEGIN();
   RUN_TEST(test_ble_adapter_uses_authoritative_parser_and_router);
   RUN_TEST(test_ble_calibration_envelope_and_typed_capabilities);
+  RUN_TEST(test_ble_mutations_use_shared_controller_owner);
   UNITY_END();
 }
 

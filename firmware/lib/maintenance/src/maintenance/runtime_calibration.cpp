@@ -7,9 +7,37 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <type_traits>
+
+#include "telemetry/sha256.h"
 
 namespace sigap::maintenance {
 namespace {
+
+const char* calibration_target_name(
+    calibration::CalibrationTarget target) noexcept {
+  constexpr const char* names[] = {
+      "hx711_organic", "hx711_inorganic", "hx711_b3",
+      "ultrasonic_organic", "ultrasonic_inorganic", "ultrasonic_b3",
+      "mq4", "mq135", "mq7", "mq8", "ds18b20_b3", "sht31_44",
+      "sht31_45"};
+  const auto index = static_cast<std::size_t>(target);
+  return index < (sizeof(names) / sizeof(names[0])) ? names[index] : "";
+}
+
+MaintenanceCommand typed_command(CommandKind kind,
+                                 calibration::CalibrationTarget target) noexcept {
+  MaintenanceCommand command{};
+  command.kind = kind;
+  (void)command.target.assign(calibration_target_name(target));
+  return command;
+}
+
+bool typed_dispatch(CommandRouter& router, MaintenanceCommand command,
+                    uint64_t now_us) noexcept {
+  MaintenanceResponse response{};
+  return router.execute(command, now_us, response) == CommandStatus::Accepted;
+}
 
 void set_calibration_provenance(acquisition::ProfileProvenance& provenance,
                                 const acquisition::BootId* boot_id,
@@ -51,6 +79,15 @@ bool append_u32(MaintenanceResponse& response, const char* label,
          response.append("\n");
 }
 
+bool append_u64(MaintenanceResponse& response, const char* label,
+                uint64_t value) noexcept {
+  char number[24]{};
+  const auto result = std::to_chars(number, number + sizeof(number), value);
+  return result.ec == std::errc{} && response.append(label) &&
+         response.append(std::string_view(number, result.ptr - number)) &&
+         response.append("\n");
+}
+
 bool append_hex(MaintenanceResponse& response, const uint8_t* bytes,
                 std::size_t size) noexcept {
   static constexpr char digits[] = "0123456789abcdef";
@@ -83,12 +120,43 @@ bool append_rom(MaintenanceResponse& response, const std::array<uint8_t, 8U>& ro
          response.append("\n");
 }
 
+bool append_preview_metadata(MaintenanceResponse& response,
+                             uint32_t evidence_count,
+                             uint64_t evidence_sequence) noexcept;
+
 bool append_proposal_identity(MaintenanceResponse& response,
                               const acquisition::EncodedProfile& encoded,
-                              uint32_t version) noexcept {
-  return response.append("proposal_hash=") &&
+                              uint32_t version, uint32_t evidence_count,
+                              uint64_t evidence_sequence) noexcept {
+  return response.append("proposal_hash=sha256:") &&
          append_hex(response, encoded.hash().data(), encoded.hash().size()) &&
-         response.append("\n") && append_u32(response, "profile_version=", version);
+         response.append("\n") && append_u32(response, "profile_version=", version) &&
+         append_preview_metadata(response, evidence_count, evidence_sequence);
+}
+
+bool append_preview_metadata(MaintenanceResponse& response,
+                             uint32_t evidence_count,
+                             uint64_t evidence_sequence) noexcept {
+  char sequence[24]{};
+  const auto converted = std::to_chars(sequence, sequence + sizeof(sequence),
+                                       evidence_sequence);
+  if (converted.ec != std::errc{}) return false;
+  const std::string_view sequence_view(sequence, converted.ptr - sequence);
+  char summary[64]{};
+  const int written = std::snprintf(summary, sizeof(summary),
+                                    "evidence:%.*s:%u",
+                                    static_cast<int>(sequence_view.size()),
+                                    sequence_view.data(), evidence_count);
+  if (written <= 0 || static_cast<std::size_t>(written) >= sizeof(summary)) return false;
+  const auto digest = telemetry_contract::sha256(
+      std::string_view(summary, static_cast<std::size_t>(written)));
+  return append_u32(response, "evidence_count=", evidence_count) &&
+         append_u64(response, "evidence_sequence=", evidence_sequence) &&
+         response.append("evidence_hash=sha256:") &&
+         append_hex(response, digest.data(), digest.size()) &&
+         response.append("\n") &&
+         append_u32(response, "expires_in_ms=",
+                    static_cast<uint32_t>(calibration::CalibrationSession::kSessionTimeoutUs / 1000U));
 }
 
 bool same_active_profile(const acquisition::ActiveProfileSnapshot& left,
@@ -106,6 +174,170 @@ bool same_active_profile(const acquisition::ActiveProfileSnapshot& left,
 }
 
 }  // namespace
+
+bool CommandRouter::status(
+    calibration::CalibrationStatusSnapshot& output) const noexcept {
+  output = calibration::CalibrationStatusSnapshot{};
+  output.target = calibration_.target();
+  output.state = calibration_.state();
+  output.failure = calibration_.failure();
+  output.active = output.state != calibration::CalibrationState::Idle &&
+                  output.state != calibration::CalibrationState::Failed;
+  output.last_activity_us = calibration_.last_activity_us();
+  output.accepted_samples = calibration_.stats().count +
+                            calibration_.secondary_stats().count;
+  output.rejected_samples = calibration_.stats().quality_failures +
+                            calibration_.secondary_stats().quality_failures;
+  return true;
+}
+
+bool CommandRouter::evidence(
+    calibration::CalibrationTarget target,
+    calibration::DiagnosticEvidence& output) const noexcept {
+  return evidence_ != nullptr && evidence_->diagnostic(target, output);
+}
+
+bool CommandRouter::active_profile(
+    calibration::CalibrationTarget target,
+    calibration::CalibrationProfileRef& output) const noexcept {
+  output = calibration::CalibrationProfileRef{};
+  if (profiles_ == nullptr) return false;
+  const auto profile_target = static_cast<acquisition::ProfileTarget>(
+      static_cast<uint8_t>(target) + 1U);
+  acquisition::ActiveProfileSnapshot active{};
+  if (!profiles_->snapshot(acquisition::default_profile_key(profile_target),
+                           active) || !active.present) {
+    return true;
+  }
+  output.present = true;
+  output.version = active.ref.profile_version;
+  output.hash = active.ref.hash;
+  return true;
+}
+
+bool CommandRouter::proposed_profile(
+    calibration::CalibrationProfileRef& output) const noexcept {
+  output = calibration::CalibrationProfileRef{};
+  if (!calibration_proposal_.present) return false;
+  output.hash = calibration_proposal_.encoded.hash();
+  MaintenanceResponse preview{};
+  if (!append_calibration_preview(preview)) return false;
+  const auto text = preview.view();
+  const auto marker = text.find("profile_version=");
+  if (marker == std::string_view::npos) return false;
+  const auto begin = marker + std::string_view("profile_version=").size();
+  const auto end = text.find('\n', begin);
+  const auto value = text.substr(begin, end == std::string_view::npos
+                                          ? text.size() - begin
+                                          : end - begin);
+  const auto parsed = std::from_chars(value.data(), value.data() + value.size(),
+                                      output.version);
+  if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size() ||
+      output.version == 0U) {
+    output = calibration::CalibrationProfileRef{};
+    return false;
+  }
+  output.present = true;
+  return true;
+}
+
+bool CommandRouter::start(calibration::CalibrationTarget target,
+                          uint64_t now_us) noexcept {
+  return typed_dispatch(*this,
+                        typed_command(CommandKind::CalibrationStart, target),
+                        now_us);
+}
+
+bool CommandRouter::set_criteria(const calibration::CaptureCriteria& criteria,
+                                 uint64_t now_us) noexcept {
+  auto set_numeric = [&](const char* field, int64_t value) noexcept {
+    MaintenanceCommand command = typed_command(CommandKind::CalibrationCriteria,
+                                               calibration_.target());
+    if (!command.field.assign(field)) return false;
+    command.numeric_value = value;
+    command.has_numeric = true;
+    return typed_dispatch(*this, command, now_us);
+  };
+  return std::visit(
+      [&](const auto& value) noexcept {
+        using T = std::decay_t<decltype(value)>;
+        if constexpr (std::is_same_v<T, calibration::Hx711CaptureCriteria>) {
+          return set_numeric("samples", value.required_samples) &&
+                 set_numeric("max_span_counts", value.max_span_counts);
+        } else if constexpr (std::is_same_v<T, calibration::DistanceCaptureCriteria>) {
+          return set_numeric("samples", value.required_samples) &&
+                 set_numeric("max_span", static_cast<int64_t>(value.max_span_mm));
+        } else if constexpr (std::is_same_v<T, calibration::MqCaptureCriteria>) {
+          return set_numeric("samples", value.required_samples) &&
+                 set_numeric("max_span_counts", value.max_span_counts);
+        } else if constexpr (std::is_same_v<T, calibration::Ds18b20CaptureCriteria>) {
+          return set_numeric("samples", value.required_samples) &&
+                 set_numeric("max_span", value.max_span_centi_c);
+        } else {
+          return set_numeric("samples", value.required_samples) &&
+                 set_numeric("max_temperature_span_centi_c",
+                             value.max_temperature_span_centi_c) &&
+                 set_numeric("max_humidity_span_centi_pct",
+                             value.max_humidity_span_centi_pct);
+        }
+      },
+      criteria);
+}
+
+bool CommandRouter::capture(calibration::CalibrationAnchor anchor,
+                            uint64_t now_us) noexcept {
+  MaintenanceCommand command = typed_command(CommandKind::CalibrationCapture,
+                                             calibration_.target());
+  const char* name = anchor == calibration::CalibrationAnchor::Tare
+                         ? "tare"
+                         : anchor == calibration::CalibrationAnchor::Reference
+                               ? "reference"
+                               : anchor == calibration::CalibrationAnchor::Empty
+                                     ? "empty"
+                                     : anchor == calibration::CalibrationAnchor::Full
+                                           ? "full"
+                                           : "primary";
+  if (!command.target.assign(name)) return false;
+  return typed_dispatch(*this, command, now_us);
+}
+
+bool CommandRouter::validate() noexcept {
+  MaintenanceCommand command = typed_command(CommandKind::CalibrationValidate,
+                                             calibration_.target());
+  return typed_dispatch(*this, command, calibration_.last_activity_us());
+}
+
+bool CommandRouter::preview(calibration::ValidationResult& output) noexcept {
+  MaintenanceCommand command = typed_command(CommandKind::CalibrationPreview,
+                                             calibration_.target());
+  const bool accepted = typed_dispatch(*this, command,
+                                       calibration_.last_activity_us());
+  output = calibration_.validation();
+  return accepted;
+}
+
+bool CommandRouter::commit() noexcept {
+  MaintenanceCommand command = typed_command(CommandKind::CalibrationCommit,
+                                             calibration_.target());
+  return typed_dispatch(*this, command, calibration_.last_activity_us());
+}
+
+bool CommandRouter::cancel() noexcept {
+  MaintenanceCommand command = typed_command(CommandKind::CalibrationCancel,
+                                             calibration_.target());
+  return typed_dispatch(*this, command, calibration_.last_activity_us());
+}
+
+bool CommandRouter::history(calibration::CalibrationResultEnvelope&) const noexcept {
+  return false;
+}
+
+bool CommandRouter::rollback() noexcept { return false; }
+
+bool CommandRouter::append_calibration_preview_response(
+    MaintenanceResponse& response) const noexcept {
+  return append_calibration_preview(response);
+}
 
 bool CommandRouter::build_calibration_proposal(
     uint64_t now_us, CalibrationProposal& proposal) const noexcept {
@@ -312,7 +544,9 @@ bool CommandRouter::append_calibration_preview(MaintenanceResponse& response) co
              append_u32(response, "divider_numerator=", profile.divider_numerator) &&
              append_u32(response, "divider_denominator=", profile.divider_denominator) &&
              append_proposal_identity(response, calibration_proposal_.encoded,
-                                     profile.manifest.profile_version);
+                                     profile.manifest.profile_version,
+                                     calibration_.stats().count + calibration_.secondary_stats().count,
+                                     evidence_sequence_);
     }
     case acquisition::ProfileKind::Calibration:
       break;
@@ -328,7 +562,9 @@ bool CommandRouter::append_calibration_preview(MaintenanceResponse& response) co
              append_i64(response, "tare_offset_counts=", profile.tare_offset_counts) &&
              append_float(response, "counts_per_kg=", profile.counts_per_kg) &&
              append_proposal_identity(response, calibration_proposal_.encoded,
-                                     profile.manifest.profile_version);
+                                     profile.manifest.profile_version,
+                                     calibration_.stats().count + calibration_.secondary_stats().count,
+                                     evidence_sequence_);
     }
     case calibration::CalibrationTarget::UltrasonicOrganic:
     case calibration::CalibrationTarget::UltrasonicInorganic:
@@ -342,7 +578,9 @@ bool CommandRouter::append_calibration_preview(MaintenanceResponse& response) co
              append_u32(response, "echo_timeout_us=", profile.echo_timeout_us) &&
              append_u32(response, "inter_sensor_gap_us=", profile.inter_sensor_gap_us) &&
              append_proposal_identity(response, calibration_proposal_.encoded,
-                                     profile.manifest.profile_version);
+                                     profile.manifest.profile_version,
+                                     calibration_.stats().count + calibration_.secondary_stats().count,
+                                     evidence_sequence_);
     }
     case calibration::CalibrationTarget::Ds18b20B3: {
       acquisition::Ds18b20Profile profile{};
@@ -351,7 +589,9 @@ bool CommandRouter::append_calibration_preview(MaintenanceResponse& response) co
              append_u32(response, "resolution_bits=", profile.resolution_bits) &&
              append_i64(response, "offset_centi_c=", profile.offset_centi_c) &&
              append_proposal_identity(response, calibration_proposal_.encoded,
-                                     profile.manifest.profile_version);
+                                     profile.manifest.profile_version,
+                                     calibration_.stats().count,
+                                     evidence_sequence_);
     }
     case calibration::CalibrationTarget::Sht31_44:
     case calibration::CalibrationTarget::Sht31_45: {
@@ -361,7 +601,9 @@ bool CommandRouter::append_calibration_preview(MaintenanceResponse& response) co
             append_i64(response, "temperature_offset_centi_c=", profile.temperature_offset_centi_c) &&
              append_i64(response, "humidity_offset_centi_pct=", profile.humidity_offset_centi_pct) &&
              append_proposal_identity(response, calibration_proposal_.encoded,
-                                     profile.manifest.profile_version);
+                                     profile.manifest.profile_version,
+                                     calibration_.stats().count + calibration_.secondary_stats().count,
+                                     evidence_sequence_);
     }
     default:
       return false;

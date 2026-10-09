@@ -32,6 +32,7 @@ enum class CalibrationOperation : uint8_t {
 
 enum class CalibrationCommandStatus : uint8_t {
   Accepted,
+  Committed,
   Replayed,
   SessionBusy,
   Expired,
@@ -70,6 +71,9 @@ struct CalibrationCommandEnvelope final {
   uint16_t protocol_version{kProtocolVersion};
   uint64_t request_id{0U};
   uint64_t device_id{0U};
+  // Stable authenticated principal identity. USB may leave this zero, while
+  // BLE/HTTPS adapters bind it to their authenticated operator/session.
+  uint64_t principal_id{0U};
   uint64_t session_id{0U};
   uint64_t expires_at_us{0U};
   CalibrationTransport transport{CalibrationTransport::Usb};
@@ -80,6 +84,10 @@ struct CalibrationCommandEnvelope final {
   CalibrationAnchor anchor{CalibrationAnchor::Primary};
   bool expected_profile_present{false};
   CalibrationProfileRef expected_profile{};
+  // Digest of the complete canonical command payload. The replay ring keeps
+  // the digest and size rather than an unbounded JSON document.
+  std::array<uint8_t, 32U> payload_digest{};
+  uint16_t payload_size{0U};
 };
 
 struct CalibrationResultEnvelope final {
@@ -126,12 +134,21 @@ class ICalibrationTransportWorkflow {
                         DiagnosticEvidence& output) const noexcept = 0;
   virtual bool active_profile(CalibrationTarget target,
                               CalibrationProfileRef& output) const noexcept = 0;
+  // During PREVIEW the workflow may expose the exact profile identity that a
+  // subsequent COMMIT is allowed to activate. Implementations that do not
+  // expose a proposal can return false; COMMIT still requires their normal
+  // lifecycle validation.
+  virtual bool proposed_profile(
+      CalibrationProfileRef& output) const noexcept {
+    output = CalibrationProfileRef{};
+    return false;
+  }
   virtual bool start(CalibrationTarget target, uint64_t now_us) noexcept = 0;
   virtual bool set_criteria(const CaptureCriteria& criteria,
                             uint64_t now_us) noexcept = 0;
   virtual bool capture(CalibrationAnchor anchor, uint64_t now_us) noexcept = 0;
   virtual bool validate() noexcept = 0;
-  virtual bool preview(ValidationResult& output) const noexcept = 0;
+  virtual bool preview(ValidationResult& output) noexcept = 0;
   virtual bool commit() noexcept = 0;
   virtual bool cancel() noexcept = 0;
   virtual bool history(CalibrationResultEnvelope& output) const noexcept = 0;
@@ -156,8 +173,10 @@ class CalibrationTransportController final {
                CalibrationResultEnvelope& output) noexcept;
   void poll(uint64_t now_us) noexcept;
   void disconnect(CalibrationTransport transport) noexcept;
+  void set_device_id(uint64_t device_id) noexcept { device_id_ = device_id; }
   bool active() const noexcept { return owner_active_; }
   CalibrationTransport owner() const noexcept { return owner_; }
+  uint64_t device_id() const noexcept { return device_id_; }
 
  private:
   bool owns(const CalibrationCommandEnvelope& command) const noexcept;
@@ -188,6 +207,7 @@ class CalibrationTransportController final {
   CalibrationTransport owner_{CalibrationTransport::Usb};
   bool owner_active_{false};
   uint64_t session_id_{0U};
+  uint64_t principal_id_{0U};
   uint64_t next_session_id_{1U};
   std::array<ReplayEntry, kReplayEntries> replay_{};
   std::size_t replay_next_{0U};

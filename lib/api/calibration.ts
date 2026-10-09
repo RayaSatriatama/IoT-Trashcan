@@ -4,6 +4,8 @@ import { ApiError, type Fetcher } from './client';
  * authenticated session and pass it to this short-lived client instance. */
 export type OperatorAuthorization = {
   bearerToken: string;
+  /** Anti-forgery value from the short-lived operator session. Never persist it. */
+  csrfToken?: string;
   operatorId?: string;
 };
 
@@ -123,11 +125,17 @@ export function createCalibrationApi(
   if (!auth.bearerToken.trim()) throw new Error('Operator authorization is required');
 
   const path = (value: string) => `${baseUrl.replace(/\/$/u, '')}${value}`;
-  const headers = () => ({
-    Accept: 'application/json',
-    'Content-Type': 'application/json',
-    Authorization: `Bearer ${auth.bearerToken}`,
-  });
+  const headers = (mutating = false) => {
+    if (mutating && !auth.csrfToken?.trim()) {
+      throw new Error('CSRF operator session is required for calibration changes');
+    }
+    return {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${auth.bearerToken}`,
+      ...(mutating ? { 'X-SIGAP-CSRF': auth.csrfToken!.trim() } : {}),
+    };
+  };
 
   async function parse<T>(response: Response): Promise<T> {
     const text = await response.text();
@@ -146,7 +154,7 @@ export function createCalibrationApi(
     return parse<T>(await fetcher(path(url), { method: 'GET', headers: headers(), signal }));
   }
   async function post<T>(url: string, payload: unknown, signal?: AbortSignal): Promise<T> {
-    return parse<T>(await fetcher(path(url), { method: 'POST', headers: headers(), body: JSON.stringify(payload), signal }));
+    return parse<T>(await fetcher(path(url), { method: 'POST', headers: headers(true), body: JSON.stringify(payload), signal }));
   }
 
   return {
@@ -183,6 +191,13 @@ export function createCalibrationApi(
     },
     getCommand: async (deviceId: string, commandId: string, signal?: AbortSignal) =>
       normalizeCommandResponse(await get<CalibrationResponse | CalibrationCommand>(`/api/device-control/commands/${encodeURIComponent(deviceId)}/${encodeURIComponent(commandId)}`, signal)),
+    cancelCommand: async (deviceId: string, commandId: string, signal?: AbortSignal) => {
+      const response = await fetcher(path(`/api/device-control/commands/${encodeURIComponent(deviceId)}/${encodeURIComponent(commandId)}`), {
+        method: 'DELETE', headers: headers(true), signal,
+      });
+      if (response.status === 204) return;
+      await parse<void>(response);
+    },
   };
 }
 

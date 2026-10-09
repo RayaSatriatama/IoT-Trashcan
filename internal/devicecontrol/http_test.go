@@ -2,6 +2,7 @@ package devicecontrol
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -41,6 +42,15 @@ func TestHTTPRequiresAuthorizersAndSupportsOperatorDeviceFlow(t *testing.T) {
 	h.ServeHTTP(claim, httptest.NewRequest(http.MethodGet, "/api/device-control/device/DEV-01/next", nil))
 	if claim.Code != http.StatusOK {
 		t.Fatalf("claim status=%d", claim.Code)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(claim.Body.Bytes(), &wire); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"operator_id", "request_hash", "expires_in_ms"} {
+		if _, ok := wire[field]; !ok {
+			t.Fatalf("device wire missing %s: %s", field, claim.Body.String())
+		}
 	}
 	result := httptest.NewRequest(http.MethodPost, "/api/device-control/device/DEV-01/http-1/result", strings.NewReader(`{"status":"ACCEPTED","session_id":"session-http","result":{"accepted":true}}`))
 	out := httptest.NewRecorder()
@@ -85,7 +95,7 @@ func TestHTTPDiagnosticsUsesOperatorAuthorizationAndExactResult(t *testing.T) {
 		t.Fatal(err)
 	}
 	const payload = `{"sensor_id":"sht31_44","quality":"UNCALIBRATED","raw":{"present":true}}`
-	if _, err := s.UpdateResult(context.Background(), req.DeviceID, req.ID, ResultRequest{Status: Capturing, SessionID: req.SessionID, Payload: []byte(payload)}); err != nil {
+	if _, err := s.UpdateResult(context.Background(), req.DeviceID, req.ID, ResultRequest{Status: Accepted, SessionID: req.SessionID, Payload: []byte(payload)}); err != nil {
 		t.Fatal(err)
 	}
 	h := NewHandler(s, HTTPOptions{Operator: operatorAuth{allow: true}})
@@ -105,7 +115,7 @@ func TestHTTPCapabilitiesAreBoundedAndSensorSpecific(t *testing.T) {
 	res := httptest.NewRecorder()
 	h.ServeHTTP(res, r)
 	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"sensor_id":"ds18b20_b3"`) ||
-		!strings.Contains(res.Body.String(), `"unit":"degC"`) {
+		!strings.Contains(res.Body.String(), `"unit":"centi_celsius"`) {
 		t.Fatalf("status=%d body=%q", res.Code, res.Body.String())
 	}
 	unknown := httptest.NewRecorder()
@@ -113,5 +123,49 @@ func TestHTTPCapabilitiesAreBoundedAndSensorSpecific(t *testing.T) {
 		"/api/device-control/commands/DEV-01/capabilities?sensor_id=unknown", nil))
 	if unknown.Code != http.StatusNotFound {
 		t.Fatalf("unknown status=%d", unknown.Code)
+	}
+}
+
+func TestHTTPCapabilitiesMatchFirmwareFamilies(t *testing.T) {
+	s, _, _ := testStore(t)
+	h := NewHandler(s, HTTPOptions{Operator: operatorAuth{allow: true}})
+	for _, test := range []struct {
+		sensor string
+		fields []string
+	}{
+		{"hx711_organic", []string{"tare_counts", "reference_mass_mg", "max_span_counts"}},
+		{"ultrasonic_b3", []string{"empty_mm", "full_mm", "echo_timeout_us", "inter_sensor_gap_us"}},
+		{"mq7", []string{"reference_mv", "full_scale_counts", "divider_numerator", "divider_denominator"}},
+		{"ds18b20_b3", []string{"reference_temperature_centi_c", "resolution_bits", "max_span_centi_c"}},
+		{"sht31_45", []string{"reference_temperature_centi_c", "reference_humidity_centi_pct", "address"}},
+	} {
+		t.Run(test.sensor, func(t *testing.T) {
+			res := httptest.NewRecorder()
+			h.ServeHTTP(res, httptest.NewRequest(http.MethodGet,
+				"/api/device-control/commands/DEV-01/capabilities?sensor_id="+test.sensor, nil))
+			if res.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%q", res.Code, res.Body.String())
+			}
+			for _, field := range test.fields {
+				if !strings.Contains(res.Body.String(), `"name":"`+field+`"`) {
+					t.Fatalf("missing field %q: %s", field, res.Body.String())
+				}
+			}
+		})
+	}
+}
+
+func TestHTTPRejectsEnvelopeOverFirmwareFourKiBBound(t *testing.T) {
+	if MaxPayloadBytes != 4*1024 {
+		t.Fatalf("device-control bound=%d, firmware payload bound is 4096", MaxPayloadBytes)
+	}
+	s, _, _ := testStore(t)
+	h := NewHandler(s, HTTPOptions{Operator: operatorAuth{allow: true}})
+	oversized := `{"command_id":"too-large","session_id":"session","sensor_id":"mq4","operation":"start","payload":"` + strings.Repeat("x", MaxPayloadBytes) + `","expires_at":"2026-10-09T12:01:00Z"}`
+	res := httptest.NewRecorder()
+	h.ServeHTTP(res, httptest.NewRequest(http.MethodPost,
+		"/api/device-control/commands/DEV-01", strings.NewReader(oversized)))
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", res.Code, res.Body.String())
 	}
 }

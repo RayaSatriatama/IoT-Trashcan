@@ -17,7 +17,23 @@ inline constexpr std::size_t kMaxDeviceControlIdBytes{64U};
 inline constexpr std::size_t kMaxDeviceControlSensorBytes{32U};
 inline constexpr std::size_t kMaxDeviceControlOperationBytes{32U};
 inline constexpr std::size_t kMaxDeviceControlPayloadBytes{4096U};
+inline constexpr std::size_t kMaxDeviceControlRequestHashBytes{71U};
 inline constexpr std::size_t kMaxDeviceControlErrorBytes{64U};
+// The server supplies this relative lease alongside its wall-clock expiry.
+// A device without a trusted UTC anchor must not derive a deadline from an
+// RFC3339 timestamp alone.
+inline constexpr uint32_t kMaxDeviceControlExpiryMs{120000U};
+
+inline bool device_control_deadline_from_relative_ms(
+    uint64_t now_us, uint32_t expires_in_ms, uint64_t& deadline_us) noexcept {
+  if (expires_in_ms == 0U || expires_in_ms > kMaxDeviceControlExpiryMs ||
+      expires_in_ms > (UINT64_MAX - now_us) / 1000U) {
+    deadline_us = 0U;
+    return false;
+  }
+  deadline_us = now_us + static_cast<uint64_t>(expires_in_ms) * 1000U;
+  return true;
+}
 
 template <std::size_t N>
 struct DeviceControlText final {
@@ -49,9 +65,11 @@ enum class DeviceControlStatus : uint8_t {
 struct DeviceControlCommand final {
   DeviceControlText<kMaxDeviceControlIdBytes> command_id{};
   DeviceControlText<kMaxDeviceControlIdBytes> device_id{};
+  DeviceControlText<kMaxDeviceControlIdBytes> operator_id{};
   DeviceControlText<kMaxDeviceControlIdBytes> session_id{};
   DeviceControlText<kMaxDeviceControlSensorBytes> sensor_id{};
   DeviceControlText<kMaxDeviceControlOperationBytes> operation{};
+  DeviceControlText<kMaxDeviceControlRequestHashBytes> request_hash{};
   std::array<uint8_t, kMaxDeviceControlPayloadBytes> payload{};
   std::size_t payload_size{0U};
   uint64_t expires_at_us{0U};
@@ -206,6 +224,7 @@ class DeviceControlPoller final {
   bool valid_command(const DeviceControlCommand& command,
                     uint64_t now_us) const noexcept {
     return command.command_id.size != 0U && command.device_id.view() == device_id_text_.view() &&
+           command.operator_id.size != 0U && command.request_hash.size != 0U &&
            command.sensor_id.size != 0U && command.operation.size != 0U &&
            command.payload_size <= command.payload.size() &&
            command.expires_at_us != 0U && now_us <= command.expires_at_us;

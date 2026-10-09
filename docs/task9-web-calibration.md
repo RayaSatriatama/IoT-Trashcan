@@ -63,6 +63,10 @@ missing a profile. Operational conversion remains unavailable in those states.
 
 ## Remediation evidence matrix
 
+This matrix records the earlier closure state. The current composition and
+fresh results are documented in the section below and supersede the rows that
+previously described firmware wiring as open.
+
 | Requirement | Implementation | Fresh evidence | Result |
 | --- | --- | --- | --- |
 | Shared bounded lifecycle and owner arbitration | `calibration_transport.*` contract plus existing `CommandRouter` session/evidence/profile lifecycle | `test_calibration_transport`, maintenance regressions | PASS in native contract tests; controller still requires final composition wiring |
@@ -83,3 +87,39 @@ bounded firmware poller seam and replay tests exist, but the Arduino HTTP
 implementation and shared calibration executor are not yet bound into
 `SigapApp`. Production operator authorization also requires deployment
 configuration. This document therefore does not claim Task 9 complete.
+
+## Current remediation status (`4fc5bddb830d4e0a4b50930227b2366421937cf2`)
+
+The current source supersedes the older remediation note above in the
+following areas:
+
+- BLE calibration mutations use the shared `CalibrationTransportController`
+  when the application composes the adapter. START, CRITERIA, CAPTURE,
+  VALIDATE, PREVIEW, COMMIT, and CANCEL carry bounded typed envelopes,
+  principal/session ownership, complete request identity, and terminal
+  `COMMITTED` state. The native adapter/controller regressions pass.
+- Arduino HTTPS device-control transport, strict command/result codecs, and
+  the shared calibration executor are present and compiled for all four target
+  environments. The application binds them only when
+  `SIGAP_NETWORK_ENDPOINT` and `SIGAP_NETWORK_CA_CERT` are supplied; the
+  default image remains fail-closed and does not claim remote execution.
+- Go command identity now covers device, operator, session, sensor,
+  operation, payload, expiry, and request hash. Mutating operations enforce
+  session ownership, expiry is bounded before execution, and COMMIT results
+  require device-confirmed profile identity/version/hash.
+- The web wizard requires CSRF for mutations, keeps its token in memory,
+  polls command state, and only enables COMMIT from a device-generated typed
+  preview. The current UI still accepts operator bearer/CSRF values supplied
+  by the caller; production operator-session deployment is not claimed.
+
+Fresh source-only evidence for this revision is 424/424 native tests,
+424/424 ASan/UBSan tests using a temporary non-production PlatformIO config,
+21 frontend files/107 tests, TypeScript and web export passes, Go full/race/
+vet passes, and all four target builds. The controller also persists committed
+request identity and profile readback through the replay-store boundary, with
+native recreation coverage. Physical BLE pairing, a browser-driven
+preview-to-commit journey, and an endpoint-enabled ESP32 HTTPS run remain
+unexecuted. The replay record is written after profile activation, so atomic
+power-loss recovery across that final persistence boundary remains a documented
+follow-up. Task 9 stays HOLD until those integrated paths are exercised with an
+authorized non-production deployment.

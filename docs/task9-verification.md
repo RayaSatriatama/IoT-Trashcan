@@ -181,14 +181,18 @@ as fresh. Physical BLE pairing, WiFi change/reconnect, HTTPS device polling,
 operator-provider deployment, sensor evidence, heater operation, NVS, SD, and
 power tests remain blocked by the explicit hardware boundary.
 
-The remaining software integration gate is firmware-side HTTPS polling of the
+The following paragraphs record the pre-composition state and are retained as
+history. They are superseded by the fresh remediation section below. The
+remaining software integration gate at that earlier state was firmware-side
+HTTPS polling of the
 Go command queue. The queue, authenticated operator/device endpoints, exact
 diagnostic body, idempotent command persistence, expiry, and native tests are
 implemented. No firmware network worker currently claims remote calibration
 commands, so WEB-CAL remote delivery is not marked complete until that adapter
 is wired and tested with the existing nonblocking network boundary.
 
-The latest closure attempt adds a CAL1 typed response contract, typed BLE
+The latest closure attempt at that earlier state added a CAL1 typed response
+contract, typed BLE
 preview/profile identity handling, web command status polling with refresh
 recovery, database-backed operator sessions and per-device authorization,
 lease recovery, structured committed-result validation, and a bounded native
@@ -196,3 +200,55 @@ lease recovery, structured committed-result validation, and a bounded native
 the Arduino HTTP implementation and shared calibration executor are still not
 bound into `SigapApp`. Operator authorization remains fail-closed and requires
 deployment provisioning. Task 9 therefore remains HOLD.
+
+## Fresh unified web calibration remediation (`4fc5bddb830d4e0a4b50930227b2366421937cf2`)
+
+The current source adds the production-side composition points that were
+missing from the previous ledger. `SigapApp` owns one calibration controller,
+the BLE adapter receives that controller, and the Arduino device-control HTTP
+transport/executor/poller are composed when endpoint and CA build policy is
+provided. The default target intentionally omits those macros, so it remains
+fail-closed rather than silently using an unverified endpoint. All mutation
+paths retain bounded buffers and share controller ownership; no separate
+calibration manager was added.
+
+Fresh verification from the current working tree:
+
+```text
+pio test -e native                                      PASS 424/424
+temporary ASan/UBSan PlatformIO config                 PASS 424/424
+pio check -e native --fail-on-defect=low                PASS, no defects
+pio run -e sigap_n16r8                                  PASS RAM 49,496; flash 1,103,173
+pio run -e sigap_n16r8_sd                               PASS RAM 50,036; flash 1,176,225
+pio run -e sigap_n16r8_sd_spi                           PASS RAM 49,792; flash 1,155,685
+pio run -e sigap_bench                                  PASS RAM 49,496; flash 1,103,173
+go test -count=1 ./...                                  PASS
+go test -race -count=1 ./...                            PASS
+go vet ./...                                             PASS
+npm test                                                PASS 21 files / 107 tests
+npm run typecheck                                        PASS
+npm run export:web                                       PASS
+telemetry package: 14 schemas / 24 valid / 36 invalid  PASS
+frozen record/body hashes                               PASS, unchanged
+git diff --check                                         PASS
+```
+
+The telemetry package explicitly ran `TestAllTelemetrySchemasCompile`, both
+fixture corpora, and the canonical record/body hash tests. The native suite
+includes controller identity/principal replay, durable committed result replay
+across controller recreation, proposed-profile expected identity, BLE
+shared-owner routing, strict device-control command/result framing, expiry,
+lost-result recovery, and the existing sensor/profile/archive regressions.
+
+Remaining acceptance gaps are deployment and hardware boundaries, not relabeled
+test results: the default target has no endpoint/CA macros, no non-production
+HTTPS staging transmission was run, no browser Web Bluetooth pairing was run,
+and no physical sensor/NVS/SD operation was performed. Operator auth is
+fail-closed in the backend but the current browser journey still supplies
+short-lived bearer/CSRF values in memory rather than using a deployed operator
+identity provider. The NVS replay record is persisted after a successful profile
+commit, but a power-loss window between profile activation and replay-record
+persistence still requires the documented atomic persistence follow-up. No
+commit or push was performed in this verification batch;
+the branch remains at the reviewed baseline with local changes only. Task 10
+was not started.

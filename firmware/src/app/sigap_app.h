@@ -20,6 +20,11 @@
 #include "models/model_lifecycle.h"
 #include "maintenance/model_runtime.h"
 #include "maintenance/ble_calibration_backend.h"
+#ifdef ARDUINO
+#include "device_control_executor.h"
+#include "calibration/calibration_replay_store.h"
+#include "network/device_control_http.h"
+#endif
 #include "storage/archive_media.h"
 #include "archive_runtime.h"
 #include "telemetry_archive/ack_journal_store.h"
@@ -282,7 +287,17 @@ class SigapApp final {
 #endif
   maintenance::CommandRouter maintenance_router_;
 #ifdef ARDUINO
+  calibration::NvsCalibrationReplayStore calibration_replay_store_{};
+  ApplicationCalibrationAuthorizer calibration_authorizer_{};
+  calibration::CalibrationTransportController calibration_controller_;
   maintenance::CommandRouterBleCalibrationBackend ble_calibration_backend_;
+#if defined(SIGAP_NETWORK_ENDPOINT) && defined(SIGAP_NETWORK_CA_CERT)
+  ApplicationCalibrationExecutor device_control_executor_;
+  network::WiFiDeviceControlHttpTransport device_control_transport_{};
+  network::DeviceControlPoller device_control_poller_;
+  bool device_control_ready_{false};
+  std::array<char, 65U> device_control_id_{};
+#endif
 #endif
   maintenance::MaintenanceService maintenance_service_;
   uint32_t profile_generation_{0U};

@@ -12,7 +12,9 @@ constexpr std::size_t kMaxBytesPerPoll{32U};
 // Calibration preview responses include the typed proposal identity and
 // sensor-specific engineering fields. Keep the wire bound fixed while
 // allowing the complete proposal to be returned without truncation.
-constexpr std::size_t kMaxResponseBytes{240U};
+// Preview responses include bounded proposal parameters and evidence
+// provenance for BLE/HTTPS consumers.  Keep one fixed limit for USB and BLE.
+constexpr std::size_t kMaxResponseBytes{384U};
 
 template <std::size_t Capacity>
 struct FixedText final {

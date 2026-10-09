@@ -134,11 +134,15 @@ func (h *Handler) operator(w http.ResponseWriter, r *http.Request, deviceID stri
 			writeControlError(w, http.StatusInternalServerError, "internal server error")
 			return
 		}
-		writeControlJSON(w, http.StatusOK, c)
+		writeControlJSON(w, http.StatusOK, commandForDevice(c, h.store.now().UTC()))
 		return
 	}
 	if len(parts) == 1 && r.Method == http.MethodDelete {
-		if err := h.store.Cancel(r.Context(), deviceID, commandID); err != nil {
+		if err := h.store.Cancel(r.Context(), deviceID, commandID, operator); err != nil {
+			if errors.Is(err, ErrNotFound) {
+				writeControlError(w, http.StatusNotFound, "not found")
+				return
+			}
 			writeControlError(w, http.StatusInternalServerError, "internal server error")
 			return
 		}
@@ -162,25 +166,36 @@ type sensorCapabilityResponse struct {
 }
 
 func sensorCapability(sensorID string) (sensorCapabilityResponse, bool) {
-	if sensorID == "" {
+	value := sensorCapabilityResponse{SensorID: sensorID}
+	switch sensorID {
+	case "hx711_organic", "hx711_inorganic", "hx711_b3":
+		value.References = []capabilityField{{"tare_counts", "counts", true}, {"reference_mass_mg", "mg", true}}
+		value.Criteria = []capabilityField{{"samples", "count", true}, {"max_span_counts", "counts", true}}
+	case "ultrasonic_organic", "ultrasonic_inorganic", "ultrasonic_b3":
+		value.References = []capabilityField{{"empty_mm", "mm", true}, {"full_mm", "mm", true}}
+		value.Criteria = []capabilityField{{"samples", "count", true}, {"max_span_mm", "mm", true}}
+		value.EngineeringParameters = []capabilityField{
+			{"echo_mm_per_us_milli", "mm_per_us", true}, {"echo_timeout_us", "us", true},
+			{"inter_sensor_gap_us", "us", true}, {"overshoot_tolerance_mm_milli", "mm", true},
+		}
+	case "mq4", "mq135", "mq7", "mq8":
+		value.Criteria = []capabilityField{{"samples", "count", true}, {"max_span_counts", "counts", true}}
+		value.EngineeringParameters = []capabilityField{
+			{"reference_mv", "mV", true}, {"full_scale_counts", "counts", true},
+			{"divider_numerator", "ratio", true}, {"divider_denominator", "ratio", true},
+		}
+	case "ds18b20_b3":
+		value.References = []capabilityField{{"reference_temperature_centi_c", "centi_celsius", true}}
+		value.Criteria = []capabilityField{{"samples", "count", true}, {"max_span_centi_c", "centi_celsius", true}}
+		value.EngineeringParameters = []capabilityField{{"resolution_bits", "bits", true}}
+	case "sht31_44", "sht31_45":
+		value.References = []capabilityField{{"reference_temperature_centi_c", "centi_celsius", true}, {"reference_humidity_centi_pct", "centi_percent", true}}
+		value.Criteria = []capabilityField{{"samples", "count", true}, {"max_temperature_span_centi_c", "centi_celsius", true}, {"max_humidity_span_centi_pct", "centi_percent", true}}
+		value.EngineeringParameters = []capabilityField{{"address", "i2c", true}}
+	default:
 		return sensorCapabilityResponse{}, false
 	}
-	stream := map[string]string{
-		"hx711_organic": "kg", "hx711_inorganic": "kg", "hx711_b3": "kg",
-		"ultrasonic_organic": "mm", "ultrasonic_inorganic": "mm", "ultrasonic_b3": "mm",
-		"mq4": "mV", "mq135": "mV", "mq7": "mV", "mq8": "mV",
-		"ds18b20_b3": "degC", "sht31_44": "degC/%RH", "sht31_45": "degC/%RH",
-	}
-	unit, ok := stream[sensorID]
-	if !ok {
-		return sensorCapabilityResponse{}, false
-	}
-	return sensorCapabilityResponse{
-		SensorID:              sensorID,
-		References:            []capabilityField{{Name: "primary", Unit: unit, Required: true}},
-		Criteria:              []capabilityField{{Name: "stability_window", Unit: "samples", Required: true}},
-		EngineeringParameters: []capabilityField{{Name: "sensor_specific", Unit: "typed_profile", Required: true}},
-	}, true
+	return value, true
 }
 
 func (h *Handler) device(w http.ResponseWriter, r *http.Request, deviceID string, parts []string) {
@@ -198,7 +213,7 @@ func (h *Handler) device(w http.ResponseWriter, r *http.Request, deviceID string
 			writeControlError(w, http.StatusInternalServerError, "internal server error")
 			return
 		}
-		writeControlJSON(w, http.StatusOK, c)
+		writeControlJSON(w, http.StatusOK, commandForDevice(c, h.store.now().UTC()))
 		return
 	}
 	if len(parts) == 2 && parts[1] == "result" && r.Method == http.MethodPost {

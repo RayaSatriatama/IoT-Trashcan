@@ -1,5 +1,6 @@
 #include <unity.h>
 
+#include "calibration/calibration_replay_store.h"
 #include "calibration/calibration_transport.h"
 
 namespace {
@@ -22,6 +23,10 @@ class FakeWorkflow final : public ICalibrationTransportWorkflow {
                       CalibrationProfileRef& output) const noexcept override {
     output = profile;
     return true;
+  }
+  bool proposed_profile(CalibrationProfileRef& output) const noexcept override {
+    output = proposal;
+    return proposal.present;
   }
   bool start(CalibrationTarget target, uint64_t now_us) noexcept override {
     if (status_.active) return false;
@@ -46,7 +51,7 @@ class FakeWorkflow final : public ICalibrationTransportWorkflow {
     status_.state = CalibrationState::Preview;
     return status_.active;
   }
-  bool preview(ValidationResult& output) const noexcept override {
+  bool preview(ValidationResult& output) noexcept override {
     output.code = ValidationCode::Valid;
     return status_.active;
   }
@@ -70,6 +75,7 @@ class FakeWorkflow final : public ICalibrationTransportWorkflow {
 
   mutable CalibrationStatusSnapshot status_{};
   CalibrationProfileRef profile{};
+  CalibrationProfileRef proposal{};
   DiagnosticEvidence evidence_{};
   bool evidence_available_{true};
   uint32_t start_calls{0U};
@@ -122,6 +128,23 @@ void test_owner_and_idempotent_start() {
   auto cancel = command(CalibrationOperation::Cancel, CalibrationTransport::Ble,
                         3U, session);
   TEST_ASSERT_TRUE(controller.execute(cancel, 13U, result));
+}
+
+void test_session_owner_binds_authenticated_principal() {
+  FakeWorkflow workflow{};
+  AllowAuthorizer authorizer{};
+  CalibrationTransportController controller(workflow, 0x1234U, &authorizer);
+  CalibrationResultEnvelope result{};
+  auto start = command(CalibrationOperation::Start, CalibrationTransport::Https, 40U);
+  start.principal_id = 11U;
+  TEST_ASSERT_TRUE(controller.execute(start, 10U, result));
+  auto criteria = command(CalibrationOperation::SetCriteria,
+                          CalibrationTransport::Https, 41U, result.session_id);
+  criteria.principal_id = 12U;
+  criteria.criteria_present = true;
+  TEST_ASSERT_FALSE(controller.execute(criteria, 11U, result));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CalibrationCommandStatus::SessionBusy),
+                        static_cast<int>(result.status));
 }
 
 void test_expiry_cancels_workflow_and_disconnect_is_local() {
@@ -208,16 +231,94 @@ void test_request_id_reuse_with_changed_payload_is_conflict() {
   TEST_ASSERT_EQUAL_UINT32(1U, workflow.start_calls);
 }
 
+void test_committed_replay_survives_controller_recreation() {
+  MemoryCalibrationReplayStore replay_store{};
+  AllowAuthorizer authorizer{};
+  FakeWorkflow first_workflow{};
+  CalibrationTransportController first(first_workflow, 0x1234U, &authorizer,
+                                       &replay_store);
+  CalibrationResultEnvelope result{};
+  auto start = command(CalibrationOperation::Start,
+                       CalibrationTransport::Https, 70U);
+  TEST_ASSERT_TRUE(first.execute(start, 1U, result));
+  auto commit = command(CalibrationOperation::Commit,
+                        CalibrationTransport::Https, 71U, result.session_id);
+  first_workflow.proposal.present = true;
+  first_workflow.proposal.version = 2U;
+  first_workflow.proposal.hash[0] = 0x5AU;
+  commit.expected_profile_present = true;
+  commit.expected_profile = first_workflow.proposal;
+  TEST_ASSERT_TRUE(first.execute(commit, 2U, result));
+
+  FakeWorkflow restarted_workflow{};
+  CalibrationTransportController restarted(restarted_workflow, 0x1234U,
+                                            &authorizer, &replay_store);
+  CalibrationResultEnvelope replayed{};
+  TEST_ASSERT_TRUE(restarted.execute(commit, 3U, replayed));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CalibrationCommandStatus::Replayed),
+                        static_cast<int>(replayed.status));
+  TEST_ASSERT_TRUE(replayed.profile.present);
+  TEST_ASSERT_EQUAL_UINT32(0U, restarted_workflow.start_calls);
+
+  commit.payload_size = 1U;
+  commit.payload_digest[0] = 0xFFU;
+  TEST_ASSERT_FALSE(restarted.execute(commit, 4U, replayed));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CalibrationCommandStatus::Conflict),
+                        static_cast<int>(replayed.status));
+}
+
+void test_commit_returns_terminal_status_and_profile_identity() {
+  FakeWorkflow workflow{};
+  AllowAuthorizer authorizer{};
+  CalibrationTransportController controller(workflow, 0x1234U, &authorizer);
+  CalibrationResultEnvelope result{};
+  auto start = command(CalibrationOperation::Start,
+                       CalibrationTransport::Https, 50U);
+  TEST_ASSERT_TRUE(controller.execute(start, 1U, result));
+  auto commit = command(CalibrationOperation::Commit,
+                        CalibrationTransport::Https, 51U, result.session_id);
+  workflow.proposal.present = true;
+  workflow.proposal.version = 2U;
+  workflow.proposal.hash[0] = 0xA5U;
+  commit.expected_profile_present = true;
+  commit.expected_profile = workflow.proposal;
+  TEST_ASSERT_TRUE(controller.execute(commit, 2U, result));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CalibrationCommandStatus::Committed),
+                        static_cast<int>(result.status));
+  TEST_ASSERT_TRUE(result.profile.present);
+  TEST_ASSERT_EQUAL_UINT32(1U, result.profile.version);
+}
+
+void test_request_id_reuse_with_changed_payload_digest_is_conflict() {
+  FakeWorkflow workflow{};
+  AllowAuthorizer authorizer{};
+  CalibrationTransportController controller(workflow, 0x1234U, &authorizer);
+  CalibrationResultEnvelope result{};
+  auto start = command(CalibrationOperation::Start, CalibrationTransport::Ble, 60U);
+  start.payload_size = 3U;
+  start.payload_digest[0] = 0x11U;
+  TEST_ASSERT_TRUE(controller.execute(start, 1U, result));
+  start.payload_digest[0] = 0x22U;
+  TEST_ASSERT_FALSE(controller.execute(start, 2U, result));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CalibrationCommandStatus::Conflict),
+                        static_cast<int>(result.status));
+  TEST_ASSERT_EQUAL_UINT32(1U, workflow.start_calls);
+}
+
 }  // namespace
 
 void setup() {
   UNITY_BEGIN();
   RUN_TEST(test_owner_and_idempotent_start);
+  RUN_TEST(test_session_owner_binds_authenticated_principal);
   RUN_TEST(test_expiry_cancels_workflow_and_disconnect_is_local);
   RUN_TEST(test_expected_profile_conflict_and_preview);
   RUN_TEST(test_remote_transport_requires_authorization);
   RUN_TEST(test_expiry_and_device_binding_are_rejected);
   RUN_TEST(test_request_id_reuse_with_changed_payload_is_conflict);
+  RUN_TEST(test_commit_returns_terminal_status_and_profile_identity);
+  RUN_TEST(test_request_id_reuse_with_changed_payload_digest_is_conflict);
+  RUN_TEST(test_committed_replay_survives_controller_recreation);
   UNITY_END();
 }
 

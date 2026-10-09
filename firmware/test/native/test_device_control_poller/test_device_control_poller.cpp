@@ -4,6 +4,7 @@
 #include <unity.h>
 
 #include "network/device_control.h"
+#include "network/device_control_codec.h"
 
 namespace {
 
@@ -130,7 +131,9 @@ DeviceControlCommand make_command(uint64_t expiry = 10000U) {
   DeviceControlCommand value{};
   (void)value.command_id.assign("cmd-1");
   (void)value.device_id.assign("DEV-1");
+  (void)value.operator_id.assign("op-1");
   (void)value.session_id.assign("session-1");
+  (void)value.request_hash.assign("sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef");
   (void)value.sensor_id.assign("mq4");
   (void)value.operation.assign("commit");
   value.payload[0] = '{';
@@ -216,6 +219,61 @@ void test_unauthorized_state_requires_explicit_reauthorization() {
   TEST_ASSERT_EQUAL_INT(DeviceControlPollOutcome::Idle, poller.poll());
 }
 
+void test_relative_server_expiry_is_bounded_before_execution() {
+  uint64_t deadline{0U};
+  TEST_ASSERT_TRUE(device_control_deadline_from_relative_ms(
+      500U, 1000U, deadline));
+  TEST_ASSERT_EQUAL_UINT64(1000500U, deadline);
+  TEST_ASSERT_FALSE(device_control_deadline_from_relative_ms(
+      500U, 0U, deadline));
+  TEST_ASSERT_FALSE(device_control_deadline_from_relative_ms(
+      500U, kMaxDeviceControlExpiryMs + 1U, deadline));
+  TEST_ASSERT_FALSE(device_control_deadline_from_relative_ms(
+      UINT64_MAX - 10U, 1U, deadline));
+}
+
+void test_oversized_command_never_reaches_executor() {
+  Clock clock{};
+  Transport transport{};
+  transport.command = make_command();
+  transport.command.payload_size = kMaxDeviceControlPayloadBytes + 1U;
+  Executor executor{};
+  DeviceControlPoller poller(policy(), clock, transport, executor);
+  TEST_ASSERT_TRUE(poller.begin("DEV-1", "token"));
+  TEST_ASSERT_EQUAL_INT(DeviceControlPollOutcome::Invalid, poller.poll());
+  TEST_ASSERT_EQUAL_UINT32(0U, executor.calls);
+}
+
+void test_wire_command_requires_bounded_relative_expiry() {
+  constexpr std::string_view valid =
+      R"({"command_id":"cmd-1","device_id":"DEV-1","operator_id":"op-1","session_id":"s-1","sensor_id":"mq4","operation":"start","payload":{"samples":3},"expires_in_ms":1000,"attempt":2,"request_hash":"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"})";
+  DeviceControlCommand command{};
+  TEST_ASSERT_TRUE(decode_device_control_command(valid, 500U, command));
+  TEST_ASSERT_EQUAL_STRING("cmd-1", command.command_id.bytes.data());
+  TEST_ASSERT_EQUAL_UINT64(1000500U, command.expires_at_us);
+  TEST_ASSERT_EQUAL_UINT32(2U, command.attempt);
+
+  constexpr std::string_view no_deadline =
+      R"({"command_id":"cmd-1","device_id":"DEV-1","operator_id":"op-1","session_id":"s-1","sensor_id":"mq4","operation":"start","payload":{},"request_hash":"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"})";
+  TEST_ASSERT_FALSE(decode_device_control_command(no_deadline, 500U, command));
+}
+
+void test_wire_result_rejects_oversized_or_invalid_payload() {
+  DeviceControlResult result{};
+  TEST_ASSERT_TRUE(result.command_id.assign("cmd-1"));
+  TEST_ASSERT_TRUE(result.session_id.assign("s-1"));
+  result.status = DeviceControlStatus::Committed;
+  constexpr std::string_view committed =
+      R"({"profile_key":"mq4","profile_hash":"sha256:abc","version":1})";
+  result.payload_size = committed.size();
+  std::copy(committed.begin(), committed.end(), result.payload.begin());
+  DeviceControlWireBody body{};
+  TEST_ASSERT_TRUE(encode_device_control_result(result, body));
+  TEST_ASSERT_TRUE(body.view().find("COMMITTED") != std::string_view::npos);
+  result.payload_size = result.payload.size() + 1U;
+  TEST_ASSERT_FALSE(encode_device_control_result(result, body));
+}
+
 }  // namespace
 
 void setup() {
@@ -224,6 +282,10 @@ void setup() {
   RUN_TEST(test_expired_or_wrong_device_command_is_never_executed);
   RUN_TEST(test_result_journal_recovers_lost_post_without_reexecution);
   RUN_TEST(test_unauthorized_state_requires_explicit_reauthorization);
+  RUN_TEST(test_relative_server_expiry_is_bounded_before_execution);
+  RUN_TEST(test_oversized_command_never_reaches_executor);
+  RUN_TEST(test_wire_command_requires_bounded_relative_expiry);
+  RUN_TEST(test_wire_result_rejects_oversized_or_invalid_payload);
   UNITY_END();
 }
 
