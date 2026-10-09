@@ -21,8 +21,15 @@ import (
 )
 
 func main() {
-	dbPath := envOrDefault("SIGAP_DB_PATH", "sigap.db")
-	addr := envOrDefault("SIGAP_HTTP_ADDR", ":8080")
+	serverConfig, err := loadServerConfig(os.Getenv)
+	if err != nil {
+		log.Fatalf("server configuration: %v", err)
+	}
+	if err := serverConfig.validateTLSFiles(); err != nil {
+		log.Fatalf("server TLS configuration: %v", err)
+	}
+	dbPath := serverConfig.dbPath
+	addr := serverConfig.addr
 
 	db, err := database.Open(dbPath)
 	if err != nil {
@@ -84,7 +91,13 @@ func main() {
 		}()
 	}
 	serverErr := make(chan error, 1)
-	go func() { serverErr <- server.ListenAndServe() }()
+	go func() {
+		if serverConfig.tlsEnabled() {
+			serverErr <- server.ListenAndServeTLS(serverConfig.tlsCertFile, serverConfig.tlsKeyFile)
+			return
+		}
+		serverErr <- server.ListenAndServe()
+	}()
 	select {
 	case serveErr := <-serverErr:
 		if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
