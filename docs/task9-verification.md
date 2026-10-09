@@ -1,6 +1,6 @@
 # Task 9 verification ledger
 
-## Fresh final remediation evidence (`e01a81e` source -> final image)
+## Fresh integrated Wave 1 evidence (`76c3203` source -> current builds)
 
 This section supersedes stale hardware-boundary statements below while
 preserving historical ledgers. Source verification was rerun on the current
@@ -8,21 +8,22 @@ working tree. The selected SD image was uploaded only to the application
 range `0x10000..0x130fff`; NVS, partition metadata, and the SD card were
 preserved.
 
-Fresh software results:
+Fresh lead verification on the integrated Wave 1 source:
 
 ```text
-pio test -e native --without-uploading                         PASS 432/432
+pio test -e native --without-uploading                         PASS 434/434
 pio check -e native --fail-on-defect=low                        PASS, no defects
 pio run -e sigap_n16r8                                          PASS RAM 49,496; flash 1,106,633
 pio run -e sigap_n16r8_sd                                       PASS RAM 50,036; flash 1,179,893
 pio run -e sigap_n16r8_sd_spi                                   PASS RAM 49,792; flash 1,159,409
 pio run -e sigap_bench                                          PASS RAM 49,496; flash 1,106,633
 pio run -e sigap_n16r8_https_compile                            PASS RAM 51,824; flash 1,300,573
+pio run -e sigap_n16r8_sd_https_compile                        PASS RAM 52,260; flash 1,358,761
 go test -count=1 ./...                                          PASS
 go test -race -count=1 ./...                                    PASS
 go vet ./...                                                    PASS
 go test -count=1 -v ./internal/telemetry                       PASS 14 schemas / 24 valid / 36 invalid / golden hashes
-npm test -- --run                                              PASS 21 files / 109 tests
+npm test -- --run                                              PASS 21 files / 111 tests
 npm run typecheck                                               PASS
 npm run export:web                                              PASS
 git diff --check                                                PASS
@@ -30,11 +31,13 @@ git diff --check                                                PASS
 
 Go used the user-owned verified Go 1.27.1 executable at
 `/home/raya/.local/opt/go1.27.1/bin/go`, without changing `go.mod` or
-`go.sum`. No sanitizer environment is defined in this checkout, so ASan/UBSan
-is BLOCKED for this source revision rather than relabeled from older evidence.
+`go.sum`. The lead copied the final firmware source into an isolated temporary
+project and ran ASan/UBSan sequentially with no diagnostics: 434/434 passed.
 
-The SD image SHA-256 is
+The previously uploaded SD image SHA-256 is
 `30def8246ef8f34df336f4865f15788ce331b87713db67a0fcb7d45958e1a66a`.
+The newly built combined SD+HTTPS image is not uploaded; its SHA-256 is
+`68917fcc4b2a055551674247484d7860ab8c7b9ddda5de0669863cb0a000afbc`.
 Selected-target disassembly reports a 32-byte `SlotProcessor::process` frame
 and a `0xa40` (2,624-byte) `ProcessingPipeline::evaluate` frame; the former
 1,664-byte and 5,376-byte frames no longer occur. These are compiler
@@ -68,10 +71,29 @@ erased. BLE pairing, WiFi association, HTTPS transmission, physical sensors,
 heater, actuators, and power-loss tests remain NOT RUN or BLOCKED.
 
 Status: **OPEN FOR INDEPENDENT REVIEW**. The branch contains software-test
-coverage and integration evidence only. The current preflight added the
+coverage and integration evidence only. Wave 1 added the
 commissioning runbooks in `docs/task9-commissioning.md` and
 `docs/task9-sensor-commissioning.md`; no physical
 commissioning or destructive hardware operation was performed.
+
+## Mandatory delegation evidence
+
+Wave 1 used exclusive worktrees and ownership:
+
+- Firmware integration: commit `244a85a`, combined SD+HTTPS compile target.
+- Storage/recovery: commit `6064ee2`, ARDUINO adapter short-write and interrupted
+  reclaim regressions.
+- Backend/security: commit `4423750`, operator ownership and bounded duplicate-key
+  request validation plus SQLite/TLS integration coverage.
+- Frontend/BLE: commit `aaf25ce`, evidence gating, BLE framing, disconnect
+  recovery, bounded capabilities and target validation.
+
+The lead cherry-picked these changes serially because platform builds share the
+PlatformIO output directory and backend/frontend contracts have separate owners.
+The independent audit at the pre-integration baseline passed Go, native, and
+cppcheck; its first ASan/UBSan attempt was rejected because a shared PlatformIO
+artifact race caused two missing-object errors. The lead reran the final source
+in an isolated temporary project and obtained 434/434 with no diagnostics.
 
 ## Independent review remediation (`b48eac1` -> `75f9634`)
 
@@ -139,15 +161,16 @@ produce a usable runtime connection or expose credentials.
 | Frontend dependency triage | PASS (bounded remediation) | Three narrow lockfile-backed overrides remove the production critical finding; remaining findings are documented toolchain/development risk and were not force-upgraded. |
 | Backend ingest and current projection | PASS (software only) | Fresh Go `internal/e2e` and full tests cover durable ACK, replay dedupe, conflict, auth, export, late backlog, and filtered cursor; no staging process or device transmission was started. |
 | Schemas and frozen hashes | PASS | Fresh Go semantic run compiled 14 schemas, checked 24 valid fixtures, rejected 36 invalid fixtures, and preserved both frozen hashes. |
-| Firmware native suite | PASS | Fresh PlatformIO suite completed 430/430 test cases across 41 folders. |
-| Firmware sanitizer suite | PASS | Fresh ASan/UBSan run completed 430/430 cases with no diagnostics. |
+| Firmware native suite | PASS | Fresh PlatformIO suite completed 434/434 test cases across 41 folders. |
+| Firmware sanitizer suite | PASS | Isolated temporary project with `-fsanitize=address,undefined -fno-omit-frame-pointer`: 434/434, no diagnostics. |
 | Cppcheck | PASS | `pio check -e native --fail-on-defect=low`, no defects. |
-| Target builds | PASS | `sigap_n16r8`, `sigap_n16r8_sd`, `sigap_n16r8_sd_spi`, `sigap_bench`, and compile-only `sigap_n16r8_https_compile`. |
-| Frontend | PASS | 21 files/107 Vitest tests, TypeScript typecheck, and Expo web export pass. |
+| Target builds | PASS | Standard targets and compile-only HTTPS targets pass; combined SD+HTTPS target uses RAM 52,260 and flash 1,358,761. |
+| Frontend | PASS | 21 files/111 Vitest tests, TypeScript typecheck, and Expo web export pass. |
 | Sensor software readiness | PASS (synthetic native) | All 13 channel adapters retain typed evidence and failure reasons; first-time profile paths are covered by native fakes. No physical coefficients are claimed. |
 | Sensor physical calibration/safety | BLOCKED | No physical sensors, MQ-7 heater, or actuators are connected. |
 | Physical BLE/WiFi commissioning | BLOCKED | Requires authorized target run, browser secure context, test network, and secure one-shot passkey handoff on the display-less board. Procedure: `docs/task9-commissioning.md`. |
 | Physical SD I/O, endurance, 24 h/72 h soak | BLOCKED | Requires explicit hardware authorization and timestamped reconciliation. |
+| Device-control result durability | UNVERIFIED | Production `SigapApp` currently constructs `DeviceControlPoller` without a durable result journal; controller NVS replay is safe, but lost POST recovery waits for lease/redelivery. |
 
 ## Fresh command results
 
@@ -282,10 +305,9 @@ telemetry schemas/fixtures/golden hashes                 PASS 14/24/36 and uncha
 git diff --check                                         PASS
 ```
 
-The repository does not define a sanitizer PlatformIO environment in this
-checkout, so a new ASan/UBSan run was not executable without introducing an
-unreviewed build configuration. Historical sanitizer evidence is not relabeled
-as fresh. Physical BLE pairing, WiFi change/reconnect, HTTPS device polling,
+This historical section predates the isolated sanitizer run recorded above;
+the current integrated source has fresh 434/434 sanitizer evidence. Physical
+BLE pairing, WiFi change/reconnect, HTTPS device polling,
 operator-provider deployment, sensor evidence, heater operation, NVS, SD, and
 power tests remain blocked by the explicit hardware boundary.
 
