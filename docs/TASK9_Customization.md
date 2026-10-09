@@ -14,6 +14,8 @@ system or move calibration/model values into runtime globals.
 | storage slice budget | bytes/time | storage runtime policy | measured and documented | per invocation; must account for nested I/O |
 | SD transport pins/mode | board policy | `BoardConfig`/build | SD_MMC 1-bit GPIO39/38/40 on confirmed board | build-time only; no silent SPI substitution |
 | telemetry credentials | secret bytes | `SecretStore`/device-auth boundary | never exposed to frontend/logs | candidate test then atomic persistence |
+| USB BLE passkey handoff | six decimal digits, ephemeral output | existing NVS-derived BLE setup secret plus `LocalPasskeyHandoff` | one disclosure after explicit `maintenance enter`; unavailable/repeated requests fail | instance-owned commissioning state; underlying secret is never rotated |
+| staging TLS | file paths and boolean requirement | Go process-local server configuration | certificate and key must be paired regular files; required mode fails closed | process startup only; loopback staging, separate SQLite database |
 | calibration/FIS/safety/capacity | typed versioned profiles | profile manager | profile validators and identity/hash | explicit validate/preview/commit; no synthetic production profile |
 | connection state, scan results, counters | runtime objects | instance-owned `RuntimeState` | bounded memory | reset on instance lifecycle, not global mutable state |
 
@@ -43,3 +45,23 @@ backpressure/gap evidence according to the existing archive policy.
 Every new policy value requires a typed validator, a focused native test, and
 documentation of its owner and activation boundary before use in target
 composition.
+
+## Commissioning-only additions
+
+The USB maintenance parser accepts `ble passkey` only after an explicit
+`maintenance enter` command. The router emits the six-digit passkey once per
+service instance, then returns `BLE_PASSKEY_ALREADY_DISCLOSED` for repeats.
+`status`, startup diagnostics, telemetry, HTTP responses, browser storage, and
+repository files never contain the passkey or the underlying NVS setup secret.
+The handoff is a local commissioning aid for a display-less board; it does not
+weaken BLE authenticated MITM protection.
+
+The disposable Go staging process accepts `SIGAP_DB_PATH`,
+`SIGAP_HTTP_ADDR`, `SIGAP_TLS_CERT_FILE`, `SIGAP_TLS_KEY_FILE`, and
+`SIGAP_TLS_REQUIRED`. TLS-required mode rejects incomplete certificate/key
+pairs and missing files before opening the database or listener. Credentials,
+private keys, and test identities remain outside the repository.
+
+Dependency remediation is documented in `docs/task9-dependency-audit.md` and
+uses only lockfile-backed, narrow overrides. It does not create a second
+runtime configuration system.
