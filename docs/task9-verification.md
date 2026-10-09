@@ -362,3 +362,9 @@ operator status readback and the telemetry-only diagnostic source. These are
 software and synthetic evidence; live BLE, private HTTPS transmission,
 operator-provider provisioning, physical sensors, NVS/SD writes, and power
 loss remain BLOCKED or NOT RUN under the hardware boundary.
+
+The final source delta at `a2f9d35` routes diagnostics through the existing
+chronology-aware telemetry current projection instead of insertion order. This
+preserves same-boot ordering and explicit cross-boot unknown ordering for the
+diagnostic response. Focused device-control, archive-query, e2e, and HTTP
+tests, followed by full Go, race, and vet runs, passed after this change.

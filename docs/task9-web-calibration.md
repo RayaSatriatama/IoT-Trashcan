@@ -148,6 +148,11 @@ does not turn the physical or deployment gates into PASS: browser pairing,
 endpoint transmission, operator identity provisioning, sensor evidence,
 NVS/SD mutation, and power-loss execution remain BLOCKED or NOT RUN.
 
+The final source delta at `a2f9d35` makes HTTPS diagnostics consume the
+chronology-aware telemetry-v3 current projection. A command result cannot
+become a diagnostic, and a late cross-boot candidate is not selected by
+database insertion order.
+
 ## Independent review closure at `75f9634`
 
 The current source binds the shared controller to the maintenance router.
