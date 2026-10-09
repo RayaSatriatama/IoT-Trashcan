@@ -6,6 +6,7 @@ export const BLE_FRAME_MAX_BYTES = 512;
 export const BLE_ATT_FRAME_BYTES = 20;
 export const BLE_REQUEST_FRAME_VERSION = 'F1';
 export const BLE_RESPONSE_FRAME_VERSION = 'R1';
+const BLE_SCAN_RESULT_MAX = 16;
 
 export type BleFrame = {
   version: typeof BLE_REQUEST_FRAME_VERSION | typeof BLE_RESPONSE_FRAME_VERSION;
@@ -99,18 +100,22 @@ export function encodeBleFrames(
 
 export function decodeBleFrame(bytes: Uint8Array): BleFrame {
   if (bytes.byteLength === 0 || bytes.byteLength > BLE_ATT_FRAME_BYTES) throw new Error('BLE frame size invalid');
-  const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-  const first = text.indexOf('|');
-  const second = text.indexOf('|', first + 1);
-  const third = text.indexOf('|', second + 1);
-  const fourth = text.indexOf('|', third + 1);
-  if (first <= 0 || second <= first || third <= second || fourth <= third) throw new Error('BLE frame envelope invalid');
-  const version = text.slice(0, first) as BleFrame['version'];
-  const requestId = text.slice(first + 1, second);
-  const chunkIndex = Number(text.slice(second + 1, third));
-  const chunkCount = Number(text.slice(third + 1, fourth));
+  const separators: number[] = [];
+  for (let index = 0; index < bytes.byteLength && separators.length < 4; index += 1) {
+    if (bytes[index] === 0x7c) separators.push(index);
+  }
+  if (separators.length !== 4 || separators[0] === 0 || separators[1] <= separators[0] ||
+      separators[2] <= separators[1] || separators[3] <= separators[2]) {
+    throw new Error('BLE frame envelope invalid');
+  }
+  const header = new TextDecoder('utf-8', { fatal: true });
+  const version = header.decode(bytes.slice(0, separators[0])) as BleFrame['version'];
+  const requestId = header.decode(bytes.slice(separators[0] + 1, separators[1]));
+  const chunkIndex = Number(header.decode(bytes.slice(separators[1] + 1, separators[2])));
+  const chunkCount = Number(header.decode(bytes.slice(separators[2] + 1, separators[3])));
   validateFrameHeader(version, requestId, chunkIndex, chunkCount);
-  const payload = new TextEncoder().encode(text.slice(fourth + 1));
+  // Keep payload bytes opaque. A frame may end in the middle of UTF-8 codepoint.
+  const payload = bytes.slice(separators[3] + 1);
   if (bytes.byteLength > BLE_ATT_FRAME_BYTES) throw new Error('BLE frame size invalid');
   return { version, requestId, chunkIndex, chunkCount, payload };
 }
@@ -178,8 +183,16 @@ export function encodeCalibrationCommand(
   parameters: Record<string, string | number | boolean> = {},
 ): Uint8Array {
   if (!BLE_CALIBRATION_OPERATIONS.includes(operation)) throw new Error('Operasi kalibrasi tidak valid');
+  const operationNeedsSensor = !['CAPABILITIES', 'STATUS', 'HISTORY', 'CANCEL'].includes(operation);
+  if (operationNeedsSensor && sensor === undefined) throw new Error('Sensor kalibrasi wajib dipilih');
   const tokens = [`CAL`, operation];
-  if (sensor !== undefined) tokens.push(calibrationToken(sensor));
+  if (sensor !== undefined) {
+    calibrationToken(sensor);
+    if (!/^(?:hx711_(?:organic|inorganic|b3)|ultrasonic_(?:organic|inorganic|b3)|mq(?:4|135|7|8)|ds18b20_b3|sht31_(?:44|45))$/u.test(sensor)) {
+      throw new Error('Sensor kalibrasi tidak dikenal');
+    }
+    tokens.push(sensor);
+  }
   if (operation === 'CAPTURE') {
     const anchor = parameters.anchor;
     if (typeof anchor !== 'string' || !['tare', 'reference', 'empty', 'full'].includes(anchor)) {
@@ -214,7 +227,15 @@ export function decodeBleResponse(bytes: Uint8Array): BleResponse {
     return { ok: true, status: { state, ssid: status[2] || null } };
   }
   if (text.startsWith('OK SCAN READY')) {
-    const lines = text.split('\n').slice(1);
+    const parts = text.split('\n');
+    const header = /^OK SCAN READY(?: count=(\d{1,2}))?$/u.exec(parts[0]);
+    if (!header) throw new Error('BLE scan header invalid');
+    const lines = parts.slice(1);
+    const declaredCount = header[1] === undefined ? null : Number(header[1]);
+    if (declaredCount !== null && (declaredCount > BLE_SCAN_RESULT_MAX || declaredCount !== lines.length)) {
+      throw new Error('BLE scan count invalid');
+    }
+    if (lines.length > BLE_SCAN_RESULT_MAX) throw new Error('BLE scan result limit exceeded');
     const networks = lines.map((line) => {
       const match = /^(.*),(-?\d+),(0|1)$/u.exec(line);
       if (!match || !match[1]) throw new Error('BLE scan entry invalid');
@@ -223,7 +244,15 @@ export function decodeBleResponse(bytes: Uint8Array): BleResponse {
     return { ok: true, networks };
   }
   if (text.startsWith('OK LIST_KNOWN_WIFI')) {
-    const lines = text.split('\n').slice(1);
+    const parts = text.split('\n');
+    const header = /^OK LIST_KNOWN_WIFI(?: count=(\d{1,2}))?$/u.exec(parts[0]);
+    if (!header) throw new Error('BLE known Wi-Fi header invalid');
+    const lines = parts.slice(1);
+    const declaredCount = header[1] === undefined ? null : Number(header[1]);
+    if (declaredCount !== null && (declaredCount > BLE_SCAN_RESULT_MAX || declaredCount !== lines.length)) {
+      throw new Error('BLE known Wi-Fi count invalid');
+    }
+    if (lines.length > BLE_SCAN_RESULT_MAX) throw new Error('BLE known Wi-Fi result limit exceeded');
     const networks = lines.map((line) => {
       const match = /^(.*),(0|1)$/u.exec(line);
       if (!match || !match[1]) throw new Error('BLE known network entry invalid');

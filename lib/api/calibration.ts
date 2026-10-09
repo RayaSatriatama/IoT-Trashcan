@@ -17,7 +17,7 @@ export const CALIBRATION_SENSOR_IDS = [
 export type CalibrationSensorId = typeof CALIBRATION_SENSOR_IDS[number];
 export type CalibrationTransport = 'ble' | 'https';
 export type CalibrationState = 'IDLE' | 'QUEUED' | 'DELIVERED' | 'ACCEPTED' | 'CAPTURING' | 'VALIDATING' | 'VALIDATED' | 'PREVIEW_READY' | 'COMMITTING' | 'COMMITTED' | 'CANCELLED' | 'EXPIRED' | 'FAILED';
-export type CalibrationQuality = 'READY' | 'CALIBRATING' | 'UNCALIBRATED' | 'STALE' | 'TIMEOUT' | 'DISCONNECTED' | 'CRC_ERROR' | 'INVALID';
+export type CalibrationQuality = 'READY' | 'WARMING_UP' | 'HEATER_PHASE' | 'CALIBRATING' | 'UNCALIBRATED' | 'STALE' | 'TIMEOUT' | 'DISCONNECTED' | 'CRC_ERROR' | 'OUT_OF_RANGE' | 'INVALID';
 
 export type RawEvidence = {
   present: boolean;
@@ -25,6 +25,8 @@ export type RawEvidence = {
   unit?: string;
   identity_verified?: boolean;
   crc_valid?: boolean;
+  temperature_crc_valid?: boolean;
+  humidity_crc_valid?: boolean;
   conversion_complete?: boolean;
   heater_ready?: boolean;
 };

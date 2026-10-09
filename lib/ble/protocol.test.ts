@@ -28,6 +28,12 @@ describe('BLE provisioning protocol', () => {
     expect(new TextDecoder().decode(assembleBleFrames(parsed, 'F1'))).toBe(`CONNECT_WIFI Lab ${'x'.repeat(64)}\n`);
   });
 
+  it('preserves a UTF-8 codepoint split across ATT frames', () => {
+    const logical = new TextEncoder().encode(`CONNECT_WIFI Cafe\u0301 ${'x'.repeat(40)}\n`);
+    const frames = encodeBleFrames('8', logical).map(decodeBleFrame);
+    expect(assembleBleFrames(frames, 'F1')).toEqual(logical);
+  });
+
   it('rejects reordered, duplicate, or mismatched response chunks', () => {
     const logical = new TextEncoder().encode(`OK SCAN READY\n${'a'.repeat(80)}`);
     const parsed = encodeBleFrames('1', logical, 'R1').map(decodeBleFrame);
@@ -41,6 +47,9 @@ describe('BLE provisioning protocol', () => {
     expect(() => decodeBleResponse(new TextEncoder().encode('[]'))).toThrow();
     expect(decodeBleResponse(new TextEncoder().encode('OK SCAN PENDING')).scanPending).toBe(true);
     expect(decodeBleResponse(new TextEncoder().encode('OK SCAN READY\nLab,-42,1')).networks?.[0].secure).toBe(true);
+    expect(decodeBleResponse(new TextEncoder().encode('OK SCAN READY count=1\nLab,-42,1')).networks).toHaveLength(1);
+    expect(() => decodeBleResponse(new TextEncoder().encode('OK SCAN READY count=2\nLab,-42,1'))).toThrow('count');
+    expect(() => decodeBleResponse(new TextEncoder().encode('OK LIST_KNOWN_WIFI count=1\nLab,1\nOther,0'))).toThrow('count');
   });
 
   it('does not claim support outside a secure Web Bluetooth context', () => {
@@ -62,6 +71,10 @@ describe('BLE provisioning protocol', () => {
   expect(new TextDecoder().decode(encodeCalibrationCommand('START', 'hx711_organic', {
     reference_mass_mg: 2000,
   }))).toContain('CAL START hx711_organic reference_mass_mg=2000');
+  expect(() => encodeCalibrationCommand('START', 'unknown_sensor')).toThrow('tidak dikenal');
+  expect(() => encodeCalibrationCommand('START')).toThrow('wajib');
+  expect(new TextDecoder().decode(encodeCalibrationCommand('STATUS'))).toBe('CAL STATUS\n');
+  expect(new TextDecoder().decode(encodeCalibrationCommand('HISTORY'))).toBe('CAL HISTORY\n');
   expect(new TextDecoder().decode(encodeCalibrationCommand('COMMIT', 'hx711_organic', {
     expected_profile_version: '18446744073709551615',
     expected_profile_hash: 'sha256:' + 'a'.repeat(64),

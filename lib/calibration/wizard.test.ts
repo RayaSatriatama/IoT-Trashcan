@@ -17,6 +17,33 @@ describe('calibration wizard contract', () => {
     expect(canBeginCalibration({ ...diagnostic, fresh: false })).toBe(false);
     expect(canBeginCalibration({ ...diagnostic, quality: 'CRC_ERROR' })).toBe(false);
     expect(canBeginCalibration(diagnostic)).toBe(true);
+    expect(canBeginCalibration({ ...diagnostic, quality: 'STALE' })).toBe(false);
+    expect(canBeginCalibration({ ...diagnostic, quality: 'HEATER_PHASE' })).toBe(false);
+    expect(canBeginCalibration({ ...diagnostic, raw: { present: true, identity_verified: false } })).toBe(false);
+  });
+
+  it('requires protocol evidence for DS18B20, SHT31, and MQ-7', () => {
+    expect(canBeginCalibration({
+      ...diagnostic, sensor_id: 'ds18b20_b3', raw: {
+        present: true, identity_verified: true, crc_valid: true, conversion_complete: false,
+      },
+    })).toBe(false);
+    expect(canBeginCalibration({
+      ...diagnostic, sensor_id: 'ds18b20_b3', raw: {
+        present: true, identity_verified: true, crc_valid: true, conversion_complete: true,
+      },
+    })).toBe(true);
+    expect(canBeginCalibration({
+      ...diagnostic, sensor_id: 'sht31_44', raw: {
+        present: true, identity_verified: true, temperature_crc_valid: true,
+        humidity_crc_valid: false,
+      },
+    })).toBe(false);
+    expect(canBeginCalibration({
+      ...diagnostic, sensor_id: 'mq7', raw: {
+        present: true, identity_verified: true, heater_ready: false,
+      },
+    })).toBe(false);
   });
 
   it('maps session state to bounded operator labels and steps', () => {

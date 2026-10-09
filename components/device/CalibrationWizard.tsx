@@ -123,12 +123,23 @@ function parseBleDiagnostic(response: BleCalibrationResponse, sensorId: Calibrat
     const reason = data.r;
     const fresh = data.fr === 'FRESH';
     if (!quality || !reason || !data.s) return null;
+    const temperatureCrc = flag('tc');
+    const humidityCrc = flag('hc');
+    const crc = flag('crc') || (temperatureCrc && humidityCrc);
     return {
       sensor_id: sensorId,
       stream: data.st ?? 'unknown',
       quality,
       reason,
-      raw: { present: data.raw === '1', identity_verified: flag('id'), crc_valid: flag('crc'), conversion_complete: flag('conv'), heater_ready: flag('heat') },
+      raw: {
+        present: data.raw === '1',
+        identity_verified: flag('id'),
+        crc_valid: crc,
+        temperature_crc_valid: temperatureCrc,
+        humidity_crc_valid: humidityCrc,
+        conversion_complete: flag('conv'),
+        heater_ready: flag('heat'),
+      },
       converted_value: null,
       converted_unit: null,
       fresh,
@@ -197,6 +208,20 @@ export function CalibrationWizard({ deviceId, sensorId, diagnostic, api, apiFact
     if (!nextCommandId && !nextSessionId) window.sessionStorage.removeItem(key);
     else window.sessionStorage.setItem(key, JSON.stringify({ commandId: nextCommandId, sessionId: nextSessionId }));
   };
+
+  useEffect(() => {
+    if (transport !== 'ble' || bleConnected) return;
+    // A disconnected BLE session cannot be resumed safely from browser state.
+    // Clear proposal/session overlays so reconnect starts from device evidence.
+    setBleDiagnostic(null);
+    setCapabilities(null);
+    setPreview(null);
+    setSessionState('IDLE');
+    setStep('diagnostics');
+    setPersistedCommand(null, null);
+  // The connection boundary intentionally clears all local calibration state.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [transport, bleConnected, deviceId, sensorId]);
 
   const loadCapabilities = async (client: CalibrationApi) => {
     try {
@@ -358,13 +383,25 @@ export function CalibrationWizard({ deviceId, sensorId, diagnostic, api, apiFact
     }
     void submit('SET_CRITERIA', { criteria: criteriaValues });
   };
+  const connectBle = async () => {
+    if (!onConnectBle) return;
+    setError(null);
+    setBusy(true);
+    try {
+      await onConnectBle();
+    } catch (cause) {
+      setError(redactCalibrationError(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return <>
     <AppButton variant="secondary" size="sm" onPress={() => { setOpen(true); setError(null); }} ariaLabel={`Kalibrasi ${sensorId}`}>Kalibrasi sensor</AppButton>
     {open ? <Card role="dialog" aria-label="Wizard kalibrasi sensor" borderWidth={1} borderColor="$borderColor" backgroundColor="$surface" borderRadius="$4" padding="$4" gap="$3">
       <XStack justifyContent="space-between" alignItems="center" gap="$3"><YStack flex={1} gap="$1"><Text color="$color" fontSize="$5" fontWeight="800">Kalibrasi {sensorId}</Text><Text color="$colorMuted" fontSize="$2">Perangkat {deviceId} · transport {transport === 'ble' ? 'BLE lokal' : 'HTTPS Wi-Fi'}</Text></YStack><AppButton variant="ghost" size="sm" onPress={() => setOpen(false)} ariaLabel="Tutup wizard kalibrasi">Tutup</AppButton></XStack>
       <Text color="$colorMuted" fontSize="$2">Langkah: {step} · {calibrationStateLabel(sessionState)}</Text>
-      {transport === 'ble' && !bleConnected ? <YStack gap="$2"><Text color="$statusWaspada">BLE belum terhubung. Browser harus mendukung Web Bluetooth pada HTTPS.</Text><AppButton onPress={() => void onConnectBle?.()} disabled={busy || !onConnectBle} ariaLabel="Hubungkan BLE kalibrasi">Hubungkan BLE</AppButton></YStack> : null}
+      {transport === 'ble' && !bleConnected ? <YStack gap="$2"><Text color="$statusWaspada">BLE belum terhubung. Browser harus mendukung Web Bluetooth pada HTTPS.</Text><AppButton onPress={() => void connectBle()} disabled={busy || !onConnectBle} ariaLabel="Hubungkan BLE kalibrasi">Hubungkan BLE</AppButton></YStack> : null}
       {transport === 'https' && !api ? <YStack gap="$2"><Text color="$color" fontWeight="700">Sesi operator</Text><Input value={operatorToken} onChangeText={(value) => { setOperatorToken(value); setSecuredDiagnostic(null); }} placeholder="Token sesi operator (tidak disimpan)" secureTextEntry aria-label="Token sesi operator" maxLength={512} autoCapitalize="none" /><Input value={csrfToken} onChangeText={setCsrfToken} placeholder="Token CSRF sesi (tidak disimpan)" secureTextEntry aria-label="Token CSRF sesi operator" maxLength={512} autoCapitalize="none" /><AppButton variant="secondary" size="sm" onPress={() => void loadSecuredDiagnostic()} disabled={busy || !operatorToken.trim()} ariaLabel="Muat diagnostik terautentikasi">Muat diagnostik terautentikasi</AppButton></YStack> : null}
       {transport === 'https' && commandId ? <YStack gap="$2"><Text color="$colorMuted" fontSize="$2">Perintah {commandId} · status {lastCommand?.status ?? sessionState}</Text><AppButton variant="ghost" size="sm" onPress={() => void recoverCommand()} disabled={busy || (!api && !operatorToken.trim())} ariaLabel="Pulihkan status perintah">Pulihkan status perintah</AppButton></YStack> : null}
       {!activeDiagnostic ? <Text color="$colorMuted">Diagnostik belum tersedia. Tidak ada bukti sintetis yang digunakan.</Text> : <>

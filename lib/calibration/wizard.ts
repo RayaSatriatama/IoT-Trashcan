@@ -17,9 +17,19 @@ export function initialWizardStatus(diagnostic: SensorDiagnostic | null = null):
 
 export function canBeginCalibration(diagnostic: SensorDiagnostic | null): boolean {
   if (!diagnostic) return false;
-  if (!diagnostic.raw?.present) return false;
+  const raw = diagnostic.raw;
+  if (!raw?.present) return false;
   if (!diagnostic.fresh) return false;
-  if (diagnostic.quality === 'TIMEOUT' || diagnostic.quality === 'DISCONNECTED' || diagnostic.quality === 'CRC_ERROR' || diagnostic.quality === 'INVALID') return false;
+  if (!['READY', 'CALIBRATING', 'UNCALIBRATED'].includes(diagnostic.quality)) return false;
+  if (raw.identity_verified === false || raw.crc_valid === false ||
+      raw.conversion_complete === false || raw.heater_ready === false) return false;
+  if (diagnostic.sensor_id === 'ds18b20_b3' &&
+      (raw.identity_verified !== true || raw.crc_valid !== true ||
+       raw.conversion_complete !== true)) return false;
+  if ((diagnostic.sensor_id === 'sht31_44' || diagnostic.sensor_id === 'sht31_45') &&
+      (raw.identity_verified !== true ||
+       raw.temperature_crc_valid !== true || raw.humidity_crc_valid !== true)) return false;
+  if (diagnostic.sensor_id === 'mq7' && raw.heater_ready !== true) return false;
   return true;
 }
 
