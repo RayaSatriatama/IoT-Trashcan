@@ -100,6 +100,24 @@ const char* state_name(WifiState state) noexcept {
 
 }  // namespace
 
+PasskeyDisclosureStatus LocalPasskeyHandoff::disclose_once(
+    char* output, std::size_t capacity) noexcept {
+  if (!configured_ || output == nullptr || capacity < 7U) {
+    return configured_ && disclosed_ ? PasskeyDisclosureStatus::AlreadyDisclosed
+                                     : PasskeyDisclosureStatus::Unavailable;
+  }
+  if (disclosed_) return PasskeyDisclosureStatus::AlreadyDisclosed;
+  output[0] = static_cast<char>('0' + ((passkey_ / 100000U) % 10U));
+  output[1] = static_cast<char>('0' + ((passkey_ / 10000U) % 10U));
+  output[2] = static_cast<char>('0' + ((passkey_ / 1000U) % 10U));
+  output[3] = static_cast<char>('0' + ((passkey_ / 100U) % 10U));
+  output[4] = static_cast<char>('0' + ((passkey_ / 10U) % 10U));
+  output[5] = static_cast<char>('0' + (passkey_ % 10U));
+  output[6] = '\0';
+  disclosed_ = true;
+  return PasskeyDisclosureStatus::Ready;
+}
+
 BleParseStatus BleCommandParser::decode_frame(std::string_view frame,
                                               BleWireFrame& output) noexcept {
   output = {};
@@ -562,6 +580,7 @@ bool ArduinoBleProvisioningService::begin(BleProvisioningSession& session,
   }
   setup_passkey_ = passkey % 1000000U;
   if (setup_passkey_ == 0U) setup_passkey_ = 1U;
+  passkey_handoff_.configure(setup_passkey_);
   // GATT reads/writes require an encrypted, authenticated link. NimBLE's
   // passkey and authentication callback provide the device-local proof of
   // possession; the setup secret never crosses the BLE wire.

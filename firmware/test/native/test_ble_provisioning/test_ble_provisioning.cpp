@@ -270,6 +270,30 @@ void test_provisioning_secret_is_separate_and_stable() {
   TEST_ASSERT_FALSE(store.load_or_create(second));
 }
 
+void test_local_passkey_handoff_is_one_shot_and_bounded() {
+  LocalPasskeyHandoff handoff;
+  char output[7]{};
+  TEST_ASSERT_EQUAL_INT(
+      PasskeyDisclosureStatus::Unavailable,
+      handoff.disclose_once(output, sizeof(output)));
+  handoff.configure(42U);
+  TEST_ASSERT_EQUAL_INT(PasskeyDisclosureStatus::Ready,
+                        handoff.disclose_once(output, sizeof(output)));
+  TEST_ASSERT_EQUAL_STRING("000042", output);
+  TEST_ASSERT_EQUAL_INT(
+      PasskeyDisclosureStatus::AlreadyDisclosed,
+      handoff.disclose_once(output, sizeof(output)));
+  char short_output[6]{};
+  handoff.configure(123456U);
+  TEST_ASSERT_EQUAL_INT(
+      PasskeyDisclosureStatus::Unavailable,
+      handoff.disclose_once(short_output, sizeof(short_output)));
+  TEST_ASSERT_EQUAL_INT(
+      PasskeyDisclosureStatus::Ready,
+      handoff.disclose_once(output, sizeof(output)));
+  TEST_ASSERT_EQUAL_STRING("123456", output);
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_parser_accepts_bounded_commands);
@@ -282,5 +306,6 @@ int main() {
   RUN_TEST(test_disconnect_cancels_and_timeout_expires_session);
   RUN_TEST(test_connect_never_exposes_password_in_status);
   RUN_TEST(test_provisioning_secret_is_separate_and_stable);
+  RUN_TEST(test_local_passkey_handoff_is_one_shot_and_bounded);
   return UNITY_END();
 }

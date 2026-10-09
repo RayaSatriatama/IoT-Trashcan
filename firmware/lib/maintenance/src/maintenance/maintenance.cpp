@@ -68,6 +68,7 @@ bool parse_tokens(const char* line, std::size_t length,
 const char* command_name(CommandKind command) noexcept {
   switch (command) {
     case CommandKind::Status: return "status";
+    case CommandKind::BlePasskey: return "ble.passkey";
     case CommandKind::MaintenanceEnter: return "maintenance.enter";
     case CommandKind::MaintenanceExit: return "maintenance.exit";
     case CommandKind::ConfigActive: return "config.active";
@@ -194,6 +195,9 @@ bool MaintenanceParser::emit_line(ParseEvent& event) noexcept {
 
   if (equals(line_.data(), tokens[0], "status") && count == 1U) {
     command.kind = CommandKind::Status;
+  } else if (equals(line_.data(), tokens[0], "ble") && count == 2U &&
+             equals(line_.data(), tokens[1], "passkey")) {
+    command.kind = CommandKind::BlePasskey;
   } else if (equals(line_.data(), tokens[0], "reboot") && count == 1U) {
     command.kind = CommandKind::Reboot;
   } else if (equals(line_.data(), tokens[0], "maintenance") && count == 2U) {

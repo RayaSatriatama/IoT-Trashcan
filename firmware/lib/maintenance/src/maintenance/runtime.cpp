@@ -205,7 +205,10 @@ void CommandRouter::refresh_mode() noexcept {
     return;
   }
   switch (config_.state()) {
-    case config::ConfigState::Active: mode_ = DeviceMode::Run; break;
+    case config::ConfigState::Active:
+      mode_ = maintenance_authorized_ ? DeviceMode::Maintenance
+                                      : DeviceMode::Run;
+      break;
     case config::ConfigState::RebootRequired: mode_ = DeviceMode::RebootRequired; break;
     case config::ConfigState::ConfigRequired: mode_ = DeviceMode::ConfigRequired; break;
     case config::ConfigState::StorageError: mode_ = DeviceMode::StorageError; break;
@@ -362,6 +365,7 @@ void CommandRouter::poll(uint64_t now_us) noexcept {
 }
 
 void CommandRouter::transport_lost() noexcept {
+  maintenance_authorized_ = false;
   calibration_.abort();
   criteria_set_ = false;
   evidence_sequence_ = 0U;
@@ -609,10 +613,39 @@ CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
         return CommandStatus::Failed;
       }
       return CommandStatus::Accepted;
+    case CommandKind::BlePasskey: {
+      if (!maintenance_authorized_ || mode_ != DeviceMode::Maintenance) {
+        (void)response.append("ERR MAINTENANCE_REQUIRED\n");
+        return CommandStatus::Rejected;
+      }
+      if (passkey_handoff_ == nullptr) {
+        (void)response.append("ERR BLE_PASSKEY_UNAVAILABLE\n");
+        return CommandStatus::Rejected;
+      }
+      char passkey[7]{};
+      const auto disclosure = passkey_handoff_->disclose_once(
+          passkey, sizeof(passkey));
+      if (disclosure == provisioning::PasskeyDisclosureStatus::AlreadyDisclosed) {
+        (void)response.append("ERR BLE_PASSKEY_ALREADY_DISCLOSED\n");
+        return CommandStatus::Rejected;
+      }
+      if (disclosure != provisioning::PasskeyDisclosureStatus::Ready) {
+        (void)response.append("ERR BLE_PASSKEY_UNAVAILABLE\n");
+        return CommandStatus::Rejected;
+      }
+      if (!response.append("ble_passkey=") ||
+          !response.append(std::string_view(passkey, 6U)) ||
+          !response.append("\n")) {
+        return CommandStatus::Failed;
+      }
+      return CommandStatus::Accepted;
+    }
     case CommandKind::MaintenanceEnter:
+      maintenance_authorized_ = true;
       mode_ = DeviceMode::Maintenance;
       return CommandStatus::Accepted;
     case CommandKind::MaintenanceExit:
+      maintenance_authorized_ = false;
       refresh_mode();
       if (config_.state() == config::ConfigState::Active) {
         mode_ = DeviceMode::Run;

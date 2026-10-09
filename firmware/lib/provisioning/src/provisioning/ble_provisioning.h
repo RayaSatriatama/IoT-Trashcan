@@ -33,6 +33,38 @@ enum class BleCommandKind : uint8_t {
   RetryWifi,
 };
 
+enum class PasskeyDisclosureStatus : uint8_t {
+  Ready,
+  AlreadyDisclosed,
+  Unavailable,
+};
+
+// The only supported passkey handoff is a single, explicitly requested local
+// disclosure.  The underlying NVS setup secret remains private.
+class ILocalPasskeyHandoff {
+ public:
+  virtual ~ILocalPasskeyHandoff() = default;
+  virtual PasskeyDisclosureStatus disclose_once(
+      char* output, std::size_t capacity) noexcept = 0;
+};
+
+class LocalPasskeyHandoff final : public ILocalPasskeyHandoff {
+ public:
+  void configure(uint32_t passkey) noexcept {
+    passkey_ = passkey;
+    configured_ = passkey <= 999999U;
+    disclosed_ = false;
+  }
+
+  PasskeyDisclosureStatus disclose_once(
+      char* output, std::size_t capacity) noexcept override;
+
+ private:
+  uint32_t passkey_{0U};
+  bool configured_{false};
+  bool disclosed_{false};
+};
+
 struct BleCommand final {
   BleCommandKind kind{BleCommandKind::Status};
   std::array<char, 33> ssid{};
@@ -181,7 +213,7 @@ class BleProvisioningSession final {
 };
 
 #ifdef ARDUINO
-class ArduinoBleProvisioningService final {
+class ArduinoBleProvisioningService final : public ILocalPasskeyHandoff {
  public:
   bool begin(BleProvisioningSession& session,
              std::string_view device_name) noexcept;
@@ -192,6 +224,10 @@ class ArduinoBleProvisioningService final {
   void handle_authenticated(bool authenticated) noexcept;
   void handle_disconnect(::NimBLEServer* server) noexcept;
   uint32_t setup_passkey() const noexcept { return setup_passkey_; }
+  PasskeyDisclosureStatus disclose_once(
+      char* output, std::size_t capacity) noexcept override {
+    return passkey_handoff_.disclose_once(output, capacity);
+  }
 
  private:
   BleProvisioningSession* session_{nullptr};
@@ -199,6 +235,7 @@ class ArduinoBleProvisioningService final {
   void* command_{nullptr};
   void* response_{nullptr};
   NvsProvisioningSecretStore secret_store_{};
+  LocalPasskeyHandoff passkey_handoff_{};
   uint32_t setup_passkey_{0U};
 };
 #endif

@@ -115,6 +115,26 @@ struct FakeSink final : IMaintenanceCommandSink {
   void transport_lost() noexcept override { ++transport_lost_calls; }
 };
 
+struct FakePasskeyHandoff final
+    : sigap::provisioning::ILocalPasskeyHandoff {
+  sigap::provisioning::PasskeyDisclosureStatus next{
+      sigap::provisioning::PasskeyDisclosureStatus::Ready};
+  std::size_t calls{0U};
+
+  sigap::provisioning::PasskeyDisclosureStatus disclose_once(
+      char* output, std::size_t capacity) noexcept override {
+    ++calls;
+    if (next != sigap::provisioning::PasskeyDisclosureStatus::Ready) return next;
+    if (output == nullptr || capacity < 7U) {
+      return sigap::provisioning::PasskeyDisclosureStatus::Unavailable;
+    }
+    const char value[] = "654321";
+    for (std::size_t i = 0U; i < 7U; ++i) output[i] = value[i];
+    next = sigap::provisioning::PasskeyDisclosureStatus::AlreadyDisclosed;
+    return sigap::provisioning::PasskeyDisclosureStatus::Ready;
+  }
+};
+
 void drain(MaintenanceService& service, FakeTransport& transport,
            uint64_t now_us = 100U) {
   while (transport.available()) service.poll(now_us);
@@ -145,6 +165,79 @@ void test_storage_sd_probe_command_is_bounded_and_explicit() {
   TEST_ASSERT_EQUAL_UINT32(1U, sink.calls);
   TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandKind::StorageSdTest),
                         static_cast<int>(sink.last.kind));
+}
+
+void test_ble_passkey_command_requires_maintenance_and_discloses_once() {
+  sigap::config::MemoryConfigStore config_store{};
+  sigap::config::ConfigManager config_manager(config_store, kValidationContext);
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(sigap::config::ConfigBootResult::BootstrapDefaults),
+      static_cast<int>(config_manager.begin()));
+  sigap::provisioning::MemorySecretBlobStore secret_backend{};
+  sigap::provisioning::PersistentSecretStore secrets(secret_backend);
+  FakePasskeyHandoff handoff{};
+  CommandRouter router(config_manager, secrets, nullptr, nullptr, nullptr,
+                       nullptr, nullptr, nullptr, nullptr, &handoff);
+
+  MaintenanceCommand command{};
+  command.kind = CommandKind::BlePasskey;
+  MaintenanceResponse response{};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Rejected),
+                        static_cast<int>(router.execute(command, 0U, response)));
+  TEST_ASSERT_TRUE(response.view().find("MAINTENANCE_REQUIRED") !=
+                   std::string_view::npos);
+  TEST_ASSERT_EQUAL_UINT(0U, handoff.calls);
+
+  MaintenanceCommand enter{};
+  enter.kind = CommandKind::MaintenanceEnter;
+  response = MaintenanceResponse{};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),
+                        static_cast<int>(router.execute(enter, 0U, response)));
+  response = MaintenanceResponse{};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),
+                        static_cast<int>(router.execute(command, 0U, response)));
+  TEST_ASSERT_EQUAL_STRING("ble_passkey=654321\n", response.c_str());
+  TEST_ASSERT_TRUE(response.view().find("[REDACTED]") == std::string_view::npos);
+  response = MaintenanceResponse{};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Rejected),
+                        static_cast<int>(router.execute(command, 0U, response)));
+  TEST_ASSERT_TRUE(response.view().find("ALREADY_DISCLOSED") !=
+                   std::string_view::npos);
+  TEST_ASSERT_EQUAL_UINT(2U, handoff.calls);
+}
+
+void test_ble_passkey_parser_and_unavailable_path_do_not_leak() {
+  FakeTransport transport{};
+  transport.input = "ble passkey\n";
+  FakeSink sink{};
+  MaintenanceService service(transport, sink);
+  drain(service, transport);
+  TEST_ASSERT_EQUAL_UINT32(1U, sink.calls);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandKind::BlePasskey),
+                        static_cast<int>(sink.last.kind));
+
+  sigap::config::MemoryConfigStore config_store{};
+  sigap::config::ConfigManager config_manager(config_store, kValidationContext);
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(sigap::config::ConfigBootResult::BootstrapDefaults),
+      static_cast<int>(config_manager.begin()));
+  sigap::provisioning::MemorySecretBlobStore secret_backend{};
+  sigap::provisioning::PersistentSecretStore secrets(secret_backend);
+  FakePasskeyHandoff handoff{};
+  handoff.next = sigap::provisioning::PasskeyDisclosureStatus::Unavailable;
+  CommandRouter router(config_manager, secrets, nullptr, nullptr, nullptr,
+                       nullptr, nullptr, nullptr, nullptr, &handoff);
+  MaintenanceCommand enter{};
+  enter.kind = CommandKind::MaintenanceEnter;
+  MaintenanceResponse response{};
+  (void)router.execute(enter, 0U, response);
+  MaintenanceCommand command{};
+  command.kind = CommandKind::BlePasskey;
+  response = MaintenanceResponse{};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Rejected),
+                        static_cast<int>(router.execute(command, 0U, response)));
+  TEST_ASSERT_TRUE(response.view().find("UNAVAILABLE") != std::string_view::npos);
+  TEST_ASSERT_TRUE(response.view().find("654321") == std::string_view::npos);
 }
 
 void test_service_polls_without_input_and_reports_disconnect_once() {
@@ -631,6 +724,8 @@ void setup() {
   RUN_TEST(test_fragmented_input_is_buffered_until_line_end);
   RUN_TEST(test_profile_lifecycle_commands_parse_as_explicit_steps);
   RUN_TEST(test_storage_sd_probe_command_is_bounded_and_explicit);
+  RUN_TEST(test_ble_passkey_command_requires_maintenance_and_discloses_once);
+  RUN_TEST(test_ble_passkey_parser_and_unavailable_path_do_not_leak);
   RUN_TEST(test_service_polls_without_input_and_reports_disconnect_once);
   RUN_TEST(test_disconnect_discards_partial_parser_line);
   RUN_TEST(test_profile_import_round_trip_uses_real_router_and_explicit_activation);

@@ -7,6 +7,7 @@
 #include "acquisition/profile_manager.h"
 #include "maintenance/maintenance.h"
 #include "provisioning/secret_store.h"
+#include "provisioning/ble_provisioning.h"
 #include "calibration/calibration_session.h"
 
 namespace sigap::maintenance {
@@ -77,10 +78,12 @@ class CommandRouter final : public IMaintenanceCommandSink,
                 acquisition::IProfileAuditSink* audit = nullptr,
                 const acquisition::BootId* boot_id = nullptr,
                 IModelCommandHandler* models = nullptr,
-                IStorageTestProbe* storage_probe = nullptr) noexcept
+                IStorageTestProbe* storage_probe = nullptr,
+                provisioning::ILocalPasskeyHandoff* passkey_handoff = nullptr) noexcept
       : config_(config), secrets_(secrets), profiles_(profiles),
         evidence_(evidence), reboot_(reboot), audit_(audit), boot_id_(boot_id),
-        models_(models), storage_probe_(storage_probe) {
+        models_(models), storage_probe_(storage_probe),
+        passkey_handoff_(passkey_handoff) {
     refresh_mode();
   }
 
@@ -94,6 +97,10 @@ class CommandRouter final : public IMaintenanceCommandSink,
   bool reboot_requested() const noexcept { return reboot_requested_; }
   void poll(uint64_t now_us) noexcept override;
   void transport_lost() noexcept override;
+  void set_passkey_handoff(
+      provisioning::ILocalPasskeyHandoff* handoff) noexcept {
+    passkey_handoff_ = handoff;
+  }
 
  private:
   static bool field_from_text(const FixedText<64U>& text,
@@ -122,6 +129,7 @@ class CommandRouter final : public IMaintenanceCommandSink,
   const acquisition::BootId* boot_id_{nullptr};
   IModelCommandHandler* models_{nullptr};
   IStorageTestProbe* storage_probe_{nullptr};
+  provisioning::ILocalPasskeyHandoff* passkey_handoff_{nullptr};
   calibration::CalibrationSession calibration_{};
   uint64_t evidence_sequence_{0U};
   bool criteria_set_{false};
@@ -139,6 +147,7 @@ class CommandRouter final : public IMaintenanceCommandSink,
   bool reference_temperature_set_{false};
   bool reference_humidity_set_{false};
   bool reboot_requested_{false};
+  bool maintenance_authorized_{false};
   acquisition::ProfileKey transfer_key_{
       acquisition::ProfileKind::Calibration,
       acquisition::ProfileTarget::Unknown};

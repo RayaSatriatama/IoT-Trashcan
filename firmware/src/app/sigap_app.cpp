@@ -220,7 +220,7 @@ SigapApp::SigapApp() noexcept
                           &evidence_cache_, &reboot_controller_, &audit_ring_,
                           &boot_identity_.boot_id, &model_router_,
 #ifdef ARDUINO
-                          &sd_probe_),
+                          &sd_probe_, &ble_service_),
 #else
                           nullptr),
 #endif
