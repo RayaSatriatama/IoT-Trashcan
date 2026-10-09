@@ -68,7 +68,9 @@ func newTelemetryRecordArchiveHandler(query telemetryRecordQuery, authorizer tel
 			writeArchiveRecordQueryError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, page)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = telemetryarchive.WriteRecordPageJSON(w, page)
 	})
 }
 

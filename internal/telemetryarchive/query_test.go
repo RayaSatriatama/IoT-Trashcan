@@ -310,6 +310,23 @@ func TestCurrentUsesTrustedUTCAcrossBoots(t *testing.T) {
 	}
 }
 
+func TestCurrentDoesNotInventOrderForEqualCrossBootUTC(t *testing.T) {
+	db := queryTestDB(t)
+	insertQueryRecord(t, db, "sample", "mq4", "organic", "boot-a", "9", "900", "2026-01-01T00:00:00Z", "SYNCED")
+	insertQueryRecord(t, db, "sample", "mq4", "organic", "boot-b", "1", "1", "2026-01-01T00:00:00Z", "SYNCED")
+	query, err := NewArchiveQuery(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := query.Current(context.Background(), "device-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.OrderingUnknown) != 1 || snapshot.OrderingUnknown[0] != "organic/mq4" {
+		t.Fatalf("equal UTC ordering=%v, want organic/mq4", snapshot.OrderingUnknown)
+	}
+}
+
 func TestCurrentDoesNotCompareTrustedUTCWithNullUTCAcrossBoots(t *testing.T) {
 	db := queryTestDB(t)
 	insertQueryRecord(t, db, "sample", "mq4", "organic", "boot-a", "9", "900", "", "UNSYNCED")

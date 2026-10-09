@@ -122,6 +122,20 @@ func TestExportRecordsPreservesRawFormattingAndEscapes(t *testing.T) {
 	if !bytes.Contains(output.Bytes(), needle) {
 		t.Fatalf("raw record bytes changed in export: want %q in %q", needle, output.Bytes())
 	}
+	page, err := query.ListRecords(context.Background(), RecordQuery{DeviceID: "device-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pageOutput bytes.Buffer
+	if err := WriteRecordPageJSON(&pageOutput, page); err != nil {
+		t.Fatal(err)
+	}
+	if !json.Valid(pageOutput.Bytes()) {
+		t.Fatalf("page is not JSON: %s", pageOutput.Bytes())
+	}
+	if !bytes.Contains(pageOutput.Bytes(), needle) {
+		t.Fatalf("raw record bytes changed in page response: want %q in %q", needle, pageOutput.Bytes())
+	}
 }
 
 func TestListRecordsRejectsCursorForAnotherDevice(t *testing.T) {

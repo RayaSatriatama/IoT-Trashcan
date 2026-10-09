@@ -53,6 +53,46 @@ type RecordPage struct {
 	NextCursor *string         `json:"next_cursor,omitempty"`
 }
 
+// WriteRecordPageJSON writes a record page without passing persisted record
+// bytes through encoding/json. The HTTP page endpoint uses this writer so its
+// nested record evidence has the same byte-preservation guarantee as export.
+func WriteRecordPageJSON(writer io.Writer, page RecordPage) error {
+	if writer == nil {
+		return fmt.Errorf("invalid record page writer")
+	}
+	device, err := json.Marshal(page.DeviceID)
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(writer, `{"device_id":%s,"records":[`, device); err != nil {
+		return err
+	}
+	for index, record := range page.Records {
+		if index > 0 {
+			if _, err := io.WriteString(writer, ","); err != nil {
+				return err
+			}
+		}
+		if err := writeArchiveRecordJSON(writer, record); err != nil {
+			return err
+		}
+	}
+	if _, err := io.WriteString(writer, "]"); err != nil {
+		return err
+	}
+	if page.NextCursor != nil {
+		cursor, err := json.Marshal(*page.NextCursor)
+		if err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(writer, `,"next_cursor":%s`, cursor); err != nil {
+			return err
+		}
+	}
+	_, err = io.WriteString(writer, "}")
+	return err
+}
+
 // ValidateRecordQuery checks the bounded, cursor-bearing portion of a record
 // read before a streaming response commits its HTTP headers. Export callers
 // use this preflight so malformed cursors cannot produce a misleading 200

@@ -361,6 +361,9 @@ func compareCurrentEvidence(previous, candidate currentEvidence) currentComparis
 		if candidate.recordedAt.After(previous.recordedAt) {
 			return currentNewer
 		}
+		if candidate.recordedAt.Equal(previous.recordedAt) {
+			return currentUnknown
+		}
 		return currentNotNewer
 	}
 	if candidate.hasUTC != previous.hasUTC {
