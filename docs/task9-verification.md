@@ -10,7 +10,7 @@ commissioning or destructive hardware operation was performed.
 
 - Task 8 merge SHA: `6269b6c2532d25a93ac6b12454106613e17af911`.
 - Task 9 branch: `feat/full-integration-hil-validation`.
-- Reviewed Task 9 source HEAD before this verification: `0fe068a`.
+- Reviewed Task 9 source HEAD before this verification: `539e251`.
 - Hardware: ESP32-S3 N16R8 with onboard FAT32 microSD; no sensors, heater, or actuators.
 - No firmware upload, reboot, SD mutation, NVS erase, unplug, power-cycle,
   power-cut, or physical commissioning was performed.
@@ -33,7 +33,7 @@ commissioning or destructive hardware operation was performed.
 | Backend ingest and current projection | PASS (synthetic integration) | `internal/e2e` exercises durable ACK, replay dedupe, conflict, auth, export, late backlog, and filtered cursor. |
 | Schemas and frozen hashes | PASS | 14 schemas compile; 24 valid and 36 invalid fixtures; frozen record/body hashes unchanged. |
 | Firmware native suite | PASS | 385/385 test cases on the sensor-readiness source. |
-| Firmware sanitizer suite | PENDING FRESH RUN | Previous 374/374 evidence is historical and must be rerun after sensor-readiness changes. |
+| Firmware sanitizer suite | PASS | Fresh ASan/UBSan run completed 385/385 cases with no diagnostics. |
 | Cppcheck | PASS | `pio check -e native --fail-on-defect=low`, no defects. |
 | Target builds | PASS | `sigap_n16r8`, `sigap_n16r8_sd`, `sigap_n16r8_sd_spi`, and `sigap_bench`. |
 | Frontend | PASS | 19 files/92 Vitest tests, TypeScript typecheck, and Expo web export pass. |
@@ -56,14 +56,19 @@ npm test                                      PASS (19 files, 92 tests)
 npm run typecheck                             PASS
 npm run export:web                            PASS
 pio test -e native                            PASS (385/385)
-ASan/UBSan native folders                    PENDING FRESH RUN (previous 374/374 is historical)
+ASan/UBSan native folders                    PASS (385/385 cases, 37 folders, 0 failed)
 pio check -e native --fail-on-defect=low     PASS (no defects)
-pio run -e sigap_n16r8                       PASS (RAM 49,496; flash 1,074,473)
-pio run -e sigap_n16r8_sd                    PASS (RAM 50,036; flash 1,148,245)
-pio run -e sigap_n16r8_sd_spi                PASS (RAM 49,792; flash 1,127,693)
-pio run -e sigap_bench                       PASS (RAM 49,496; flash 1,074,473)
+pio run -e sigap_n16r8                       PASS (RAM 49,496; flash 1,077,321)
+pio run -e sigap_n16r8_sd                    PASS (RAM 50,036; flash 1,151,001)
+pio run -e sigap_n16r8_sd_spi                PASS (RAM 49,792; flash 1,130,529)
+pio run -e sigap_bench                       PASS (RAM 49,496; flash 1,077,321)
 git diff --check                             PASS
 ```
+
+The current execution environment has no `go` executable on `PATH`, so the
+fresh Go test, race, vet, schema-conformance, and frozen-hash commands were
+not executable in this pass. The prior Go/schema/hash evidence remains
+historical and is not counted as fresh sensor-readiness verification.
 
 The frozen golden hashes remain:
 
