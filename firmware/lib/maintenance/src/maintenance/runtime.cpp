@@ -1,4 +1,5 @@
 #include "maintenance/runtime.h"
+#include "acquisition/target_protocol.h"
 
 #include <algorithm>
 #include <charconv>
@@ -474,7 +475,10 @@ bool CommandRouter::build_and_stage_calibration_profile(uint64_t now_us) noexcep
         if (active.present) {
           if (!codec.decode(active.encoded, profile)) return false;
         } else {
-          if (!ds_rom_set_) return false;
+          if (!ds_rom_set_ || ds_rom_[0] != 0x28U ||
+              acquisition::ds18b20_crc8(ds_rom_.data(), 7U) != ds_rom_[7]) {
+            return false;
+          }
           profile.has_rom = true;
           profile.rom = ds_rom_;
           profile.resolution_bits = ds_resolution_set_ ? ds_resolution_bits_ : 12U;
@@ -772,6 +776,7 @@ CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
       ultrasonic_inter_sensor_gap_us_ = 0U;
       ultrasonic_overshoot_tolerance_mm_milli_ = 0U;
       ultrasonic_echo_conversion_set_ = false;
+      ultrasonic_tolerance_set_ = false;
       ultrasonic_timing_set_ = false;
       mq_reference_mv_ = 0U;
       mq_full_scale_counts_ = 0U;
@@ -820,22 +825,29 @@ CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
                                 1000.0F)) {
           return CommandStatus::Rejected;
         }
-      } else if (field == "echo_timeout_us" || field == "inter_sensor_gap_us" ||
-          field == "overshoot_tolerance_mm_milli") {
+      } else if (field == "echo_timeout_us" || field == "inter_sensor_gap_us") {
         if (command.numeric_value <= 0 || command.numeric_value > UINT32_MAX) {
           return CommandStatus::InvalidNumeric;
         }
         const auto value = static_cast<uint32_t>(command.numeric_value);
         if (field == "echo_timeout_us") {
           ultrasonic_echo_timeout_us_ = value;
-        } else if (field == "inter_sensor_gap_us") {
-          ultrasonic_inter_sensor_gap_us_ = value;
         } else {
-          ultrasonic_overshoot_tolerance_mm_milli_ = value;
+          ultrasonic_inter_sensor_gap_us_ = value;
         }
         ultrasonic_timing_set_ = ultrasonic_echo_timeout_us_ != 0U &&
                                  ultrasonic_inter_sensor_gap_us_ != 0U &&
-                                 ultrasonic_overshoot_tolerance_mm_milli_ != 0U;
+                                 ultrasonic_tolerance_set_;
+      } else if (field == "overshoot_tolerance_mm_milli") {
+        if (command.numeric_value < 0 || command.numeric_value > UINT32_MAX) {
+          return CommandStatus::InvalidNumeric;
+        }
+        ultrasonic_overshoot_tolerance_mm_milli_ =
+            static_cast<uint32_t>(command.numeric_value);
+        ultrasonic_tolerance_set_ = true;
+        ultrasonic_timing_set_ = ultrasonic_echo_timeout_us_ != 0U &&
+                                 ultrasonic_inter_sensor_gap_us_ != 0U &&
+                                 ultrasonic_tolerance_set_;
       } else if (field == "reference_mv" || field == "full_scale_counts" ||
           field == "divider_numerator" || field == "divider_denominator") {
         if (command.numeric_value <= 0 || command.numeric_value > UINT32_MAX) {
@@ -959,6 +971,15 @@ CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
       uint64_t sequence{0U};
       if (!evidence_->latest(pending_target_, evidence_sequence_, trial, sequence)) {
         return CommandStatus::Rejected;
+      }
+      if (pending_target_ == calibration::CalibrationTarget::Ds18b20B3) {
+        const auto* ds_trial = std::get_if<calibration::Ds18b20Trial>(&trial);
+        if (ds_trial == nullptr || ds_trial->resolution_bits < 9U ||
+            ds_trial->resolution_bits > 12U ||
+            (ds_resolution_set_ &&
+             ds_trial->resolution_bits != ds_resolution_bits_)) {
+          return CommandStatus::Rejected;
+        }
       }
       calibration::CalibrationAnchor anchor = calibration::CalibrationAnchor::Primary;
       if (command.target.view() == "tare") anchor = calibration::CalibrationAnchor::Tare;

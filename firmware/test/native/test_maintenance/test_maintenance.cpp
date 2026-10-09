@@ -726,6 +726,11 @@ void test_first_time_engineering_criteria_are_bounded_and_typed() {
                             router, "calibration criteria echo_mm_per_us_milli 171\n",
                             4U, response)));
   TEST_ASSERT_FLOAT_WITHIN(0.0001F, 0.171F, evidence.ultrasonic_conversion);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),
+                        static_cast<int>(run_router_line(
+                            router,
+                            "calibration criteria overshoot_tolerance_mm_milli 0\n",
+                            4U, response)));
   TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::InvalidNumeric),
                         static_cast<int>(run_router_line(
                             router, "calibration criteria resolution_bits 13\n",

@@ -150,6 +150,7 @@ class CommandRouter final : public IMaintenanceCommandSink,
   uint32_t ultrasonic_inter_sensor_gap_us_{0U};
   uint32_t ultrasonic_overshoot_tolerance_mm_milli_{0U};
   bool ultrasonic_echo_conversion_set_{false};
+  bool ultrasonic_tolerance_set_{false};
   bool ultrasonic_timing_set_{false};
   uint32_t mq_reference_mv_{0U};
   uint32_t mq_full_scale_counts_{0U};
