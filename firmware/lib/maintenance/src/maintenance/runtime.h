@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <array>
 
 #include "config/config_manager.h"
 #include "acquisition/profile_manager.h"
@@ -141,6 +142,24 @@ class CommandRouter final : public IMaintenanceCommandSink,
   int32_t criteria_humidity_span_{0};
   bool criteria_temperature_span_set_{false};
   bool criteria_humidity_span_set_{false};
+  // First-time sensor setup parameters are explicit maintenance criteria.
+  // They are session-owned and are never persisted independently of the
+  // validated profile produced at commit.
+  uint32_t ultrasonic_echo_mm_per_us_milli_{0U};
+  uint32_t ultrasonic_echo_timeout_us_{0U};
+  uint32_t ultrasonic_inter_sensor_gap_us_{0U};
+  uint32_t ultrasonic_overshoot_tolerance_mm_milli_{0U};
+  bool ultrasonic_echo_conversion_set_{false};
+  bool ultrasonic_timing_set_{false};
+  uint32_t mq_reference_mv_{0U};
+  uint32_t mq_full_scale_counts_{0U};
+  uint32_t mq_divider_numerator_{0U};
+  uint32_t mq_divider_denominator_{0U};
+  bool mq_engineering_set_{false};
+  uint8_t ds_resolution_bits_{12U};
+  bool ds_resolution_set_{false};
+  std::array<uint8_t, 8U> ds_rom_{};
+  bool ds_rom_set_{false};
   uint64_t reference_mass_mg_{0U};
   int32_t reference_temperature_centi_c_{0};
   int32_t reference_humidity_centi_pct_{0};

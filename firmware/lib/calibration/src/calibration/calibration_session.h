@@ -162,6 +162,10 @@ class ICalibrationEvidenceSource {
   virtual bool latest(CalibrationTarget target, uint64_t after_sequence,
                       TrialObservation& output,
                       uint64_t& observed_sequence) const noexcept = 0;
+  // Optional session-owned engineering setup for first-time ultrasonic
+  // calibration. Sources that do not expose this setting return false.
+  virtual bool set_ultrasonic_engineering_conversion(
+      CalibrationTarget, float) noexcept { return false; }
 };
 
 // First-time ultrasonic setup may provide only the validated engineering
@@ -186,7 +190,7 @@ class CalibrationEvidenceCache final
     profiles_ = profiles;
   }
   bool set_ultrasonic_engineering_conversion(
-      CalibrationTarget target, float echo_mm_per_us) noexcept;
+      CalibrationTarget target, float echo_mm_per_us) noexcept override;
   bool latest(CalibrationTarget target, uint64_t after_sequence,
               TrialObservation& output,
               uint64_t& observed_sequence) const noexcept override;

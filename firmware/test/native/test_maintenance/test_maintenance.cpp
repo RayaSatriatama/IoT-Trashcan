@@ -115,6 +115,49 @@ struct FakeSink final : IMaintenanceCommandSink {
   void transport_lost() noexcept override { ++transport_lost_calls; }
 };
 
+struct CalibrationEvidenceFake final
+    : sigap::calibration::ICalibrationEvidenceSource {
+  sigap::calibration::TrialObservation trial{};
+  uint64_t sequence{0U};
+  float ultrasonic_conversion{0.0F};
+
+  bool latest(sigap::calibration::CalibrationTarget target,
+              uint64_t after_sequence,
+              sigap::calibration::TrialObservation& output,
+              uint64_t& observed_sequence) const noexcept override {
+    if (sequence == 0U || sequence <= after_sequence) return false;
+    const bool ds_target =
+        target == sigap::calibration::CalibrationTarget::Ds18b20B3;
+    const bool variant_matches =
+        (ds_target && std::holds_alternative<sigap::calibration::Ds18b20Trial>(trial)) ||
+        (!ds_target && std::holds_alternative<sigap::calibration::Hx711Trial>(trial));
+    if (!variant_matches) return false;
+    output = trial;
+    observed_sequence = sequence;
+    return true;
+  }
+
+  bool set_ultrasonic_engineering_conversion(
+      sigap::calibration::CalibrationTarget, float value) noexcept override {
+    ultrasonic_conversion = value;
+    return value > 0.0F;
+  }
+};
+
+CommandStatus run_router_line(CommandRouter& router, const char* line,
+                              uint64_t now_us,
+                              MaintenanceResponse& response) {
+  MaintenanceParser parser{};
+  ParseEvent event{};
+  bool emitted{false};
+  for (const char character : std::string(line)) {
+    emitted = parser.consume(character, event) || emitted;
+  }
+  TEST_ASSERT_TRUE(emitted);
+  response = MaintenanceResponse{};
+  return router.execute(event.command, now_us, response);
+}
+
 struct FakePasskeyHandoff final
     : sigap::provisioning::ILocalPasskeyHandoff {
   sigap::provisioning::PasskeyDisclosureStatus next{
@@ -582,6 +625,116 @@ void test_calibration_start_binds_target_timeout_and_cancel_before_criteria() {
   TEST_ASSERT_FALSE(second.is_calibrating(sigap::acquisition::SensorId::Ds18b20B3));
 }
 
+void test_empty_store_hx711_calibration_commits_through_parser() {
+  using namespace sigap::acquisition;
+  sigap::config::MemoryConfigStore config_store{};
+  sigap::config::ConfigManager config_manager(config_store, kValidationContext);
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(sigap::config::ConfigBootResult::BootstrapDefaults),
+      static_cast<int>(config_manager.begin()));
+  sigap::provisioning::MemorySecretBlobStore secret_backend{};
+  sigap::provisioning::PersistentSecretStore secrets(secret_backend);
+  MemoryProfileStore profile_store{};
+  ProfilePersistence persistence(profile_store);
+  ProfileCodec codec{};
+  ProfileManager manager(persistence, codec);
+  TEST_ASSERT_TRUE(manager.load(ProfileTarget::Hx711Organic));
+
+  CalibrationEvidenceFake evidence{};
+  evidence.trial = sigap::calibration::Hx711Trial{1000,
+      SampleQuality::Uncalibrated, true, true};
+  evidence.sequence = 1U;
+  CommandRouter router(config_manager, secrets, &manager, &evidence);
+  MaintenanceResponse response{};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),
+                        static_cast<int>(run_router_line(
+                            router, "calibration start hx711_organic\n", 10U,
+                            response)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),
+                        static_cast<int>(run_router_line(
+                            router, "calibration criteria samples 1\n", 11U,
+                            response)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),
+                        static_cast<int>(run_router_line(
+                            router, "calibration criteria max_span_counts 10\n",
+                            12U, response)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),
+                        static_cast<int>(run_router_line(
+                            router, "calibration criteria reference_mass_mg 1000000\n",
+                            13U, response)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),
+                        static_cast<int>(run_router_line(
+                            router, "calibration capture tare\n", 14U,
+                            response)));
+
+  evidence.trial = sigap::calibration::Hx711Trial{2000,
+      SampleQuality::Uncalibrated, true, true};
+  evidence.sequence = 2U;
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),
+                        static_cast<int>(run_router_line(
+                            router, "calibration capture reference\n", 15U,
+                            response)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),
+                        static_cast<int>(run_router_line(
+                            router, "calibration validate\n", 16U, response)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),
+                        static_cast<int>(run_router_line(
+                            router, "calibration preview\n", 17U, response)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),
+                        static_cast<int>(run_router_line(
+                            router, "calibration commit\n", 18U, response)));
+
+  ActiveProfileSnapshot active{};
+  TEST_ASSERT_TRUE(manager.snapshot(ProfileTarget::Hx711Organic, active));
+  TEST_ASSERT_TRUE(active.present);
+  Hx711Profile profile{};
+  TEST_ASSERT_TRUE(codec.decode(active.encoded, profile));
+  TEST_ASSERT_FLOAT_WITHIN(0.001F, 1000.0F, profile.counts_per_kg);
+  ProfileManager reloaded(persistence, codec);
+  TEST_ASSERT_TRUE(reloaded.load(ProfileTarget::Hx711Organic));
+  ActiveProfileSnapshot persisted{};
+  TEST_ASSERT_TRUE(reloaded.snapshot(ProfileTarget::Hx711Organic, persisted));
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(active.ref.hash.data(), persisted.ref.hash.data(),
+                                active.ref.hash.size());
+}
+
+void test_first_time_engineering_criteria_are_bounded_and_typed() {
+  sigap::config::MemoryConfigStore config_store{};
+  sigap::config::ConfigManager config_manager(config_store, kValidationContext);
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(sigap::config::ConfigBootResult::BootstrapDefaults),
+      static_cast<int>(config_manager.begin()));
+  sigap::provisioning::MemorySecretBlobStore secret_backend{};
+  sigap::provisioning::PersistentSecretStore secrets(secret_backend);
+  CalibrationEvidenceFake evidence{};
+  CommandRouter router(config_manager, secrets, nullptr, &evidence);
+  MaintenanceResponse response{};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),
+                        static_cast<int>(run_router_line(
+                            router, "calibration start ultrasonic_b3\n", 1U,
+                            response)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::InvalidNumeric),
+                        static_cast<int>(run_router_line(
+                            router, "calibration criteria echo_mm_per_us_milli 0\n",
+                            2U, response)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::InvalidNumeric),
+                        static_cast<int>(run_router_line(
+                            router, "calibration criteria echo_mm_per_us_milli 1001\n",
+                            3U, response)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),
+                        static_cast<int>(run_router_line(
+                            router, "calibration criteria echo_mm_per_us_milli 171\n",
+                            4U, response)));
+  TEST_ASSERT_FLOAT_WITHIN(0.0001F, 0.171F, evidence.ultrasonic_conversion);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::InvalidNumeric),
+                        static_cast<int>(run_router_line(
+                            router, "calibration criteria resolution_bits 13\n",
+                            5U, response)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),
+                        static_cast<int>(run_router_line(
+                            router, "calibration cancel\n", 6U, response)));
+}
+
 void test_fragmented_input_is_buffered_until_line_end() {
   FakeTransport transport{};
   transport.input = "status";
@@ -760,6 +913,8 @@ void setup() {
   RUN_TEST(test_profile_import_rejects_unbound_or_out_of_order_chunks);
   RUN_TEST(test_profile_import_timeout_and_disconnect_discard_draft);
   RUN_TEST(test_calibration_start_binds_target_timeout_and_cancel_before_criteria);
+  RUN_TEST(test_empty_store_hx711_calibration_commits_through_parser);
+  RUN_TEST(test_first_time_engineering_criteria_are_bounded_and_typed);
   RUN_TEST(test_multiple_commands_are_processed_with_poll_budget);
   RUN_TEST(test_oversized_command_is_rejected_and_parser_recovers);
   RUN_TEST(test_unknown_empty_and_invalid_numeric_commands_are_explicit);
