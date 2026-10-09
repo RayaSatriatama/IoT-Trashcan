@@ -157,6 +157,66 @@ func TestTask9RemoteCalibrationLoopbackJourney(t *testing.T) {
 	}
 }
 
+func TestTask9OperatorReadbackIsBoundToCommandOwner(t *testing.T) {
+	db, err := database.Open(filepath.Join(t.TempDir(), "task9-owner.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	seedControlDevice(t, db, "SIGAP-CAL-OWNER", "device-token")
+	now := time.Now().UTC()
+	for _, operator := range []struct {
+		id    string
+		token string
+		csrf  string
+	}{
+		{"operator-a", "operator-a-token", "operator-a-csrf"},
+		{"operator-b", "operator-b-token", "operator-b-csrf"},
+	} {
+		if err := devicecontrol.ProvisionOperatorSession(context.Background(), db,
+			operator.id+"-session", operator.id, operator.token, operator.csrf,
+			now.Add(10*time.Minute), []string{"SIGAP-CAL-OWNER"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store := devicecontrol.NewStore(db)
+	authorizer := devicecontrol.NewDatabaseAuthorizer(db)
+	server := httptest.NewTLSServer(httpapi.NewRouter(ingest.NewService(db),
+		httpapi.WithDeviceControl(store, devicecontrol.HTTPOptions{Operator: authorizer, Device: authorizer, AllowedOrigin: "https://sigap.test"})))
+	defer server.Close()
+	client := server.Client()
+
+	command, err := json.Marshal(map[string]any{
+		"command_id": "owner-command", "session_id": "owner-session",
+		"sensor_id": "mq4", "operation": "start",
+		"payload":    map[string]any{"references": map[string]any{"reference_mv": 500}},
+		"expires_at": time.Now().UTC().Add(time.Minute).Format(time.RFC3339Nano),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created := doControlRequest(t, client, server.URL+"/api/device-control/commands/SIGAP-CAL-OWNER",
+		http.MethodPost, command, "operator-a-token", "operator-a-csrf", "https://sigap.test")
+	if created.StatusCode != http.StatusAccepted {
+		t.Fatalf("create status=%d body=%s", created.StatusCode, readBody(created))
+	}
+	_ = readBody(created)
+
+	foreign := doControlRequest(t, client, server.URL+"/api/device-control/commands/SIGAP-CAL-OWNER/owner-command",
+		http.MethodGet, nil, "operator-b-token", "", "https://sigap.test")
+	if foreign.StatusCode != http.StatusNotFound {
+		t.Fatalf("foreign readback status=%d body=%s", foreign.StatusCode, readBody(foreign))
+	}
+	_ = readBody(foreign)
+
+	owner := doControlRequest(t, client, server.URL+"/api/device-control/commands/SIGAP-CAL-OWNER/owner-command",
+		http.MethodGet, nil, "operator-a-token", "", "https://sigap.test")
+	if owner.StatusCode != http.StatusOK {
+		t.Fatalf("owner readback status=%d body=%s", owner.StatusCode, readBody(owner))
+	}
+	_ = readBody(owner)
+}
+
 func seedControlDevice(t *testing.T, db *sql.DB, deviceID, token string) {
 	t.Helper()
 	digest := sha256.Sum256([]byte(token))

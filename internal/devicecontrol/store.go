@@ -23,6 +23,7 @@ import (
 // result envelopes are rejected before they can reach the device.
 const MaxPayloadBytes = 4 * 1024
 const MaxCommandLifetime = 120 * time.Second
+const maxJSONNesting = 32
 
 type Status string
 

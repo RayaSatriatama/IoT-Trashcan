@@ -171,6 +171,14 @@ func (h *Handler) operator(w http.ResponseWriter, r *http.Request, deviceID stri
 			writeControlError(w, http.StatusInternalServerError, "internal server error")
 			return
 		}
+		// A device permission permits monitoring of the device, but not
+		// readback of another operator's calibration command or result.
+		// Keeping the response indistinguishable from an unknown command avoids
+		// revealing command existence or calibration provenance across sessions.
+		if c.OperatorID != operator {
+			writeControlError(w, http.StatusNotFound, "not found")
+			return
+		}
 		writeControlJSON(w, http.StatusOK, commandForOperator(c))
 		return
 	}
@@ -283,13 +291,93 @@ func decodeBoundedJSON(r *http.Request, dst any) error {
 	if err != nil || len(raw) > MaxPayloadBytes {
 		return errors.New("payload too large")
 	}
+	if err = rejectDuplicateJSONKeys(raw); err != nil {
+		return err
+	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
 	if err = dec.Decode(dst); err != nil {
 		return err
 	}
 	var extra any
 	if err = dec.Decode(&extra); err != io.EOF {
 		return errors.New("trailing json")
+	}
+	return nil
+}
+
+// rejectDuplicateJSONKeys validates every object before it reaches an
+// envelope struct. encoding/json otherwise accepts duplicate member names and
+// silently chooses the final value, which makes signed command identity
+// ambiguous across parsers.
+func rejectDuplicateJSONKeys(raw []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	if err := consumeJSONValue(decoder, 0); err != nil {
+		return err
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		if err == nil {
+			return errors.New("trailing json")
+		}
+		return err
+	}
+	return nil
+}
+
+func consumeJSONValue(decoder *json.Decoder, depth int) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delimiter, isDelimiter := token.(json.Delim)
+	if !isDelimiter {
+		return nil
+	}
+	if depth >= maxJSONNesting {
+		return errors.New("json nesting exceeds bound")
+	}
+	switch delimiter {
+	case '{':
+		keys := make(map[string]struct{})
+		for decoder.More() {
+			keyToken, keyErr := decoder.Token()
+			if keyErr != nil {
+				return keyErr
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return errors.New("object key is not a string")
+			}
+			if _, exists := keys[key]; exists {
+				return errors.New("duplicate json key")
+			}
+			keys[key] = struct{}{}
+			if err := consumeJSONValue(decoder, depth+1); err != nil {
+				return err
+			}
+		}
+		end, endErr := decoder.Token()
+		if endErr != nil {
+			return endErr
+		}
+		if value, ok := end.(json.Delim); !ok || value != '}' {
+			return errors.New("invalid object")
+		}
+	case '[':
+		for decoder.More() {
+			if err := consumeJSONValue(decoder, depth+1); err != nil {
+				return err
+			}
+		}
+		end, endErr := decoder.Token()
+		if endErr != nil {
+			return endErr
+		}
+		if value, ok := end.(json.Delim); !ok || value != ']' {
+			return errors.New("invalid array")
+		}
+	default:
+		return errors.New("unexpected json delimiter")
 	}
 	return nil
 }

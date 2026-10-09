@@ -3,6 +3,7 @@ package devicecontrol
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,6 +18,15 @@ func (a operatorAuth) AuthorizeOperator(context.Context, *http.Request, string) 
 		return "", ErrUnauthorized
 	}
 	return "operator-1", nil
+}
+
+type operatorIDAuth struct{ id string }
+
+func (a operatorIDAuth) AuthorizeOperator(context.Context, *http.Request, string) (string, error) {
+	if a.id == "" {
+		return "", ErrUnauthorized
+	}
+	return a.id, nil
 }
 
 type deviceAuth struct{ allow bool }
@@ -161,6 +171,23 @@ func TestHTTPCommandReadbackReturnsPersistedStatusAndResult(t *testing.T) {
 	}
 }
 
+func TestHTTPCommandReadbackRejectsDifferentAuthorizedOperator(t *testing.T) {
+	s, _, now := testStore(t)
+	req := commandRequest(now)
+	req.ID = "cmd-owner-only-readback"
+	if _, err := s.Enqueue(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+
+	h := NewHandler(s, HTTPOptions{Operator: operatorIDAuth{id: "operator-2"}})
+	r := httptest.NewRequest(http.MethodGet, "/api/device-control/commands/DEV-01/"+req.ID, nil)
+	res := httptest.NewRecorder()
+	h.ServeHTTP(res, r)
+	if res.Code != http.StatusNotFound {
+		t.Fatalf("foreign operator readback status=%d body=%s", res.Code, res.Body.String())
+	}
+}
+
 func TestHTTPDiagnosticsDoesNotTreatCalibrationResultAsSensorEvidence(t *testing.T) {
 	s, _, now := testStore(t)
 	req := commandRequest(now)
@@ -246,5 +273,45 @@ func TestHTTPRejectsEnvelopeOverFirmwareFourKiBBound(t *testing.T) {
 		"/api/device-control/commands/DEV-01", strings.NewReader(oversized)))
 	if res.Code != http.StatusBadRequest {
 		t.Fatalf("status=%d body=%s", res.Code, res.Body.String())
+	}
+}
+
+func TestHTTPRejectsDuplicateJSONKeysBeforeCommandExecution(t *testing.T) {
+	s, _, _ := testStore(t)
+	h := NewHandler(s, HTTPOptions{Operator: operatorAuth{allow: true}})
+	for name, body := range map[string]string{
+		"envelope": `{"command_id":"duplicate-a","command_id":"duplicate-b","session_id":"session-duplicate","sensor_id":"mq4","operation":"start","payload":{},"expires_at":"2026-10-09T12:01:00Z"}`,
+		"payload":  `{"command_id":"duplicate-payload","session_id":"session-duplicate","sensor_id":"mq4","operation":"start","payload":{"reference_mv":500,"reference_mv":600},"expires_at":"2026-10-09T12:01:00Z"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			res := httptest.NewRecorder()
+			h.ServeHTTP(res, httptest.NewRequest(http.MethodPost,
+				"/api/device-control/commands/DEV-01", strings.NewReader(body)))
+			if res.Code != http.StatusBadRequest {
+				t.Fatalf("duplicate %s status=%d body=%s", name, res.Code, res.Body.String())
+			}
+		})
+	}
+	if _, err := s.Get(context.Background(), "DEV-01", "duplicate-a"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("duplicate envelope reached store: %v", err)
+	}
+	if _, err := s.Get(context.Background(), "DEV-01", "duplicate-payload"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("duplicate payload reached store: %v", err)
+	}
+}
+
+func TestHTTPRejectsExcessivelyNestedEnvelope(t *testing.T) {
+	s, _, _ := testStore(t)
+	h := NewHandler(s, HTTPOptions{Operator: operatorAuth{allow: true}})
+	nested := strings.Repeat("[", maxJSONNesting+1) + "0" + strings.Repeat("]", maxJSONNesting+1)
+	body := `{"command_id":"too-deep","session_id":"session-deep","sensor_id":"mq4","operation":"start","payload":{"nested":` + nested + `},"expires_at":"2026-10-09T12:01:00Z"}`
+	res := httptest.NewRecorder()
+	h.ServeHTTP(res, httptest.NewRequest(http.MethodPost,
+		"/api/device-control/commands/DEV-01", strings.NewReader(body)))
+	if res.Code != http.StatusBadRequest {
+		t.Fatalf("nested envelope status=%d body=%s", res.Code, res.Body.String())
+	}
+	if _, err := s.Get(context.Background(), "DEV-01", "too-deep"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("nested envelope reached store: %v", err)
 	}
 }
