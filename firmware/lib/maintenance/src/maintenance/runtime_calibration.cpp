@@ -36,7 +36,8 @@ MaintenanceCommand typed_command(CommandKind kind,
 bool typed_dispatch(CommandRouter& router, MaintenanceCommand command,
                     uint64_t now_us) noexcept {
   MaintenanceResponse response{};
-  return router.execute(command, now_us, response) == CommandStatus::Accepted;
+  return router.execute_calibration_internal(command, now_us, response) ==
+         CommandStatus::Accepted;
 }
 
 void set_calibration_provenance(acquisition::ProfileProvenance& provenance,

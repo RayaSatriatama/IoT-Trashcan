@@ -20,6 +20,21 @@ bool text_equals(const FixedText<64U>& value, const char* expected) noexcept {
       std::string_view(expected, length);
 }
 
+bool is_calibration_mutation(CommandKind kind) noexcept {
+  switch (kind) {
+    case CommandKind::CalibrationStart:
+    case CommandKind::CalibrationCriteria:
+    case CommandKind::CalibrationCapture:
+    case CommandKind::CalibrationValidate:
+    case CommandKind::CalibrationPreview:
+    case CommandKind::CalibrationCommit:
+    case CommandKind::CalibrationCancel:
+      return true;
+    default:
+      return false;
+  }
+}
+
 const char* mode_name(DeviceMode mode) noexcept {
   switch (mode) {
     case DeviceMode::Run: return "RUN";
@@ -484,6 +499,12 @@ CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
     profiles_->set_audit_context(now_us, current_config);
   }
   refresh_mode();
+  if (is_calibration_mutation(command.kind) &&
+      calibration_controller_ != nullptr &&
+      !internal_calibration_dispatch_ && calibration_controller_->active()) {
+    (void)response.append("ERR CALIBRATION_SESSION_BUSY\n");
+    return CommandStatus::Rejected;
+  }
   if (command.kind == CommandKind::ProfileImportBegin) {
     cancel_profile_transfer();
   }
@@ -980,6 +1001,16 @@ CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
       // validation or activation metadata.
       return CommandStatus::Rejected;
   }
+}
+
+CommandStatus CommandRouter::execute_calibration_internal(
+    const MaintenanceCommand& command, uint64_t now_us,
+    MaintenanceResponse& response) noexcept {
+  const bool previous = internal_calibration_dispatch_;
+  internal_calibration_dispatch_ = true;
+  const CommandStatus status = execute(command, now_us, response);
+  internal_calibration_dispatch_ = previous;
+  return status;
 }
 
 }  // namespace sigap::maintenance

@@ -107,6 +107,21 @@ implementation and shared calibration executor are not yet bound into
 `SigapApp`. Production operator authorization also requires deployment
 configuration. This document therefore does not claim Task 9 complete.
 
+## Independent review closure at `b48eac1`
+
+The current source binds the shared controller to the maintenance router.
+While BLE or HTTPS owns a session, raw USB calibration mutations return a
+bounded `Rejected` response; typed controller dispatch uses an explicit
+internal router boundary and is not blocked by that guard. Current remote
+authorization is checked before in-memory or durable replay lookup, so a
+revoked principal cannot use an exact replay to bypass authorization.
+
+Prepared COMMIT intents are single-owner records. A different request cannot
+overwrite an unreconciled intent in either the native replay store or the
+Arduino NVS implementation, and malformed existing NVS state fails closed.
+The native regressions are fresh at 430/430; target builds compile the NVS
+path, but target runtime and physical BLE/HTTPS execution remain unrun.
+
 ## Current remediation status (`bf37efcf0ea86ea9848d57d395f729f58b77b6ef`)
 
 The current source supersedes the older remediation note above in the

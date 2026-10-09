@@ -125,6 +125,7 @@ void test_ble_mutations_use_shared_controller_owner() {
   sigap::calibration::CalibrationTransportController controller(
       router, 7U, &authorizer);
   CommandRouterBleCalibrationBackend backend(router, clock, &controller);
+  router.set_calibration_transport_controller(&controller);
   char response[512]{};
   std::size_t size{0U};
 
@@ -133,6 +134,15 @@ void test_ble_mutations_use_shared_controller_owner() {
   TEST_ASSERT_TRUE(controller.active());
   TEST_ASSERT_TRUE(std::string_view(response, size).find("status=ACCEPTED") !=
                   std::string_view::npos);
+  MaintenanceParser parser{};
+  ParseEvent event{};
+  for (const char byte : std::string_view("calibration criteria samples 2\n")) {
+    (void)parser.consume(byte, event);
+  }
+  MaintenanceResponse usb_response{};
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(CommandStatus::Rejected),
+      static_cast<int>(router.execute(event.command, clock.now, usb_response)));
   size = 0U;
   TEST_ASSERT_TRUE(backend.execute(
       "CAL CRITERIA hx711_organic samples=2 max_span_counts=10", response,

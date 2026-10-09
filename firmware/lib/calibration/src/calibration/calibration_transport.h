@@ -90,6 +90,68 @@ struct CalibrationCommandEnvelope final {
   uint16_t payload_size{0U};
 };
 
+// Replay identity is stable across delivery attempts and reboot.  The
+// expires_at_us field is a local execution deadline and is intentionally not
+// part of this comparison.
+inline bool calibration_command_identity_equal(
+    const CalibrationCommandEnvelope& left,
+    const CalibrationCommandEnvelope& right) noexcept {
+  if (left.request_id == 0U || left.request_id != right.request_id ||
+      left.protocol_version != right.protocol_version ||
+      left.device_id != right.device_id ||
+      left.principal_id != right.principal_id ||
+      left.session_id != right.session_id ||
+      left.transport != right.transport ||
+      left.operation != right.operation ||
+      left.target != right.target ||
+      left.criteria_present != right.criteria_present ||
+      left.anchor != right.anchor ||
+      left.expected_profile_present != right.expected_profile_present ||
+      left.payload_size != right.payload_size ||
+      left.payload_digest != right.payload_digest) {
+    return false;
+  }
+  if (left.expected_profile_present &&
+      !left.expected_profile.equals(right.expected_profile)) {
+    return false;
+  }
+  if (!left.criteria_present || left.criteria.index() != right.criteria.index()) {
+    if (left.criteria_present) return false;
+  } else {
+    const bool equal = std::visit(
+        [](const auto& lhs, const auto& rhs) noexcept {
+          using L = std::decay_t<decltype(lhs)>;
+          using R = std::decay_t<decltype(rhs)>;
+          if constexpr (!std::is_same_v<L, R>) {
+            return false;
+          } else if constexpr (std::is_same_v<L, Hx711CaptureCriteria>) {
+            return lhs.required_samples == rhs.required_samples &&
+                   lhs.max_span_counts == rhs.max_span_counts;
+          } else if constexpr (std::is_same_v<L, DistanceCaptureCriteria>) {
+            return lhs.required_samples == rhs.required_samples &&
+                   lhs.max_span_mm == rhs.max_span_mm;
+          } else if constexpr (std::is_same_v<L, MqCaptureCriteria>) {
+            return lhs.required_samples == rhs.required_samples &&
+                   lhs.max_span_counts == rhs.max_span_counts &&
+                   lhs.require_low_detect == rhs.require_low_detect;
+          } else if constexpr (std::is_same_v<L, Ds18b20CaptureCriteria>) {
+            return lhs.required_samples == rhs.required_samples &&
+                   lhs.max_span_centi_c == rhs.max_span_centi_c &&
+                   lhs.require_rom_match == rhs.require_rom_match;
+          } else {
+            return lhs.required_samples == rhs.required_samples &&
+                   lhs.max_temperature_span_centi_c ==
+                       rhs.max_temperature_span_centi_c &&
+                   lhs.max_humidity_span_centi_pct ==
+                       rhs.max_humidity_span_centi_pct;
+          }
+        },
+        left.criteria, right.criteria);
+    if (!equal) return false;
+  }
+  return true;
+}
+
 struct CalibrationResultEnvelope final {
   uint16_t protocol_version{CalibrationCommandEnvelope::kProtocolVersion};
   uint64_t request_id{0U};

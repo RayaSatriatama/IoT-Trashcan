@@ -6,6 +6,29 @@ commissioning runbooks in `docs/task9-commissioning.md` and
 `docs/task9-sensor-commissioning.md`; no physical
 commissioning or destructive hardware operation was performed.
 
+## Independent review remediation at `b48eac1`
+
+The independent source audit reproduced three software defects and added
+regressions before the fixes were applied:
+
+- Replay lookup ran before current remote authorization, allowing an exact
+  replay to bypass a revoked principal. Authorization now runs before any
+  replay lookup, while committed replay remains available for an authorized
+  retry.
+- A new COMMIT could replace an unreconciled prepared intent. The bounded
+  memory store and the Arduino NVS store now reject a different prepared
+  identity and fail closed on an invalid existing record. A matching prepared
+  identity is idempotent.
+- Raw USB calibration mutations could run while BLE or HTTPS owned the
+  session. The application binds the shared controller to the maintenance
+  router; raw USB mutations are rejected while another transport owns the
+  session, while controller-internal typed dispatch uses an explicit internal
+  boundary.
+
+Focused regressions cover authorization revocation, prepared-intent
+replacement, and USB/session contention. The fixes preserve the stable
+command identity rule: local monotonic deadlines are not replay identity.
+
 ## Latest remediation under review
 
 Starting source: `c09c4663b3cf91082d711bbc7ef389cd019bd79b`.
@@ -48,8 +71,8 @@ produce a usable runtime connection or expose credentials.
 | Frontend dependency triage | PASS (bounded remediation) | Three narrow lockfile-backed overrides remove the production critical finding; remaining findings are documented toolchain/development risk and were not force-upgraded. |
 | Backend ingest and current projection | PASS (software only) | Fresh Go `internal/e2e` and full tests cover durable ACK, replay dedupe, conflict, auth, export, late backlog, and filtered cursor; no staging process or device transmission was started. |
 | Schemas and frozen hashes | PASS | Fresh Go semantic run compiled 14 schemas, checked 24 valid fixtures, rejected 36 invalid fixtures, and preserved both frozen hashes. |
-| Firmware native suite | PASS | Fresh PlatformIO suite completed 428/428 test cases across 41 folders. |
-| Firmware sanitizer suite | PASS | Fresh ASan/UBSan run completed 428/428 cases with no diagnostics. |
+| Firmware native suite | PASS | Fresh PlatformIO suite completed 430/430 test cases across 41 folders. |
+| Firmware sanitizer suite | PASS | Fresh ASan/UBSan run completed 430/430 cases with no diagnostics. |
 | Cppcheck | PASS | `pio check -e native --fail-on-defect=low`, no defects. |
 | Target builds | PASS | `sigap_n16r8`, `sigap_n16r8_sd`, `sigap_n16r8_sd_spi`, `sigap_bench`, and compile-only `sigap_n16r8_https_compile`. |
 | Frontend | PASS | 21 files/107 Vitest tests, TypeScript typecheck, and Expo web export pass. |
@@ -72,14 +95,15 @@ go1.27.1 test ./internal/telemetry            PASS (14 schemas, 24 valid, 36 inv
 npm test                                      PASS (21 files, 107 tests)
 npm run typecheck                             PASS
 npm run export:web                            PASS
-pio test -e native                            PASS (428/428)
-ASan/UBSan native folders                    PASS (428/428 cases, 41 folders, 0 failed)
+pio test -e native                            PASS (430/430)
+pio test -d . -c /tmp/platformio-sanitize.ini -e native
+                                             PASS (430/430 cases, 41 folders, 0 failed)
 pio check -e native --fail-on-defect=low     PASS (no defects)
-pio run -e sigap_n16r8                       PASS (RAM 49,496; flash 1,104,309)
-pio run -e sigap_n16r8_sd                    PASS (RAM 50,036; flash 1,177,409)
-pio run -e sigap_n16r8_sd_spi                PASS (RAM 49,792; flash 1,156,897)
-pio run -e sigap_bench                       PASS (RAM 49,496; flash 1,104,309)
-pio run -e sigap_n16r8_https_compile         PASS (compile-only; RAM 51,824; flash 1,298,181)
+pio run -e sigap_n16r8                       PASS (RAM 49,496; flash 1,105,033)
+pio run -e sigap_n16r8_sd                    PASS (RAM 50,036; flash 1,178,117)
+pio run -e sigap_n16r8_sd_spi                PASS (RAM 49,792; flash 1,157,613)
+pio run -e sigap_bench                       PASS (RAM 49,496; flash 1,105,033)
+pio run -e sigap_n16r8_https_compile         PASS (compile-only; RAM 51,824; flash 1,298,801)
 git diff --check                             PASS
 ```
 

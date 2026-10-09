@@ -94,6 +94,17 @@ class CommandRouter final : public IMaintenanceCommandSink,
                         uint64_t now_us,
                         MaintenanceResponse& response) noexcept override;
 
+  // Typed calibration transports call through this boundary so the USB
+  // maintenance guard cannot reject the controller's own workflow calls.
+  CommandStatus execute_calibration_internal(
+      const MaintenanceCommand& command, uint64_t now_us,
+      MaintenanceResponse& response) noexcept;
+
+  void set_calibration_transport_controller(
+      calibration::CalibrationTransportController* controller) noexcept {
+    calibration_controller_ = controller;
+  }
+
   void refresh_mode() noexcept;
   DeviceMode mode() const noexcept { return mode_; }
   bool is_calibrating(acquisition::SensorId sensor) const noexcept override;
@@ -171,6 +182,8 @@ class CommandRouter final : public IMaintenanceCommandSink,
   IModelCommandHandler* models_{nullptr};
   IStorageTestProbe* storage_probe_{nullptr};
   provisioning::ILocalPasskeyHandoff* passkey_handoff_{nullptr};
+  calibration::CalibrationTransportController* calibration_controller_{nullptr};
+  bool internal_calibration_dispatch_{false};
   calibration::CalibrationSession calibration_{};
   CalibrationProposal calibration_proposal_{};
   uint64_t evidence_sequence_{0U};

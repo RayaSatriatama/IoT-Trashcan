@@ -185,6 +185,36 @@ bool NvsCalibrationReplayStore::prepare(
   if (!encode(command, empty, record, true)) return false;
   nvs_handle_t handle{};
   if (nvs_open(kNamespace, NVS_READWRITE, &handle) != ESP_OK) return false;
+  Record existing{};
+  std::size_t existing_size = sizeof(existing);
+  const esp_err_t existing_status =
+      nvs_get_blob(handle, kKey, &existing, &existing_size);
+  if (existing_status == ESP_OK) {
+    if (existing_size != sizeof(existing)) {
+      nvs_close(handle);
+      return false;
+    }
+    const bool existing_prepared = (existing.flags & 4U) != 0U;
+    CalibrationCommandEnvelope existing_command{};
+    CalibrationResultEnvelope existing_result{};
+    const bool valid = decode(existing, existing_command, existing_result,
+                              existing_prepared);
+    if (!valid ||
+        (existing_prepared &&
+         !calibration_command_identity_equal(existing_command, command))) {
+      nvs_close(handle);
+      return false;
+    }
+    // A matching prepared intent is already durable. Rewriting it is
+    // unnecessary and could create a second failure window.
+    if (existing_prepared) {
+      nvs_close(handle);
+      return true;
+    }
+  } else if (existing_status != ESP_ERR_NVS_NOT_FOUND) {
+    nvs_close(handle);
+    return false;
+  }
   const esp_err_t write = nvs_set_blob(handle, kKey, &record, sizeof(record));
   const esp_err_t committed = write == ESP_OK ? nvs_commit(handle) : write;
   nvs_close(handle);

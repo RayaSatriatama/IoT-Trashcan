@@ -92,6 +92,14 @@ class AllowAuthorizer final : public ICalibrationTransportAuthorizer {
   bool allow{true};
 };
 
+class ToggleAuthorizer final : public ICalibrationTransportAuthorizer {
+ public:
+  bool authorize(const CalibrationCommandEnvelope&) const noexcept override {
+    return allowed;
+  }
+  bool allowed{true};
+};
+
 CalibrationCommandEnvelope command(CalibrationOperation operation,
                                    CalibrationTransport transport,
                                    uint64_t request_id,
@@ -283,6 +291,32 @@ void test_failed_prepare_does_not_activate_profile() {
   TEST_ASSERT_EQUAL_UINT32(0U, workflow.commit_calls);
 }
 
+void test_prepared_intent_cannot_be_replaced_by_another_request() {
+  MemoryCalibrationReplayStore replay_store{};
+  const auto first = command(CalibrationOperation::Commit,
+                             CalibrationTransport::Https, 84U, 9U);
+  auto second = first;
+  second.request_id = 85U;
+  TEST_ASSERT_TRUE(replay_store.prepare(first));
+  TEST_ASSERT_FALSE(replay_store.prepare(second));
+}
+
+void test_replay_still_requires_current_authorization() {
+  MemoryCalibrationReplayStore replay_store{};
+  ToggleAuthorizer authorizer{};
+  FakeWorkflow workflow{};
+  CalibrationTransportController controller(workflow, 0x1234U, &authorizer,
+                                             &replay_store);
+  CalibrationResultEnvelope result{};
+  const auto start = command(CalibrationOperation::Start,
+                             CalibrationTransport::Https, 86U);
+  TEST_ASSERT_TRUE(controller.execute(start, 1U, result));
+  authorizer.allowed = false;
+  TEST_ASSERT_FALSE(controller.execute(start, 2U, result));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CalibrationCommandStatus::Unauthorized),
+                        static_cast<int>(result.status));
+}
+
 void test_committed_replay_survives_controller_recreation() {
   MemoryCalibrationReplayStore replay_store{};
   AllowAuthorizer authorizer{};
@@ -370,6 +404,8 @@ void setup() {
   RUN_TEST(test_local_deadline_is_not_replay_identity);
   RUN_TEST(test_failed_replay_persistence_is_reconciled_without_second_commit);
   RUN_TEST(test_failed_prepare_does_not_activate_profile);
+  RUN_TEST(test_prepared_intent_cannot_be_replaced_by_another_request);
+  RUN_TEST(test_replay_still_requires_current_authorization);
   RUN_TEST(test_commit_returns_terminal_status_and_profile_identity);
   RUN_TEST(test_request_id_reuse_with_changed_payload_digest_is_conflict);
   RUN_TEST(test_committed_replay_survives_controller_recreation);

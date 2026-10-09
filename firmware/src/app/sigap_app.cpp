@@ -247,6 +247,10 @@ SigapApp::SigapApp() noexcept
     defined(SIGAP_NETWORK_CA_CERT)
   network_link_.bind(&network_transport_);
 #endif
+#ifdef ARDUINO
+  maintenance_router_.set_calibration_transport_controller(
+      &calibration_controller_);
+#endif
   sd_probe_.bind_archive_store(
       sd_store_, config_manager_.active().storage.sd_pending_quota_bytes);
   profile_manager_.bind_runtime_profiles(profiles_);

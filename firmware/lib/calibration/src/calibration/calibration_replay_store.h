@@ -14,6 +14,11 @@ class MemoryCalibrationReplayStore final
  public:
   bool prepare(const CalibrationCommandEnvelope& command) noexcept override {
     if (fail_prepare || command.request_id == 0U) return false;
+    if (prepared_ &&
+        !calibration_command_identity_equal(command_, command)) {
+      return false;
+    }
+    if (prepared_) return true;
     command_ = command;
     result_ = CalibrationResultEnvelope{};
     prepared_ = true;
