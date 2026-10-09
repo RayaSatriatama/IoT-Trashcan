@@ -55,10 +55,10 @@ SQLite trigger in the same ingest transaction and may be rebuilt from the
 authoritative record table if recovery tooling requires it.
 
 Synthetic benchmark on the repository test SQLite backend (AMD Ryzen 3 5300U,
-Go 1.27.1, one benchmark iteration) measured current reads over 100, 1,000,
-and 10,000 retained records for one source/boot at approximately 177 us,
-84 us, and 96 us respectively. The 1,000 and 10,000 cases each used 8.3 KiB
-and 43 allocations per read, demonstrating that read cost follows the bounded
+Go 1.27.1, 100 measured iterations) measured current reads over 100, 1,000,
+and 10,000 retained records for one source/boot at approximately 21.8 us,
+26.3 us, and 35.6 us respectively. Allocation stayed near 2.0 KiB and 32
+allocations per read, demonstrating that read cost follows the bounded
 candidate projection rather than total retained history. These are host-side
 measurements, not production database latency or hardware endurance claims.
 
