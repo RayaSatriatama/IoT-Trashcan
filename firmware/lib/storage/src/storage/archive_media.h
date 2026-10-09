@@ -263,14 +263,14 @@ class LittleFsArchiveStore : public IArchiveStore {
     index_count_ = 0U;
     File file = filesystem_->open(path_, FILE_READ);
     if (file && file.size() == 0U && has_quarantine()) {
+      // A recovery marker is handled before opening the archive. Reaching an
+      // empty primary here therefore means an earlier repair completed and a
+      // later legitimate reclaim removed the final pending frame. The tail
+      // remains forensic-only and must not block new appends or be restored.
       file.close();
-      // A tail without a durable recovery marker is forensic data, not an
-      // authority to replace the current archive.  In particular, an old
-      // tail may pre-date a legitimate reclaim.  The marker is processed
-      // above before any archive is opened, so reaching this branch means a
-      // prior repair was interrupted before it established authority.
-      health_ = ArchiveHealth::Degraded;
-      return false;
+      recovery_ready_ = true;
+      health_ = gap_valid ? ArchiveHealth::Healthy : ArchiveHealth::Degraded;
+      return true;
     }
     if (!file) {
       if (!filesystem_->exists(path_)) {

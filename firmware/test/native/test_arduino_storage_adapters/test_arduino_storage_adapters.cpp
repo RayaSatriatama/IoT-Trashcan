@@ -183,6 +183,29 @@ void test_target_archive_failed_reclaim_preserves_source() {
   TEST_ASSERT_TRUE(after_rename_failure.contains(second.identity, second.hash));
 }
 
+void test_target_archive_empty_after_legitimate_reclaim_keeps_tail_forensic() {
+  fs::FS filesystem{};
+  LittleFsArchiveStore store("/sigap/archive.bin");
+  TEST_ASSERT_TRUE(store.begin(filesystem, 1024U * 1024U));
+  const auto only = record(107U);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AppendStatus::Durable),
+                        static_cast<int>(store.append(only)));
+
+  const std::array<uint8_t, 1U> corrupt{{0xE3U}};
+  filesystem.append_raw("/sigap/archive.bin", corrupt.data(), corrupt.size());
+  TEST_ASSERT_TRUE(store.recover());
+  TEST_ASSERT_TRUE(filesystem.exists("/sigap/archive.bin.tail0"));
+
+  // The verified tail is forensic-only after recovery. Reclaiming the last
+  // pending frame must leave an empty, usable primary archive rather than
+  // treating that tail as pending data on the next recovery.
+  TEST_ASSERT_TRUE(store.reclaim_pending(only.identity, only.hash));
+  LittleFsArchiveStore restarted("/sigap/archive.bin");
+  TEST_ASSERT_TRUE(restarted.begin(filesystem, 1024U * 1024U));
+  TEST_ASSERT_FALSE(restarted.contains(only.identity, only.hash));
+  TEST_ASSERT_TRUE(filesystem.exists("/sigap/archive.bin.tail0"));
+}
+
 void test_sd_probe_path_is_device_owned_and_bounded() {
   char path[64U]{};
   TEST_ASSERT_TRUE(sigap::storage::build_sd_probe_path(
@@ -351,6 +374,7 @@ int main() {
   RUN_TEST(test_target_archive_reclaims_non_head_probe_record);
   RUN_TEST(test_target_archive_short_append_recovers_valid_prefix);
   RUN_TEST(test_target_archive_failed_reclaim_preserves_source);
+  RUN_TEST(test_target_archive_empty_after_legitimate_reclaim_keeps_tail_forensic);
   RUN_TEST(test_sd_probe_path_is_device_owned_and_bounded);
   RUN_TEST(test_target_batch_and_ack_replay_preserve_exact_bytes_and_binding);
   RUN_TEST(test_target_ack_restart_does_not_reclaim_wrong_pending_batch);
