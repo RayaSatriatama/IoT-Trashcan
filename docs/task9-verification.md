@@ -6,7 +6,7 @@ commissioning runbooks in `docs/task9-commissioning.md` and
 `docs/task9-sensor-commissioning.md`; no physical
 commissioning or destructive hardware operation was performed.
 
-## Independent review remediation at `b48eac1`
+## Independent review remediation (`b48eac1` -> `75f9634`)
 
 The independent source audit reproduced three software defects and added
 regressions before the fixes were applied:
@@ -26,7 +26,8 @@ regressions before the fixes were applied:
   boundary.
 
 Focused regressions cover authorization revocation, prepared-intent
-replacement, and USB/session contention. The fixes preserve the stable
+replacement, and USB/session contention. Final source is `75f96348f8b93a3ddead9b1f62f946523d701f29`.
+The fixes preserve the stable
 command identity rule: local monotonic deadlines are not replay identity.
 
 ## Latest remediation under review

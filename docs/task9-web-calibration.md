@@ -107,7 +107,7 @@ implementation and shared calibration executor are not yet bound into
 `SigapApp`. Production operator authorization also requires deployment
 configuration. This document therefore does not claim Task 9 complete.
 
-## Independent review closure at `b48eac1`
+## Independent review closure at `75f9634`
 
 The current source binds the shared controller to the maintenance router.
 While BLE or HTTPS owns a session, raw USB calibration mutations return a
