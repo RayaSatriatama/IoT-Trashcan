@@ -127,6 +127,62 @@ void test_target_archive_reclaims_non_head_probe_record() {
   TEST_ASSERT_FALSE(restarted.contains(second.identity, second.hash));
 }
 
+void test_target_archive_short_append_recovers_valid_prefix() {
+  fs::FS filesystem{};
+  LittleFsArchiveStore store("/sigap/archive.bin");
+  TEST_ASSERT_TRUE(store.begin(filesystem, 1024U * 1024U));
+  const auto first = record(103U);
+  const auto second = record(104U);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AppendStatus::Durable),
+                        static_cast<int>(store.append(first)));
+
+  filesystem.short_write_once(13U);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AppendStatus::Retryable),
+                        static_cast<int>(store.append(second)));
+  filesystem.clear_faults();
+
+  LittleFsArchiveStore recovered("/sigap/archive.bin");
+  TEST_ASSERT_TRUE(recovered.begin(filesystem, 1024U * 1024U));
+  TEST_ASSERT_TRUE(recovered.contains(first.identity, first.hash));
+  TEST_ASSERT_FALSE(recovered.contains(second.identity, second.hash));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AppendStatus::Durable),
+                        static_cast<int>(recovered.append(second)));
+
+  LittleFsArchiveStore restarted("/sigap/archive.bin");
+  TEST_ASSERT_TRUE(restarted.begin(filesystem, 1024U * 1024U));
+  TEST_ASSERT_TRUE(restarted.contains(first.identity, first.hash));
+  TEST_ASSERT_TRUE(restarted.contains(second.identity, second.hash));
+}
+
+void test_target_archive_failed_reclaim_preserves_source() {
+  fs::FS filesystem{};
+  LittleFsArchiveStore store("/sigap/archive.bin");
+  TEST_ASSERT_TRUE(store.begin(filesystem, 1024U * 1024U));
+  const auto first = record(105U);
+  const auto second = record(106U);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AppendStatus::Durable),
+                        static_cast<int>(store.append(first)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AppendStatus::Durable),
+                        static_cast<int>(store.append(second)));
+
+  filesystem.short_write_once(13U);
+  TEST_ASSERT_FALSE(store.reclaim_pending(first.identity, first.hash));
+  filesystem.clear_faults();
+
+  LittleFsArchiveStore after_copy_failure("/sigap/archive.bin");
+  TEST_ASSERT_TRUE(after_copy_failure.begin(filesystem, 1024U * 1024U));
+  TEST_ASSERT_TRUE(after_copy_failure.contains(first.identity, first.hash));
+  TEST_ASSERT_TRUE(after_copy_failure.contains(second.identity, second.hash));
+
+  filesystem.fail_next_rename();
+  TEST_ASSERT_FALSE(after_copy_failure.reclaim_pending(first.identity,
+                                                        first.hash));
+  LittleFsArchiveStore after_rename_failure("/sigap/archive.bin");
+  TEST_ASSERT_TRUE(after_rename_failure.begin(filesystem, 1024U * 1024U));
+  TEST_ASSERT_TRUE(after_rename_failure.contains(first.identity, first.hash));
+  TEST_ASSERT_TRUE(after_rename_failure.contains(second.identity, second.hash));
+}
+
 void test_sd_probe_path_is_device_owned_and_bounded() {
   char path[64U]{};
   TEST_ASSERT_TRUE(sigap::storage::build_sd_probe_path(
@@ -293,6 +349,8 @@ int main() {
   UNITY_BEGIN();
   RUN_TEST(test_target_archive_failed_recovery_copy_is_restart_safe);
   RUN_TEST(test_target_archive_reclaims_non_head_probe_record);
+  RUN_TEST(test_target_archive_short_append_recovers_valid_prefix);
+  RUN_TEST(test_target_archive_failed_reclaim_preserves_source);
   RUN_TEST(test_sd_probe_path_is_device_owned_and_bounded);
   RUN_TEST(test_target_batch_and_ack_replay_preserve_exact_bytes_and_binding);
   RUN_TEST(test_target_ack_restart_does_not_reclaim_wrong_pending_batch);
