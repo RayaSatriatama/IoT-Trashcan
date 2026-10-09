@@ -4,12 +4,14 @@ import {
   decodeBleResponse,
   encodeBleFrames,
   encodeBleCommand,
+  encodeCalibrationCommand,
   isWebBluetoothAvailable,
   SIGAP_BLE_CONTROL_UUID,
   SIGAP_BLE_EVENTS_UUID,
   SIGAP_BLE_SERVICE_UUID,
   type WifiNetwork,
   type WifiStatus,
+  type BleCalibrationOperation,
 } from './protocol';
 
 type BleCharacteristic = {
@@ -154,6 +156,99 @@ export class BleProvisioningClient {
       }
     }
     throw new Error(`Koneksi Wi-Fi tidak selesai (status ${latest.state})`);
+  }
+
+  async calibrationCapabilities(): Promise<string> {
+    return this.calibration('CAPABILITIES');
+  }
+
+  async calibrationStatus(sensor: string): Promise<string> {
+    return this.calibration('STATUS', sensor);
+  }
+
+  async calibrationEvidence(sensor: string): Promise<string> {
+    return this.calibration('EVIDENCE', sensor);
+  }
+
+  async calibrationStart(sensor: string): Promise<string> {
+    return this.calibration('START', sensor);
+  }
+
+  async calibrationCriteria(
+    sensor: string,
+    parameters: Record<string, string | number | boolean>,
+  ): Promise<string> {
+    return this.calibration('CRITERIA', sensor, parameters);
+  }
+
+  async calibrationCapture(sensor: string): Promise<string> {
+    return this.calibration('CAPTURE', sensor);
+  }
+
+  async calibrationValidate(sensor: string): Promise<string> {
+    return this.calibration('VALIDATE', sensor);
+  }
+
+  async calibrationPreview(sensor: string): Promise<string> {
+    return this.calibration('PREVIEW', sensor);
+  }
+
+  async calibrationCommit(sensor: string): Promise<string> {
+    return this.calibration('COMMIT', sensor);
+  }
+
+  async calibrationCancel(): Promise<string> {
+    return this.calibration('CANCEL');
+  }
+
+  async calibrationHistory(sensor?: string): Promise<string> {
+    return this.calibration('HISTORY', sensor);
+  }
+
+  async calibrationRollback(sensor: string, version: string): Promise<string> {
+    return this.calibration('ROLLBACK', sensor, { version });
+  }
+
+  private async calibration(
+    operation: BleCalibrationOperation,
+    sensor?: string,
+    parameters: Record<string, string | number | boolean> = {},
+  ): Promise<string> {
+    const response = await this.requestCalibration(
+      encodeCalibrationCommand(operation, sensor, parameters),
+    );
+    return response;
+  }
+
+  private async requestCalibration(command: Uint8Array): Promise<string> {
+    const control = this.control;
+    if (!control) throw new Error('Hubungkan perangkat BLE terlebih dahulu');
+    const requestId = String(this.nextRequestId++);
+    const frames = encodeBleFrames(requestId, command);
+    const response = await new Promise<ReturnType<typeof decodeBleResponse>>((resolve, reject) => {
+      const timer = globalThis.setTimeout(() => {
+        this.pending = null;
+        reject(new Error('Perangkat tidak merespons'));
+      }, this.requestTimeoutMs);
+      this.pending = {
+        requestId,
+        frames: [],
+        accept: () => true,
+        resolve: (value) => { globalThis.clearTimeout(timer); resolve(value); },
+        reject: (error) => { globalThis.clearTimeout(timer); reject(error); },
+      };
+      void (async () => {
+        try {
+          for (const frame of frames) await control.writeValue(frame as unknown as BufferSource);
+        } catch (error: unknown) {
+          globalThis.clearTimeout(timer);
+          this.pending = null;
+          reject(error instanceof Error ? error : new Error('BLE write gagal'));
+        }
+      })();
+    });
+    if (!response.calibration) throw new Error('Respons kalibrasi tidak tersedia');
+    return response.calibration.text;
   }
 
   private async request(command: string, payload: Record<string, unknown> = {}, accept: (response: ReturnType<typeof decodeBleResponse>) => boolean = () => true): Promise<ReturnType<typeof decodeBleResponse>> {

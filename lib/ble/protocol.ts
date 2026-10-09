@@ -32,7 +32,14 @@ export type BleResponse = {
   status?: WifiStatus;
   networks?: WifiNetwork[];
   scanPending?: boolean;
+  calibration?: { text: string };
 };
+
+export const BLE_CALIBRATION_OPERATIONS = [
+  'CAPABILITIES', 'STATUS', 'EVIDENCE', 'START', 'CRITERIA', 'CAPTURE',
+  'VALIDATE', 'PREVIEW', 'COMMIT', 'CANCEL', 'HISTORY', 'ROLLBACK',
+] as const;
+export type BleCalibrationOperation = typeof BLE_CALIBRATION_OPERATIONS[number];
 
 function validateFrameHeader(version: string, requestId: string, chunkIndex: number, chunkCount: number): void {
   if (version !== BLE_REQUEST_FRAME_VERSION && version !== BLE_RESPONSE_FRAME_VERSION) throw new Error('BLE frame version invalid');
@@ -119,8 +126,9 @@ export function assembleBleFrames(
 }
 
 export function encodeBleCommand(_id: string, command: string, payload: Record<string, unknown> = {}): Uint8Array {
-  let body = command.toUpperCase();
-  if (body === 'CONNECT' || body === 'CONNECT_WIFI') {
+  let body = command.trim();
+  const normalized = body.toUpperCase();
+  if (normalized === 'CONNECT' || normalized === 'CONNECT_WIFI') {
     const ssid = typeof payload.ssid === 'string' ? payload.ssid : '';
     const password = typeof payload.password === 'string' ? payload.password : '';
     if (!ssid || /[\s\r\n]/u.test(ssid) || ssid.length > 32 || password.length > 64 || /[\r\n]/u.test(password)) {
@@ -128,15 +136,42 @@ export function encodeBleCommand(_id: string, command: string, payload: Record<s
     }
     body = `CONNECT_WIFI ${ssid} ${password}`;
   }
-  if (body !== 'STATUS' && body !== 'GET_STATUS' && body !== 'SCAN' &&
-      body !== 'SCAN_WIFI' && body !== 'PING' && body !== 'LIST_KNOWN_WIFI' &&
-      body !== 'RETRY_WIFI' && !body.startsWith('CONNECT ') &&
-      !body.startsWith('CONNECT_WIFI ')) {
+  const normalizedBody = body.toUpperCase();
+  if (normalizedBody !== 'STATUS' && normalizedBody !== 'GET_STATUS' && normalizedBody !== 'SCAN' &&
+      normalizedBody !== 'SCAN_WIFI' && normalizedBody !== 'PING' && normalizedBody !== 'LIST_KNOWN_WIFI' &&
+      normalizedBody !== 'RETRY_WIFI' && !normalizedBody.startsWith('CONNECT ') &&
+      !normalizedBody.startsWith('CONNECT_WIFI ') && !normalizedBody.startsWith('CAL ')) {
     throw new Error('BLE command tidak dikenal');
+  }
+  if (body.startsWith('CAL ') && (body.length > 135 || /[\r\n]/u.test(body))) {
+    throw new Error('Perintah kalibrasi tidak valid');
   }
   const encoded = new TextEncoder().encode(`${body}\n`);
   if (encoded.byteLength > BLE_FRAME_MAX_BYTES) throw new Error('BLE command is too large');
   return encoded;
+}
+
+function calibrationToken(value: string): string {
+  if (!value || value.length > 96 || /[\s\r\n|]/u.test(value)) {
+    throw new Error('Parameter kalibrasi tidak valid');
+  }
+  return value;
+}
+
+export function encodeCalibrationCommand(
+  operation: BleCalibrationOperation,
+  sensor?: string,
+  parameters: Record<string, string | number | boolean> = {},
+): Uint8Array {
+  if (!BLE_CALIBRATION_OPERATIONS.includes(operation)) throw new Error('Operasi kalibrasi tidak valid');
+  const tokens = [`CAL`, operation];
+  if (sensor !== undefined) tokens.push(calibrationToken(sensor));
+  Object.keys(parameters).sort().forEach((key) => {
+    const safeKey = calibrationToken(key);
+    const value = calibrationToken(String(parameters[key]));
+    tokens.push(`${safeKey}=${value}`);
+  });
+  return encodeBleCommand('', tokens.join(' '));
 }
 
 export function decodeBleResponse(bytes: Uint8Array): BleResponse {
@@ -172,6 +207,7 @@ export function decodeBleResponse(bytes: Uint8Array): BleResponse {
     return { ok: true, networks };
   }
   if (text === 'OK RETRY_WIFI') return { ok: true, status: { state: 'CONNECTING', ssid: null } };
+  if (text.startsWith('OK CAL ')) return { ok: true, calibration: { text: text.slice(3) } };
   throw new Error('BLE response envelope is invalid');
 }
 

@@ -94,6 +94,25 @@ class Backend final : public IBleProvisioningBackend {
   std::string connected_ssid;
   std::string connected_password;
 };
+
+class CalibrationBackend final : public IBleCalibrationBackend {
+ public:
+  bool execute(std::string_view command, char* response, std::size_t capacity,
+               std::size_t& response_size) noexcept override {
+    last_command.assign(command);
+    if (response == nullptr || capacity < 4U) return false;
+    const char* value = command == "CAL STATUS ds18b20_b3"
+                            ? "OK CAL STATUS sensor=ds18b20_b3 state=IDLE"
+                            : "ERR CAL_REJECTED";
+    response_size = std::min<std::size_t>(std::strlen(value), capacity);
+    std::memcpy(response, value, response_size);
+    return value[0] == 'O';
+  }
+  void disconnect() noexcept override { ++disconnects; }
+
+  std::string last_command;
+  int disconnects{0};
+};
 }  // namespace
 
 void test_parser_accepts_bounded_commands() {
@@ -294,6 +313,41 @@ void test_local_passkey_handoff_is_one_shot_and_bounded() {
   TEST_ASSERT_EQUAL_STRING("123456", output);
 }
 
+void test_calibration_commands_use_shared_bounded_backend() {
+  BleCommand command{};
+  TEST_ASSERT_EQUAL_INT(
+      BleParseStatus::Accepted,
+      BleCommandParser::parse("CAL STATUS ds18b20_b3", command));
+  TEST_ASSERT_EQUAL_INT(BleCommandKind::CalibrationStatus, command.kind);
+  TEST_ASSERT_EQUAL_INT(
+      BleParseStatus::Invalid,
+      BleCommandParser::parse("CAL STATUS", command));
+  TEST_ASSERT_EQUAL_INT(
+      BleParseStatus::Accepted,
+      BleCommandParser::parse("CAL CAPABILITIES", command));
+
+  Backend wifi;
+  CalibrationBackend calibration;
+  Clock clock;
+  BleProvisioningSession session(wifi, clock);
+  session.set_calibration_backend(&calibration);
+  BleResponse response{};
+  session.on_connect(0U);
+  session.on_authenticated(true);
+  TEST_ASSERT_EQUAL_INT(
+      BleParseStatus::Accepted,
+      session.receive("CAL STATUS ds18b20_b3", response));
+  TEST_ASSERT_NOT_NULL(std::strstr(gather_response(session, response).c_str(),
+                                   "sensor=ds18b20_b3"));
+  TEST_ASSERT_EQUAL_STRING("CAL STATUS ds18b20_b3", calibration.last_command.c_str());
+
+  session.on_disconnect();
+  TEST_ASSERT_EQUAL_INT(1, calibration.disconnects);
+  TEST_ASSERT_EQUAL_INT(
+      BleParseStatus::Invalid,
+      session.receive("CAL STATUS ds18b20_b3", response));
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_parser_accepts_bounded_commands);
@@ -307,5 +361,6 @@ int main() {
   RUN_TEST(test_connect_never_exposes_password_in_status);
   RUN_TEST(test_provisioning_secret_is_separate_and_stable);
   RUN_TEST(test_local_passkey_handoff_is_one_shot_and_bounded);
+  RUN_TEST(test_calibration_commands_use_shared_bounded_backend);
   return UNITY_END();
 }

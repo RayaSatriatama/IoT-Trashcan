@@ -31,6 +31,18 @@ enum class BleCommandKind : uint8_t {
   Ping,
   ListKnownWifi,
   RetryWifi,
+  CalibrationCapabilities,
+  CalibrationStatus,
+  CalibrationEvidence,
+  CalibrationStart,
+  CalibrationCriteria,
+  CalibrationCapture,
+  CalibrationValidate,
+  CalibrationPreview,
+  CalibrationCommit,
+  CalibrationCancel,
+  CalibrationHistory,
+  CalibrationRollback,
 };
 
 enum class PasskeyDisclosureStatus : uint8_t {
@@ -71,6 +83,8 @@ struct BleCommand final {
   std::array<char, 65> password{};
   std::size_t ssid_size{0U};
   std::size_t password_size{0U};
+  std::array<char, 128> calibration_arguments{};
+  std::size_t calibration_arguments_size{0U};
 };
 
 struct BleWireFrame final {
@@ -120,6 +134,20 @@ class IBleProvisioningBackend {
   virtual void cancel() noexcept = 0;
 };
 
+// Calibration is deliberately exposed as a narrow transport seam.  The
+// authoritative session/controller remains owned by the calibration module;
+// this adapter only forwards a bounded, authenticated command and receives a
+// bounded response.  A single controller can therefore arbitrate USB, BLE,
+// and HTTPS callers without duplicating calibration state here.
+class IBleCalibrationBackend {
+ public:
+  virtual ~IBleCalibrationBackend() = default;
+  virtual bool execute(std::string_view command, char* response,
+                       std::size_t capacity,
+                       std::size_t& response_size) noexcept = 0;
+  virtual void disconnect() noexcept = 0;
+};
+
 class WifiProvisioningBackend final : public IBleProvisioningBackend {
  public:
   explicit WifiProvisioningBackend(WifiConnectionManager& manager) noexcept
@@ -165,6 +193,9 @@ class BleProvisioningSession final {
 
   void on_connect(uint64_t now_us) noexcept;
   void on_authenticated(bool authenticated) noexcept { authenticated_ = authenticated; }
+  void set_calibration_backend(IBleCalibrationBackend* backend) noexcept {
+    calibration_backend_ = backend;
+  }
   void on_disconnect() noexcept;
   bool connected() const noexcept { return connected_; }
   bool authenticated() const noexcept { return authenticated_; }
@@ -186,6 +217,7 @@ class BleProvisioningSession final {
   BleParseStatus dispatch(std::string_view payload, uint32_t request_id,
                           BleResponse& response) noexcept;
   bool timed_out(uint64_t now_us) const noexcept;
+  bool calibration_command(BleCommandKind kind) const noexcept;
 
   IBleProvisioningBackend& backend_;
   BleProvisioningClock& clock_;
@@ -210,6 +242,8 @@ class BleProvisioningSession final {
   uint32_t pending_response_id_{0U};
   uint16_t pending_response_chunk_{0U};
   uint32_t response_request_id_{0U};
+  IBleCalibrationBackend* calibration_backend_{nullptr};
+  std::array<char, kMaxResponseBytes> calibration_response_{};
 };
 
 #ifdef ARDUINO

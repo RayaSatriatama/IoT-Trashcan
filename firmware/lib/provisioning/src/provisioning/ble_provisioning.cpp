@@ -45,6 +45,24 @@ bool parse_uint(std::string_view value, uint32_t maximum,
   return true;
 }
 
+bool calibration_operation(std::string_view operation,
+                           BleCommandKind& kind) noexcept {
+  if (operation == "CAPABILITIES") kind = BleCommandKind::CalibrationCapabilities;
+  else if (operation == "STATUS") kind = BleCommandKind::CalibrationStatus;
+  else if (operation == "EVIDENCE") kind = BleCommandKind::CalibrationEvidence;
+  else if (operation == "START") kind = BleCommandKind::CalibrationStart;
+  else if (operation == "CRITERIA") kind = BleCommandKind::CalibrationCriteria;
+  else if (operation == "CAPTURE") kind = BleCommandKind::CalibrationCapture;
+  else if (operation == "VALIDATE") kind = BleCommandKind::CalibrationValidate;
+  else if (operation == "PREVIEW") kind = BleCommandKind::CalibrationPreview;
+  else if (operation == "COMMIT") kind = BleCommandKind::CalibrationCommit;
+  else if (operation == "CANCEL") kind = BleCommandKind::CalibrationCancel;
+  else if (operation == "HISTORY") kind = BleCommandKind::CalibrationHistory;
+  else if (operation == "ROLLBACK") kind = BleCommandKind::CalibrationRollback;
+  else return false;
+  return true;
+}
+
 std::size_t next_field(std::string_view value, std::size_t start,
                        std::string_view& field) noexcept {
   if (start > value.size()) return std::string_view::npos;
@@ -200,6 +218,41 @@ BleParseStatus BleCommandParser::parse(std::string_view frame,
     output.kind = BleCommandKind::RetryWifi;
     return BleParseStatus::Accepted;
   }
+  constexpr std::string_view calibration_prefix{"CAL "};
+  if (frame.substr(0U, calibration_prefix.size()) == calibration_prefix) {
+    const auto command = frame.substr(calibration_prefix.size());
+    const auto separator = command.find(' ');
+    const auto operation = command.substr(0U, separator);
+    if (operation.empty() || !calibration_operation(operation, output.kind)) {
+      return BleParseStatus::Invalid;
+    }
+    if (command.size() >= output.calibration_arguments.size() ||
+        has_control(command)) {
+      return command.size() > output.calibration_arguments.size()
+                 ? BleParseStatus::Oversized
+                 : BleParseStatus::Invalid;
+    }
+    std::copy(command.begin(), command.end(), output.calibration_arguments.begin());
+    output.calibration_arguments_size = command.size();
+    output.calibration_arguments[command.size()] = '\0';
+    // Commands that need a target/criteria must carry one.  CAPABILITIES,
+    // HISTORY and CANCEL are valid without an argument because the shared
+    // controller resolves the active session/target in that case.
+    const bool requires_argument =
+        output.kind == BleCommandKind::CalibrationStatus ||
+        output.kind == BleCommandKind::CalibrationEvidence ||
+        output.kind == BleCommandKind::CalibrationStart ||
+        output.kind == BleCommandKind::CalibrationCriteria ||
+        output.kind == BleCommandKind::CalibrationCapture ||
+        output.kind == BleCommandKind::CalibrationValidate ||
+        output.kind == BleCommandKind::CalibrationPreview ||
+        output.kind == BleCommandKind::CalibrationCommit ||
+        output.kind == BleCommandKind::CalibrationRollback;
+    if (requires_argument && separator == std::string_view::npos) {
+      return BleParseStatus::Invalid;
+    }
+    return BleParseStatus::Accepted;
+  }
   constexpr std::string_view prefix{"CONNECT "};
   constexpr std::string_view wifi_prefix{"CONNECT_WIFI "};
   if (frame.substr(0U, wifi_prefix.size()) == wifi_prefix) {
@@ -250,6 +303,7 @@ void BleProvisioningSession::on_disconnect() noexcept {
   reset_reassembly();
   pending_response_size_ = 0U;
   pending_response_offset_ = 0U;
+  if (calibration_backend_ != nullptr) calibration_backend_->disconnect();
   backend_.cancel();
 }
 
@@ -414,6 +468,35 @@ BleParseStatus BleProvisioningSession::dispatch(std::string_view payload,
     return status;
   }
   last_activity_us_ = clock_.now_us();
+  if (calibration_command(command.kind)) {
+    if (calibration_backend_ == nullptr) {
+      set_response(response, "ERR CAL_UNAVAILABLE");
+      return BleParseStatus::Accepted;
+    }
+    char command_text[136]{};
+    const int command_size = std::snprintf(
+        command_text, sizeof(command_text), "CAL %.*s",
+        static_cast<int>(command.calibration_arguments_size),
+        command.calibration_arguments.data());
+    if (command_size <= 0 || static_cast<std::size_t>(command_size) >=
+                                 sizeof(command_text)) {
+      set_response(response, "ERR OVERSIZED");
+      return BleParseStatus::Oversized;
+    }
+    std::size_t result_size{0U};
+    const bool accepted = calibration_backend_->execute(
+        std::string_view(command_text, static_cast<std::size_t>(command_size)),
+        calibration_response_.data(), calibration_response_.size(), result_size);
+    result_size = std::min(result_size, calibration_response_.size());
+    if (result_size == 0U) {
+      set_response(response, accepted ? "OK CAL" : "ERR CAL_REJECTED");
+      return accepted ? BleParseStatus::Accepted : BleParseStatus::Invalid;
+    }
+    queue_response(std::string_view(calibration_response_.data(), result_size),
+                   request_id);
+    emit_response(response);
+    return accepted ? BleParseStatus::Accepted : BleParseStatus::Invalid;
+  }
   switch (command.kind) {
     case BleCommandKind::Status:
       status_response(response);
@@ -537,6 +620,11 @@ bool BleProvisioningSession::timed_out(uint64_t now_us) const noexcept {
   return now_us >= last_activity_us_ &&
          now_us - last_activity_us_ >=
              static_cast<uint64_t>(policy_.session_timeout_ms) * 1000U;
+}
+
+bool BleProvisioningSession::calibration_command(BleCommandKind kind) const noexcept {
+  return static_cast<uint8_t>(kind) >=
+         static_cast<uint8_t>(BleCommandKind::CalibrationCapabilities);
 }
 
 #ifdef ARDUINO

@@ -6,6 +6,7 @@ import {
   decodeBleFrame,
   decodeBleResponse,
   encodeBleCommand,
+  encodeCalibrationCommand,
   encodeBleFrames,
   isWebBluetoothAvailable,
 } from './protocol';
@@ -44,5 +45,24 @@ describe('BLE provisioning protocol', () => {
 
   it('does not claim support outside a secure Web Bluetooth context', () => {
     expect(isWebBluetoothAvailable()).toBe(false);
+  });
+
+  it('encodes bounded calibration operations without changing sensor identity', () => {
+    const bytes = encodeCalibrationCommand('CRITERIA', 'ds18b20_b3', {
+      reference_c: 25.5,
+      stable_samples: 8,
+    });
+    expect(new TextDecoder().decode(bytes)).toBe(
+      'CAL CRITERIA ds18b20_b3 reference_c=25.5 stable_samples=8\n',
+    );
+    expect(() => encodeCalibrationCommand('START', 'sensor with spaces')).toThrow();
+    expect(() => encodeCalibrationCommand('START', 'ds18b20_b3', { note: 'x y' })).toThrow();
+  });
+
+  it('decodes calibration response text while preserving bounded errors', () => {
+    expect(decodeBleResponse(new TextEncoder().encode('OK CAL PREVIEW sensor=ds18b20_b3')))
+      .toEqual({ ok: true, calibration: { text: 'CAL PREVIEW sensor=ds18b20_b3' } });
+    expect(decodeBleResponse(new TextEncoder().encode('ERR CAL_SESSION_BUSY')))
+      .toEqual({ ok: false, error: 'CAL_SESSION_BUSY' });
   });
 });
