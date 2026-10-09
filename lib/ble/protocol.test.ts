@@ -62,9 +62,19 @@ describe('BLE provisioning protocol', () => {
   });
 
   it('decodes calibration response text while preserving bounded errors', () => {
-    expect(decodeBleResponse(new TextEncoder().encode('OK CAL PREVIEW sensor=ds18b20_b3')))
-      .toEqual({ ok: true, calibration: { text: 'CAL PREVIEW sensor=ds18b20_b3' } });
+    expect(decodeBleResponse(new TextEncoder().encode(
+      'CAL1|op=PREVIEW|status=ACCEPTED|session=12|sensor=ds18b20_b3|data=proposal_hash=abc;profile_version=2',
+    ))).toEqual({ ok: true, calibration: {
+      version: 'CAL1', operation: 'PREVIEW', status: 'ACCEPTED', sessionId: '12',
+      sensor: 'ds18b20_b3', data: { proposal_hash: 'abc', profile_version: '2' },
+    } });
     expect(decodeBleResponse(new TextEncoder().encode('ERR CAL_SESSION_BUSY')))
       .toEqual({ ok: false, error: 'CAL_SESSION_BUSY' });
+    expect(decodeBleResponse(new TextEncoder().encode(
+      'CAL1|op=COMMIT|status=ERROR|session=12|sensor=ds18b20_b3|data=error=CONFLICT',
+    ))).toEqual({ ok: false, error: 'CONFLICT', calibration: {
+      version: 'CAL1', operation: 'COMMIT', status: 'ERROR', sessionId: '12',
+      sensor: 'ds18b20_b3', data: { error: 'CONFLICT' }, error: 'CONFLICT',
+    } });
   });
 });

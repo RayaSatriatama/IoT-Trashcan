@@ -840,6 +840,26 @@ CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
         clear_calibration_proposal();
         return CommandStatus::Rejected;
       }
+      if (profiles_ == nullptr || !calibration_proposal_.present) {
+        (void)calibration_.complete_commit(false);
+        clear_calibration_proposal();
+        return CommandStatus::Failed;
+      }
+      {
+        acquisition::ActiveProfileSnapshot committed{};
+        if (!profiles_->snapshot(calibration_proposal_.key, committed) ||
+            !committed.present ||
+            !append_u64(response, "profile_version=",
+                        committed.ref.profile_version) ||
+            !response.append("profile_hash=") ||
+            !append_hex(response, committed.ref.hash.data(),
+                        committed.ref.hash.size()) ||
+            !response.append("\n")) {
+          (void)calibration_.complete_commit(false);
+          clear_calibration_proposal();
+          return CommandStatus::Failed;
+        }
+      }
       (void)calibration_.complete_commit(true);
       clear_calibration_proposal();
       mode_ = DeviceMode::Maintenance;

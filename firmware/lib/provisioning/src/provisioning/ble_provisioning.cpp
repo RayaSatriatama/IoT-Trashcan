@@ -50,6 +50,7 @@ bool calibration_operation(std::string_view operation,
   if (operation == "CAPABILITIES") kind = BleCommandKind::CalibrationCapabilities;
   else if (operation == "STATUS") kind = BleCommandKind::CalibrationStatus;
   else if (operation == "EVIDENCE") kind = BleCommandKind::CalibrationEvidence;
+  else if (operation == "ACTIVE_PROFILE") kind = BleCommandKind::CalibrationActiveProfile;
   else if (operation == "START") kind = BleCommandKind::CalibrationStart;
   else if (operation == "CRITERIA") kind = BleCommandKind::CalibrationCriteria;
   else if (operation == "CAPTURE") kind = BleCommandKind::CalibrationCapture;
@@ -240,6 +241,7 @@ BleParseStatus BleCommandParser::parse(std::string_view frame,
     // shared controller resolves the active session/target in that case.
     const bool requires_argument =
         output.kind == BleCommandKind::CalibrationEvidence ||
+        output.kind == BleCommandKind::CalibrationActiveProfile ||
         output.kind == BleCommandKind::CalibrationStart ||
         output.kind == BleCommandKind::CalibrationCriteria ||
         output.kind == BleCommandKind::CalibrationCapture ||

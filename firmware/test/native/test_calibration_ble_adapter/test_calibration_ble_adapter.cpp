@@ -39,7 +39,7 @@ void test_ble_adapter_uses_authoritative_parser_and_router() {
   CommandRouter router(config, secrets);
   Clock clock{};
   CommandRouterBleCalibrationBackend backend(router, clock);
-  char response[192]{};
+  char response[512]{};
   std::size_t size{0U};
 
   TEST_ASSERT_TRUE(backend.execute("CAL STATUS", response, sizeof(response), size));
@@ -64,11 +64,52 @@ void test_ble_adapter_uses_authoritative_parser_and_router() {
                        "calibration_active=false") != std::string_view::npos);
 }
 
+void test_ble_calibration_envelope_and_typed_capabilities() {
+  sigap::config::MemoryConfigStore config_store{};
+  sigap::config::ConfigManager config(config_store, kContext);
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(sigap::config::ConfigBootResult::BootstrapDefaults),
+      static_cast<int>(config.begin()));
+  sigap::provisioning::MemorySecretBlobStore secret_store{};
+  sigap::provisioning::PersistentSecretStore secrets(secret_store);
+  CommandRouter router(config, secrets);
+  Clock clock{};
+  CommandRouterBleCalibrationBackend backend(router, clock);
+  char response[512]{};
+  std::size_t size{0U};
+
+  TEST_ASSERT_TRUE(backend.execute("CAL CAPABILITIES ds18b20_b3", response,
+                                  sizeof(response), size));
+  const std::string_view capabilities(response, size);
+  TEST_ASSERT_TRUE(capabilities.find("CAL1|op=CAPABILITIES|status=ACCEPTED") !=
+                  std::string_view::npos);
+  TEST_ASSERT_TRUE(capabilities.find("reference_temperature_centi_c") !=
+                  std::string_view::npos);
+
+  size = 0U;
+  TEST_ASSERT_FALSE(backend.execute("CAL HISTORY ds18b20_b3", response,
+                                   sizeof(response), size));
+  TEST_ASSERT_TRUE(std::string_view(response, size).find(
+                       "status=ERROR") != std::string_view::npos);
+  TEST_ASSERT_TRUE(std::string_view(response, size).find(
+                       "UNSUPPORTED") != std::string_view::npos);
+
+  sigap::provisioning::BleCommand parsed{};
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(sigap::provisioning::BleParseStatus::Accepted),
+      static_cast<int>(sigap::provisioning::BleCommandParser::parse(
+          "CAL ACTIVE_PROFILE ds18b20_b3", parsed)));
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(sigap::provisioning::BleCommandKind::CalibrationActiveProfile),
+      static_cast<int>(parsed.kind));
+}
+
 }  // namespace
 
 void setup() {
   UNITY_BEGIN();
   RUN_TEST(test_ble_adapter_uses_authoritative_parser_and_router);
+  RUN_TEST(test_ble_calibration_envelope_and_typed_capabilities);
   UNITY_END();
 }
 

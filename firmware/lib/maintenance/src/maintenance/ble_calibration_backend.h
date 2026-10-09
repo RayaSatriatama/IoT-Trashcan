@@ -37,6 +37,9 @@ class CommandRouterBleCalibrationBackend final
   const ICalibrationClock& clock_;
   MaintenanceParser parser_{};
   bool ble_session_owned_{false};
+  uint64_t session_id_{0U};
+  uint64_t next_session_id_{1U};
+  std::array<char, 64U> session_sensor_{};
 };
 
 }  // namespace sigap::maintenance

@@ -2,6 +2,7 @@
 #include "maintenance/runtime.h"
 
 #include <algorithm>
+#include <charconv>
 
 namespace sigap::maintenance {
 namespace {
@@ -15,6 +16,92 @@ bool append_text(char* output, std::size_t capacity, std::size_t& size,
   size += value.size();
   output[size] = '\0';
   return true;
+}
+
+bool append_escaped_data(char* output, std::size_t capacity, std::size_t& size,
+                         std::string_view value) noexcept {
+  for (const char byte : value) {
+    // Maintenance responses are line-oriented.  Keep the BLE envelope
+    // single-line and deterministic while retaining every field/value.
+    if (byte == '|' ) {
+      if (!append_text(output, capacity, size, "%7C")) return false;
+      continue;
+    }
+    const char replacement = byte == '\n' || byte == '\r' ? ';' : byte;
+    if (!append_text(output, capacity, size, std::string_view(&replacement, 1U))) return false;
+  }
+  return true;
+}
+
+std::string_view operation_name(std::string_view operation) noexcept {
+  if (operation == "ACTIVE_PROFILE") return "PROFILE";
+  return operation;
+}
+
+bool sensor_from_arguments(std::string_view arguments,
+                           std::string_view& sensor) noexcept {
+  const auto separator = arguments.find(' ');
+  sensor = separator == std::string_view::npos
+               ? arguments
+               : arguments.substr(0U, separator);
+  return !sensor.empty();
+}
+
+bool append_envelope(char* output, std::size_t capacity, std::size_t& size,
+                     std::string_view operation, bool accepted,
+                     std::string_view sensor, uint64_t session_id,
+                     std::string_view payload) noexcept {
+  size = 0U;
+  if (!append_text(output, capacity, size, "CAL1|op=") ||
+      !append_text(output, capacity, size, operation_name(operation)) ||
+      !append_text(output, capacity, size, "|status=") ||
+      !append_text(output, capacity, size, accepted ? "ACCEPTED" : "ERROR") ||
+      !append_text(output, capacity, size, "|session=") ) return false;
+  char session[21]{};
+  const auto result = std::to_chars(session, session + sizeof(session), session_id);
+  if (result.ec != std::errc{} ||
+      !append_text(output, capacity, size,
+                   std::string_view(session, static_cast<std::size_t>(result.ptr - session))) ||
+      !append_text(output, capacity, size, "|sensor=") ||
+      !append_text(output, capacity, size, sensor) ||
+      !append_text(output, capacity, size, "|data=") ||
+      !append_escaped_data(output, capacity, size, payload)) return false;
+  return size < capacity && (output[size] = '\0', true);
+}
+
+bool append_error_envelope(char* output, std::size_t capacity,
+                           std::size_t& size, std::string_view operation,
+                           std::string_view sensor, uint64_t session_id,
+                           std::string_view code) noexcept {
+  return append_envelope(output, capacity, size, operation, false, sensor,
+                         session_id, code);
+}
+
+bool capability_data(std::string_view sensor, std::string_view& data) noexcept {
+  if (sensor == "hx711_organic" || sensor == "hx711_inorganic" ||
+      sensor == "hx711_b3") {
+    data = "references=tare_counts:counts,reference_mass_mg:mg;criteria=samples:count,max_span_counts:counts";
+    return true;
+  }
+  if (sensor == "ultrasonic_organic" || sensor == "ultrasonic_inorganic" ||
+      sensor == "ultrasonic_b3") {
+    data = "references=empty_mm:mm,full_mm:mm;criteria=samples:count,max_span_mm:mm;engineering=echo_mm_per_us_milli:mm_per_us,echo_timeout_us:us,inter_sensor_gap_us:us,overshoot_tolerance_mm_milli:mm";
+    return true;
+  }
+  if (sensor == "mq4" || sensor == "mq135" || sensor == "mq7" ||
+      sensor == "mq8") {
+    data = "references=none;criteria=samples:count,max_span_counts:counts;engineering=reference_mv:mV,full_scale_counts:counts,divider_numerator:ratio,divider_denominator:ratio";
+    return true;
+  }
+  if (sensor == "ds18b20_b3") {
+    data = "references=reference_temperature_centi_c:centi_celsius;criteria=samples:count,max_span_centi_c:centi_celsius;engineering=resolution_bits:bits";
+    return true;
+  }
+  if (sensor == "sht31_44" || sensor == "sht31_45") {
+    data = "references=reference_temperature_centi_c:centi_celsius,reference_humidity_centi_pct:centi_percent;criteria=samples:count,max_temperature_span_centi_c:centi_celsius,max_humidity_span_centi_pct:centi_percent;engineering=address:i2c";
+    return true;
+  }
+  return false;
 }
 
 bool dispatch_line(MaintenanceParser& parser, CommandRouter& router,
@@ -89,12 +176,49 @@ bool CommandRouterBleCalibrationBackend::execute(
                              : command.substr(separator + 1U);
   constexpr std::string_view prefix{"calibration "};
 
-  if (operation == "CAPABILITIES" || operation == "HISTORY" ||
-      operation == "ROLLBACK") {
-    // These operations need a typed workflow API that is not exposed by the
-    // legacy maintenance router. Rejecting them is safer than fabricating a
-    // capability/history/rollback response.
+  std::string_view sensor{};
+  (void)sensor_from_arguments(arguments, sensor);
+
+  if (operation == "CAPABILITIES") {
+    std::string_view data{};
+    if (!capability_data(sensor, data)) {
+      (void)append_error_envelope(response, capacity, response_size, operation,
+                                  sensor, session_id_, "INVALID_SENSOR");
+      return false;
+    }
+    return append_envelope(response, capacity, response_size, operation, true,
+                           sensor, session_id_, data);
+  }
+
+  if (operation == "HISTORY" || operation == "ROLLBACK") {
+    // No history/rollback primitive is exposed by ProfileManager yet.  Keep
+    // this explicit and typed instead of fabricating a successful result.
+    (void)append_error_envelope(response, capacity, response_size, operation,
+                                sensor, session_id_, "UNSUPPORTED");
     return false;
+  }
+
+  if (operation == "ACTIVE_PROFILE") {
+    if (sensor.empty()) {
+      (void)append_error_envelope(response, capacity, response_size, operation,
+                                  sensor, session_id_, "INVALID_SENSOR");
+      return false;
+    }
+    std::array<char, kMaxCommandLineBytes> line{};
+    std::size_t line_size{0U};
+    if (!append_text(line.data(), line.size(), line_size, "profile status ") ||
+        !append_text(line.data(), line.size(), line_size, sensor)) {
+      return false;
+    }
+    MaintenanceResponse maintenance_response{};
+    CommandKind kind{CommandKind::Unknown};
+    const bool accepted = dispatch_line(parser_, router_, clock_,
+                                        std::string_view(line.data(), line_size),
+                                        maintenance_response, kind);
+    const bool encoded = append_envelope(response, capacity, response_size,
+                                         operation, accepted, sensor,
+                                         session_id_, maintenance_response.view());
+    return accepted && encoded;
   }
 
   if (operation == "STATUS" || operation == "EVIDENCE") {
@@ -114,8 +238,10 @@ bool CommandRouterBleCalibrationBackend::execute(
     const bool accepted = dispatch_line(
         parser_, router_, clock_, std::string_view(line.data(), line_size),
         maintenance_response, kind);
-    copy_response(maintenance_response, response, capacity, response_size);
-    return accepted;
+    const bool encoded = append_envelope(response, capacity, response_size,
+                                         operation, accepted, sensor,
+                                         session_id_, maintenance_response.view());
+    return accepted && encoded;
   }
 
   if (operation == "CRITERIA") {
@@ -157,8 +283,9 @@ bool CommandRouterBleCalibrationBackend::execute(
       cursor = end + 1U;
     }
     if (!dispatched) return false;
-    copy_response(last_response, response, capacity, response_size);
-    return true;
+    return append_envelope(response, capacity, response_size, operation, true,
+                           sensor, session_id_,
+                           last_response.view());
   }
 
   std::array<char, kMaxCommandLineBytes> line{};
@@ -198,16 +325,30 @@ bool CommandRouterBleCalibrationBackend::execute(
   const bool accepted = dispatch_line(
       parser_, router_, clock_, std::string_view(line.data(), line_size),
       maintenance_response, kind);
+  const uint64_t response_session = session_id_;
   if (accepted) {
     if (kind == CommandKind::CalibrationStart) {
       ble_session_owned_ = true;
+      session_id_ = next_session_id_++;
+      session_sensor_.fill('\0');
+      const auto copied = std::min(arguments.size(), session_sensor_.size() - 1U);
+      std::copy_n(arguments.data(), copied, session_sensor_.data());
+      session_sensor_[copied] = '\0';
     } else if (kind == CommandKind::CalibrationCancel ||
                kind == CommandKind::CalibrationCommit) {
       ble_session_owned_ = false;
     }
   }
-  copy_response(maintenance_response, response, capacity, response_size);
-  return accepted;
+  const bool encoded = append_envelope(
+      response, capacity, response_size, operation, accepted, sensor,
+      kind == CommandKind::CalibrationStart ? session_id_ : response_session,
+      maintenance_response.view());
+  if (accepted && (kind == CommandKind::CalibrationCancel ||
+                   kind == CommandKind::CalibrationCommit)) {
+    session_id_ = 0U;
+    session_sensor_.fill('\0');
+  }
+  return accepted && encoded;
 }
 
 void CommandRouterBleCalibrationBackend::disconnect() noexcept {
@@ -216,6 +357,8 @@ void CommandRouterBleCalibrationBackend::disconnect() noexcept {
     router_.transport_lost();
     ble_session_owned_ = false;
   }
+  session_id_ = 0U;
+  session_sensor_.fill('\0');
 }
 
 }  // namespace sigap::maintenance

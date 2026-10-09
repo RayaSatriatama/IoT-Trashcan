@@ -12,6 +12,7 @@ import {
   type WifiNetwork,
   type WifiStatus,
   type BleCalibrationOperation,
+  type BleCalibrationResponse,
 } from './protocol';
 
 type BleCharacteristic = {
@@ -158,54 +159,54 @@ export class BleProvisioningClient {
     throw new Error(`Koneksi Wi-Fi tidak selesai (status ${latest.state})`);
   }
 
-  async calibrationCapabilities(): Promise<string> {
+  async calibrationCapabilities(): Promise<BleCalibrationResponse> {
     return this.calibration('CAPABILITIES');
   }
 
-  async calibrationStatus(sensor: string): Promise<string> {
+  async calibrationStatus(sensor: string): Promise<BleCalibrationResponse> {
     return this.calibration('STATUS', sensor);
   }
 
-  async calibrationEvidence(sensor: string): Promise<string> {
+  async calibrationEvidence(sensor: string): Promise<BleCalibrationResponse> {
     return this.calibration('EVIDENCE', sensor);
   }
 
-  async calibrationStart(sensor: string): Promise<string> {
+  async calibrationStart(sensor: string): Promise<BleCalibrationResponse> {
     return this.calibration('START', sensor);
   }
 
   async calibrationCriteria(
     sensor: string,
     parameters: Record<string, string | number | boolean>,
-  ): Promise<string> {
+  ): Promise<BleCalibrationResponse> {
     return this.calibration('CRITERIA', sensor, parameters);
   }
 
-  async calibrationCapture(sensor: string, anchor: 'tare' | 'reference' | 'empty' | 'full'): Promise<string> {
+  async calibrationCapture(sensor: string, anchor: 'tare' | 'reference' | 'empty' | 'full'): Promise<BleCalibrationResponse> {
     return this.calibration('CAPTURE', sensor, { anchor });
   }
 
-  async calibrationValidate(sensor: string): Promise<string> {
+  async calibrationValidate(sensor: string): Promise<BleCalibrationResponse> {
     return this.calibration('VALIDATE', sensor);
   }
 
-  async calibrationPreview(sensor: string): Promise<string> {
+  async calibrationPreview(sensor: string): Promise<BleCalibrationResponse> {
     return this.calibration('PREVIEW', sensor);
   }
 
-  async calibrationCommit(sensor: string): Promise<string> {
+  async calibrationCommit(sensor: string): Promise<BleCalibrationResponse> {
     return this.calibration('COMMIT', sensor);
   }
 
-  async calibrationCancel(): Promise<string> {
+  async calibrationCancel(): Promise<BleCalibrationResponse> {
     return this.calibration('CANCEL');
   }
 
-  async calibrationHistory(sensor?: string): Promise<string> {
+  async calibrationHistory(sensor?: string): Promise<BleCalibrationResponse> {
     return this.calibration('HISTORY', sensor);
   }
 
-  async calibrationRollback(sensor: string, version: string): Promise<string> {
+  async calibrationRollback(sensor: string, version: string): Promise<BleCalibrationResponse> {
     return this.calibration('ROLLBACK', sensor, { version });
   }
 
@@ -213,14 +214,14 @@ export class BleProvisioningClient {
     operation: BleCalibrationOperation,
     sensor?: string,
     parameters: Record<string, string | number | boolean> = {},
-  ): Promise<string> {
+  ): Promise<BleCalibrationResponse> {
     const response = await this.requestCalibration(
       encodeCalibrationCommand(operation, sensor, parameters),
     );
     return response;
   }
 
-  private async requestCalibration(command: Uint8Array): Promise<string> {
+  private async requestCalibration(command: Uint8Array): Promise<BleCalibrationResponse> {
     const control = this.control;
     if (!control) throw new Error('Hubungkan perangkat BLE terlebih dahulu');
     const requestId = String(this.nextRequestId++);
@@ -247,8 +248,8 @@ export class BleProvisioningClient {
         }
       })();
     });
-    if (!response.calibration) throw new Error('Respons kalibrasi tidak tersedia');
-    return response.calibration.text;
+    if (!response.calibration || !response.calibration.status) throw new Error('Respons kalibrasi tidak tersedia');
+    return response.calibration;
   }
 
   private async request(command: string, payload: Record<string, unknown> = {}, accept: (response: ReturnType<typeof decodeBleResponse>) => boolean = () => true): Promise<ReturnType<typeof decodeBleResponse>> {

@@ -32,12 +32,23 @@ export type BleResponse = {
   status?: WifiStatus;
   networks?: WifiNetwork[];
   scanPending?: boolean;
-  calibration?: { text: string };
+  calibration?: BleCalibrationResponse;
+};
+
+export type BleCalibrationStatus = 'ACCEPTED' | 'ERROR';
+export type BleCalibrationResponse = {
+  version: 'CAL1';
+  operation: BleCalibrationOperation | 'PROFILE';
+  status: BleCalibrationStatus;
+  sessionId: string;
+  sensor: string | null;
+  data: Record<string, string>;
+  error?: string;
 };
 
 export const BLE_CALIBRATION_OPERATIONS = [
   'CAPABILITIES', 'STATUS', 'EVIDENCE', 'START', 'CRITERIA', 'CAPTURE',
-  'VALIDATE', 'PREVIEW', 'COMMIT', 'CANCEL', 'HISTORY', 'ROLLBACK',
+  'VALIDATE', 'PREVIEW', 'COMMIT', 'CANCEL', 'HISTORY', 'ROLLBACK', 'ACTIVE_PROFILE',
 ] as const;
 export type BleCalibrationOperation = typeof BLE_CALIBRATION_OPERATIONS[number];
 
@@ -218,7 +229,48 @@ export function decodeBleResponse(bytes: Uint8Array): BleResponse {
     return { ok: true, networks };
   }
   if (text === 'OK RETRY_WIFI') return { ok: true, status: { state: 'CONNECTING', ssid: null } };
-  if (text.startsWith('OK CAL ')) return { ok: true, calibration: { text: text.slice(3) } };
+  if (text.startsWith('CAL1|')) {
+    const fields = text.split('|');
+    if (fields.length < 6 || fields[0] !== 'CAL1') throw new Error('BLE calibration envelope invalid');
+    const values = new Map<string, string>();
+    for (const field of fields.slice(1, 5)) {
+      const separator = field.indexOf('=');
+      if (separator <= 0) throw new Error('BLE calibration field invalid');
+      values.set(field.slice(0, separator), field.slice(separator + 1));
+    }
+    if (values.size !== 4 || !values.has('op') || !values.has('status') ||
+        !values.has('session') || !values.has('sensor')) {
+      throw new Error('BLE calibration envelope fields invalid');
+    }
+    const operation = values.get('op') as BleCalibrationResponse['operation'];
+    if (![...BLE_CALIBRATION_OPERATIONS, 'PROFILE'].includes(operation as BleCalibrationOperation | 'PROFILE')) {
+      throw new Error('BLE calibration operation invalid');
+    }
+    const status = values.get('status');
+    if (status !== 'ACCEPTED' && status !== 'ERROR') throw new Error('BLE calibration status invalid');
+    if (!/^\d{1,20}$/u.test(values.get('session') ?? '')) throw new Error('BLE calibration session invalid');
+    const dataField = fields.slice(5).join('|');
+    if (!dataField.startsWith('data=')) throw new Error('BLE calibration data missing');
+    const data: Record<string, string> = {};
+    const encoded = dataField.slice(5);
+    if (encoded.length > BLE_FRAME_MAX_BYTES) throw new Error('BLE calibration data too large');
+    if (encoded) {
+      for (const item of encoded.split(';')) {
+        if (!item) continue;
+        const separator = item.indexOf('=');
+        if (separator <= 0) throw new Error('BLE calibration data invalid');
+        const key = item.slice(0, separator);
+        if (!/^[a-z][a-z0-9_]*$/u.test(key) || key in data) throw new Error('BLE calibration data key invalid');
+        data[key] = item.slice(separator + 1);
+      }
+    }
+    const result: BleCalibrationResponse = {
+      version: 'CAL1', operation, status, sessionId: values.get('session') ?? '',
+      sensor: values.get('sensor') || null, data,
+    };
+    if (status === 'ERROR') result.error = data.error ?? 'CALIBRATION_REJECTED';
+    return status === 'ACCEPTED' ? { ok: true, calibration: result } : { ok: false, error: result.error, calibration: result };
+  }
   throw new Error('BLE response envelope is invalid');
 }
 

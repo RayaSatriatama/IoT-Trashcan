@@ -34,6 +34,7 @@ enum class BleCommandKind : uint8_t {
   CalibrationCapabilities,
   CalibrationStatus,
   CalibrationEvidence,
+  CalibrationActiveProfile,
   CalibrationStart,
   CalibrationCriteria,
   CalibrationCapture,

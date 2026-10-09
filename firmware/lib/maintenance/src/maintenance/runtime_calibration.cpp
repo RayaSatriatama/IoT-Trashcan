@@ -51,6 +51,16 @@ bool append_u32(MaintenanceResponse& response, const char* label,
          response.append("\n");
 }
 
+bool append_hex(MaintenanceResponse& response, const uint8_t* bytes,
+                std::size_t size) noexcept {
+  static constexpr char digits[] = "0123456789abcdef";
+  for (std::size_t index = 0U; index < size; ++index) {
+    char pair[2]{digits[bytes[index] >> 4U], digits[bytes[index] & 0x0fU]};
+    if (!response.append(std::string_view(pair, 2U))) return false;
+  }
+  return true;
+}
+
 bool append_float(MaintenanceResponse& response, const char* label,
                   float value) noexcept {
   char number[32]{};
@@ -71,6 +81,14 @@ bool append_rom(MaintenanceResponse& response, const std::array<uint8_t, 8U>& ro
   }
   return response.append("rom=") && response.append(std::string_view(text, sizeof(text))) &&
          response.append("\n");
+}
+
+bool append_proposal_identity(MaintenanceResponse& response,
+                              const acquisition::EncodedProfile& encoded,
+                              uint32_t version) noexcept {
+  return response.append("proposal_hash=") &&
+         append_hex(response, encoded.hash().data(), encoded.hash().size()) &&
+         response.append("\n") && append_u32(response, "profile_version=", version);
 }
 
 bool same_active_profile(const acquisition::ActiveProfileSnapshot& left,
@@ -292,7 +310,9 @@ bool CommandRouter::append_calibration_preview(MaintenanceResponse& response) co
              append_u32(response, "reference_mv=", profile.reference_mv) &&
              append_u32(response, "full_scale_counts=", profile.full_scale_counts) &&
              append_u32(response, "divider_numerator=", profile.divider_numerator) &&
-             append_u32(response, "divider_denominator=", profile.divider_denominator);
+             append_u32(response, "divider_denominator=", profile.divider_denominator) &&
+             append_proposal_identity(response, calibration_proposal_.encoded,
+                                     profile.manifest.profile_version);
     }
     case acquisition::ProfileKind::Calibration:
       break;
@@ -306,7 +326,9 @@ bool CommandRouter::append_calibration_preview(MaintenanceResponse& response) co
       acquisition::Hx711Profile profile{};
       return codec.decode(calibration_proposal_.encoded, profile) &&
              append_i64(response, "tare_offset_counts=", profile.tare_offset_counts) &&
-             append_float(response, "counts_per_kg=", profile.counts_per_kg);
+             append_float(response, "counts_per_kg=", profile.counts_per_kg) &&
+             append_proposal_identity(response, calibration_proposal_.encoded,
+                                     profile.manifest.profile_version);
     }
     case calibration::CalibrationTarget::UltrasonicOrganic:
     case calibration::CalibrationTarget::UltrasonicInorganic:
@@ -318,22 +340,28 @@ bool CommandRouter::append_calibration_preview(MaintenanceResponse& response) co
              append_float(response, "echo_mm_per_us=", profile.echo_mm_per_us) &&
              append_float(response, "overshoot_tolerance_mm=", profile.overshoot_tolerance_mm) &&
              append_u32(response, "echo_timeout_us=", profile.echo_timeout_us) &&
-             append_u32(response, "inter_sensor_gap_us=", profile.inter_sensor_gap_us);
+             append_u32(response, "inter_sensor_gap_us=", profile.inter_sensor_gap_us) &&
+             append_proposal_identity(response, calibration_proposal_.encoded,
+                                     profile.manifest.profile_version);
     }
     case calibration::CalibrationTarget::Ds18b20B3: {
       acquisition::Ds18b20Profile profile{};
       return codec.decode(calibration_proposal_.encoded, profile) &&
              append_rom(response, profile.rom) &&
              append_u32(response, "resolution_bits=", profile.resolution_bits) &&
-             append_i64(response, "offset_centi_c=", profile.offset_centi_c);
+             append_i64(response, "offset_centi_c=", profile.offset_centi_c) &&
+             append_proposal_identity(response, calibration_proposal_.encoded,
+                                     profile.manifest.profile_version);
     }
     case calibration::CalibrationTarget::Sht31_44:
     case calibration::CalibrationTarget::Sht31_45: {
       acquisition::Sht31Profile profile{};
       return codec.decode(calibration_proposal_.encoded, profile) &&
              append_u32(response, "address=", profile.address) &&
-             append_i64(response, "temperature_offset_centi_c=", profile.temperature_offset_centi_c) &&
-             append_i64(response, "humidity_offset_centi_pct=", profile.humidity_offset_centi_pct);
+            append_i64(response, "temperature_offset_centi_c=", profile.temperature_offset_centi_c) &&
+             append_i64(response, "humidity_offset_centi_pct=", profile.humidity_offset_centi_pct) &&
+             append_proposal_identity(response, calibration_proposal_.encoded,
+                                     profile.manifest.profile_version);
     }
     default:
       return false;
