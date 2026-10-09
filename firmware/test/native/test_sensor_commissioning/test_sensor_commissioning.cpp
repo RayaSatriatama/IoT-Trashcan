@@ -31,6 +31,8 @@ struct Evidence final : calibration::ICalibrationEvidenceSource {
     if (sequence == 0U || sequence <= after) return false;
     const bool matches = [&] {
       switch (target) {
+        case calibration::CalibrationTarget::Hx711Organic:
+          return std::holds_alternative<calibration::Hx711Trial>(value);
         case calibration::CalibrationTarget::UltrasonicB3:
           return std::holds_alternative<calibration::UltrasonicTrial>(value);
         case calibration::CalibrationTarget::Mq4:
@@ -81,6 +83,23 @@ CommandStatus command(CommandRouter& router, std::string_view text,
   TEST_ASSERT_TRUE(emitted);
   MaintenanceResponse response{};
   return router.execute(event.command, now, response);
+}
+
+struct CommandResult final {
+  CommandStatus status{CommandStatus::Rejected};
+  std::string response{};
+};
+
+CommandResult command_with_response(CommandRouter& router, std::string_view text,
+                                    uint64_t now) {
+  MaintenanceParser parser{};
+  ParseEvent event{};
+  bool emitted{false};
+  for (const char byte : text) emitted = parser.consume(byte, event) || emitted;
+  TEST_ASSERT_TRUE(emitted);
+  MaintenanceResponse response{};
+  return CommandResult{router.execute(event.command, now, response),
+                       std::string(response.view())};
 }
 
 void start_common(Fixture& fixture, const char* target, const char* span,
@@ -191,11 +210,121 @@ void test_first_time_sht31_profile_binds_address_and_offsets() {
   TEST_ASSERT_EQUAL_UINT8(0x44U, profile.address);
 }
 
+void test_hx711_preview_is_read_only_and_commits_exact_coefficient() {
+  Fixture fixture{};
+  start_common(fixture, "hx711_organic", "10");
+  TEST_ASSERT_EQUAL_INT(0, static_cast<int>(command(
+      fixture.router, "calibration criteria reference_mass_mg 1000000\n", 4U)));
+  fixture.evidence.value = calibration::Hx711Trial{1000, acquisition::SampleQuality::Uncalibrated,
+                                                    true, true};
+  fixture.evidence.sequence = 1U;
+  TEST_ASSERT_EQUAL_INT(0, static_cast<int>(command(
+      fixture.router, "calibration capture tare\n", 5U)));
+  fixture.evidence.value = calibration::Hx711Trial{3000, acquisition::SampleQuality::Uncalibrated,
+                                                    true, true};
+  fixture.evidence.sequence = 2U;
+  TEST_ASSERT_EQUAL_INT(0, static_cast<int>(command(
+      fixture.router, "calibration capture reference\n", 6U)));
+  TEST_ASSERT_EQUAL_INT(0, static_cast<int>(command(
+      fixture.router, "calibration validate\n", 7U)));
+
+  const CommandResult preview = command_with_response(
+      fixture.router, "calibration preview\n", 8U);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),
+                        static_cast<int>(preview.status));
+  TEST_ASSERT_NOT_EQUAL(std::string::npos, preview.response.find("tare_offset_counts=1000"));
+  TEST_ASSERT_NOT_EQUAL(std::string::npos, preview.response.find("counts_per_kg=2000"));
+  TEST_ASSERT_FALSE(fixture.profile_store.slot_present(
+      acquisition::ProfileTarget::Hx711Organic, acquisition::ProfileSlot::A));
+  TEST_ASSERT_FALSE(fixture.profile_store.slot_present(
+      acquisition::ProfileTarget::Hx711Organic, acquisition::ProfileSlot::B));
+
+  TEST_ASSERT_EQUAL_INT(0, static_cast<int>(command(
+      fixture.router, "calibration commit\n", 9U)));
+  acquisition::ActiveProfileSnapshot active{};
+  acquisition::Hx711Profile profile{};
+  TEST_ASSERT_TRUE(fixture.profiles.snapshot(acquisition::ProfileTarget::Hx711Organic, active));
+  TEST_ASSERT_TRUE(active.present);
+  TEST_ASSERT_TRUE(fixture.codec.decode(active.encoded, profile));
+  TEST_ASSERT_EQUAL_INT64(1000, profile.tare_offset_counts);
+  TEST_ASSERT_FLOAT_WITHIN(0.001F, 2000.0F, profile.counts_per_kg);
+}
+
+void test_commit_rejects_preview_stale_reference_and_preserves_storage() {
+  Fixture fixture{};
+  start_common(fixture, "mq4", "10");
+  TEST_ASSERT_EQUAL_INT(0, static_cast<int>(command(fixture.router, "calibration criteria reference_mv 3300\n", 4U)));
+  TEST_ASSERT_EQUAL_INT(0, static_cast<int>(command(fixture.router, "calibration criteria full_scale_counts 4095\n", 5U)));
+  TEST_ASSERT_EQUAL_INT(0, static_cast<int>(command(fixture.router, "calibration criteria divider_numerator 2\n", 6U)));
+  TEST_ASSERT_EQUAL_INT(0, static_cast<int>(command(fixture.router, "calibration criteria divider_denominator 1\n", 7U)));
+  fixture.evidence.value = calibration::MqTrial{1234U, acquisition::SampleQuality::Uncalibrated,
+                                                true, true, true};
+  fixture.evidence.sequence = 1U;
+  TEST_ASSERT_EQUAL_INT(0, static_cast<int>(command(fixture.router, "calibration capture reference\n", 8U)));
+  TEST_ASSERT_EQUAL_INT(0, static_cast<int>(command(fixture.router, "calibration validate\n", 9U)));
+  TEST_ASSERT_EQUAL_INT(0, static_cast<int>(command(fixture.router, "calibration preview\n", 10U)));
+  TEST_ASSERT_EQUAL_INT(0, static_cast<int>(command(fixture.router, "calibration criteria reference_mv 3000\n", 11U)));
+
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Rejected), static_cast<int>(command(
+      fixture.router, "calibration commit\n", 12U)));
+  TEST_ASSERT_FALSE(fixture.profile_store.slot_present(
+      acquisition::ProfileTarget::Mq4, acquisition::ProfileSlot::A));
+  TEST_ASSERT_FALSE(fixture.profile_store.slot_present(
+      acquisition::ProfileTarget::Mq4, acquisition::ProfileSlot::B));
+}
+
+void test_repeat_calibration_versions_profile_and_failed_pointer_update_keeps_active() {
+  Fixture fixture{};
+  start_common(fixture, "mq4", "10");
+  TEST_ASSERT_EQUAL_INT(0, static_cast<int>(command(fixture.router, "calibration criteria reference_mv 3300\n", 4U)));
+  TEST_ASSERT_EQUAL_INT(0, static_cast<int>(command(fixture.router, "calibration criteria full_scale_counts 4095\n", 5U)));
+  TEST_ASSERT_EQUAL_INT(0, static_cast<int>(command(fixture.router, "calibration criteria divider_numerator 2\n", 6U)));
+  TEST_ASSERT_EQUAL_INT(0, static_cast<int>(command(fixture.router, "calibration criteria divider_denominator 1\n", 7U)));
+  fixture.evidence.value = calibration::MqTrial{1000U, acquisition::SampleQuality::Uncalibrated,
+                                                true, true, true};
+  fixture.evidence.sequence = 1U;
+  finish(fixture, "reference", 8U);
+
+  start_common(fixture, "mq4", "10");
+  fixture.evidence.value = calibration::MqTrial{1200U, acquisition::SampleQuality::Uncalibrated,
+                                                true, true, true};
+  fixture.evidence.sequence = 2U;
+  finish(fixture, "reference", 20U);
+  acquisition::ActiveProfileSnapshot active{};
+  TEST_ASSERT_TRUE(fixture.profiles.snapshot(acquisition::ProfileTarget::Mq4, active));
+  TEST_ASSERT_TRUE(active.present);
+  TEST_ASSERT_EQUAL_UINT32(2U, active.ref.profile_version);
+
+  start_common(fixture, "mq4", "10");
+  fixture.evidence.value = calibration::MqTrial{1300U, acquisition::SampleQuality::Uncalibrated,
+                                                true, true, true};
+  fixture.evidence.sequence = 3U;
+  TEST_ASSERT_EQUAL_INT(0, static_cast<int>(command(fixture.router, "calibration capture reference\n", 32U)));
+  TEST_ASSERT_EQUAL_INT(0, static_cast<int>(command(fixture.router, "calibration validate\n", 33U)));
+  TEST_ASSERT_EQUAL_INT(0, static_cast<int>(command(fixture.router, "calibration preview\n", 34U)));
+  fixture.profile_store.fail_next(acquisition::MemoryProfileStore::Fault::WriteActivation);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Rejected), static_cast<int>(command(
+      fixture.router, "calibration commit\n", 35U)));
+
+  acquisition::ActiveProfileSnapshot unchanged{};
+  TEST_ASSERT_TRUE(fixture.profiles.snapshot(acquisition::ProfileTarget::Mq4, unchanged));
+  TEST_ASSERT_TRUE(unchanged.present);
+  TEST_ASSERT_EQUAL_UINT32(2U, unchanged.ref.profile_version);
+  acquisition::ProfileManager reloaded{fixture.persistence, fixture.codec};
+  TEST_ASSERT_TRUE(reloaded.load(acquisition::ProfileTarget::Mq4));
+  TEST_ASSERT_TRUE(reloaded.snapshot(acquisition::ProfileTarget::Mq4, unchanged));
+  TEST_ASSERT_TRUE(unchanged.present);
+  TEST_ASSERT_EQUAL_UINT32(2U, unchanged.ref.profile_version);
+}
+
 void setup() {
   RUN_TEST(test_first_time_ultrasonic_profile_is_typed_and_persistent);
   RUN_TEST(test_first_time_mq_profile_keeps_adc_only_semantics);
   RUN_TEST(test_first_time_ds_profile_requires_wire_identity_and_reference);
   RUN_TEST(test_first_time_sht31_profile_binds_address_and_offsets);
+  RUN_TEST(test_hx711_preview_is_read_only_and_commits_exact_coefficient);
+  RUN_TEST(test_commit_rejects_preview_stale_reference_and_preserves_storage);
+  RUN_TEST(test_repeat_calibration_versions_profile_and_failed_pointer_update_keeps_active);
 }
 
 }  // namespace

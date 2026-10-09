@@ -114,12 +114,25 @@ class CommandRouter final : public IMaintenanceCommandSink,
   static bool calibration_target_from_text(
       const FixedText<64U>& text,
       calibration::CalibrationTarget& target) noexcept;
+  struct CalibrationProposal final {
+    bool present{false};
+    acquisition::ProfileKey key{};
+    acquisition::EncodedProfile encoded{};
+    acquisition::ActiveProfileSnapshot active{};
+    uint64_t created_at_us{0U};
+    uint64_t evidence_sequence{0U};
+  };
+  bool build_calibration_proposal(uint64_t now_us,
+                                  CalibrationProposal& proposal) const noexcept;
+  bool calibration_proposal_current() const noexcept;
+  bool append_calibration_preview(MaintenanceResponse& response) const noexcept;
+  void clear_calibration_proposal() noexcept { calibration_proposal_ = CalibrationProposal{}; }
   CommandStatus execute_config(const MaintenanceCommand& command,
                                MaintenanceResponse& response) noexcept;
   CommandStatus sensor_status(const MaintenanceCommand& command,
                               uint64_t now_us,
                               MaintenanceResponse& response) noexcept;
-  bool build_and_stage_calibration_profile(uint64_t now_us) noexcept;
+  bool commit_calibration_proposal() noexcept;
   CommandStatus profile_transfer(const MaintenanceCommand& command,
                                  MaintenanceResponse& response) noexcept;
   void cancel_profile_transfer() noexcept;
@@ -135,6 +148,7 @@ class CommandRouter final : public IMaintenanceCommandSink,
   IStorageTestProbe* storage_probe_{nullptr};
   provisioning::ILocalPasskeyHandoff* passkey_handoff_{nullptr};
   calibration::CalibrationSession calibration_{};
+  CalibrationProposal calibration_proposal_{};
   uint64_t evidence_sequence_{0U};
   bool criteria_set_{false};
   calibration::CalibrationTarget pending_target_{calibration::CalibrationTarget::Hx711Organic};

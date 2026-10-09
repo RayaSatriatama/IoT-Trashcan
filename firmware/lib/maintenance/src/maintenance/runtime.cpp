@@ -530,6 +530,7 @@ void CommandRouter::cancel_profile_transfer() noexcept {
 
 void CommandRouter::poll(uint64_t now_us) noexcept {
   if (calibration_.tick(now_us)) {
+    clear_calibration_proposal();
     criteria_set_ = false;
     evidence_sequence_ = 0U;
     mode_ = DeviceMode::Maintenance;
@@ -545,6 +546,7 @@ void CommandRouter::poll(uint64_t now_us) noexcept {
 void CommandRouter::transport_lost() noexcept {
   maintenance_authorized_ = false;
   calibration_.abort();
+  clear_calibration_proposal();
   criteria_set_ = false;
   evidence_sequence_ = 0U;
   cancel_profile_transfer();
@@ -746,6 +748,7 @@ CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
       calibration::CalibrationTarget target{};
       if (!calibration_target_from_text(command.target, target)) return CommandStatus::InvalidSyntax;
       if (!calibration_.begin(target, now_us)) return CommandStatus::Rejected;
+      clear_calibration_proposal();
       pending_target_ = target;
       criteria_set_ = false;
       criteria_samples_ = 0U;
@@ -780,6 +783,9 @@ CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
       return CommandStatus::Accepted;
     }
     case CommandKind::CalibrationCriteria: {
+      // Any accepted or attempted session-input update invalidates a prior
+      // proposal. A new validation and preview is required before persistence.
+      clear_calibration_proposal();
       const auto field = command.field.view();
       if (field == "reference_temperature_centi_c") {
         if (command.numeric_value < std::numeric_limits<int32_t>::min() ||
@@ -1001,19 +1007,29 @@ CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
     }
     case CommandKind::CalibrationValidate:
       return calibration_.validate() ? CommandStatus::Accepted : CommandStatus::Rejected;
-    case CommandKind::CalibrationPreview:
-      return calibration_.preview() ? CommandStatus::Accepted : CommandStatus::Rejected;
+    case CommandKind::CalibrationPreview: {
+      CalibrationProposal proposal{};
+      if (!build_calibration_proposal(now_us, proposal) || !calibration_.preview()) {
+        return CommandStatus::Rejected;
+      }
+      calibration_proposal_ = proposal;
+      return append_calibration_preview(response) ? CommandStatus::Accepted
+                                                   : CommandStatus::Failed;
+    }
     case CommandKind::CalibrationCommit:
       if (!calibration_.request_commit()) return CommandStatus::Rejected;
-      if (!build_and_stage_calibration_profile(now_us)) {
+      if (!commit_calibration_proposal()) {
         (void)calibration_.complete_commit(false);
+        clear_calibration_proposal();
         return CommandStatus::Rejected;
       }
       (void)calibration_.complete_commit(true);
+      clear_calibration_proposal();
       mode_ = DeviceMode::Maintenance;
       return CommandStatus::Accepted;
     case CommandKind::CalibrationCancel:
       if (!calibration_.cancel()) return CommandStatus::Rejected;
+      clear_calibration_proposal();
       criteria_set_ = false;
       refresh_mode();
       return CommandStatus::Accepted;
@@ -1104,6 +1120,7 @@ CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
                  : storage_probe_->run_sd_probe(response);
     case CommandKind::Reboot:
       calibration_.abort();
+      clear_calibration_proposal();
       criteria_set_ = false;
       cancel_profile_transfer();
       if (models_ != nullptr) models_->cancel_model();

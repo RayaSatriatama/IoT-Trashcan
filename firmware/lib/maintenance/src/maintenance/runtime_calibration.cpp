@@ -3,7 +3,9 @@
 #include "acquisition/target_protocol.h"
 
 #include <cmath>
+#include <charconv>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 
 namespace sigap::maintenance {
@@ -31,9 +33,64 @@ void set_calibration_provenance(acquisition::ProfileProvenance& provenance,
   std::memcpy(provenance.reference_note.data(), note, sizeof(note) - 1U);
 }
 
+bool append_i64(MaintenanceResponse& response, const char* label,
+                int64_t value) noexcept {
+  char number[24]{};
+  const auto result = std::to_chars(number, number + sizeof(number), value);
+  return result.ec == std::errc{} && response.append(label) &&
+         response.append(std::string_view(number, result.ptr - number)) &&
+         response.append("\n");
+}
+
+bool append_u32(MaintenanceResponse& response, const char* label,
+                uint32_t value) noexcept {
+  char number[16]{};
+  const auto result = std::to_chars(number, number + sizeof(number), value);
+  return result.ec == std::errc{} && response.append(label) &&
+         response.append(std::string_view(number, result.ptr - number)) &&
+         response.append("\n");
+}
+
+bool append_float(MaintenanceResponse& response, const char* label,
+                  float value) noexcept {
+  char number[32]{};
+  const int written = std::snprintf(number, sizeof(number), "%.3f",
+                                    static_cast<double>(value));
+  return written > 0 && static_cast<std::size_t>(written) < sizeof(number) &&
+         response.append(label) &&
+         response.append(std::string_view(number, static_cast<std::size_t>(written))) &&
+         response.append("\n");
+}
+
+bool append_rom(MaintenanceResponse& response, const std::array<uint8_t, 8U>& rom) noexcept {
+  static constexpr char kDigits[] = "0123456789abcdef";
+  char text[16]{};
+  for (std::size_t index = 0U; index < rom.size(); ++index) {
+    text[index * 2U] = kDigits[rom[index] >> 4U];
+    text[index * 2U + 1U] = kDigits[rom[index] & 0x0fU];
+  }
+  return response.append("rom=") && response.append(std::string_view(text, sizeof(text))) &&
+         response.append("\n");
+}
+
+bool same_active_profile(const acquisition::ActiveProfileSnapshot& left,
+                         const acquisition::ActiveProfileSnapshot& right) noexcept {
+  if (left.present != right.present) return false;
+  if (!left.present) return true;
+  return left.ref.kind == right.ref.kind &&
+         left.ref.schema_version == right.ref.schema_version &&
+         left.ref.profile_version == right.ref.profile_version &&
+         left.ref.target_id == right.ref.target_id &&
+         left.ref.hash == right.ref.hash &&
+         left.encoded.size == right.encoded.size &&
+         std::memcmp(left.encoded.bytes.data(), right.encoded.bytes.data(),
+                     left.encoded.size) == 0;
+}
+
 }  // namespace
 
-bool CommandRouter::build_and_stage_calibration_profile(uint64_t now_us) noexcept {
+bool CommandRouter::build_calibration_proposal(
+    uint64_t now_us, CalibrationProposal& proposal) const noexcept {
   if (profiles_ == nullptr) return false;
   const auto target = static_cast<acquisition::ProfileTarget>(
       static_cast<uint8_t>(pending_target_) + 1U);
@@ -200,8 +257,95 @@ bool CommandRouter::build_and_stage_calibration_profile(uint64_t now_us) noexcep
       }
       break;
   }
-  return profiles_->stage_import(key, encoded) && profiles_->validate(key) &&
-         profiles_->preview(key) && profiles_->commit(key);
+  proposal = CalibrationProposal{};
+  proposal.present = true;
+  proposal.key = key;
+  proposal.encoded = encoded;
+  proposal.active = active;
+  proposal.created_at_us = now_us;
+  proposal.evidence_sequence = evidence_sequence_;
+  return true;
+}
+
+bool CommandRouter::calibration_proposal_current() const noexcept {
+  if (!calibration_proposal_.present || profiles_ == nullptr ||
+      calibration_proposal_.evidence_sequence != evidence_sequence_) {
+    return false;
+  }
+  const auto target = static_cast<acquisition::ProfileTarget>(
+      static_cast<uint8_t>(pending_target_) + 1U);
+  const acquisition::ProfileKey expected = acquisition::default_profile_key(target);
+  if (calibration_proposal_.key.kind != expected.kind ||
+      calibration_proposal_.key.target != expected.target) return false;
+  acquisition::ActiveProfileSnapshot active{};
+  return profiles_->snapshot(calibration_proposal_.key, active) &&
+         same_active_profile(calibration_proposal_.active, active);
+}
+
+bool CommandRouter::append_calibration_preview(MaintenanceResponse& response) const noexcept {
+  if (!calibration_proposal_.present) return false;
+  acquisition::ProfileCodec codec{};
+  switch (calibration_proposal_.key.kind) {
+    case acquisition::ProfileKind::Adc: {
+      acquisition::MqAdcProfile profile{};
+      return codec.decode(calibration_proposal_.encoded, profile) &&
+             append_u32(response, "reference_mv=", profile.reference_mv) &&
+             append_u32(response, "full_scale_counts=", profile.full_scale_counts) &&
+             append_u32(response, "divider_numerator=", profile.divider_numerator) &&
+             append_u32(response, "divider_denominator=", profile.divider_denominator);
+    }
+    case acquisition::ProfileKind::Calibration:
+      break;
+    default:
+      return false;
+  }
+  switch (pending_target_) {
+    case calibration::CalibrationTarget::Hx711Organic:
+    case calibration::CalibrationTarget::Hx711Inorganic:
+    case calibration::CalibrationTarget::Hx711B3: {
+      acquisition::Hx711Profile profile{};
+      return codec.decode(calibration_proposal_.encoded, profile) &&
+             append_i64(response, "tare_offset_counts=", profile.tare_offset_counts) &&
+             append_float(response, "counts_per_kg=", profile.counts_per_kg);
+    }
+    case calibration::CalibrationTarget::UltrasonicOrganic:
+    case calibration::CalibrationTarget::UltrasonicInorganic:
+    case calibration::CalibrationTarget::UltrasonicB3: {
+      acquisition::UltrasonicProfile profile{};
+      return codec.decode(calibration_proposal_.encoded, profile) &&
+             append_float(response, "d_empty_mm=", profile.d_empty_mm) &&
+             append_float(response, "d_full_mm=", profile.d_full_mm) &&
+             append_float(response, "echo_mm_per_us=", profile.echo_mm_per_us) &&
+             append_float(response, "overshoot_tolerance_mm=", profile.overshoot_tolerance_mm) &&
+             append_u32(response, "echo_timeout_us=", profile.echo_timeout_us) &&
+             append_u32(response, "inter_sensor_gap_us=", profile.inter_sensor_gap_us);
+    }
+    case calibration::CalibrationTarget::Ds18b20B3: {
+      acquisition::Ds18b20Profile profile{};
+      return codec.decode(calibration_proposal_.encoded, profile) &&
+             append_rom(response, profile.rom) &&
+             append_u32(response, "resolution_bits=", profile.resolution_bits) &&
+             append_i64(response, "offset_centi_c=", profile.offset_centi_c);
+    }
+    case calibration::CalibrationTarget::Sht31_44:
+    case calibration::CalibrationTarget::Sht31_45: {
+      acquisition::Sht31Profile profile{};
+      return codec.decode(calibration_proposal_.encoded, profile) &&
+             append_u32(response, "address=", profile.address) &&
+             append_i64(response, "temperature_offset_centi_c=", profile.temperature_offset_centi_c) &&
+             append_i64(response, "humidity_offset_centi_pct=", profile.humidity_offset_centi_pct);
+    }
+    default:
+      return false;
+  }
+}
+
+bool CommandRouter::commit_calibration_proposal() noexcept {
+  if (!calibration_proposal_current()) return false;
+  const CalibrationProposal proposal = calibration_proposal_;
+  return profiles_->stage_import(proposal.key, proposal.encoded) &&
+         profiles_->validate(proposal.key) && profiles_->preview(proposal.key) &&
+         profiles_->commit(proposal.key);
 }
 
 }  // namespace sigap::maintenance
