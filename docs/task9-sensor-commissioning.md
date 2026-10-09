@@ -170,7 +170,9 @@ profile presence, `pv` profile version, `c` calibration state, and `a`/`x`
 accepted/rejected evidence counts. It never prints raw values, ROM/scratchpad,
 profile hashes, Wi-Fi credentials, or device tokens. `fr=STALE` means the
 latest observation is marked stale or exceeds the fixed diagnostic window of
-5 seconds for HX711, ultrasonic, DS18B20, and SHT31, or 10 seconds for MQ.
+5 seconds for HX711, ultrasonic, DS18B20, and SHT31, or 10 seconds for
+MQ-4, MQ-135, and MQ-8. MQ-7 uses the active valid heater cycle
+(`high_clean_us + low_detect_us`); without that profile, `fr=UNAVAILABLE`.
 
 Use `calibration status`, `profile status <target>`, and the normal `status`
 for their respective lifecycle and device summaries.

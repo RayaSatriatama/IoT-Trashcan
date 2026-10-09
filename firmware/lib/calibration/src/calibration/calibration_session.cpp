@@ -20,6 +20,35 @@ bool accepted_quality(SampleQuality quality) noexcept {
          quality == SampleQuality::Uncalibrated;
 }
 
+bool accepted_diagnostic_evidence(
+    const acquisition::SampleRecord& sample) noexcept {
+  if (!accepted_quality(sample.quality)) return false;
+  const auto& raw = sample.raw;
+  switch (sample.header.sensor) {
+    case SensorId::Hx711Organic:
+    case SensorId::Hx711Inorganic:
+    case SensorId::Hx711B3:
+    case SensorId::UltrasonicOrganic:
+    case SensorId::UltrasonicInorganic:
+    case SensorId::UltrasonicB3:
+      return raw.present && raw.identity_valid;
+    case SensorId::Mq4:
+    case SensorId::Mq135:
+    case SensorId::Mq8:
+      return raw.present && raw.identity_valid;
+    case SensorId::Mq7:
+      return raw.present && raw.identity_valid && raw.heater_ready;
+    case SensorId::Ds18b20B3:
+      return raw.present && raw.identity_valid && raw.conversion_complete &&
+             raw.crc_valid && raw.ds_wire_evidence;
+    case SensorId::Sht31_44:
+    case SensorId::Sht31_45:
+      return raw.present && raw.identity_valid && raw.temperature_crc_valid &&
+             raw.humidity_crc_valid;
+  }
+  return false;
+}
+
 std::size_t ultrasonic_index(SensorId sensor) noexcept {
   switch (sensor) {
     case SensorId::UltrasonicOrganic: return 0U;
@@ -180,7 +209,7 @@ void CalibrationEvidenceCache::observe(
   diagnostic.heater_ready = sample.raw.heater_ready;
   diagnostic.wire_evidence = sample.raw.ds_wire_evidence;
   diagnostic.observed_at_us = sample.header.monotonic_us;
-  uint32_t& count = accepted_quality(sample.quality)
+  uint32_t& count = accepted_diagnostic_evidence(sample)
                         ? diagnostic.accepted_count : diagnostic.rejected_count;
   if (count != UINT32_MAX) ++count;
 }

@@ -219,8 +219,26 @@ const char* calibration_state_name(calibration::CalibrationState state) noexcept
   return "FAILED";
 }
 
-uint64_t freshness_limit_us(calibration::CalibrationTarget target) noexcept {
-  return is_mq_target(target) ? 10000000ULL : 5000000ULL;
+bool freshness_limit_us(calibration::CalibrationTarget target,
+                        const acquisition::ProfileManager* profiles,
+                        uint64_t& limit_us) noexcept {
+  if (target != calibration::CalibrationTarget::Mq7) {
+    limit_us = is_mq_target(target) ? 10000000ULL : 5000000ULL;
+    return true;
+  }
+  if (profiles == nullptr) return false;
+  acquisition::ActiveProfileSnapshot snapshot{};
+  const acquisition::ProfileKey heater_key{
+      acquisition::ProfileKind::Heater, acquisition::ProfileTarget::Mq7};
+  if (!profiles->snapshot(heater_key, snapshot) || !snapshot.present) return false;
+  acquisition::Mq7HeaterProfile heater{};
+  acquisition::ProfileCodec codec{};
+  if (!codec.decode(snapshot.encoded, heater) || !heater.valid() ||
+      heater.high_clean_us > UINT64_MAX - heater.low_detect_us) {
+    return false;
+  }
+  limit_us = heater.high_clean_us + heater.low_detect_us;
+  return true;
 }
 
 bool append_flag(MaintenanceResponse& response, const char* name,
@@ -378,8 +396,11 @@ CommandStatus CommandRouter::sensor_status(const MaintenanceCommand& command,
   const bool available = evidence_ != nullptr && evidence_->diagnostic(target, evidence);
   const uint64_t age_us = !available || now_us < evidence.observed_at_us
                               ? 0U : now_us - evidence.observed_at_us;
-  const bool fresh = available && evidence.quality != acquisition::SampleQuality::Stale &&
-                     age_us <= freshness_limit_us(target);
+  uint64_t freshness_limit{0U};
+  const bool freshness_available = freshness_limit_us(target, profiles_, freshness_limit);
+  const bool fresh = available && freshness_available &&
+                     evidence.quality != acquisition::SampleQuality::Stale &&
+                     age_us <= freshness_limit;
   acquisition::ActiveProfileSnapshot profile{};
   bool profile_present{false};
   if (profiles_ != nullptr) {
@@ -400,11 +421,14 @@ CommandStatus CommandRouter::sensor_status(const MaintenanceCommand& command,
       !response.append(available && evidence.raw_present ? "1\n" : "0\n") ||
       !append_u64(response, "age=", age_us) ||
       !response.append("fr=") ||
-      !response.append(!available ? "UNAVAILABLE\n" : fresh ? "FRESH\n" : "STALE\n") ||
+      !response.append(!available || !freshness_available ? "UNAVAILABLE\n" :
+                       fresh ? "FRESH\n" : "STALE\n") ||
       !(available ? append_protocol_flags(response, evidence) : response.append("f=na")) ||
       !response.append("\np=") || !response.append(profile_present ? "1\n" : "0\n") ||
       !append_u64(response, "pv=", profile_present ? profile.ref.profile_version : 0U) ||
-      !response.append("c=") || !response.append(calibration_state_name(calibration_.state())) ||
+      !response.append("c=") || !response.append(calibration_state_name(
+          calibration_.target() == target ? calibration_.state()
+                                          : calibration::CalibrationState::Idle)) ||
       !response.append("\n") ||
       !append_u64(response, "a=", available ? evidence.accepted_count : 0U) ||
       !append_u64(response, "x=", available ? evidence.rejected_count : 0U)) {

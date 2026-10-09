@@ -51,6 +51,20 @@ sigap::acquisition::Sht31Profile make_sht_profile(
   return profile;
 }
 
+sigap::acquisition::Mq7HeaterProfile make_mq7_heater_profile(
+    uint32_t version, uint64_t high_clean_us, uint64_t low_detect_us) {
+  sigap::acquisition::Mq7HeaterProfile profile{};
+  profile.kind = sigap::acquisition::ProfileKind::Heater;
+  profile.schema_version = 1U;
+  profile.profile_version = version;
+  profile.target_id = static_cast<uint32_t>(sigap::acquisition::ProfileTarget::Mq7);
+  profile.present = true;
+  profile.preheat_us = 1U;
+  profile.high_clean_us = high_clean_us;
+  profile.low_detect_us = low_detect_us;
+  return profile;
+}
+
 std::string hex(const sigap::acquisition::EncodedProfile& encoded) {
   static constexpr char digits[] = "0123456789abcdef";
   std::string output;
@@ -1083,6 +1097,129 @@ void test_sensor_status_is_bounded_and_redacts_sensitive_or_raw_values() {
   TEST_ASSERT_EQUAL(std::string_view::npos, response.view().find("54321"));
 }
 
+void test_sensor_status_uses_active_mq7_heater_cycle_for_freshness() {
+  using namespace sigap::acquisition;
+  sigap::config::MemoryConfigStore config_store{};
+  sigap::config::ConfigManager config_manager(config_store, kValidationContext);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(sigap::config::ConfigBootResult::BootstrapDefaults),
+                        static_cast<int>(config_manager.begin()));
+  sigap::provisioning::MemorySecretBlobStore secret_backend{};
+  sigap::provisioning::PersistentSecretStore secrets(secret_backend);
+  MemoryProfileStore profile_store{};
+  ProfilePersistence persistence(profile_store);
+  ProfileCodec codec{};
+  EncodedProfile encoded{};
+  TEST_ASSERT_TRUE(codec.encode(make_mq7_heater_profile(1U, 100U, 200U), encoded));
+  const ProfileKey heater_key{ProfileKind::Heater, ProfileTarget::Mq7};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileCommitResult::Committed),
+                        static_cast<int>(persistence.commit(heater_key, encoded)));
+  ProfileManager profiles(persistence, codec);
+  TEST_ASSERT_TRUE(profiles.load(heater_key));
+  sigap::calibration::CalibrationEvidenceCache evidence{};
+  auto sample = diagnostic_sample(SensorId::Mq7, StreamId::B3,
+                                  SampleQuality::Ready, SampleReason::DataReady,
+                                  1U, 1U);
+  sample.raw.present = true;
+  sample.raw.identity_valid = true;
+  sample.raw.heater_ready = true;
+  evidence.observe(sample);
+  CommandRouter router(config_manager, secrets, &profiles, &evidence);
+  MaintenanceResponse response{};
+
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),
+                        static_cast<int>(run_router_line(
+                            router, "sensor status mq7\n", 302U, response)));
+  TEST_ASSERT_NOT_EQUAL(std::string_view::npos, response.view().find("fr=STALE\n"));
+}
+
+void test_sensor_status_accepts_longer_active_mq7_heater_cycle() {
+  using namespace sigap::acquisition;
+  sigap::config::MemoryConfigStore config_store{};
+  sigap::config::ConfigManager config_manager(config_store, kValidationContext);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(sigap::config::ConfigBootResult::BootstrapDefaults),
+                        static_cast<int>(config_manager.begin()));
+  sigap::provisioning::MemorySecretBlobStore secret_backend{};
+  sigap::provisioning::PersistentSecretStore secrets(secret_backend);
+  MemoryProfileStore profile_store{};
+  ProfilePersistence persistence(profile_store);
+  ProfileCodec codec{};
+  EncodedProfile encoded{};
+  TEST_ASSERT_TRUE(codec.encode(make_mq7_heater_profile(1U, 200U, 400U), encoded));
+  const ProfileKey heater_key{ProfileKind::Heater, ProfileTarget::Mq7};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileCommitResult::Committed),
+                        static_cast<int>(persistence.commit(heater_key, encoded)));
+  ProfileManager profiles(persistence, codec);
+  TEST_ASSERT_TRUE(profiles.load(heater_key));
+  sigap::calibration::CalibrationEvidenceCache evidence{};
+  auto sample = diagnostic_sample(SensorId::Mq7, StreamId::B3,
+                                  SampleQuality::Ready, SampleReason::DataReady,
+                                  1U, 1U);
+  sample.raw.present = true;
+  sample.raw.identity_valid = true;
+  sample.raw.heater_ready = true;
+  evidence.observe(sample);
+  CommandRouter router(config_manager, secrets, &profiles, &evidence);
+  MaintenanceResponse response{};
+
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),
+                        static_cast<int>(run_router_line(
+                            router, "sensor status mq7\n", 302U, response)));
+  TEST_ASSERT_NOT_EQUAL(std::string_view::npos, response.view().find("fr=FRESH\n"));
+}
+
+void test_sensor_status_keeps_calibration_state_target_local() {
+  sigap::config::MemoryConfigStore config_store{};
+  sigap::config::ConfigManager config_manager(config_store, kValidationContext);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(sigap::config::ConfigBootResult::BootstrapDefaults),
+                        static_cast<int>(config_manager.begin()));
+  sigap::provisioning::MemorySecretBlobStore secret_backend{};
+  sigap::provisioning::PersistentSecretStore secrets(secret_backend);
+  CommandRouter router(config_manager, secrets);
+  MaintenanceResponse response{};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),
+                        static_cast<int>(run_router_line(
+                            router, "calibration start mq7\n", 1U, response)));
+
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),
+                        static_cast<int>(run_router_line(
+                            router, "sensor status hx711_organic\n", 2U,
+                            response)));
+  TEST_ASSERT_NOT_EQUAL(std::string_view::npos, response.view().find("c=IDLE\n"));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),
+                        static_cast<int>(run_router_line(
+                            router, "sensor status mq7\n", 2U, response)));
+  TEST_ASSERT_NOT_EQUAL(std::string_view::npos,
+                        response.view().find("c=CONFIGURING\n"));
+}
+
+void test_sensor_status_counts_only_physical_evidence() {
+  using namespace sigap::acquisition;
+  sigap::config::MemoryConfigStore config_store{};
+  sigap::config::ConfigManager config_manager(config_store, kValidationContext);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(sigap::config::ConfigBootResult::BootstrapDefaults),
+                        static_cast<int>(config_manager.begin()));
+  sigap::provisioning::MemorySecretBlobStore secret_backend{};
+  sigap::provisioning::PersistentSecretStore secrets(secret_backend);
+  sigap::calibration::CalibrationEvidenceCache evidence{};
+  auto sample = diagnostic_sample(SensorId::Sht31_44, StreamId::Organic,
+                                  SampleQuality::Ready, SampleReason::DataReady,
+                                  1U, 1U);
+  sample.raw.present = true;
+  sample.raw.identity_valid = true;
+  sample.raw.temperature_crc_valid = true;
+  sample.raw.humidity_crc_valid = false;
+  evidence.observe(sample);
+  CommandRouter router(config_manager, secrets, nullptr, &evidence);
+  MaintenanceResponse response{};
+
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),
+                        static_cast<int>(run_router_line(
+                            router, "sensor status sht31_44\n", 2U,
+                            response)));
+  TEST_ASSERT_NOT_EQUAL(std::string_view::npos, response.view().find("a=0\n"));
+  TEST_ASSERT_NOT_EQUAL(std::string_view::npos, response.view().find("x=1\n"));
+}
+
 void test_maintenance_memory_footprint_is_bounded() {
   std::printf("memory MaintenanceParser=%zu MaintenanceResponse=%zu "
               "CommandRouter=%zu MaintenanceService=%zu\n",
@@ -1128,6 +1265,10 @@ void setup() {
   RUN_TEST(test_sensor_status_reports_crc_failure_and_stale_evidence);
   RUN_TEST(test_sensor_status_reports_active_profile_and_isolates_channels);
   RUN_TEST(test_sensor_status_is_bounded_and_redacts_sensitive_or_raw_values);
+  RUN_TEST(test_sensor_status_uses_active_mq7_heater_cycle_for_freshness);
+  RUN_TEST(test_sensor_status_accepts_longer_active_mq7_heater_cycle);
+  RUN_TEST(test_sensor_status_keeps_calibration_state_target_local);
+  RUN_TEST(test_sensor_status_counts_only_physical_evidence);
   RUN_TEST(test_maintenance_memory_footprint_is_bounded);
   UNITY_END();
 }
