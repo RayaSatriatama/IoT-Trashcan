@@ -43,4 +43,23 @@ describe('operator calibration API client', () => {
   it('requires a non-empty operator token', () => {
     expect(() => createCalibrationApi({ bearerToken: ' ' })).toThrow('Operator authorization is required');
   });
+
+  it('normalizes direct command responses from the production handler and preserves result preview', async () => {
+    const client = createCalibrationApi({ bearerToken: 'operator-session' }, async () => jsonResponse({
+      command_id: 'c-preview', device_id: 'SIGAP-01', sensor_id: 'hx711_organic', operation: 'preview', status: 'PREVIEW_READY',
+      result: { proposal_hash: 'sha256:proposal', profile_version: '2', evidence_count: 3 },
+    }));
+    await expect(client.submit({ device_id: 'SIGAP-01', sensor_id: 'hx711_organic', operation: 'PREVIEW' })).resolves.toMatchObject({ command: { command_id: 'c-preview', status: 'PREVIEW_READY' } });
+    await expect(client.getCommand('SIGAP-01', 'c-preview')).resolves.toMatchObject({ command: { command_id: 'c-preview' } });
+  });
+
+  it('requests sensor-specific capabilities through the authenticated route', async () => {
+    let url = '';
+    const client = createCalibrationApi({ bearerToken: 'operator-session' }, async (input) => {
+      url = String(input);
+      return jsonResponse({ capabilities: { sensor_id: 'ds18b20_b3', references: [{ name: 'reference_temperature_c', unit: 'degC', required: true }], criteria: [], engineering_parameters: [] } });
+    });
+    await expect(client.getCapabilities('SIGAP-01', 'ds18b20_b3')).resolves.toMatchObject({ capabilities: { sensor_id: 'ds18b20_b3' } });
+    expect(url).toBe('/api/device-control/commands/SIGAP-01/capabilities?sensor_id=ds18b20_b3');
+  });
 });

@@ -26,10 +26,11 @@ describe('calibration wizard contract', () => {
     expect(nextStep('PREVIEW_READY', 'preview')).toBe('commit');
     expect(nextStep('COMMITTED', 'commit')).toBe('done');
     expect(calibrationStateLabel('EXPIRED')).toBe('Kedaluwarsa');
+    expect(calibrationStateLabel('QUEUED')).toBe('Menunggu perangkat');
+    expect(nextStep('DELIVERED', 'criteria')).toBe('criteria');
   });
 
   it('redacts secret-shaped error details', () => {
     expect(redactCalibrationError(new Error('token=abc password=hunter2'))).toBe('token=[REDACTED] password=[REDACTED]');
   });
 });
-

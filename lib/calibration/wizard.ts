@@ -17,7 +17,7 @@ export function initialWizardStatus(diagnostic: SensorDiagnostic | null = null):
 
 export function canBeginCalibration(diagnostic: SensorDiagnostic | null): boolean {
   if (!diagnostic) return false;
-  if (!diagnostic.raw.present) return false;
+  if (!diagnostic.raw?.present) return false;
   if (!diagnostic.fresh) return false;
   if (diagnostic.quality === 'TIMEOUT' || diagnostic.quality === 'DISCONNECTED' || diagnostic.quality === 'CRC_ERROR' || diagnostic.quality === 'INVALID') return false;
   return true;
@@ -25,7 +25,7 @@ export function canBeginCalibration(diagnostic: SensorDiagnostic | null): boolea
 
 export function calibrationStateLabel(state: CalibrationState): string {
   const labels: Record<CalibrationState, string> = {
-    IDLE: 'Belum dimulai', CAPTURING: 'Mengumpulkan bukti', VALIDATING: 'Memvalidasi',
+    IDLE: 'Belum dimulai', QUEUED: 'Menunggu perangkat', DELIVERED: 'Diterima perangkat', ACCEPTED: 'Diterima', CAPTURING: 'Mengumpulkan bukti', VALIDATING: 'Memvalidasi',
     PREVIEW_READY: 'Preview siap', COMMITTING: 'Menyimpan profil', COMMITTED: 'Profil aktif',
     CANCELLED: 'Dibatalkan', EXPIRED: 'Kedaluwarsa', FAILED: 'Gagal',
   };
@@ -38,6 +38,7 @@ export function nextStep(state: CalibrationState, current: CalibrationWizardStep
   if (state === 'PREVIEW_READY') return 'commit';
   if (state === 'VALIDATING') return 'preview';
   if (state === 'CAPTURING') return 'validate';
+  if (state === 'QUEUED' || state === 'DELIVERED' || state === 'ACCEPTED' || state === 'COMMITTING') return current;
   if (state === 'IDLE' && current === 'diagnostics') return 'criteria';
   return current;
 }

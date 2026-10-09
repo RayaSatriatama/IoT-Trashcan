@@ -14,7 +14,7 @@ export const CALIBRATION_SENSOR_IDS = [
 ] as const;
 export type CalibrationSensorId = typeof CALIBRATION_SENSOR_IDS[number];
 export type CalibrationTransport = 'ble' | 'https';
-export type CalibrationState = 'IDLE' | 'CAPTURING' | 'VALIDATING' | 'PREVIEW_READY' | 'COMMITTING' | 'COMMITTED' | 'CANCELLED' | 'EXPIRED' | 'FAILED';
+export type CalibrationState = 'IDLE' | 'QUEUED' | 'DELIVERED' | 'ACCEPTED' | 'CAPTURING' | 'VALIDATING' | 'PREVIEW_READY' | 'COMMITTING' | 'COMMITTED' | 'CANCELLED' | 'EXPIRED' | 'FAILED';
 export type CalibrationQuality = 'READY' | 'CALIBRATING' | 'UNCALIBRATED' | 'STALE' | 'TIMEOUT' | 'DISCONNECTED' | 'CRC_ERROR' | 'INVALID';
 
 export type RawEvidence = {
@@ -32,7 +32,7 @@ export type SensorDiagnostic = {
   stream: 'organic' | 'inorganic' | 'b3' | string;
   quality: CalibrationQuality;
   reason: string;
-  raw: RawEvidence;
+  raw: RawEvidence | null;
   converted_value: number | null;
   converted_unit: string | null;
   fresh: boolean;
@@ -63,6 +63,7 @@ export type CalibrationCommand = {
   expires_at: string;
   accepted_at?: string;
   error?: string;
+  result?: Record<string, unknown> | null;
 };
 
 export type CalibrationPreview = {
@@ -97,6 +98,14 @@ type CalibrationResponse = {
   preview?: CalibrationPreview;
   session_id?: string;
 };
+
+export type CalibrationCommandResponse = CalibrationResponse & { command: CalibrationCommand };
+
+function normalizeCommandResponse(body: CalibrationResponse | CalibrationCommand): CalibrationCommandResponse {
+  if (typeof body === 'object' && body !== null && 'command' in body && body.command) return body as CalibrationCommandResponse;
+  if (typeof body === 'object' && body !== null && 'command_id' in body) return { command: body as CalibrationCommand };
+  throw new Error('Respons command tidak valid');
+}
 
 export type CalibrationApi = ReturnType<typeof createCalibrationApi>;
 
@@ -153,7 +162,7 @@ export function createCalibrationApi(
     },
     getCapabilities: (deviceId: string, sensorId: CalibrationSensorId, signal?: AbortSignal) =>
       get<CalibrationResponse>(`/api/device-control/commands/${encodeURIComponent(deviceId)}/capabilities?sensor_id=${encodeURIComponent(sensorId)}`, signal),
-    submit: (request: CalibrationCommandRequest, signal?: AbortSignal) => {
+    submit: async (request: CalibrationCommandRequest, signal?: AbortSignal) => {
       const commandPayload = {
         ...(request.payload ?? {}),
         ...(request.parameters ? { parameters: request.parameters } : {}),
@@ -162,7 +171,7 @@ export function createCalibrationApi(
         ...(request.expected_profile_hash ? { expected_profile_hash: request.expected_profile_hash } : {}),
         ...(request.expected_profile_version ? { expected_profile_version: request.expected_profile_version } : {}),
       };
-      return post<CalibrationResponse>(`/api/device-control/commands/${encodeURIComponent(request.device_id)}`, {
+      const body = await post<CalibrationResponse | CalibrationCommand>(`/api/device-control/commands/${encodeURIComponent(request.device_id)}`, {
         command_id: request.command_id ?? requestId(),
         session_id: request.session_id ?? '',
         sensor_id: request.sensor_id,
@@ -170,9 +179,10 @@ export function createCalibrationApi(
         payload: commandPayload,
         expires_at: request.expires_at ?? new Date(Date.now() + 120_000).toISOString(),
       }, signal);
+      return normalizeCommandResponse(body);
     },
-    getCommand: (deviceId: string, commandId: string, signal?: AbortSignal) =>
-      get<CalibrationResponse>(`/api/device-control/commands/${encodeURIComponent(deviceId)}/${encodeURIComponent(commandId)}`, signal),
+    getCommand: async (deviceId: string, commandId: string, signal?: AbortSignal) =>
+      normalizeCommandResponse(await get<CalibrationResponse | CalibrationCommand>(`/api/device-control/commands/${encodeURIComponent(deviceId)}/${encodeURIComponent(commandId)}`, signal)),
   };
 }
 
