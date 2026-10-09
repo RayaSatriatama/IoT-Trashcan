@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
+
+	"github.com/RayaSatriatama/IoT-Trashcan/internal/telemetry"
 )
 
 func TestListRecordsUsesUint64SortKeyCursorAndFilters(t *testing.T) {
@@ -81,6 +84,42 @@ func TestExportRecordsStreamsExactRecordEvidence(t *testing.T) {
 	}
 	if _, ok := record["profile_refs"]; !ok {
 		t.Fatalf("provenance missing from exported record: %s", exported.Records[0].Record)
+	}
+}
+
+func TestExportRecordsPreservesRawFormattingAndEscapes(t *testing.T) {
+	db := queryTestDB(t)
+	raw := []byte(`{
+  "record_id": "device-1/boot-a/1",
+  "payload": "\u003cscript\u003e \u00e9 \"quoted\""
+}`)
+	sortKey, err := telemetry.SequenceSortKey("1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`INSERT INTO telemetry_records
+ (device_id,record_id,record_hash,kind,boot_id,sequence_decimal,sequence_sort,monotonic_us,recorded_at,time_quality,stream,sensor_id,quality,record_bytes,first_batch_id,created_at)
+ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"device-1", "device-1/boot-a/1", "sha256:"+strings.Repeat("0", 64),
+		"sample", "boot-a", "1", sortKey, "10", nil, "UNSYNCED",
+		"organic", "mq4", "READY", raw, "batch", "2026-01-01T00:00:00Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	query, err := NewArchiveQuery(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	if err := query.ExportRecordsJSON(context.Background(), RecordQuery{DeviceID: "device-1"}, &output); err != nil {
+		t.Fatal(err)
+	}
+	if !json.Valid(output.Bytes()) {
+		t.Fatalf("export is not JSON: %s", output.Bytes())
+	}
+	needle := append([]byte(`"record":`), raw...)
+	if !bytes.Contains(output.Bytes(), needle) {
+		t.Fatalf("raw record bytes changed in export: want %q in %q", needle, output.Bytes())
 	}
 }
 

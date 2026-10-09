@@ -193,17 +193,13 @@ func (q *ArchiveQuery) ExportRecordsJSON(ctx context.Context, request RecordQuer
 		if err != nil {
 			return fmt.Errorf("scan telemetry export record: %w", err)
 		}
-		encoded, err := json.Marshal(record)
-		if err != nil {
-			return err
-		}
 		if !first {
 			if _, err := io.WriteString(writer, ","); err != nil {
 				return err
 			}
 		}
 		first = false
-		if _, err := writer.Write(encoded); err != nil {
+		if err := writeArchiveRecordJSON(writer, record); err != nil {
 			return err
 		}
 	}
@@ -211,6 +207,55 @@ func (q *ArchiveQuery) ExportRecordsJSON(ctx context.Context, request RecordQuer
 		return fmt.Errorf("iterate telemetry export records: %w", err)
 	}
 	_, err = io.WriteString(writer, "]}")
+	return err
+}
+
+// writeArchiveRecordJSON writes the documented archive-record envelope while
+// inserting the persisted record bytes directly. Encoding an ArchiveRecord
+// with encoding/json would HTML-escape strings inside RawMessage (for example
+// < and >) and would therefore change the exact evidence captured at ingest.
+func writeArchiveRecordJSON(writer io.Writer, record ArchiveRecord) error {
+	if writer == nil || !json.Valid(record.Record) {
+		return fmt.Errorf("invalid archive record bytes")
+	}
+	metadata := struct {
+		DeviceID    string  `json:"device_id"`
+		RecordID    string  `json:"record_id"`
+		RecordHash  string  `json:"record_hash"`
+		Kind        string  `json:"kind"`
+		BootID      string  `json:"boot_id"`
+		Sequence    string  `json:"sequence"`
+		MonotonicUS string  `json:"monotonic_us"`
+		RecordedAt  *string `json:"recorded_at"`
+		TimeQuality string  `json:"time_quality"`
+		Stream      *string `json:"stream,omitempty"`
+		SensorID    *string `json:"sensor_id,omitempty"`
+		Quality     *string `json:"quality,omitempty"`
+	}{
+		DeviceID: record.DeviceID, RecordID: record.RecordID,
+		RecordHash: record.RecordHash, Kind: record.Kind,
+		BootID: record.BootID, Sequence: record.Sequence,
+		MonotonicUS: record.MonotonicUS, RecordedAt: record.RecordedAt,
+		TimeQuality: record.TimeQuality, Stream: record.Stream,
+		SensorID: record.SensorID, Quality: record.Quality,
+	}
+	encoded, err := json.Marshal(metadata)
+	if err != nil {
+		return err
+	}
+	if len(encoded) == 0 || encoded[len(encoded)-1] != '}' {
+		return fmt.Errorf("invalid archive record envelope")
+	}
+	if _, err := writer.Write(encoded[:len(encoded)-1]); err != nil {
+		return err
+	}
+	if _, err := io.WriteString(writer, `,"record":`); err != nil {
+		return err
+	}
+	if _, err := writer.Write(record.Record); err != nil {
+		return err
+	}
+	_, err = io.WriteString(writer, "}")
 	return err
 }
 
