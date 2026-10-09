@@ -31,7 +31,7 @@ commissioning or destructive hardware operation was performed.
 | Loopback HTTPS staging | PASS (Go config/tests) | TLS-required configuration fails closed for incomplete/missing certificate pairs and supports an isolated SQLite path; no staging process or device transmission was started. |
 | Frontend dependency triage | PASS (bounded remediation) | Three narrow lockfile-backed overrides remove the production critical finding; remaining findings are documented toolchain/development risk and were not force-upgraded. |
 | Backend ingest and current projection | PASS (synthetic integration) | `internal/e2e` exercises durable ACK, replay dedupe, conflict, auth, export, late backlog, and filtered cursor. |
-| Schemas and frozen hashes | PASS | 14 schemas compile; 24 valid and 36 invalid fixtures; frozen record/body hashes unchanged. |
+| Schemas and frozen hashes | BLOCKED (fresh Go gate) | Historical evidence covers 14 schemas, 24 valid fixtures, 36 invalid fixtures, and unchanged frozen hashes; the current environment has no Go executable for a fresh semantic run. |
 | Firmware native suite | PASS | 389/389 test cases on the sensor-readiness source. |
 | Firmware sanitizer suite | PASS | Fresh ASan/UBSan run completed 389/389 cases with no diagnostics. |
 | Cppcheck | PASS | `pio check -e native --fail-on-defect=low`, no defects. |
@@ -44,24 +44,25 @@ commissioning or destructive hardware operation was performed.
 
 ## Fresh command results
 
-Toolchain: Go `go1.27.1 linux/amd64`; PlatformIO supplied by `uv tool run`;
-Node/npm dependencies installed from the repository lockfile.
+Toolchain: PlatformIO supplied by `uv tool run`; Node/npm dependencies
+installed from the repository lockfile. Go is unavailable in this execution
+environment (`go: command not found`).
 
 ```text
-go test -count=1 ./...                         PASS
-go test -race -count=1 ./...                  PASS
-go vet ./...                                  PASS
-go test ./internal/telemetry (schema/golden)  PASS (14/24/36)
+go test -count=1 ./...                         BLOCKED (go unavailable)
+go test -race -count=1 ./...                  BLOCKED (go unavailable)
+go vet ./...                                  BLOCKED (go unavailable)
+go test ./internal/telemetry (schema/golden)  BLOCKED (go unavailable)
 npm test                                      PASS (19 files, 92 tests)
 npm run typecheck                             PASS
 npm run export:web                            PASS
 pio test -e native                            PASS (389/389)
 ASan/UBSan native folders                    PASS (389/389 cases, 38 folders, 0 failed)
 pio check -e native --fail-on-defect=low     PASS (no defects)
-pio run -e sigap_n16r8                       PASS (RAM 49,496; flash 1,077,321)
-pio run -e sigap_n16r8_sd                    PASS (RAM 50,036; flash 1,151,001)
-pio run -e sigap_n16r8_sd_spi                PASS (RAM 49,792; flash 1,130,529)
-pio run -e sigap_bench                       PASS (RAM 49,496; flash 1,077,321)
+pio run -e sigap_n16r8                       PASS (RAM 49,496; flash 1,077,313)
+pio run -e sigap_n16r8_sd                    PASS (RAM 50,036; flash 1,150,993)
+pio run -e sigap_n16r8_sd_spi                PASS (RAM 49,792; flash 1,130,521)
+pio run -e sigap_bench                       PASS (RAM 49,496; flash 1,077,313)
 git diff --check                             PASS
 ```
 
