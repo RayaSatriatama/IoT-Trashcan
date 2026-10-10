@@ -69,6 +69,21 @@ No device-to-staging request has been run in this preparation phase.
 
 ## WiFi and BLE checklist
 
+For the current Linux session, `/dev/ttyACM0` is `root:uucp` mode `0660`.
+`raya` is already listed in the `uucp` group, but the existing login shell has
+not refreshed its supplementary groups. Use a new shell with:
+
+```bash
+newgrp uucp
+/tmp/sigap-platformio-BRefWz/bin/pio device monitor -p /dev/ttyACM0 -b 115200 --echo
+```
+
+Wait for boot output, then enter `maintenance enter` and, only in the local
+authorized operator terminal, `ble passkey`. Do not run the passkey command
+through a recorded agent tool. Opening the native USB monitor or esptool may
+toggle CDC/RTS and reset the board, so record that side effect and do not
+repeat it unnecessarily.
+
 Record each item as `PASS`, `FAIL`, `BLOCKED`, or `NOT RUN`, with UTC time and
 redacted command/response evidence:
 

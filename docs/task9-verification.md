@@ -1,5 +1,75 @@
 # Task 9 verification ledger
 
+## Lead orchestrator verification (`318f70f`, 2026-10-10)
+
+The branch and worktree were verified at `318f70f81f125a88f3a37f7e6b5bfde0f4c7cd13`.
+PR #27 is OPEN and unmerged. GitHub reports both `Vercel: SUCCESS` and
+`Vercel Preview Comments: SUCCESS` for this HEAD. No source files were changed
+by the verification run.
+
+Fresh host-side results:
+
+```text
+pio test -e native                                      PASS 450/450
+pio check -e native --fail-on-defect=low                PASS, no defects
+pio run -e sigap_n16r8                                  PASS (RAM 49,496; flash 1,106,945)
+pio run -e sigap_n16r8_sd                               PASS (RAM 50,036; flash 1,180,189)
+pio run -e sigap_n16r8_sd_spi                           PASS (RAM 49,792; flash 1,159,709)
+pio run -e sigap_bench                                  PASS (RAM 49,496; flash 1,106,945)
+pio run -e sigap_n16r8_https_compile                    PASS (RAM 51,824; flash 1,305,225)
+pio run -e sigap_n16r8_sd_https_compile                 PASS (RAM 52,260; flash 1,363,341)
+npm test -- --run                                      PASS (21 files, 114 tests)
+npm run typecheck                                       PASS
+npm run export:web                                      PASS
+git diff --check                                        PASS
+go test -count=1 ./...                                 PASS
+go test -race -count=1 ./...                           PASS
+go vet ./...                                           PASS
+go test -count=1 -v ./internal/telemetry                PASS (14 schemas, 24 valid, 36 invalid, frozen hashes)
+```
+
+Go verification used an isolated official Go 1.27.1 toolchain installed under
+`/tmp` after checksum validation (`63d339f0da5ab53635a56f2490a7984dfe12dfcff22ad749f63edaf590168445`).
+The system Go installation and repository environment were not modified.
+
+The combined SD+HTTPS compile-only image from this run is
+`firmware/.pio/build/sigap_n16r8_sd_https_compile/firmware.bin` with SHA-256
+`4b7bdd91d94a18f0ed12f63a98af88955f13a496f1895ef34ee9576880ced8fe`.
+The PlatformIO board descriptor still labels the generic board as N8/no PSRAM,
+while the project overrides 16 MiB flash and OPI PSRAM. This metadata mismatch
+must be checked before any upload; it is not physical runtime proof.
+
+Physical read-only observations:
+
+```text
+USB VID:PID       303a:1001 Espressif USB JTAG/serial debug unit
+USB serial        98:A3:16:F5:C1:50 -> /dev/ttyACM0
+ESP32-S3          revision v0.2, USB-Serial/JTAG, embedded PSRAM 8 MiB
+BLE               98:A3:16:F5:C1:51, SIGAP-A398, service discovered
+BlueZ             Paired=yes, Bonded=yes, Trusted=yes, Connected=no
+```
+
+`esptool chip_id` was used only for identification and caused an RTS hard
+reset while opening the USB transport. No flash write, erase, NVS change, SD
+write, or firmware upload occurred. PlatformIO Monitor accepted
+`maintenance enter` with `OK`; the passkey command was not executed by the
+agent and no passkey was captured.
+
+The supplied serial boot evidence contains:
+
+```text
+esp_littlefs: Corrupted dir pair at {0x0, 0x1}
+mount failed, (-84)
+Failed to initialize LittleFS
+```
+
+This remains `LITTLEFS_RUNTIME: FAIL / UNRESOLVED`. No format, erase, repair,
+or overwrite was attempted. Because the production device-control result
+journal depends on LittleFS recovery, real HTTPS device-control durability is
+not a physical PASS. Real WiFi, HTTPS, SD writes, BLE MITM pairing,
+`GET_DEVICE_ID`, runtime high-water metrics, and long-duration endurance
+remain `NOT RUN` or `HUMAN_ACTION_REQUIRED`.
+
 ## Real BLE scope-override attempt (`0590a08`)
 
 The attached board was discovered with the host Bluetooth adapter after a
