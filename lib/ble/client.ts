@@ -31,7 +31,9 @@ export type BleProvisioningClientOptions = {
   connectPollIntervalMs?: number;
   sleep?: (milliseconds: number) => Promise<void>;
   onConnectionChange?: (connected: boolean) => void;
+  // Device name is display-only and is never used as an identity proof.
   onDeviceIdentityChange?: (name: string | null) => void;
+  onAuthenticatedDeviceIdentityChange?: (deviceId: string | null) => void;
 };
 
 const bluetooth = (): BluetoothAdapter => {
@@ -58,6 +60,8 @@ export class BleProvisioningClient {
   private readonly sleep: (milliseconds: number) => Promise<void>;
   private readonly onConnectionChange?: (connected: boolean) => void;
   private readonly onDeviceIdentityChange?: (name: string | null) => void;
+  private readonly onAuthenticatedDeviceIdentityChange?: (deviceId: string | null) => void;
+  private authenticatedDeviceId: string | null = null;
 
   constructor(options: BleProvisioningClientOptions = {}) {
     this.requestTimeoutMs = options.requestTimeoutMs ?? 5000;
@@ -66,9 +70,17 @@ export class BleProvisioningClient {
     this.sleep = options.sleep ?? ((milliseconds) => new Promise((resolve) => globalThis.setTimeout(resolve, milliseconds)));
     this.onConnectionChange = options.onConnectionChange;
     this.onDeviceIdentityChange = options.onDeviceIdentityChange;
+    this.onAuthenticatedDeviceIdentityChange = options.onAuthenticatedDeviceIdentityChange;
+  }
+
+  get verifiedDeviceId(): string | null {
+    return this.authenticatedDeviceId;
   }
 
   async connect(): Promise<void> {
+    // A device switch invalidates the previous authenticated identity before
+    // any new GATT session is opened.
+    if (this.device || this.server) this.close();
     const device = await bluetooth().requestDevice({ filters: [{ services: [SIGAP_BLE_SERVICE_UUID] }] });
     if (!device.gatt) throw new Error('Perangkat BLE tidak menyediakan GATT');
     const server = await device.gatt.connect();
@@ -101,8 +113,30 @@ export class BleProvisioningClient {
     });
     this.device = device;
     this.onDeviceIdentityChange?.(device.name ?? null);
+    this.authenticatedDeviceId = null;
+    this.onAuthenticatedDeviceIdentityChange?.(null);
     this.onConnectionChange?.(true);
     device.addEventListener('gattserverdisconnected', () => this.close());
+  }
+
+  /**
+   * Read and verify the identity over the authenticated GATT session.  The
+   * advertising name and service UUID remain display/routing hints only.
+   */
+  async verifyDeviceIdentity(expectedDeviceId: string): Promise<string> {
+    const expected = expectedDeviceId.trim().toLowerCase();
+    if (!/^[0-9a-f]{16}$/u.test(expected)) {
+      throw new Error('Identitas perangkat SIGAP tidak canonical');
+    }
+    const response = await this.request('GET_DEVICE_ID');
+    if (!response.deviceId || response.deviceId !== expected) {
+      this.authenticatedDeviceId = null;
+      this.onAuthenticatedDeviceIdentityChange?.(null);
+      throw new Error('Perangkat BLE tidak cocok dengan device_id yang dipilih');
+    }
+    this.authenticatedDeviceId = response.deviceId;
+    this.onAuthenticatedDeviceIdentityChange?.(response.deviceId);
+    return response.deviceId;
   }
 
   close(): void {
@@ -112,6 +146,8 @@ export class BleProvisioningClient {
     this.server?.disconnect?.();
     this.server = null;
     this.device = null;
+    this.authenticatedDeviceId = null;
+    this.onAuthenticatedDeviceIdentityChange?.(null);
     this.onDeviceIdentityChange?.(null);
     this.onConnectionChange?.(false);
   }
@@ -218,6 +254,13 @@ export class BleProvisioningClient {
     sensor?: string,
     parameters: Record<string, string | number | boolean> = {},
   ): Promise<BleCalibrationResponse> {
+    if (operation === 'START' || operation === 'CRITERIA' || operation === 'CAPTURE' ||
+        operation === 'VALIDATE' || operation === 'PREVIEW' || operation === 'COMMIT' ||
+        operation === 'CANCEL' || operation === 'ROLLBACK') {
+      if (this.authenticatedDeviceId === null) {
+        throw new Error('Identitas perangkat BLE belum diverifikasi');
+      }
+    }
     const response = await this.requestCalibration(
       encodeCalibrationCommand(operation, sensor, parameters),
     );

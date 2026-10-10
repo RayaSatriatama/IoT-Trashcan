@@ -30,6 +30,7 @@ export type WifiStatus = {
 export type BleResponse = {
   ok: boolean;
   error?: string;
+  deviceId?: string;
   status?: WifiStatus;
   networks?: WifiNetwork[];
   scanPending?: boolean;
@@ -153,7 +154,7 @@ export function encodeBleCommand(_id: string, command: string, payload: Record<s
     body = `CONNECT_WIFI ${ssid} ${password}`;
   }
   const normalizedBody = body.toUpperCase();
-  if (normalizedBody !== 'STATUS' && normalizedBody !== 'GET_STATUS' && normalizedBody !== 'SCAN' &&
+  if (normalizedBody !== 'STATUS' && normalizedBody !== 'GET_STATUS' && normalizedBody !== 'GET_DEVICE_ID' && normalizedBody !== 'SCAN' &&
       normalizedBody !== 'SCAN_WIFI' && normalizedBody !== 'PING' && normalizedBody !== 'LIST_KNOWN_WIFI' &&
       normalizedBody !== 'RETRY_WIFI' && !normalizedBody.startsWith('CONNECT ') &&
       !normalizedBody.startsWith('CONNECT_WIFI ') && !normalizedBody.startsWith('CAL ')) {
@@ -219,6 +220,8 @@ export function decodeBleResponse(bytes: Uint8Array): BleResponse {
   if (text.startsWith('ERR ')) return { ok: false, error: text.slice(4) };
   if (text === 'OK SCAN PENDING') return { ok: true, scanPending: true };
   if (text === 'OK PONG') return { ok: true };
+  const deviceIdentity = /^OK DEVICE_ID id=([0-9a-f]{16})$/u.exec(text);
+  if (deviceIdentity) return { ok: true, deviceId: deviceIdentity[1] };
   if (text === 'OK CONNECTING') return { ok: true, status: { state: 'CONNECTING', ssid: null } };
   const status = /^OK STATUS state=(\S+) ssid=(.*)$/u.exec(text);
   if (status) {

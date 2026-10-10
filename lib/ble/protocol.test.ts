@@ -52,6 +52,18 @@ describe('BLE provisioning protocol', () => {
     expect(() => decodeBleResponse(new TextEncoder().encode('OK LIST_KNOWN_WIFI count=1\nLab,1\nOther,0'))).toThrow('count');
   });
 
+  it('decodes only the canonical authenticated device identity response', () => {
+    expect(decodeBleResponse(new TextEncoder().encode(
+      'OK DEVICE_ID id=0000000000001234',
+    ))).toEqual({ ok: true, deviceId: '0000000000001234' });
+    expect(() => decodeBleResponse(new TextEncoder().encode(
+      'OK DEVICE_ID id=SIGAP-01',
+    ))).toThrow();
+    expect(() => decodeBleResponse(new TextEncoder().encode(
+      'OK DEVICE_ID id=0000000000001234 extra',
+    ))).toThrow();
+  });
+
   it('does not claim support outside a secure Web Bluetooth context', () => {
     expect(isWebBluetoothAvailable()).toBe(false);
   });

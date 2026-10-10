@@ -203,6 +203,10 @@ BleParseStatus BleCommandParser::parse(std::string_view frame,
     output.kind = BleCommandKind::Status;
     return BleParseStatus::Accepted;
   }
+  if (equal_literal(frame, "GET_DEVICE_ID")) {
+    output.kind = BleCommandKind::DeviceIdentity;
+    return BleParseStatus::Accepted;
+  }
   if (equal_literal(frame, "SCAN") || equal_literal(frame, "SCAN_WIFI")) {
     output.kind = BleCommandKind::Scan;
     return BleParseStatus::Accepted;
@@ -381,6 +385,21 @@ void BleProvisioningSession::status_response(BleResponse& response) noexcept {
                static_cast<int>(std::min<std::size_t>(ssid.size(), 32U)), ssid.data());
 }
 
+void BleProvisioningSession::device_identity_response(
+    BleResponse& response) noexcept {
+  if (device_id_ == 0U) {
+    set_response(response, "ERR DEVICE_ID_UNAVAILABLE");
+    return;
+  }
+  char identity[17]{};
+  constexpr char kHex[] = "0123456789abcdef";
+  for (std::size_t index = 0U; index < 16U; ++index) {
+    const auto shift = static_cast<unsigned>((15U - index) * 4U);
+    identity[index] = kHex[(device_id_ >> shift) & 0x0fU];
+  }
+  set_response(response, "OK DEVICE_ID id=%s", identity);
+}
+
 void BleProvisioningSession::scan_response(WifiScanStatus status,
                                            BleResponse& response) noexcept {
   switch (status) {
@@ -501,6 +520,9 @@ BleParseStatus BleProvisioningSession::dispatch(std::string_view payload,
   switch (command.kind) {
     case BleCommandKind::Status:
       status_response(response);
+      break;
+    case BleCommandKind::DeviceIdentity:
+      device_identity_response(response);
       break;
     case BleCommandKind::Ping:
       set_response(response, "OK PONG");

@@ -26,6 +26,7 @@ inline constexpr char kProvisioningResponseUuid[] =
 
 enum class BleCommandKind : uint8_t {
   Status,
+  DeviceIdentity,
   Scan,
   Connect,
   Ping,
@@ -194,6 +195,11 @@ class BleProvisioningSession final {
 
   void on_connect(uint64_t now_us) noexcept;
   void on_authenticated(bool authenticated) noexcept { authenticated_ = authenticated; }
+  // The canonical device identity is injected by the application composition
+  // from the same EFUSE identity used by telemetry and device-control.  The
+  // identity is only disclosed after the encrypted/authenticated GATT link is
+  // established.
+  void set_device_id(uint64_t device_id) noexcept { device_id_ = device_id; }
   void set_calibration_backend(IBleCalibrationBackend* backend) noexcept {
     calibration_backend_ = backend;
   }
@@ -210,6 +216,7 @@ class BleProvisioningSession final {
   static constexpr std::size_t kMaxChunks{128U};
 
   void status_response(BleResponse& response) noexcept;
+  void device_identity_response(BleResponse& response) noexcept;
   void scan_response(WifiScanStatus status, BleResponse& response) noexcept;
   void set_response(BleResponse& response, const char* format, ...) noexcept;
   void queue_response(std::string_view payload, uint32_t request_id) noexcept;
@@ -225,6 +232,7 @@ class BleProvisioningSession final {
   ProvisioningPolicy policy_{};
   bool connected_{false};
   bool authenticated_{false};
+  uint64_t device_id_{0U};
   uint64_t last_activity_us_{0U};
   bool scan_waiting_{false};
   std::array<WifiNetwork, 16> scan_results_{};

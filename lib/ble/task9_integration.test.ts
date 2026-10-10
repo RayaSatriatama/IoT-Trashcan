@@ -138,6 +138,10 @@ describe('Task 9 Web Bluetooth provisioning boundary', () => {
     const commands: string[] = [];
     const harness = installBluetooth((command, _requestId, emit) => {
       commands.push(command);
+      if (command === 'GET_DEVICE_ID') {
+        emit('OK DEVICE_ID id=0000000000000042');
+        return;
+      }
       const tokens = command.split(/\s+/u);
       expect(tokens[0]).toBe('CAL');
       const operation = tokens[1];
@@ -178,6 +182,7 @@ describe('Task 9 Web Bluetooth provisioning boundary', () => {
     }, () => {});
     const client = new BleProvisioningClient({ requestTimeoutMs: 200 });
     await client.connect();
+    await expect(client.verifyDeviceIdentity('0000000000000042')).resolves.toBe('0000000000000042');
 
     const capabilities = await client.calibrationCapabilities(sensor);
     expect(capabilities.sensor).toBe(sensor);
@@ -204,7 +209,7 @@ describe('Task 9 Web Bluetooth provisioning boundary', () => {
     });
     expect(committed.data.state).toBe('COMMITTED');
     expect(committed.data.profile_hash).toBe(proposalHash);
-    expect(commands).toHaveLength(7);
+    expect(commands).toHaveLength(8);
 
     let step: CalibrationWizardStep = 'diagnostics';
     step = nextStepAfterOperation('START', 'ACCEPTED', step);

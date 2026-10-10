@@ -214,7 +214,9 @@ describe('BLE provisioning client', () => {
     control = new FakeCharacteristic((requestFrames) => {
       const first = decodeBleFrame(requestFrames[0]);
       const command = new TextDecoder().decode(assembleBleFrames(requestFrames.map(decodeBleFrame), 'F1')).trim();
-      const response = command.startsWith('CAL START hx711_organic reference_mass_mg=2000000 tare_counts=12')
+      const response = command === 'GET_DEVICE_ID'
+        ? 'OK DEVICE_ID id=0000000000000001'
+        : command.startsWith('CAL START hx711_organic reference_mass_mg=2000000 tare_counts=12')
         ? 'CAL1|op=START|status=ACCEPTED|session=9|sensor=hx711_organic|data=state=CAPTURING'
         : 'ERR CAL_REJECTED';
       encodeBleFrames(first.requestId, new TextEncoder().encode(response), 'R1').forEach((frame) => events.emit(frame));
@@ -229,9 +231,45 @@ describe('BLE provisioning client', () => {
 
     const client = new BleProvisioningClient();
     await client.connect();
+    await client.verifyDeviceIdentity('0000000000000001');
     await expect(client.calibrationStart('hx711_organic', {
       reference_mass_mg: 2000000,
       tare_counts: 12,
     })).resolves.toMatchObject({ operation: 'START', status: 'ACCEPTED' });
+  });
+
+  it('verifies the authenticated device identity before calibration mutation', async () => {
+    let identity = '00000000000000aa';
+    let control: FakeCharacteristic;
+    let events: FakeCharacteristic;
+    control = new FakeCharacteristic((requestFrames) => {
+      const first = decodeBleFrame(requestFrames[0]);
+      const command = new TextDecoder().decode(assembleBleFrames(requestFrames.map(decodeBleFrame), 'F1')).trim();
+      const response = command === 'GET_DEVICE_ID'
+        ? `OK DEVICE_ID id=${identity}`
+        : 'CAL1|op=START|status=ACCEPTED|session=9|sensor=hx711_organic|data=state=CAPTURING';
+      encodeBleFrames(first.requestId, new TextEncoder().encode(response), 'R1').forEach((frame) => events.emit(frame));
+    });
+    events = new FakeCharacteristic();
+    const server = new FakeServer(control, events);
+    Object.defineProperty(globalThis, 'isSecureContext', { configurable: true, value: true });
+    Object.defineProperty(globalThis, 'navigator', {
+      configurable: true,
+      value: { bluetooth: { requestDevice: async () => ({ gatt: { connect: async () => server }, addEventListener: () => {} }) } },
+    });
+
+    const client = new BleProvisioningClient();
+    await client.connect();
+    await expect(client.calibrationStart('hx711_organic', { reference_mass_mg: 2000 }))
+      .rejects.toThrow('Identitas perangkat BLE belum diverifikasi');
+    await expect(client.verifyDeviceIdentity('00000000000000ab'))
+      .rejects.toThrow('tidak cocok');
+    expect(client.verifiedDeviceId).toBeNull();
+    await expect(client.verifyDeviceIdentity('00000000000000aa')).resolves.toBe('00000000000000aa');
+    await expect(client.calibrationStart('hx711_organic', { reference_mass_mg: 2000 }))
+      .resolves.toMatchObject({ operation: 'START', status: 'ACCEPTED' });
+    client.close();
+    expect(client.verifiedDeviceId).toBeNull();
+    identity = '00000000000000bb';
   });
 });

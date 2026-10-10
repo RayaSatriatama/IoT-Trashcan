@@ -21,6 +21,7 @@ export type CalibrationWizardProps = {
 };
 
 export type BleCalibrationAdapter = {
+  verifyDeviceIdentity?: (deviceId: string) => Promise<string>;
   calibrationCapabilities?: (sensor: string) => Promise<BleCalibrationResponse>;
   calibrationEvidence?: (sensor: string) => Promise<BleCalibrationResponse>;
   calibrationStart: (sensor: string, parameters?: Record<string, string | number | boolean>) => Promise<BleCalibrationResponse>;
@@ -251,9 +252,17 @@ export function CalibrationWizard({ deviceId, sensorId, diagnostic, api, apiFact
     } catch (cause) { setError(redactCalibrationError(cause)); }
   };
 
+  const ensureBleIdentity = async () => {
+    if (!bleClient?.verifyDeviceIdentity) {
+      throw new Error('Adapter BLE tidak menyediakan verifikasi device_id');
+    }
+    await bleClient.verifyDeviceIdentity(deviceId);
+  };
+
   const loadBleCapabilities = async () => {
     if (!bleClient?.calibrationCapabilities) return;
     try {
+      await ensureBleIdentity();
       const value = parseBleCapabilities(await bleClient.calibrationCapabilities(sensorId), sensorId);
       if (!value) throw new Error('Kapabilitas perangkat tidak valid');
       setCapabilities(value);
@@ -306,6 +315,7 @@ export function CalibrationWizard({ deviceId, sensorId, diagnostic, api, apiFact
     setError(null); setBusy(true); commandInFlight.current = true;
     try {
       if (transport === 'ble' && bleClient) {
+        await ensureBleIdentity();
         const output = operation === 'START' ? await bleClient.calibrationStart(sensorId, {
             ...(extra.references ?? {}),
             ...(extra.parameters ?? {}),
