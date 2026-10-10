@@ -2,10 +2,11 @@
 
 ## Lead orchestrator verification (`318f70f`, 2026-10-10)
 
-The branch and worktree were verified at `318f70f81f125a88f3a37f7e6b5bfde0f4c7cd13`.
-PR #27 is OPEN and unmerged. GitHub reports both `Vercel: SUCCESS` and
-`Vercel Preview Comments: SUCCESS` for this HEAD. No source files were changed
-by the verification run.
+The source verification began from `318f70f81f125a88f3a37f7e6b5bfde0f4c7cd13`.
+PR #27 remains OPEN and unmerged. The follow-up documentation-only commit is
+`8ced31f31cdffad4c8d360607f5a26b93cd8f202`; it contains no production-source
+change. Vercel Preview Comments is successful for the follow-up commit, while
+the new Vercel deployment was still pending when this ledger was updated.
 
 Fresh host-side results:
 
