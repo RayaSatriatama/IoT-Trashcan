@@ -119,14 +119,20 @@ function parseBleDiagnostic(response: BleCalibrationResponse, sensorId: Calibrat
     if (response.status === 'ERROR' || response.sensor !== sensorId) return null;
     const data = response.data;
     const flags = data.f ?? '';
-    const flag = (name: string) => new RegExp(`${name}=([01])`, 'u').exec(flags)?.[1] === '1';
+    const optionalFlag = (name: string): boolean | undefined => {
+      const match = new RegExp(`${name}=([01])`, 'u').exec(flags);
+      return match ? match[1] === '1' : undefined;
+    };
     const quality = data.q as SensorDiagnostic['quality'] | undefined;
     const reason = data.r;
     const fresh = data.fr === 'FRESH';
     if (!quality || !reason || !data.s) return null;
-    const temperatureCrc = flag('tc');
-    const humidityCrc = flag('hc');
-    const crc = flag('crc') || (temperatureCrc && humidityCrc);
+    const temperatureCrc = optionalFlag('tc');
+    const humidityCrc = optionalFlag('hc');
+    const directCrc = optionalFlag('crc');
+    const crc = directCrc ?? (temperatureCrc !== undefined && humidityCrc !== undefined
+      ? temperatureCrc && humidityCrc
+      : undefined);
     return {
       sensor_id: sensorId,
       stream: data.st ?? 'unknown',
@@ -134,12 +140,12 @@ function parseBleDiagnostic(response: BleCalibrationResponse, sensorId: Calibrat
       reason,
       raw: {
         present: data.raw === '1',
-        identity_verified: flag('id'),
+        identity_verified: optionalFlag('id'),
         crc_valid: crc,
         temperature_crc_valid: temperatureCrc,
         humidity_crc_valid: humidityCrc,
-        conversion_complete: flag('conv'),
-        heater_ready: flag('heat'),
+        conversion_complete: optionalFlag('conv'),
+        heater_ready: optionalFlag('heat'),
       },
       converted_value: null,
       converted_unit: null,
