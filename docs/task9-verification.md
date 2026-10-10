@@ -33,6 +33,10 @@ PASS: missing mapping, verified identity, diagnostics, START, criteria,
       wrong-device rejection
 ```
 
+The fresh runner used Chromium `153.0.8010.52`, Node `v24.15.0`, and an
+isolated `/tmp` Playwright Core installation. No Playwright package or
+private key was added to the repository.
+
 The Go loopback calibration journey is an isolated TLS/SQLite software test
 and passed all six lifecycle stages. It does not prove ESP32-originated HTTPS.
 The browser run uses only ephemeral test certificates and synthetic evidence;
