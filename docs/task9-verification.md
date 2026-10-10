@@ -80,7 +80,7 @@ Final target resource measurements are RAM/flash: `sigap_n16r8` 49,496 /
 SD+HTTPS image SHA-256 is
 `64f28c0b7120abfe09c5cdb61e8e145f46f2b2fa43a7563827ea9ab7969a0696`.
 
-## Final durability remediation (`4d1f2ee` -> integrated source)
+## Historical durability remediation snapshot (`4d1f2ee` -> integrated source, superseded)
 
 Fresh scoped fixes now include backend late-result reconciliation
 (`cd9acc8`), empty-archive forensic preservation (`6b2028a`), serialized
@@ -90,19 +90,9 @@ regression is 13/13 PASS, target adapter storage regressions are 16/16 PASS,
 backend device-control/E2E tests pass in normal and race modes, and frontend
 tests are 112/112 PASS.
 
-The production persistent result journal remains an explicit software gap.
-`IDeviceControlResultJournal` is still optional in `SigapApp`; the NVS partition
-is already shared by configuration, secrets, profiles, models, and calibration
-replay, while one exact command/result can approach 9 KiB. The safe remaining
-design is a transactional LittleFS journal with corrupt-versus-absent state,
-startup recovery before poller fetch, and target adapter tests. No unsafe NVS
-blob was added.
-
-The poller now fails closed around reboot-relative expiry and journal
-save/clear failures, but `SigapApp` still does not bind a persistent
-`IDeviceControlResultJournal`. Therefore production cross-reboot result
-durability is not accepted by this ledger. BLE authenticated device identity
-binding and physical browser automation also remain unverified.
+At this historical snapshot the production persistent result journal and BLE
+identity binding were still open. Those statements are superseded by the P0
+closure section above, which records the production binding and fresh evidence.
 
 This section supersedes stale hardware-boundary statements below while
 preserving historical ledgers. Source verification was rerun on the current
@@ -272,7 +262,7 @@ produce a usable runtime connection or expose credentials.
 | Sensor physical calibration/safety | BLOCKED | No physical sensors, MQ-7 heater, or actuators are connected. |
 | Physical BLE/WiFi commissioning | BLOCKED | Requires authorized target run, browser secure context, test network, and secure one-shot passkey handoff on the display-less board. Procedure: `docs/task9-commissioning.md`. |
 | Physical SD I/O, endurance, 24 h/72 h soak | BLOCKED | Requires explicit hardware authorization and timestamped reconciliation. |
-| Device-control result durability | UNVERIFIED | Production `SigapApp` currently constructs `DeviceControlPoller` without a durable result journal; controller NVS replay is safe, but lost POST recovery waits for lease/redelivery. |
+| Device-control result durability | PASS (software) | Current `SigapApp` binds the LittleFS `FsDeviceControlResultJournal`; 445 native tests, sanitizer regressions, and six target builds cover recovery and fail-closed startup. Physical reboot/result-post recovery remains separate. |
 
 ## Fresh command results
 
