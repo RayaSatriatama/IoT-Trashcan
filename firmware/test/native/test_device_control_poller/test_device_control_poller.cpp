@@ -98,8 +98,14 @@ struct Journal final : IDeviceControlResultJournal {
   DeviceControlCommand command{};
   DeviceControlResult result{};
   bool present{false};
+  bool fail_save{false};
+  bool fail_clear{false};
+  uint32_t save_calls{0U};
+  uint32_t clear_calls{0U};
   bool save(const DeviceControlCommand& value,
             const DeviceControlResult& output) noexcept override {
+    ++save_calls;
+    if (fail_save) return false;
     command = value;
     result = output;
     present = true;
@@ -113,6 +119,8 @@ struct Journal final : IDeviceControlResultJournal {
     return true;
   }
   bool clear() noexcept override {
+    ++clear_calls;
+    if (fail_clear) return false;
     present = false;
     return true;
   }
@@ -202,6 +210,81 @@ void test_result_journal_recovers_lost_post_without_reexecution() {
                         restarted.poll());
   TEST_ASSERT_EQUAL_UINT32(0U, restarted_executor.calls);
   TEST_ASSERT_FALSE(journal.present);
+}
+
+void test_recovered_result_ignores_prior_boot_monotonic_deadline() {
+  Clock clock{};
+  Journal journal{};
+  journal.command = make_command(10U);
+  journal.result.status = DeviceControlStatus::Committed;
+  TEST_ASSERT_TRUE(journal.result.command_id.assign("cmd-1"));
+  TEST_ASSERT_TRUE(journal.result.session_id.assign("session-1"));
+  journal.result.payload[0] = '{';
+  journal.result.payload[1] = '}';
+  journal.result.payload_size = 2U;
+  journal.present = true;
+  // A reboot-relative clock cannot be compared with a deadline from the prior
+  // boot. The already executed result must be reconciled, not discarded.
+  clock.now = 1000U;
+  Transport transport{};
+  transport.result_status = 200;
+  Executor executor{};
+  DeviceControlPoller poller(policy(), clock, transport, executor, &journal);
+  TEST_ASSERT_TRUE(poller.begin("DEV-1", "token"));
+  TEST_ASSERT_EQUAL_INT(DeviceControlPollOutcome::ResultSent, poller.poll());
+  TEST_ASSERT_EQUAL_UINT32(0U, executor.calls);
+  TEST_ASSERT_FALSE(journal.present);
+}
+
+void test_journal_save_failure_blocks_new_commands_until_durable() {
+  Clock clock{};
+  Transport transport{};
+  transport.command = make_command();
+  Executor executor{};
+  Journal journal{};
+  journal.fail_save = true;
+  DeviceControlPoller poller(policy(), clock, transport, executor, &journal);
+  TEST_ASSERT_TRUE(poller.begin("DEV-1", "token"));
+  TEST_ASSERT_EQUAL_INT(DeviceControlPollOutcome::Failed, poller.poll());
+  TEST_ASSERT_EQUAL_UINT32(1U, executor.calls);
+  TEST_ASSERT_EQUAL_UINT32(1U, transport.command_starts);
+
+  clock.now = poller.next_attempt_us();
+  TEST_ASSERT_EQUAL_INT(DeviceControlPollOutcome::Failed, poller.poll());
+  TEST_ASSERT_EQUAL_UINT32(1U, executor.calls);
+  TEST_ASSERT_EQUAL_UINT32(1U, transport.command_starts);
+
+  journal.fail_save = false;
+  clock.now = poller.next_attempt_us();
+  TEST_ASSERT_EQUAL_INT(DeviceControlPollOutcome::Executed, poller.poll());
+  TEST_ASSERT_TRUE(journal.present);
+  TEST_ASSERT_EQUAL_UINT32(1U, executor.calls);
+  TEST_ASSERT_EQUAL_UINT32(1U, transport.command_starts);
+}
+
+void test_journal_clear_failure_blocks_new_commands() {
+  Clock clock{};
+  Transport transport{};
+  transport.command = make_command();
+  Executor executor{};
+  Journal journal{};
+  journal.fail_clear = true;
+  DeviceControlPoller poller(policy(), clock, transport, executor, &journal);
+  TEST_ASSERT_TRUE(poller.begin("DEV-1", "token"));
+  TEST_ASSERT_EQUAL_INT(DeviceControlPollOutcome::Executed, poller.poll());
+  TEST_ASSERT_EQUAL_INT(DeviceControlPollOutcome::Failed, poller.poll());
+  TEST_ASSERT_TRUE(journal.present);
+  TEST_ASSERT_EQUAL_UINT32(1U, transport.command_starts);
+
+  clock.now = poller.next_attempt_us();
+  TEST_ASSERT_EQUAL_INT(DeviceControlPollOutcome::Failed, poller.poll());
+  TEST_ASSERT_EQUAL_UINT32(1U, transport.command_starts);
+
+  journal.fail_clear = false;
+  clock.now = poller.next_attempt_us();
+  TEST_ASSERT_EQUAL_INT(DeviceControlPollOutcome::ResultSent, poller.poll());
+  TEST_ASSERT_FALSE(journal.present);
+  TEST_ASSERT_EQUAL_UINT32(1U, transport.command_starts);
 }
 
 void test_unauthorized_state_requires_explicit_reauthorization() {
@@ -308,6 +391,9 @@ void setup() {
   RUN_TEST(test_stalled_get_and_result_do_not_block_or_repeat_execution);
   RUN_TEST(test_expired_or_wrong_device_command_is_never_executed);
   RUN_TEST(test_result_journal_recovers_lost_post_without_reexecution);
+  RUN_TEST(test_recovered_result_ignores_prior_boot_monotonic_deadline);
+  RUN_TEST(test_journal_save_failure_blocks_new_commands_until_durable);
+  RUN_TEST(test_journal_clear_failure_blocks_new_commands);
   RUN_TEST(test_unauthorized_state_requires_explicit_reauthorization);
   RUN_TEST(test_relative_server_expiry_is_bounded_before_execution);
   RUN_TEST(test_oversized_command_never_reaches_executor);

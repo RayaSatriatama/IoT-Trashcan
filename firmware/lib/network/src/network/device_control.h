@@ -161,9 +161,9 @@ class DeviceControlPoller final {
     next_attempt_us_ = 0U;
     command_ = DeviceControlCommand{};
     result_ = DeviceControlResult{};
+    result_request_pending_ = false;
     if (journal_ != nullptr && journal_->load(command_, result_)) {
-      if (!valid_command(command_, clock_.now_us()) ||
-          result_.command_id.view() != command_.command_id.view()) {
+      if (!valid_recovered_result(command_, result_)) {
         (void)journal_->clear();
       } else {
         state_ = State::PostingResult;
@@ -183,7 +183,9 @@ class DeviceControlPoller final {
     if (state_ == State::AuthRequired) return DeviceControlPollOutcome::Unauthorized;
     if (now < next_attempt_us_) return DeviceControlPollOutcome::Backoff;
 
+    if (state_ == State::PersistingResult) return persist_result(now);
     if (state_ == State::PostingResult) return poll_result(now);
+    if (state_ == State::ClearingJournal) return clear_result(now);
     if (state_ == State::WaitingCommand) {
       DeviceControlHttpResponse response{};
       const auto transport_result = transport_.poll_next_command(response);
@@ -219,7 +221,14 @@ class DeviceControlPoller final {
   const DeviceControlResult& result() const noexcept { return result_; }
 
  private:
-  enum class State : uint8_t { Idle, WaitingCommand, PostingResult, AuthRequired };
+  enum class State : uint8_t {
+    Idle,
+    WaitingCommand,
+    PersistingResult,
+    PostingResult,
+    ClearingJournal,
+    AuthRequired,
+  };
 
   bool valid_command(const DeviceControlCommand& command,
                     uint64_t now_us) const noexcept {
@@ -228,6 +237,23 @@ class DeviceControlPoller final {
            command.sensor_id.size != 0U && command.operation.size != 0U &&
            command.payload_size <= command.payload.size() &&
            command.expires_at_us != 0U && now_us <= command.expires_at_us;
+  }
+
+  bool valid_recovered_result(const DeviceControlCommand& command,
+                              const DeviceControlResult& result) const noexcept {
+    // expires_at_us is relative to the uptime of the boot that accepted the
+    // command. It cannot authorize a new execution after reboot, but it also
+    // must not discard an already executed result awaiting reconciliation.
+    return command.command_id.size != 0U &&
+           command.device_id.view() == device_id_text_.view() &&
+           command.operator_id.size != 0U && command.session_id.size != 0U &&
+           command.request_hash.size != 0U && command.sensor_id.size != 0U &&
+           command.operation.size != 0U &&
+           command.payload_size <= command.payload.size() &&
+           result.command_id.view() == command.command_id.view() &&
+           result.session_id.view() == command.session_id.view() &&
+           result.payload_size != 0U &&
+           result.payload_size <= result.payload.size();
   }
 
   void schedule_retry(uint64_t now_us) noexcept {
@@ -272,10 +298,22 @@ class DeviceControlPoller final {
       result_.status = DeviceControlStatus::Failed;
     }
     if (journal_ != nullptr && !journal_->save(command_, result_)) {
+      state_ = State::PersistingResult;
       schedule_retry(now_us);
       return DeviceControlPollOutcome::Failed;
     }
     state_ = State::PostingResult;
+    return DeviceControlPollOutcome::Executed;
+  }
+
+  DeviceControlPollOutcome persist_result(uint64_t now_us) noexcept {
+    if (journal_ == nullptr || !journal_->save(command_, result_)) {
+      schedule_retry(now_us);
+      return DeviceControlPollOutcome::Failed;
+    }
+    state_ = State::PostingResult;
+    retry_attempt_ = 0U;
+    next_attempt_us_ = now_us;
     return DeviceControlPollOutcome::Executed;
   }
 
@@ -306,10 +344,27 @@ class DeviceControlPoller final {
       schedule_retry(now_us);
       return DeviceControlPollOutcome::Failed;
     }
+    if (journal_ != nullptr && !journal_->clear()) {
+      state_ = State::ClearingJournal;
+      schedule_retry(now_us);
+      return DeviceControlPollOutcome::Failed;
+    }
     state_ = State::Idle;
     retry_attempt_ = 0U;
     next_attempt_us_ = now_us;
-    if (journal_ != nullptr) (void)journal_->clear();
+    return DeviceControlPollOutcome::ResultSent;
+  }
+
+  DeviceControlPollOutcome clear_result(uint64_t now_us) noexcept {
+    if (journal_ == nullptr || !journal_->clear()) {
+      schedule_retry(now_us);
+      return DeviceControlPollOutcome::Failed;
+    }
+    state_ = State::Idle;
+    retry_attempt_ = 0U;
+    next_attempt_us_ = now_us;
+    command_ = DeviceControlCommand{};
+    result_ = DeviceControlResult{};
     return DeviceControlPollOutcome::ResultSent;
   }
 
