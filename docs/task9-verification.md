@@ -2,6 +2,62 @@
 
 ## Fresh integrated Wave 1 evidence (`76c3203` source -> current builds)
 
+## Latest final-source verification (`14a27fd`)
+
+The final integrated source was verified after the backend, storage, browser,
+and poller remediation commits. These results supersede earlier numeric totals
+in this ledger while preserving the historical sections below.
+
+```text
+pio test -e native --without-uploading                         PASS 438/438
+isolated ASan/UBSan pio test -e native                         PASS 438/438, no diagnostics
+pio check -e native --fail-on-defect=low                       PASS, no defects
+pio run -e sigap_n16r8 -e sigap_n16r8_sd                       PASS
+pio run -e sigap_n16r8_sd_spi -e sigap_bench                   PASS
+pio run -e sigap_n16r8_https_compile                           PASS
+pio run -e sigap_n16r8_sd_https_compile                        PASS
+go test -count=1 ./...                                         PASS
+go test -race -count=1 ./...                                   PASS
+go vet ./...                                                   PASS
+go test -count=1 -v ./internal/telemetry                      PASS 14 schemas / 24 valid / 36 invalid / golden hashes
+npm test -- --run                                             PASS 21 files / 112 tests
+npm run typecheck                                              PASS
+npm run export:web                                             PASS
+git diff --check                                               PASS
+```
+
+Final target resource measurements are RAM/flash: `sigap_n16r8` 49,496 /
+1,106,673; `sigap_n16r8_sd` 50,036 / 1,179,933;
+`sigap_n16r8_sd_spi` 49,792 / 1,159,453; `sigap_bench` 49,496 / 1,106,673;
+`sigap_n16r8_https_compile` 51,824 / 1,300,825; and
+`sigap_n16r8_sd_https_compile` 52,260 / 1,358,973 bytes. The combined
+SD+HTTPS image SHA-256 is
+`64f28c0b7120abfe09c5cdb61e8e145f46f2b2fa43a7563827ea9ab7969a0696`.
+
+## Final durability remediation (`4d1f2ee` -> integrated source)
+
+Fresh scoped fixes now include backend late-result reconciliation
+(`cd9acc8`), empty-archive forensic preservation (`6b2028a`), serialized
+BLE requests (`3051eef`), and fail-closed poller handling for journal save/
+clear failures plus reboot-relative expiry (`14a27fd`). The focused poller
+regression is 13/13 PASS, target adapter storage regressions are 16/16 PASS,
+backend device-control/E2E tests pass in normal and race modes, and frontend
+tests are 112/112 PASS.
+
+The production persistent result journal remains an explicit software gap.
+`IDeviceControlResultJournal` is still optional in `SigapApp`; the NVS partition
+is already shared by configuration, secrets, profiles, models, and calibration
+replay, while one exact command/result can approach 9 KiB. The safe remaining
+design is a transactional LittleFS journal with corrupt-versus-absent state,
+startup recovery before poller fetch, and target adapter tests. No unsafe NVS
+blob was added.
+
+The poller now fails closed around reboot-relative expiry and journal
+save/clear failures, but `SigapApp` still does not bind a persistent
+`IDeviceControlResultJournal`. Therefore production cross-reboot result
+durability is not accepted by this ledger. BLE authenticated device identity
+binding and physical browser automation also remain unverified.
+
 This section supersedes stale hardware-boundary statements below while
 preserving historical ledgers. Source verification was rerun on the current
 working tree. The selected SD image was uploaded only to the application
