@@ -109,6 +109,53 @@ DeviceControlResult control_result(const char* id) {
   return value;
 }
 
+struct JournalClock final : IMonotonicClock {
+  uint64_t now_us() const noexcept override { return 0U; }
+};
+
+struct JournalTransport final : IDeviceControlTransport {
+  uint32_t command_starts{0U};
+
+  TransportResult start_next_command(std::string_view, std::string_view,
+                                     uint32_t,
+                                     DeviceControlHttpResponse&) noexcept override {
+    ++command_starts;
+    return TransportResult::Failed;
+  }
+  TransportResult poll_next_command(DeviceControlHttpResponse&) noexcept override {
+    return TransportResult::Failed;
+  }
+  TransportResult start_command_result(std::string_view, std::string_view,
+                                       const DeviceControlCommand&,
+                                       const DeviceControlResult&, uint32_t,
+                                       DeviceControlHttpResponse&) noexcept override {
+    return TransportResult::Failed;
+  }
+  TransportResult poll_command_result(DeviceControlHttpResponse&) noexcept override {
+    return TransportResult::Failed;
+  }
+  void cancel_command_request() noexcept override {}
+};
+
+struct JournalExecutor final : IDeviceControlExecutor {
+  uint32_t calls{0U};
+
+  bool execute(const DeviceControlCommand&, uint64_t,
+               DeviceControlResult&) noexcept override {
+    ++calls;
+    return false;
+  }
+};
+
+NetworkPolicy journal_policy() {
+  NetworkPolicy policy{};
+  policy.retry_min_ms = 1U;
+  policy.retry_max_ms = 1U;
+  policy.request_timeout_ms = 1U;
+  policy.retry_after_max_ms = 1U;
+  return policy;
+}
+
 void test_target_archive_failed_recovery_copy_is_restart_safe() {
   fs::FS filesystem{};
   LittleFsArchiveStore initial("/sigap/archive.bin");
@@ -443,6 +490,67 @@ void test_target_device_control_journal_fault_is_not_empty() {
                         static_cast<int>(restarted.state()));
 }
 
+void test_target_device_control_journal_partial_new_slot_keeps_valid_result() {
+  fs::FS filesystem{};
+  FsDeviceControlResultJournal journal;
+  TEST_ASSERT_TRUE(journal.begin(filesystem, "/sigap/device-control.result"));
+  TEST_ASSERT_TRUE(journal.save(control_command("control-valid"),
+                                control_result("control-valid")));
+  filesystem.short_write_once(3U);
+  TEST_ASSERT_FALSE(journal.save(control_command("control-partial"),
+                                 control_result("control-partial")));
+
+  FsDeviceControlResultJournal restarted;
+  TEST_ASSERT_TRUE(restarted.begin(filesystem, "/sigap/device-control.result"));
+  DeviceControlCommand recovered_command{};
+  DeviceControlResult recovered_result{};
+  TEST_ASSERT_TRUE(restarted.load(recovered_command, recovered_result));
+  TEST_ASSERT_EQUAL_STRING("control-valid",
+                           recovered_command.command_id.bytes.data());
+  TEST_ASSERT_EQUAL_STRING("control-valid",
+                           recovered_result.command_id.bytes.data());
+}
+
+void test_target_device_control_journal_corrupt_only_slot_blocks_poller() {
+  fs::FS filesystem{};
+  FsDeviceControlResultJournal journal;
+  TEST_ASSERT_TRUE(journal.begin(filesystem, "/sigap/device-control.result"));
+  TEST_ASSERT_TRUE(journal.save(control_command("control-corrupt"),
+                                control_result("control-corrupt")));
+  constexpr std::array<uint8_t, 1U> corrupt{{0xFFU}};
+  filesystem.append_raw("/sigap/device-control.result.a", corrupt.data(),
+                        corrupt.size());
+
+  FsDeviceControlResultJournal restarted;
+  TEST_ASSERT_FALSE(restarted.begin(filesystem, "/sigap/device-control.result"));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(DeviceControlJournalState::Corrupt),
+                        static_cast<int>(restarted.state()));
+  JournalClock clock{};
+  JournalTransport transport{};
+  JournalExecutor executor{};
+  DeviceControlPoller poller(journal_policy(), clock, transport, executor,
+                             &restarted);
+  TEST_ASSERT_FALSE(poller.begin("0000000000000042", "token"));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(DeviceControlPollOutcome::Failed),
+                        static_cast<int>(poller.poll()));
+  TEST_ASSERT_EQUAL_UINT32(0U, executor.calls);
+  TEST_ASSERT_EQUAL_UINT32(0U, transport.command_starts);
+}
+
+void test_target_device_control_journal_unavailable_blocks_poller() {
+  FsDeviceControlResultJournal unavailable;
+  JournalClock clock{};
+  JournalTransport transport{};
+  JournalExecutor executor{};
+  DeviceControlPoller poller(journal_policy(), clock, transport, executor,
+                             &unavailable);
+  TEST_ASSERT_FALSE(poller.begin("0000000000000042", "token"));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(DeviceControlPollOutcome::Failed),
+                        static_cast<int>(poller.poll()));
+  TEST_ASSERT_EQUAL_UINT32(0U, executor.calls);
+  TEST_ASSERT_EQUAL_UINT32(0U, transport.command_starts);
+}
+
 }  // namespace
 
 int main() {
@@ -460,5 +568,8 @@ int main() {
   RUN_TEST(test_target_migration_receipt_survives_restart_boundary);
   RUN_TEST(test_target_device_control_journal_replays_exact_result_after_restart);
   RUN_TEST(test_target_device_control_journal_fault_is_not_empty);
+  RUN_TEST(test_target_device_control_journal_partial_new_slot_keeps_valid_result);
+  RUN_TEST(test_target_device_control_journal_corrupt_only_slot_blocks_poller);
+  RUN_TEST(test_target_device_control_journal_unavailable_blocks_poller);
   return UNITY_END();
 }
