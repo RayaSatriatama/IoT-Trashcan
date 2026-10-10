@@ -1,5 +1,31 @@
 # Task 9 verification ledger
 
+## Real BLE scope-override attempt (`0590a08`)
+
+The attached board was discovered with the host Bluetooth adapter after a
+temporary, reversible adapter unblock. The USB identity was
+`98:A3:16:F5:C1:50`; BlueZ discovered BLE address `98:A3:16:F5:C1:51` with
+advertised SIGAP service UUID `7d3f0001-7d3f-4a53-9a4b-534947415000` and name
+`SIGAP-A398`. Chromium 153 exposed a real `navigator.bluetooth` object on the
+local HTTPS origin with the experimental Web Bluetooth feature enabled.
+
+The rendered website requested the real device chooser without replacing
+`navigator.bluetooth`. No device was selected during the 120-second window,
+so no authenticated pairing, GATT command, `GET_STATUS`, `GET_DEVICE_ID`,
+notification exchange, or reconnect occurred. The serial maintenance path was
+also unavailable to the current user because `/dev/ttyACM0` is owned by group
+`uucp`; the one-shot passkey was not disclosed or logged. The host adapter was
+powered off and re-blocked after the attempt.
+
+```text
+REAL_BLE_DISCOVERY: PASS
+REAL_BLE_PAIRING: HUMAN_ACTION_REQUIRED / NOT RUN
+REAL_BLE_GATT: NOT RUN
+REAL_BLE_DEVICE_ID: NOT RUN (source contract exists; runtime response unverified)
+REAL_BLE_BROWSER_E2E: INCOMPLETE
+HUMAN_PAIRING_STEP: select SIGAP-A398 and enter the one-shot USB-disclosed passkey
+```
+
 ## Current final-source verification (`a91418a`)
 
 This is the current evidence for the open Task 9 branch. Earlier sections are

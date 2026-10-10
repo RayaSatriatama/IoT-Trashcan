@@ -1,10 +1,13 @@
 # Task 9 commissioning and HIL procedure
 
-Status: **PREPARATION WITH ATTACHED SD PROBE COMPLETE**. The documented
-application-only upload and non-destructive SD probe were executed on the
-selected final image. BLE pairing, WiFi changes, USB passkey disclosure,
+Status: **PREPARATION WITH ATTACHED SD PROBE AND BLE DISCOVERY COMPLETE**.
+The documented application-only upload and non-destructive SD probe were
+executed on the selected historical image. A later scope-override attempt
+discovered the attached SIGAP BLE advertisement and opened the real Chromium
+device chooser, but no operator selected the device or entered the passkey.
+Authenticated pairing, GATT commands, WiFi changes, USB passkey disclosure,
 sensor calibration, heater/actuator operation, and destructive tests remain
-outside this run.
+unverified.
 
 ## Preconditions and safety boundary
 
