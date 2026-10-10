@@ -249,7 +249,8 @@ SigapApp::SigapApp() noexcept
       device_control_executor_(maintenance_router_, calibration_controller_),
       device_control_poller_(
           network::NetworkPolicy{1000U, 60000U, 10000U, 60000U, 250U},
-          network_clock_, device_control_transport_, device_control_executor_),
+          network_clock_, device_control_transport_, device_control_executor_,
+          &device_control_result_journal_),
 #endif
 #endif
       network_source_(batch_runtime_),
@@ -335,6 +336,7 @@ void SigapApp::setup() noexcept {
   }
   record_context_.device_id = device_identity;
   record_factory_.set_device_id(device_identity);
+  ble_session_.set_device_id(device_mac);
   (void)std::snprintf(ble_name, sizeof(ble_name), "SIGAP-%04llX",
                       static_cast<unsigned long long>(device_mac & 0xffffU));
 #if defined(SIGAP_NETWORK_ENDPOINT) && defined(SIGAP_NETWORK_CA_CERT)
@@ -399,6 +401,28 @@ void SigapApp::setup() noexcept {
           250U},
       network_clock_, network_jitter_, network_link_, network_transport_,
       network_source_);
+#ifdef ARDUINO
+  // Persistent device-control result recovery must complete before the first
+  // command fetch.  LittleFS is mounted without formatting; a failed mount
+  // keeps device-control disabled while archive and acquisition remain safe.
+  const bool littlefs_mounted = LittleFS.begin(false);
+  if (littlefs_mounted) {
+    (void)migration_journal_.begin(LittleFS);
+    (void)littlefs_store_.begin(
+        LittleFS, config_manager_.active().storage.flash_pending_quota_bytes);
+    (void)batch_store_.begin(
+        LittleFS, config_manager_.active().storage.flash_pending_quota_bytes);
+    (void)ack_journal_.begin(LittleFS);
+    device_control_journal_ready_ =
+        device_control_result_journal_.begin(LittleFS) &&
+        device_control_result_journal_.recover();
+  }
+#else
+  (void)littlefs_store_.begin(
+      config_manager_.active().storage.flash_pending_quota_bytes);
+  (void)sd_store_.begin(
+      config_manager_.active().storage.sd_pending_quota_bytes);
+#endif
   // Network credentials are loaded only into the worker boundary. They are
   // never serialized, logged, or exposed through maintenance responses.
   provisioning::NetworkSecrets network_secrets{};
@@ -419,6 +443,7 @@ void SigapApp::setup() noexcept {
         device_control_transport_.set_endpoint(SIGAP_NETWORK_ENDPOINT) &&
         device_control_transport_.begin(SIGAP_NETWORK_CA_CERT);
     device_control_ready_ = control_transport_ready &&
+                            device_control_journal_ready_ &&
                             device_control_poller_.begin(
                                 std::string_view(device_control_id_.data()),
                                 std::string_view(network_secrets.device_token.data(),
@@ -439,15 +464,6 @@ void SigapApp::setup() noexcept {
                               network_secrets.device_token.size());
   }
 #ifdef ARDUINO
-  const bool littlefs_mounted = LittleFS.begin(false);
-  if (littlefs_mounted) {
-    (void)migration_journal_.begin(LittleFS);
-    (void)littlefs_store_.begin(
-        LittleFS, config_manager_.active().storage.flash_pending_quota_bytes);
-    (void)batch_store_.begin(
-        LittleFS, config_manager_.active().storage.flash_pending_quota_bytes);
-    (void)ack_journal_.begin(LittleFS);
-  }
 #ifdef SIGAP_USE_SD
   const bool sd_mounted = begin_sd_transport();
   if (sd_mounted) {
@@ -455,11 +471,6 @@ void SigapApp::setup() noexcept {
         sd_filesystem(), config_manager_.active().storage.sd_pending_quota_bytes);
   }
 #endif
-#else
-  (void)littlefs_store_.begin(
-      config_manager_.active().storage.flash_pending_quota_bytes);
-  (void)sd_store_.begin(
-      config_manager_.active().storage.sd_pending_quota_bytes);
 #endif
 
   const processing::ResultRecordContext result_context{

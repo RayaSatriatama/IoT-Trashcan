@@ -121,6 +121,10 @@ class IDeviceControlExecutor {
 class IDeviceControlResultJournal {
  public:
   virtual ~IDeviceControlResultJournal() = default;
+  // Startup recovery is separate from loading a record.  A missing journal
+  // is healthy and returns true; corrupt or inaccessible storage returns
+  // false so the poller cannot fetch a new mutating command.
+  virtual bool recover() noexcept { return true; }
   virtual bool load(DeviceControlCommand& command,
                     DeviceControlResult& result) const noexcept = 0;
   virtual bool save(const DeviceControlCommand& command,
@@ -162,9 +166,16 @@ class DeviceControlPoller final {
     command_ = DeviceControlCommand{};
     result_ = DeviceControlResult{};
     result_request_pending_ = false;
+    if (journal_ != nullptr && !journal_->recover()) {
+      state_ = State::JournalUnavailable;
+      return false;
+    }
     if (journal_ != nullptr && journal_->load(command_, result_)) {
       if (!valid_recovered_result(command_, result_)) {
-        (void)journal_->clear();
+        if (!journal_->clear()) {
+          state_ = State::JournalUnavailable;
+          return false;
+        }
       } else {
         state_ = State::PostingResult;
         return true;
@@ -181,6 +192,7 @@ class DeviceControlPoller final {
   DeviceControlPollOutcome poll() noexcept {
     const uint64_t now = clock_.now_us();
     if (state_ == State::AuthRequired) return DeviceControlPollOutcome::Unauthorized;
+    if (state_ == State::JournalUnavailable) return DeviceControlPollOutcome::Failed;
     if (now < next_attempt_us_) return DeviceControlPollOutcome::Backoff;
 
     if (state_ == State::PersistingResult) return persist_result(now);
@@ -208,10 +220,14 @@ class DeviceControlPoller final {
   }
 
   bool busy() const noexcept {
-    return state_ == State::WaitingCommand || state_ == State::PostingResult;
+    return state_ == State::WaitingCommand || state_ == State::PersistingResult ||
+           state_ == State::PostingResult || state_ == State::ClearingJournal ||
+           state_ == State::JournalUnavailable;
   }
   NetworkState state() const noexcept {
     return state_ == State::AuthRequired ? NetworkState::AuthRequired
+                                         : state_ == State::JournalUnavailable
+                                               ? NetworkState::Offline
                                          : state_ == State::Idle
                                                ? NetworkState::Offline
                                                : NetworkState::Online;
@@ -228,6 +244,7 @@ class DeviceControlPoller final {
     PostingResult,
     ClearingJournal,
     AuthRequired,
+    JournalUnavailable,
   };
 
   bool valid_command(const DeviceControlCommand& command,

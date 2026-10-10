@@ -24,6 +24,7 @@
 #include "device_control_executor.h"
 #include "calibration/calibration_replay_store.h"
 #include "network/device_control_http.h"
+#include "network/device_control_journal.h"
 #endif
 #include "storage/archive_media.h"
 #include "archive_runtime.h"
@@ -294,8 +295,10 @@ class SigapApp final {
 #if defined(SIGAP_NETWORK_ENDPOINT) && defined(SIGAP_NETWORK_CA_CERT)
   ApplicationCalibrationExecutor device_control_executor_;
   network::WiFiDeviceControlHttpTransport device_control_transport_{};
+  network::FsDeviceControlResultJournal device_control_result_journal_{};
   network::DeviceControlPoller device_control_poller_;
   bool device_control_ready_{false};
+  bool device_control_journal_ready_{false};
   std::array<char, 65U> device_control_id_{};
 #endif
 #endif

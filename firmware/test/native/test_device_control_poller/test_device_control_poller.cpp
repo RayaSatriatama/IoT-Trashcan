@@ -287,6 +287,24 @@ void test_journal_clear_failure_blocks_new_commands() {
   TEST_ASSERT_EQUAL_UINT32(1U, transport.command_starts);
 }
 
+void test_invalid_recovered_result_clear_failure_blocks_fetch() {
+  Clock clock{};
+  Transport transport{};
+  transport.command = make_command();
+  Executor executor{};
+  Journal journal{};
+  journal.command = make_command();
+  journal.result.status = DeviceControlStatus::Committed;
+  TEST_ASSERT_TRUE(journal.result.command_id.assign("cmd-1"));
+  TEST_ASSERT_TRUE(journal.result.session_id.assign("session-1"));
+  journal.present = true;
+  journal.fail_clear = true;
+  DeviceControlPoller poller(policy(), clock, transport, executor, &journal);
+  TEST_ASSERT_FALSE(poller.begin("DEV-1", "token"));
+  TEST_ASSERT_TRUE(poller.busy());
+  TEST_ASSERT_EQUAL_UINT32(0U, transport.command_starts);
+}
+
 void test_unauthorized_state_requires_explicit_reauthorization() {
   Clock clock{};
   Transport transport{};
@@ -394,6 +412,7 @@ void setup() {
   RUN_TEST(test_recovered_result_ignores_prior_boot_monotonic_deadline);
   RUN_TEST(test_journal_save_failure_blocks_new_commands_until_durable);
   RUN_TEST(test_journal_clear_failure_blocks_new_commands);
+  RUN_TEST(test_invalid_recovered_result_clear_failure_blocks_fetch);
   RUN_TEST(test_unauthorized_state_requires_explicit_reauthorization);
   RUN_TEST(test_relative_server_expiry_is_bounded_before_execution);
   RUN_TEST(test_oversized_command_never_reaches_executor);
