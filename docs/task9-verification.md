@@ -1,5 +1,58 @@
 # Task 9 verification ledger
 
+## Current final-source verification (`a91418a`)
+
+This is the current evidence for the open Task 9 branch. Earlier sections are
+historical snapshots and are not substitutes for this run.
+
+```text
+pio test -e native --without-uploading                         PASS 450/450
+isolated ASan/UBSan pio test -e native                         PASS 450/450, no diagnostics
+pio check -e native --fail-on-defect=low                       PASS, no defects
+pio run -e sigap_n16r8 -e sigap_n16r8_sd -e sigap_n16r8_sd_spi \
+        -e sigap_bench -e sigap_n16r8_https_compile \
+        -e sigap_n16r8_sd_https_compile                       PASS, 6/6
+go test -count=1 ./...                                        PASS
+go test -race -count=1 ./...                                  PASS
+go vet ./...                                                  PASS
+go test -count=1 -v ./internal/telemetry                      PASS, 14 schemas / 24 valid / 36 invalid / frozen hashes
+npm test -- --run                                            PASS, 21 files / 114 tests
+npm run typecheck                                             PASS
+npm run export:web                                            PASS
+git diff --check                                              PASS
+```
+
+The Chromium browser harness is a synthetic GATT test, not physical pairing:
+
+```text
+SIGAP_E2E_URL=https://127.0.0.1:4173 \
+SIGAP_PLAYWRIGHT_CORE=/tmp/.../playwright-core/index.js \
+SIGAP_CHROMIUM=/usr/bin/chromium node scripts/task9-browser-e2e.mjs
+PASS: missing mapping, verified identity, diagnostics, START, criteria,
+      capture, validate, preview, identity-bound COMMIT, disconnect,
+      wrong-device rejection
+```
+
+The Go loopback calibration journey is an isolated TLS/SQLite software test
+and passed all six lifecycle stages. It does not prove ESP32-originated HTTPS.
+The browser run uses only ephemeral test certificates and synthetic evidence;
+no credentials are persisted or committed.
+
+Final resource measurements are RAM/flash bytes:
+`sigap_n16r8` 49,496/1,106,945; `sigap_n16r8_sd` 50,036/1,180,189;
+`sigap_n16r8_sd_spi` 49,792/1,159,709; `sigap_bench` 49,496/1,106,945;
+`sigap_n16r8_https_compile` 51,824/1,305,225; and
+`sigap_n16r8_sd_https_compile` 52,260/1,363,341.
+The final combined image is
+`firmware/.pio/build/sigap_n16r8_sd_https_compile/firmware.bin` with SHA-256
+`4b7bdd91d94a18f0ed12f63a98af88955f13a496f1895ef34ee9576880ced8fe`.
+
+Physical ESP32 upload/reboot, WiFi association, HTTPS transmission, BLE
+pairing, SD writes, LittleFS diagnosis, runtime stack/heap high-water, and
+24/72-hour endurance were not run in this batch. The supplied WiFi credentials
+were not used. Historical attached-only SD evidence remains separate and does
+not establish the current image's physical runtime behavior.
+
 ## P0 closure verification (`d5d0169` plus identity mapping)
 
 The production composition now binds `FsDeviceControlResultJournal` to the

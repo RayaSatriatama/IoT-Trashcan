@@ -42,6 +42,14 @@ go test -count=1 ./internal/e2e -run TestTask9RemoteCalibrationLoopbackJourney -
 PASS (6 lifecycle subtests; ephemeral TLS; isolated SQLite; no external network)
 ```
 
+The rendered browser companion is `scripts/task9-browser-e2e.mjs`. It runs
+against an ephemeral local HTTPS origin with Chromium and Playwright Core
+provided outside the repository. The run verifies the rendered BLE identity
+gate and the complete synthetic calibration lifecycle, including exact
+preview-to-COMMIT identity, disconnect recovery, and wrong-device rejection.
+It is browser software evidence only; it is not physical Web Bluetooth or
+ESP32 HTTPS evidence.
+
 The test certificate and all credentials exist only in process memory. This
 does not prove ESP32 HTTPS reachability, private-LAN hostname routing,
 firmware task scheduling, or physical profile persistence. Those remain
