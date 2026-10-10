@@ -1,5 +1,15 @@
 # Task 9 verification ledger
 
+## Final pushed source (`9f80ee9`, 2026-10-10)
+
+The identity-gate implementation and its focused tests were committed and
+pushed to `feat/full-integration-hil-validation`. PR #27 remains OPEN and
+unmerged. GitHub reports Vercel Preview Comments SUCCESS and the deployment
+context PENDING at ledger update time. The worktree is clean after the push.
+
+The final source verification includes the fresh results below; historical
+counts elsewhere in this ledger remain labelled as superseded snapshots.
+
 ## P0 remediation follow-up (`273478a` source, 2026-10-10)
 
 The current source changes enforce authenticated BLE device identity before
