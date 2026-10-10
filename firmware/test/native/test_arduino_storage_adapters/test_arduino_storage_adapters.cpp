@@ -9,6 +9,7 @@
 #include "storage/archive_media.h"
 #include "storage/sd_probe_path.h"
 #include "storage/media_migration.h"
+#include "network/device_control_journal.h"
 #include "telemetry_archive/ack_journal_store.h"
 #include "telemetry_archive/batch_store.h"
 
@@ -18,6 +19,7 @@ using namespace sigap;
 using namespace sigap::acquisition;
 using namespace sigap::storage;
 using namespace sigap::telemetry_archive;
+using namespace sigap::network;
 
 DeviceId device(uint8_t value) {
   DeviceId result{};
@@ -72,6 +74,39 @@ Ack ack_for(const ImmutableBatch& value) {
   result.device_id = value.device_id;
   result.status = AckStatus::Durable;
   return result;
+}
+
+DeviceControlCommand control_command(const char* id) {
+  DeviceControlCommand value{};
+  TEST_ASSERT_TRUE(value.command_id.assign(id));
+  TEST_ASSERT_TRUE(value.device_id.assign("0000000000000042"));
+  TEST_ASSERT_TRUE(value.operator_id.assign("operator-1"));
+  TEST_ASSERT_TRUE(value.session_id.assign("session-1"));
+  TEST_ASSERT_TRUE(value.sensor_id.assign("mq4"));
+  TEST_ASSERT_TRUE(value.operation.assign("commit"));
+  TEST_ASSERT_TRUE(value.request_hash.assign(
+      "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"));
+  value.payload[0] = '{';
+  value.payload[1] = '}';
+  value.payload_size = 2U;
+  value.expires_at_us = 10U;
+  return value;
+}
+
+DeviceControlResult control_result(const char* id) {
+  DeviceControlResult value{};
+  value.status = DeviceControlStatus::Committed;
+  TEST_ASSERT_TRUE(value.command_id.assign(id));
+  TEST_ASSERT_TRUE(value.session_id.assign("session-1"));
+  value.payload[0] = '{';
+  value.payload[1] = '"';
+  value.payload[2] = '1';
+  value.payload[3] = '"';
+  value.payload[4] = ':';
+  value.payload[5] = '1';
+  value.payload[6] = '}';
+  value.payload_size = 7U;
+  return value;
 }
 
 void test_target_archive_failed_recovery_copy_is_restart_safe() {
@@ -366,6 +401,48 @@ void test_target_migration_receipt_survives_restart_boundary() {
                         static_cast<int>(restarted.load(loaded)));
 }
 
+void test_target_device_control_journal_replays_exact_result_after_restart() {
+  fs::FS filesystem{};
+  DeviceControlCommand expected_command = control_command("control-a");
+  DeviceControlResult expected_result = control_result("control-a");
+  FsDeviceControlResultJournal journal;
+  TEST_ASSERT_TRUE(journal.begin(filesystem, "/sigap/device-control.result"));
+  TEST_ASSERT_TRUE(journal.recover());
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(DeviceControlJournalState::Empty),
+                        static_cast<int>(journal.state()));
+  TEST_ASSERT_TRUE(journal.save(expected_command, expected_result));
+
+  FsDeviceControlResultJournal restarted;
+  TEST_ASSERT_TRUE(restarted.begin(filesystem, "/sigap/device-control.result"));
+  TEST_ASSERT_TRUE(restarted.recover());
+  DeviceControlCommand recovered_command{};
+  DeviceControlResult recovered_result{};
+  TEST_ASSERT_TRUE(restarted.load(recovered_command, recovered_result));
+  TEST_ASSERT_EQUAL_STRING(expected_command.command_id.bytes.data(),
+                           recovered_command.command_id.bytes.data());
+  TEST_ASSERT_EQUAL_UINT32(expected_result.payload_size,
+                           recovered_result.payload_size);
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(expected_result.payload.data(),
+                                recovered_result.payload.data(),
+                                expected_result.payload_size);
+  TEST_ASSERT_TRUE(restarted.clear());
+}
+
+void test_target_device_control_journal_fault_is_not_empty() {
+  fs::FS filesystem{};
+  FsDeviceControlResultJournal journal;
+  TEST_ASSERT_TRUE(journal.begin(filesystem, "/sigap/device-control.result"));
+  filesystem.short_write_once(3U);
+  TEST_ASSERT_FALSE(journal.save(control_command("control-b"),
+                                 control_result("control-b")));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(DeviceControlJournalState::IoError),
+                        static_cast<int>(journal.state()));
+  FsDeviceControlResultJournal restarted;
+  TEST_ASSERT_FALSE(restarted.begin(filesystem, "/sigap/device-control.result"));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(DeviceControlJournalState::Corrupt),
+                        static_cast<int>(restarted.state()));
+}
+
 }  // namespace
 
 int main() {
@@ -381,5 +458,7 @@ int main() {
   RUN_TEST(test_target_ack_short_frame_recovery_preserves_valid_prefix);
   RUN_TEST(test_target_batch_marker_clears_before_new_append);
   RUN_TEST(test_target_migration_receipt_survives_restart_boundary);
+  RUN_TEST(test_target_device_control_journal_replays_exact_result_after_restart);
+  RUN_TEST(test_target_device_control_journal_fault_is_not_empty);
   return UNITY_END();
 }

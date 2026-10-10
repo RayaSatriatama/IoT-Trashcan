@@ -20,8 +20,8 @@ shown as `BLE belum diprovision` and mutating BLE operations are unavailable.
 Fresh source verification:
 
 ```text
-pio test -e native --without-uploading                         PASS 445/445
-isolated ASan/UBSan pio test -e native                         PASS 445/445, no diagnostics
+pio test -e native --without-uploading                         PASS 447/447
+isolated ASan/UBSan pio test -e native                         PASS 447/447, no diagnostics
 pio check -e native --fail-on-defect=low                       PASS, no defects
 pio run -e sigap_n16r8 -e sigap_n16r8_sd -e sigap_n16r8_sd_spi \
         -e sigap_bench -e sigap_n16r8_https_compile \
@@ -34,6 +34,9 @@ npm run typecheck                                             PASS
 npm run export:web                                            PASS
 git diff --check                                              PASS
 ```
+
+The final native and isolated ASan/UBSan reruns after adding the ARDUINO
+filesystem-double journal regressions were both 447/447 with no diagnostics.
 
 Final target resource values are RAM/flash bytes:
 `sigap_n16r8` 49,496/1,106,945; `sigap_n16r8_sd` 50,036/1,180,189;
