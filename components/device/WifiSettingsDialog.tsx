@@ -5,7 +5,7 @@ import { BleProvisioningClient } from '../../lib/ble/client';
 import { isWebBluetoothAvailable, type WifiNetwork, type WifiStatus } from '../../lib/ble/protocol';
 import { AppButton } from '../AppButton';
 
-export type WifiSettingsDialogProps = { deviceId: string };
+export type WifiSettingsDialogProps = { deviceId: string; bleDeviceId?: string | null };
 
 function stateLabel(status: WifiStatus | null): string {
   if (!status) return 'Belum terhubung';
@@ -16,10 +16,11 @@ function stateLabel(status: WifiStatus | null): string {
   return 'Belum terkonfigurasi';
 }
 
-export function WifiSettingsDialog({ deviceId }: WifiSettingsDialogProps) {
+export function WifiSettingsDialog({ deviceId, bleDeviceId = null }: WifiSettingsDialogProps) {
   const [open, setOpen] = useState(false);
   const [bleConnected, setBleConnected] = useState(false);
   const [bleDeviceName, setBleDeviceName] = useState<string | null>(null);
+  const [verifiedBleDeviceId, setVerifiedBleDeviceId] = useState<string | null>(null);
   const [status, setStatus] = useState<WifiStatus | null>(null);
   const [networks, setNetworks] = useState<WifiNetwork[]>([]);
   const [knownNetworks, setKnownNetworks] = useState<WifiNetwork[]>([]);
@@ -28,19 +29,32 @@ export function WifiSettingsDialog({ deviceId }: WifiSettingsDialogProps) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
-  const client = useMemo(() => new BleProvisioningClient({ onConnectionChange: setBleConnected, onDeviceIdentityChange: setBleDeviceName }), []);
+  const client = useMemo(() => new BleProvisioningClient({
+    onConnectionChange: setBleConnected,
+    onDeviceIdentityChange: setBleDeviceName,
+    onAuthenticatedDeviceIdentityChange: setVerifiedBleDeviceId,
+  }), []);
 
   useEffect(() => () => client.close(), [client]);
 
   const connectBle = async () => {
     setError(null);
+    setStatus(null);
+    setKnownNetworks([]);
+    setNetworks([]);
+    setVerifiedBleDeviceId(null);
+    if (!bleDeviceId) {
+      setError('Identity BLE belum diprovision untuk perangkat ini');
+      return;
+    }
     setBusy(true);
     try {
       await client.connect();
-      setBleConnected(true);
+      await client.verifyDeviceIdentity(bleDeviceId);
       setStatus(await client.status());
       setKnownNetworks(await client.listKnownWifi());
     } catch (cause) {
+      client.close();
       setError(cause instanceof Error ? cause.message : 'BLE tidak dapat terhubung');
       setBleConnected(false);
     } finally {
@@ -87,12 +101,12 @@ export function WifiSettingsDialog({ deviceId }: WifiSettingsDialogProps) {
     {open ? <Card role="dialog" aria-label="Pengaturan Wi-Fi" borderWidth={1} borderColor="$borderColor" backgroundColor="$surface" borderRadius="$4" padding="$4" gap="$3">
       <XStack justifyContent="space-between" alignItems="center" gap="$3"><YStack flex={1} gap="$1"><Text color="$color" fontSize="$5" fontWeight="800">Pengaturan Wi-Fi</Text><Text color="$colorMuted" fontSize="$2">Perangkat {deviceId}</Text></YStack><AppButton variant="ghost" size="sm" onPress={() => setOpen(false)} ariaLabel="Tutup pengaturan Wi-Fi">Tutup</AppButton></XStack>
       {!isWebBluetoothAvailable() ? <Text role="alert" color="$statusWaspada">Web Bluetooth memerlukan HTTPS dan browser yang mendukungnya.</Text> : null}
-      <Text color="$colorMuted" fontSize="$3">BLE: {bleConnected ? `terhubung${bleDeviceName ? ` (${bleDeviceName})` : ''}` : 'belum terhubung'}</Text>
+      <Text color="$colorMuted" fontSize="$3">BLE: {verifiedBleDeviceId === bleDeviceId && bleConnected ? `terautentikasi${bleDeviceName ? ` (${bleDeviceName})` : ''}` : 'belum terhubung'}</Text>
       <Text color="$color" fontWeight="700">Wi-Fi: {stateLabel(status)}</Text>
-      <XStack gap="$2" flexWrap="wrap"><AppButton size="sm" onPress={connectBle} disabled={busy || !isWebBluetoothAvailable()} ariaLabel="Hubungkan BLE">Hubungkan perangkat</AppButton><AppButton size="sm" variant="secondary" onPress={scan} disabled={busy || !bleConnected} ariaLabel="Pindai Wi-Fi">{busy ? 'Memproses...' : 'Pindai Wi-Fi'}</AppButton>{knownNetworks.length ? <AppButton size="sm" variant="ghost" onPress={retrySavedWifi} disabled={busy || !bleConnected} ariaLabel="Coba ulang Wi-Fi tersimpan">Coba ulang tersimpan</AppButton> : null}</XStack>
+      <XStack gap="$2" flexWrap="wrap"><AppButton size="sm" onPress={connectBle} disabled={busy || !isWebBluetoothAvailable() || !bleDeviceId} ariaLabel="Hubungkan BLE">Hubungkan perangkat</AppButton><AppButton size="sm" variant="secondary" onPress={scan} disabled={busy || verifiedBleDeviceId !== bleDeviceId || !bleConnected} ariaLabel="Pindai Wi-Fi">{busy ? 'Memproses...' : 'Pindai Wi-Fi'}</AppButton>{knownNetworks.length ? <AppButton size="sm" variant="ghost" onPress={retrySavedWifi} disabled={busy || verifiedBleDeviceId !== bleDeviceId || !bleConnected} ariaLabel="Coba ulang Wi-Fi tersimpan">Coba ulang tersimpan</AppButton> : null}</XStack>
       {knownNetworks.length ? <YStack gap="$2"><Text color="$color" fontWeight="700">Jaringan tersimpan</Text>{knownNetworks.map((network) => <Text key={network.ssid} color="$colorMuted" fontSize="$2">{network.ssid} · {network.secure ? 'Aman' : 'Terbuka'}</Text>)}</YStack> : null}
       {networks.length ? <YStack gap="$2"><Text color="$color" fontWeight="700">Jaringan terdekat</Text>{networks.map((network) => <AppButton key={`${network.ssid}-${network.rssi}`} variant={selectedSsid === network.ssid ? 'secondary' : 'ghost'} size="sm" onPress={() => setSelectedSsid(network.ssid)} ariaLabel={`Pilih jaringan ${network.ssid}`}>{network.ssid} · {network.rssi} dBm · {network.secure ? 'Aman' : 'Terbuka'}</AppButton>)}</YStack> : null}
-      {selectedSsid ? <YStack gap="$2"><Text color="$color" fontWeight="700">Jaringan dipilih: {selectedSsid}</Text><Input value={password} onChangeText={setPassword} placeholder="Password Wi-Fi" secureTextEntry aria-label="Password Wi-Fi" maxLength={63} autoCapitalize="none" /><AppButton onPress={connectWifi} disabled={busy || !bleConnected} ariaLabel="Simpan dan hubungkan Wi-Fi">Hubungkan Wi-Fi</AppButton></YStack> : null}
+      {selectedSsid ? <YStack gap="$2"><Text color="$color" fontWeight="700">Jaringan dipilih: {selectedSsid}</Text><Input value={password} onChangeText={setPassword} placeholder="Password Wi-Fi" secureTextEntry aria-label="Password Wi-Fi" maxLength={63} autoCapitalize="none" /><AppButton onPress={connectWifi} disabled={busy || verifiedBleDeviceId !== bleDeviceId || !bleConnected} ariaLabel="Simpan dan hubungkan Wi-Fi">Hubungkan Wi-Fi</AppButton></YStack> : null}
       {success ? <Text role="status" color="$statusNormal">Wi-Fi tersimpan setelah perangkat mengonfirmasi koneksi.</Text> : null}
       {error ? <YStack gap="$2"><Text role="alert" color="$statusSafetyAlert">{error}</Text><AppButton variant="ghost" size="sm" onPress={() => { setError(null); void connectBle(); }} ariaLabel="Coba lagi pengaturan Wi-Fi">Coba lagi</AppButton></YStack> : null}
     </Card> : null}

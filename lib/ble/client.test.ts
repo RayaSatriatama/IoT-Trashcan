@@ -69,6 +69,7 @@ describe('BLE provisioning client', () => {
       const first = decodeBleFrame(requestFrames[0]);
       const command = new TextDecoder().decode(assembleBleFrames(requestFrames.map(decodeBleFrame), 'F1')).trim();
       let response = 'OK PONG';
+      if (command === 'GET_DEVICE_ID') response = 'OK DEVICE_ID id=0000000000000001';
       if (command.startsWith('CONNECT_WIFI ')) response = 'OK CONNECTING';
       if (command === 'GET_STATUS') {
         statusRequests += 1;
@@ -95,13 +96,14 @@ describe('BLE provisioning client', () => {
 
     const client = new BleProvisioningClient({ connectPollIntervalMs: 0, sleep: async () => {} });
     await client.connect();
+    await client.verifyDeviceIdentity('0000000000000001');
     const status = await client.connectWifi('TestNetwork', 'test-password');
 
     expect(status).toEqual({ state: 'CONNECTED', ssid: 'TestNetwork' });
     expect(control.writes.length).toBeGreaterThan(1);
     expect(control.writes.every((frame) => frame.byteLength <= 20)).toBe(true);
     const requestIds = new Set(control.writes.map((frame) => decodeBleFrame(frame).requestId));
-    expect(requestIds.size).toBe(3);
+    expect(requestIds.size).toBe(4);
   });
 
   it('does not treat CONNECTING as a successful provisioning result', async () => {
@@ -110,7 +112,9 @@ describe('BLE provisioning client', () => {
     control = new FakeCharacteristic((requestFrames) => {
       const first = decodeBleFrame(requestFrames[0]);
       const command = new TextDecoder().decode(assembleBleFrames(requestFrames.map(decodeBleFrame), 'F1')).trim();
-      const response = command.startsWith('CONNECT_WIFI ')
+      const response = command === 'GET_DEVICE_ID'
+        ? 'OK DEVICE_ID id=0000000000000001'
+        : command.startsWith('CONNECT_WIFI ')
         ? 'OK CONNECTING'
         : 'OK STATUS state=BACKOFF ssid=';
       encodeBleFrames(first.requestId, new TextEncoder().encode(response), 'R1').forEach((frame) => events.emit(frame));
@@ -125,6 +129,7 @@ describe('BLE provisioning client', () => {
 
     const client = new BleProvisioningClient({ connectTimeoutMs: 1, connectPollIntervalMs: 0, sleep: async () => {} });
     await client.connect();
+    await client.verifyDeviceIdentity('0000000000000001');
     await expect(client.connectWifi('TestNetwork', 'test-password')).rejects.toThrow('Koneksi Wi-Fi tidak selesai');
   });
 
@@ -134,6 +139,10 @@ describe('BLE provisioning client', () => {
     control = new FakeCharacteristic((requestFrames) => {
       const first = decodeBleFrame(requestFrames[0]);
       const command = new TextDecoder().decode(assembleBleFrames(requestFrames.map(decodeBleFrame), 'F1')).trim();
+      if (command === 'GET_DEVICE_ID') {
+        encodeBleFrames(first.requestId, new TextEncoder().encode('OK DEVICE_ID id=0000000000000001'), 'R1').forEach((frame) => events.emit(frame));
+        return;
+      }
       if (command !== 'SCAN_WIFI') return;
       encodeBleFrames(first.requestId, new TextEncoder().encode('OK SCAN PENDING'), 'R1').forEach((frame) => events.emit(frame));
       encodeBleFrames(first.requestId, new TextEncoder().encode('OK SCAN READY count=1\nTestNetwork,-39,1'), 'R1').forEach((frame) => events.emit(frame));
@@ -148,6 +157,7 @@ describe('BLE provisioning client', () => {
 
     const client = new BleProvisioningClient({ requestTimeoutMs: 100, sleep: async () => {} });
     await client.connect();
+    await client.verifyDeviceIdentity('0000000000000001');
     await expect(client.scan()).resolves.toEqual([{ ssid: 'TestNetwork', rssi: -39, secure: true }]);
   });
 
@@ -186,6 +196,10 @@ describe('BLE provisioning client', () => {
     control = new FakeCharacteristic((requestFrames) => {
       const first = decodeBleFrame(requestFrames[0]);
       const command = new TextDecoder().decode(assembleBleFrames(requestFrames.map(decodeBleFrame), 'F1')).trim();
+      if (command === 'GET_DEVICE_ID') {
+        encodeBleFrames(first.requestId, new TextEncoder().encode('OK DEVICE_ID id=0000000000000001'), 'R1').forEach((frame) => events.emit(frame));
+        return;
+      }
       if (command === 'GET_STATUS' && !firstRequestId) firstRequestId = first.requestId;
     });
     events = new FakeCharacteristic();
@@ -198,6 +212,7 @@ describe('BLE provisioning client', () => {
 
     const client = new BleProvisioningClient({ requestTimeoutMs: 100 });
     await client.connect();
+    await client.verifyDeviceIdentity('0000000000000001');
     const first = client.status();
     await Promise.resolve();
 

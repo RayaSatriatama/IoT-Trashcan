@@ -153,28 +153,33 @@ export class BleProvisioningClient {
   }
 
   async status(): Promise<WifiStatus> {
+    this.requireAuthenticatedDevice();
     const response = await this.request('GET_STATUS');
     if (!response.status) throw new Error('Status WiFi tidak tersedia');
     return response.status;
   }
 
   async scan(): Promise<WifiNetwork[]> {
+    this.requireAuthenticatedDevice();
     const response = await this.request('SCAN_WIFI', {}, (value) => !value.scanPending);
     return response.networks ?? [];
   }
 
   async listKnownWifi(): Promise<WifiNetwork[]> {
+    this.requireAuthenticatedDevice();
     const response = await this.request('LIST_KNOWN_WIFI');
     return response.networks ?? [];
   }
 
   async retryWifi(): Promise<WifiStatus> {
+    this.requireAuthenticatedDevice();
     const response = await this.request('RETRY_WIFI');
     if (!response.status) throw new Error('Status retry Wi-Fi tidak tersedia');
     return response.status;
   }
 
   async connectWifi(ssid: string, password: string): Promise<WifiStatus> {
+    this.requireAuthenticatedDevice();
     if (!ssid.trim() || ssid.length > 32 || password.length > 64) throw new Error('SSID atau password tidak valid');
     const response = await this.request('CONNECT_WIFI', { ssid, password });
     if (!response.status) throw new Error('Status koneksi tidak tersedia');
@@ -193,6 +198,15 @@ export class BleProvisioningClient {
       }
     }
     throw new Error(`Koneksi Wi-Fi tidak selesai (status ${latest.state})`);
+  }
+
+  private requireAuthenticatedDevice(): void {
+    if (this.control === null) {
+      throw new Error('Hubungkan perangkat BLE terlebih dahulu');
+    }
+    if (this.authenticatedDeviceId === null) {
+      throw new Error('Identitas perangkat BLE belum diverifikasi');
+    }
   }
 
   async calibrationCapabilities(sensor: string): Promise<BleCalibrationResponse> {

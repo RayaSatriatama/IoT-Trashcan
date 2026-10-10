@@ -1,5 +1,38 @@
 # Task 9 verification ledger
 
+## P0 remediation follow-up (`273478a` source, 2026-10-10)
+
+The current source changes enforce authenticated BLE device identity before
+any Wi-Fi status, scan, retry, or credential mutation. `WifiSettingsDialog`
+now receives the provisioned canonical `ble_device_id`, performs
+`GET_DEVICE_ID` verification before reading status, clears diagnostic state
+on a new connection attempt, and disables mutations when identity is absent,
+mismatched, or disconnected. The BLE client rejects all Wi-Fi operations
+until identity verification succeeds. Focused Vitest coverage is 14/14.
+
+The physical LittleFS partition was inspected read-only before any repair
+attempt. The partition table at `0x8000` matches `firmware/partitions_n16r8.csv`
+(`spiffs`, `0x410000`, `0x800000`). A complete 8 MiB dump was captured to an
+operator-controlled temporary file and hashed as
+`9f9b02f5ee6cbef5e018c1ee424095fc21a842ea6968c0d36114b5930dab2ba1`.
+All sampled blocks, including the first and last blocks, were `0xFF` with
+zero non-FF bytes. This is consistent with a blank/unformatted or otherwise
+unavailable filesystem and not a single recoverable directory entry. No
+format, erase, repair, NVS mutation, SD write, or journal write was attempted.
+The firmware continues to mount with `LittleFS.begin(false)` and disables
+device-control polling when the journal cannot recover; this is the required
+fail-closed behavior. Physical LittleFS repair and real HTTPS durability
+remain BLOCKED pending an owner-approved preservation and recovery operation.
+
+Fresh source checks after this follow-up:
+
+```text
+npm test -- --run lib/ble/client.test.ts lib/ble/task9_integration.test.ts PASS 14/14
+npm test -- --run                                      PASS 21 files / 115 tests
+npm run typecheck                                       PASS
+npm run export:web                                      PASS
+```
+
 ## Lead orchestrator verification (`318f70f`, 2026-10-10)
 
 The source verification began from `318f70f81f125a88f3a37f7e6b5bfde0f4c7cd13`.

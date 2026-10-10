@@ -1,5 +1,28 @@
 # Task 9 commissioning and HIL procedure
 
+## Current physical storage finding (`2026-10-10`)
+
+The board's LittleFS partition was backed up read-only before any repair
+operation. The installed table matches the source layout, but the complete
+8 MiB partition image contained only `0xFF` bytes in all sampled blocks
+(backup SHA-256:
+`9f9b02f5ee6cbef5e018c1ee424095fc21a842ea6968c0d36114b5930dab2ba1`).
+Treat the filesystem as unavailable or blank until an owner-approved,
+data-preserving recovery is completed. Do not format or erase it. The current
+firmware deliberately uses `LittleFS.begin(false)` and keeps HTTPS
+device-control disabled when the persistent result journal cannot initialize
+or recover. This prevents command execution without durable result replay.
+
+## Current BLE identity gate (`2026-10-10`)
+
+The Wi-Fi maintenance dialog now requires the provisioned canonical
+`ble_device_id` and performs authenticated `GET_DEVICE_ID` verification before
+`GET_STATUS`, scan, retry, or credential mutation. A failed or disconnected
+session clears the verified identity and all cached Wi-Fi state. The BLE
+advertising name and service UUID remain display/routing hints only. Physical
+MITM pairing and runtime `GET_DEVICE_ID` response verification remain
+HUMAN_ACTION_REQUIRED and were not performed in this pass.
+
 Status: **PREPARATION WITH ATTACHED SD PROBE AND BLE DISCOVERY COMPLETE**.
 The documented application-only upload and non-destructive SD probe were
 executed on the selected historical image. A later scope-override attempt

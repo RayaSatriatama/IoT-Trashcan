@@ -241,8 +241,11 @@ describe('Task 9 Web Bluetooth provisioning boundary', () => {
     let requestCount = 0;
     let requestedService = '';
     const harness = installBluetooth((command, requestId, emit) => {
-      expect(command).toBe('GET_STATUS');
-      emit('OK STATUS state=CONNECTED ssid=TestNetwork');
+      if (command === 'GET_DEVICE_ID') emit('OK DEVICE_ID id=0000000000000001');
+      else {
+        expect(command).toBe('GET_STATUS');
+        emit('OK STATUS state=CONNECTED ssid=TestNetwork');
+      }
       expect(requestId).toMatch(/^\d+$/u);
     }, () => { requestCount += 1; });
     Object.defineProperty(globalThis, 'navigator', {
@@ -260,9 +263,24 @@ describe('Task 9 Web Bluetooth provisioning boundary', () => {
     expect(requestCount).toBe(0);
     const client = new BleProvisioningClient();
     await client.connect();
+    await client.verifyDeviceIdentity('0000000000000001');
     expect(requestCount).toBe(1);
     expect(requestedService).toBe('7d3f0001-7d3f-4a53-9a4b-534947415000');
     await expect(client.status()).resolves.toEqual({ state: 'CONNECTED', ssid: 'TestNetwork' });
+  });
+
+  it('rejects WiFi status and mutation operations until the GATT identity is verified', async () => {
+    const harness = installBluetooth(() => {
+      throw new Error('No command may be sent before identity verification');
+    }, () => {});
+    const client = new BleProvisioningClient();
+    await client.connect();
+    await expect(client.status()).rejects.toThrow('Identitas perangkat BLE belum diverifikasi');
+    await expect(client.scan()).rejects.toThrow('Identitas perangkat BLE belum diverifikasi');
+    await expect(client.listKnownWifi()).rejects.toThrow('Identitas perangkat BLE belum diverifikasi');
+    await expect(client.retryWifi()).rejects.toThrow('Identitas perangkat BLE belum diverifikasi');
+    await expect(client.connectWifi('TestNetwork', 'password')).rejects.toThrow('Identitas perangkat BLE belum diverifikasi');
+    harness.device.disconnect();
   });
 
   it('scans, retries saved WiFi, and reports status while connected', async () => {
@@ -278,12 +296,15 @@ describe('Task 9 Web Bluetooth provisioning boundary', () => {
         emit('OK RETRY_WIFI');
       } else if (command === 'GET_STATUS') {
         emit('OK STATUS state=CONNECTED ssid=TestNetwork');
+      } else if (command === 'GET_DEVICE_ID') {
+        emit('OK DEVICE_ID id=0000000000000001');
       } else {
         throw new Error(`unexpected command ${command}`);
       }
     }, () => {});
     const client = new BleProvisioningClient({ requestTimeoutMs: 100 });
     await client.connect();
+    await client.verifyDeviceIdentity('0000000000000001');
     await expect(client.scan()).resolves.toEqual([
       { ssid: 'TestNetwork', rssi: -38, secure: true },
       { ssid: 'Guest', rssi: -72, secure: false },
@@ -308,11 +329,13 @@ describe('Task 9 Web Bluetooth provisioning boundary', () => {
     Object.defineProperty(globalThis, 'fetch', { configurable: true, value: async () => { fetchCalls += 1; throw new Error('network must not be used'); } });
     const harness = installBluetooth((command, _requestId, emit) => {
       bleCommand = command;
-      if (command.startsWith('CONNECT_WIFI ')) emit('OK CONNECTING');
+      if (command === 'GET_DEVICE_ID') emit('OK DEVICE_ID id=0000000000000001');
+      else if (command.startsWith('CONNECT_WIFI ')) emit('OK CONNECTING');
       else emit('OK STATUS state=CONNECTED ssid=TestNetwork');
     }, () => {});
     const client = new BleProvisioningClient({ connectTimeoutMs: 100, connectPollIntervalMs: 0, sleep: async () => {} });
     await client.connect();
+    await client.verifyDeviceIdentity('0000000000000001');
     await expect(client.connectWifi('TestNetwork', password)).resolves.toEqual({ state: 'CONNECTED', ssid: 'TestNetwork' });
     expect(bleCommand).toBe('GET_STATUS');
     expect(harness.control.writes.length).toBeGreaterThan(1);
@@ -324,14 +347,17 @@ describe('Task 9 Web Bluetooth provisioning boundary', () => {
   it('recovers after a GATT disconnect and allows a fresh user-triggered connection', async () => {
     let requestCount = 0;
     const harness = installBluetooth((command, _requestId, emit) => {
-      if (command === 'GET_STATUS') emit('OK STATUS state=CONNECTED ssid=TestNetwork');
+      if (command === 'GET_DEVICE_ID') emit('OK DEVICE_ID id=0000000000000001');
+      else if (command === 'GET_STATUS') emit('OK STATUS state=CONNECTED ssid=TestNetwork');
       else emit('OK PONG');
     }, () => { requestCount += 1; });
     const client = new BleProvisioningClient();
     await client.connect();
+    await client.verifyDeviceIdentity('0000000000000001');
     harness.device.disconnect();
     await expect(client.status()).rejects.toThrow('Hubungkan perangkat');
     await client.connect();
+    await client.verifyDeviceIdentity('0000000000000001');
     expect(requestCount).toBe(2);
     await expect(client.status()).resolves.toEqual({ state: 'CONNECTED', ssid: 'TestNetwork' });
   });
