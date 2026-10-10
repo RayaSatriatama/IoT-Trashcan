@@ -1,5 +1,51 @@
 # Task 9 verification ledger
 
+## P0 closure verification (`d5d0169` plus identity mapping)
+
+The production composition now binds `FsDeviceControlResultJournal` to the
+HTTPS-enabled `DeviceControlPoller`. LittleFS is mounted without formatting,
+the two-slot versioned/CRC journal is recovered before command fetch, and
+save, load, corrupt, and clear failures remain fail-closed. Native persistence
+and poller recovery regressions cover exact result replay, reboot-relative
+deadlines, duplicate delivery, and unresolved journal state.
+
+BLE identity is authenticated over encrypted MITM GATT with `GET_DEVICE_ID`.
+The firmware publishes the EFUSE identity as canonical lower-case 16-hex, and
+the browser clears verification on disconnect or device switch. Backend device
+records now carry an optional `ble_device_id` provisioned from that EFUSE value
+(`migrations/007_device_ble_identity.sql`). The website never derives BLE
+identity from an advertising name or a legacy `device_code`; absent mapping is
+shown as `BLE belum diprovision` and mutating BLE operations are unavailable.
+
+Fresh source verification:
+
+```text
+pio test -e native --without-uploading                         PASS 445/445
+isolated ASan/UBSan pio test -e native                         PASS 445/445, no diagnostics
+pio check -e native --fail-on-defect=low                       PASS, no defects
+pio run -e sigap_n16r8 -e sigap_n16r8_sd -e sigap_n16r8_sd_spi \
+        -e sigap_bench -e sigap_n16r8_https_compile \
+        -e sigap_n16r8_sd_https_compile                       PASS, 6/6
+go test -count=1 ./...                                        PASS
+go test -race -count=1 ./...                                  PASS
+go vet ./...                                                  PASS
+npm test -- --run                                            PASS 21 files / 114 tests
+npm run typecheck                                             PASS
+npm run export:web                                            PASS
+git diff --check                                              PASS
+```
+
+Final target resource values are RAM/flash bytes:
+`sigap_n16r8` 49,496/1,106,945; `sigap_n16r8_sd` 50,036/1,180,189;
+`sigap_n16r8_sd_spi` 49,792/1,159,709; `sigap_bench` 49,496/1,106,945;
+`sigap_n16r8_https_compile` 51,824/1,305,225; and
+`sigap_n16r8_sd_https_compile` 52,260/1,363,341. The final combined image
+SHA-256 is `4b7bdd91d94a18f0ed12f63a98af88955f13a496f1895ef34ee9576880ced8fe`.
+
+These are software and compile/runtime-double results. Physical upload,
+WiFi association, HTTPS staging, BLE pairing, SD writes, and runtime stack or
+heap high-water capture were not performed in this verification pass.
+
 ## Fresh integrated Wave 1 evidence (`76c3203` source -> current builds)
 
 ## Latest final-source verification (`14a27fd`)

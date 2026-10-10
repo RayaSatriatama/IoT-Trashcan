@@ -178,8 +178,9 @@ func TestReadAPILocationAndDeviceDetailsDoNotExposeCredential(t *testing.T) {
 	var location struct {
 		Status  *string `json:"status"`
 		Devices []struct {
-			ID    string `json:"id"`
-			Slots []struct {
+			ID          string  `json:"id"`
+			BleDeviceID *string `json:"ble_device_id"`
+			Slots       []struct {
 				Stream            string   `json:"stream"`
 				WeightUtilization *float64 `json:"weight_utilization"`
 				Status            *string  `json:"status"`
@@ -192,6 +193,9 @@ func TestReadAPILocationAndDeviceDetailsDoNotExposeCredential(t *testing.T) {
 	}
 	if location.Devices[0].Slots[0].WeightUtilization == nil || *location.Devices[0].Slots[0].WeightUtilization != 50 {
 		t.Fatalf("slot normalization=%+v", location.Devices[0].Slots[0])
+	}
+	if location.Devices[0].BleDeviceID == nil || *location.Devices[0].BleDeviceID != "0000000000000042" {
+		t.Fatalf("BLE identity mapping=%+v", location.Devices[0])
 	}
 
 	deviceRequest := httptest.NewRequest(http.MethodGet, "/api/devices/device-a", nil)
@@ -367,9 +371,9 @@ func readAPIFixture(t *testing.T) (*ReadAPI, *sql.DB) {
 	t.Cleanup(func() { _ = db.Close() })
 
 	execFixture(t, db, `INSERT INTO locations (id, name, address_text) VALUES ('location-a', 'Alpha Lab', 'Campus A'), ('location-b', 'Beta Lab', 'Campus B')`)
-	execFixture(t, db, `INSERT INTO devices (id, location_id, device_code, placement_label, last_seen, credential_digest) VALUES
-		('device-a', 'location-a', 'SIGAP-A', 'North gate', '2026-09-17T09:59:45Z', 'fixture-secret'),
-		('device-b', 'location-b', 'SIGAP-B', 'South gate', '2026-09-17T09:58:00Z', 'fixture-secret')`)
+	execFixture(t, db, `INSERT INTO devices (id, location_id, device_code, ble_device_id, placement_label, last_seen, credential_digest) VALUES
+		('device-a', 'location-a', 'SIGAP-A', '0000000000000042', 'North gate', '2026-09-17T09:59:45Z', 'fixture-secret'),
+		('device-b', 'location-b', 'SIGAP-B', NULL, 'South gate', '2026-09-17T09:58:00Z', 'fixture-secret')`)
 	for _, deviceID := range []string{"device-a", "device-b"} {
 		for _, stream := range []string{"organic", "inorganic", "b3"} {
 			execFixture(t, db, `INSERT INTO slots (id, device_id, waste_stream, operational_capacity) VALUES (?, ?, ?, 10)`, deviceID+"-"+stream, deviceID, stream)

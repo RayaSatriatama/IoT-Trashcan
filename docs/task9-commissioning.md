@@ -49,6 +49,11 @@ and hostname, and provision the CA and token through the existing SecretStore
 boundary. Do not expose the endpoint publicly, commit credentials, or print
 request headers. Capture only redacted status and response metadata.
 
+For BLE-enabled records, provision `devices.ble_device_id` with the exact
+canonical lower-case 16-hex EFUSE identity returned by authenticated GATT.
+Legacy labels such as `SIGAP-01` remain display/archive identifiers and are not
+used as BLE identity. A missing mapping keeps BLE mutation unavailable.
+
 The planned transaction evidence is:
 
 1. First exact telemetry-v3 batch bytes produce a durable ACK.

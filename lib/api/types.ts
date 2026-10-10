@@ -39,6 +39,7 @@ export interface DeviceDetail {
   id: string;
   location_id: string;
   device_code: string;
+  ble_device_id?: string | null;
   placement_label: string | null;
   online_state: 'Online' | 'Offline' | null;
   last_seen: string | null;

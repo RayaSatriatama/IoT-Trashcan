@@ -413,9 +413,11 @@ void SigapApp::setup() noexcept {
     (void)batch_store_.begin(
         LittleFS, config_manager_.active().storage.flash_pending_quota_bytes);
     (void)ack_journal_.begin(LittleFS);
+#if defined(SIGAP_NETWORK_ENDPOINT) && defined(SIGAP_NETWORK_CA_CERT)
     device_control_journal_ready_ =
         device_control_result_journal_.begin(LittleFS) &&
         device_control_result_journal_.recover();
+#endif
   }
 #else
   (void)littlefs_store_.begin(

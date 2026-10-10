@@ -14,6 +14,9 @@ secret. The staging database must be separate from any production database.
 
 - Go 1.27.1 (or the repository toolchain) is available.
 - A disposable device identity and token are supplied out-of-band.
+- For BLE-enabled records, provision `devices.ble_device_id` with the exact
+  canonical 16-hex EFUSE identity returned by authenticated GATT. The value is
+  not inferred from `device_code`, advertising names, or service UUIDs.
 - A trusted CA and server certificate for a local staging hostname are
   supplied or generated in a user-owned temporary directory.
 - The firmware endpoint and CA are configured separately in the authorized
