@@ -98,3 +98,10 @@ TCP connection from the board. The firmware reported bounded TLS connect
 timeouts. This is a private-LAN ingress or firewall prerequisite, not evidence
 of a successful device HTTPS transaction. No public exposure or insecure TLS
 fallback was used.
+
+The follow-up listener test confirmed the same result: LAN binding and
+certificate verification worked from the host, but the device generated no
+observable TCP connection. Packet capture could not be collected in the
+current user session because `tcpdump` is absent and raw packet capabilities
+are denied. Root-approved firewall inspection and a narrowly scoped ingress
+rule remain prerequisites for physical HTTPS evidence.

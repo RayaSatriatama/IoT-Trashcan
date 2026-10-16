@@ -985,3 +985,31 @@ and `sha256:3620edf0548b8a15eb1638fc7d239b1995372a28982f7f1e194949160f166c7c`.
 
 Task 9 remains HOLD. No sensor calibration, heater, actuator, physical NVS or
 SD destructive operation, public staging deployment, or PR merge was performed.
+
+## Blocker-resolution attempt after `bd94890`
+
+The staging process was started with the real Go router and disposable SQLite
+database on `192.168.0.101:18443`. `ss` confirmed a listener on that exact LAN
+address, and a CA-verified host curl completed TLS and received HTTP 404 from
+the router. The device remained reachable by ARP and ICMP at `192.168.0.109`.
+
+During a 70-second observation window, `ss -tn` recorded no connection from the
+device and the Go process emitted no request. A controlled USB-open reboot then
+gave the device 75 seconds to retry; the result was unchanged. `tcpdump` is not
+installed, raw AF_PACKET capture is denied by the current user capability, and
+firewall/nft rules require root. No firewall or network policy was changed.
+The remaining network prerequisite is a root-approved, narrowly scoped inbound
+TCP rule or an approved private endpoint reachable from the device subnet.
+
+The BLE adapter was scanned again. The SIGAP address `98:A3:16:F5:C1:51` and
+service UUID were discovered, while BlueZ reported `Paired: no`, `Bonded: no`,
+`Trusted: no`, and `Connected: no`. Authenticated `GET_DEVICE_ID` and
+`GET_STATUS` therefore remain unrun. The one-shot passkey must be entered by
+the local operator without recording it.
+
+The SD probe was not repeated blindly. Source inspection and the timestamped
+log show the command reached the `/sdcard/sigap/archive-sd.bin.recover` open
+inside `SdArchiveStore::recover()` after the SD mount path, then produced no
+terminal response for 125 seconds. The exact blocking stage is therefore the
+SD archive recovery/open scan, not a proven LittleFS failure. No SD mutation,
+format, or erase was attempted.
