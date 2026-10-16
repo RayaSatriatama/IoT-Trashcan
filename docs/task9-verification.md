@@ -1013,3 +1013,42 @@ inside `SdArchiveStore::recover()` after the SD mount path, then produced no
 terminal response for 125 seconds. The exact blocking stage is therefore the
 SD archive recovery/open scan, not a proven LittleFS failure. No SD mutation,
 format, or erase was attempted.
+
+## HTTPS initiation transition audit after `571de39`
+
+The installed runtime-ready image was checked through the actual startup and
+loop conditions. The out-of-tree build header contains endpoint
+`https://192.168.0.101:18443` and a non-empty CA with an IP SAN for
+`192.168.0.101`. A current maintenance read-only check returned
+`wifi=present` and `device_token=present`, with no secret value exposed.
+
+The source path requires `config_manager_.runtime_ready()`, an active config
+reference, LittleFS journal recovery, a loaded device token, transport begin,
+and the wall-clock gate before polling. Physical debug output from this image
+recorded both `GET https://192.168.0.101:18443/50C1F516A398/next` and telemetry
+`POST https://192.168.0.101:18443/`. This proves the network worker and device
+control poller reached the HTTPS transport. Both entered `start_ssl_client()`
+and timed out while opening the socket; neither reached a TLS certificate
+failure or HTTP response.
+
+The staging listener was independently bound to `192.168.0.101:18443` and
+accepted CA-verified host curl. A 70-second LAN observation plus a 75-second
+post-reset device window produced no server request. Packet-level SYN
+classification remains unavailable because `tcpdump` is not installed and raw
+capture is denied to the current user. Firewall inspection/change therefore
+requires separate root authorization.
+
+Required verdicts for this run:
+
+| Gate | Result | Evidence |
+| --- | --- | --- |
+| CONFIG_RUNTIME_READY | PASS | Boot proceeded past runtime guard and started network workers. |
+| NETWORK_SECRETS_READY | PASS | Read-only maintenance status reported both WiFi and device token present. |
+| NETWORK_READY | PASS | WiFi associated and the worker reached transport polling. |
+| SNTP_TIME_READY | PASS | HTTPS polling passed the source wall-clock gate and entered `start_ssl_client()`. Numeric wall-clock readback is not exposed by current maintenance grammar. |
+| HTTPS_TRANSPORT_STARTED | PASS | Device logs show GET and POST HTTPS URLs and socket-start logs. |
+| TCP_SYN_OBSERVED | NOT_RUN | No tcpdump capability; no established TCP state or server request was observed. |
+| TLS_HANDSHAKE | BLOCKED | Socket connection timed out before certificate exchange. |
+| GO_REQUEST_RECEIVED | FAIL | LAN-bound Go listener received no device request. |
+| TELEMETRY_ACK | NOT_RUN | No device request reached the backend. |
+| FIRST_REAL_E2E | BLOCKED | The first failed transition is device-to-host TCP reachability. |
