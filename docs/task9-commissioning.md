@@ -252,3 +252,35 @@ For every case record: case ID, timestamp with timezone, firmware SHA, board
 and interface identity, exact bounded action, redacted output, expected result,
 actual result, and classification. Keep secrets and raw passkeys outside the
 repository. A missing prerequisite is `BLOCKED` or `NOT RUN`, never PASS.
+
+## Latest authorized application-only run
+
+The final out-of-tree `sigap_n16r8_sd_https_staging` image was built with SD_MMC
+1-bit, BLE provisioning, native USB maintenance, telemetry, HTTPS device
+control, and the LittleFS result journal. The image SHA-256 is
+`21446d761fb6cd7952c4230b15c55db5adf5f50a509ec6c7e15da596d9e24d6c`.
+Application-only DIO flashing at `0x10000` completed with esptool verification;
+no NVS, partition table, LittleFS, or SD write was performed by that operation.
+
+The board booted with matching 16 MiB flash and 8 MiB PSRAM. LittleFS mounted
+without the earlier corrupted-directory error. WiFi associated and obtained
+`192.168.0.109`. HTTPS remained blocked by host/LAN TCP ingress: host-side TLS
+and curl worked, but neither the Go server nor an independent OpenSSL TLS
+listener observed a connection from the board. The physical SD probe did not
+complete within its bounded 125-second observation window and was not retried
+with formatting or destructive recovery.
+
+The next authorized physical steps are narrow and ordered:
+
+1. Allow the board IP to reach the approved private staging host and port, or
+   provide an approved private endpoint with matching hostname and CA.
+2. In a local unrecorded terminal, obtain and enter the one-shot BLE passkey;
+   do not place it in logs, screenshots, browser storage, or repository files.
+3. Re-run only read-only BLE `GET_DEVICE_ID` and `GET_STATUS` checks after
+   authenticated pairing.
+4. Diagnose the SD probe using timing output before any test-owned write.
+5. Exercise journal persistence and acknowledged replay only with disposable
+   commands and explicit operator approval.
+
+No scientific calibration or COMMIT is authorized by this run. Task 9 remains
+HOLD until the physical gates above have direct evidence.

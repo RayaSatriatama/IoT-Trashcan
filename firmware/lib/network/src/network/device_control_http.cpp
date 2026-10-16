@@ -12,7 +12,10 @@
 namespace sigap::network {
 namespace {
 
-constexpr uint32_t kControlTaskStackWords{1024U};
+// WiFiClientSecure and HTTPClient use more than 4 KiB of stack during TLS
+// setup on ESP32-S3.  Keep the control request isolated from loopTask while
+// leaving enough bounded headroom for certificate parsing and JSON framing.
+constexpr uint32_t kControlTaskStackWords{4096U};
 
 bool https_prefix(std::string_view value) noexcept {
   constexpr std::string_view prefix{"https://"};

@@ -240,7 +240,6 @@ class FsImmutableBatchStore final : public IImmutableBatchStore {
                           batch.batch_id_size) &&
                     write(batch.body.data(), batch.body_size) &&
                     write(marker.data(), marker.size());
-    file.flush();
     file.close();
     if (!ok) return BatchStoreStatus::Retryable;
     add_index(batch);
@@ -260,7 +259,6 @@ class FsImmutableBatchStore final : public IImmutableBatchStore {
     put_u32(bytes.data(), kBatchFrameCommitMarker);
     put_u64(bytes.data() + 4U, pending_bytes_);
     const bool written = marker.write(bytes.data(), bytes.size()) == bytes.size();
-    marker.flush();
     marker.close();
     return written;
 #else
@@ -698,7 +696,6 @@ class FsImmutableBatchStore final : public IImmutableBatchStore {
     if (!marker) return false;
     const bool written = marker.write(frame.data(), frame.size()) ==
                          static_cast<int>(frame.size());
-    if (written) marker.flush();
     marker.close();
     return written;
   }
@@ -726,7 +723,6 @@ class FsImmutableBatchStore final : public IImmutableBatchStore {
       }
       remaining -= chunk;
     }
-    destination.flush();
     source.close();
     destination.close();
     return copied && remaining == 0U &&
@@ -793,7 +789,6 @@ class FsImmutableBatchStore final : public IImmutableBatchStore {
       }
       remaining -= chunk;
     }
-    destination.flush();
     source.close();
     destination.close();
     if (!copied || remaining != 0U ||

@@ -467,7 +467,6 @@ class FsMigrationReceiptJournal final : public IMigrationReceiptJournal {
     if (!file) return false;
     const bool written = file.write(frame.data(), frame.size()) ==
                          static_cast<int>(frame.size());
-    if (written) file.flush();
     file.close();
     return written;
   }

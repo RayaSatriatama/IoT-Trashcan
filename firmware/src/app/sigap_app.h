@@ -267,6 +267,9 @@ class SigapApp final {
 #endif
   std::optional<network::NetworkWorker> network_worker_{};
   bool network_ready_{false};
+#if defined(ARDUINO) && defined(SIGAP_NETWORK_ENDPOINT) && defined(SIGAP_NETWORK_CA_CERT)
+  bool network_time_ready_{false};
+#endif
   models::NvsModelProfilePersistence model_persistence_{};
   models::ModelProfileLifecycle model_lifecycle_;
   maintenance::ModelMaintenanceRouter model_router_;

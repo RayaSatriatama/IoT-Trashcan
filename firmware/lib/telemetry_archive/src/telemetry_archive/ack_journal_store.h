@@ -245,7 +245,6 @@ class FsAckJournalStore final {
     write_u32(bytes.data() + kAckCheckpointChecksumOffset,
               ack_crc32(bytes.data(), kAckCheckpointChecksumOffset));
     const bool written = marker.write(bytes.data(), bytes.size()) == bytes.size();
-    marker.flush();
     marker.close();
     checkpointed_ = written;
     if (checkpointed_) checkpoint_generation_ = generation_;
@@ -480,7 +479,6 @@ class FsAckJournalStore final {
     write_u32(frame.data() + kAckJournalChecksumOffset, checksum);
     write_u32(frame.data() + kAckJournalMarkerOffset, kAckJournalMarker);
     const bool written = file.write(frame.data(), frame.size()) == frame.size();
-    file.flush();
     file.close();
     if (!written) return AckPersistStatus::Retryable;
     return AckPersistStatus::Durable;
@@ -537,7 +535,6 @@ class FsAckJournalStore final {
     File marker = filesystem_->open(marker_path, FILE_WRITE);
     if (!marker) return false;
     const bool written = marker.write(frame.data(), frame.size()) == frame.size();
-    if (written) marker.flush();
     marker.close();
     return written;
   }
@@ -564,7 +561,6 @@ class FsAckJournalStore final {
       }
       remaining -= chunk;
     }
-    destination.flush();
     const bool size_matches = destination.size() == valid_bytes;
     source.close();
     destination.close();

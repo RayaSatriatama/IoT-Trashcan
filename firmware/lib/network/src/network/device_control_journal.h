@@ -477,7 +477,6 @@ class FsDeviceControlResultJournal final : public IDeviceControlResultJournal {
     File file = filesystem_->open(path, FILE_WRITE);
     if (!file) return false;
     const bool written = file.write(frame_.data(), size) == size;
-    if (written) file.flush();
     file.close();
     return written;
   }

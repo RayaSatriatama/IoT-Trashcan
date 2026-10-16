@@ -3,6 +3,7 @@
 
 #include <array>
 #include <cstdio>
+#include <ctime>
 #include <string_view>
 
 #include "sigap/board/board_memory.h"
@@ -458,6 +459,14 @@ void SigapApp::setup() noexcept {
     network_ready_ = transport_ready && token_size != 0U &&
                      network_worker_->begin(std::string_view(
                          network_secrets.device_token.data(), token_size));
+#if defined(SIGAP_NETWORK_ENDPOINT) && defined(SIGAP_NETWORK_CA_CERT)
+    if (network_ready_) {
+      // TLS certificate validity cannot be checked against the reset epoch.
+      // SNTP starts asynchronously; loop() gates every HTTPS worker until a
+      // trustworthy wall-clock value is available.
+      configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+    }
+#endif
     provisioning::secure_zero(network_secrets.ssid.data(),
                               network_secrets.ssid.size());
     provisioning::secure_zero(network_secrets.password.data(),
@@ -467,11 +476,11 @@ void SigapApp::setup() noexcept {
   }
 #ifdef ARDUINO
 #ifdef SIGAP_USE_SD
-  const bool sd_mounted = begin_sd_transport();
-  if (sd_mounted) {
-    (void)sd_store_.begin(
-        sd_filesystem(), config_manager_.active().storage.sd_pending_quota_bytes);
-  }
+  // SD_MMC probing is intentionally lazy.  Card initialization and archive
+  // recovery can block for an unbounded media timeout, so doing them in setup
+  // would prevent USB maintenance, BLE, WiFi, and HTTPS from reaching their
+  // bounded event loops.  The owned storage probe performs the same mount and
+  // archive recovery before any SD test-owned write.
 #endif
 #endif
 
@@ -535,10 +544,31 @@ void SigapApp::loop() noexcept {
   (void)archive_runtime_.drain_samples(acquisition_.handoff());
   processing_runtime_.poll(now_us);
   (void)archive_runtime_.drain_results(processing_runtime_.handoff());
-  (void)archive_runtime_.poll_storage_slice(4U, 32U * 1024U);
-  (void)batch_runtime_.poll();
+  // LittleFS and the Arduino VFS share the global descriptor table with the
+  // asynchronous HTTPS workers. Keep filesystem ownership in loopTask while
+  // either transport task is still active; this prevents a failed TLS socket
+  // teardown from colliding with an in-flight filesystem descriptor.
+  bool filesystem_transport_busy{false};
+  if (network_worker_.has_value() && network_worker_->transport_pending()) {
+    filesystem_transport_busy = true;
+  }
+#if defined(SIGAP_NETWORK_ENDPOINT) && defined(SIGAP_NETWORK_CA_CERT)
+  if (device_control_ready_ && device_control_poller_.busy()) {
+    filesystem_transport_busy = true;
+  }
+#endif
+  if (!filesystem_transport_busy) {
+    (void)archive_runtime_.poll_storage_slice(4U, 32U * 1024U);
+    (void)batch_runtime_.poll();
+  }
   network_clock_.set_now(now_us);
-  if (network_ready_ && network_worker_.has_value()) {
+  bool tls_time_ready{true};
+#if defined(SIGAP_NETWORK_ENDPOINT) && defined(SIGAP_NETWORK_CA_CERT)
+  const std::time_t wall_clock = std::time(nullptr);
+  network_time_ready_ = wall_clock >= static_cast<std::time_t>(1700000000);
+  tls_time_ready = network_time_ready_;
+#endif
+  if (network_ready_ && tls_time_ready && network_worker_.has_value()) {
     (void)network_worker_->poll();
   }
   // The shared controller owns session expiry for every transport, including
@@ -546,7 +576,7 @@ void SigapApp::loop() noexcept {
   // endpoint.
   calibration_controller_.poll(now_us);
 #if defined(SIGAP_NETWORK_ENDPOINT) && defined(SIGAP_NETWORK_CA_CERT)
-  if (device_control_ready_) {
+  if (device_control_ready_ && tls_time_ready) {
     (void)device_control_poller_.poll();
   }
 #endif

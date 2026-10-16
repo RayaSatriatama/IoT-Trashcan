@@ -915,3 +915,73 @@ Journey A GATT server is an in-process fake. They prove software contracts,
 not ESP32 HTTPS transmission or physical Web Bluetooth pairing. The full
 fresh suite listed above remains applicable because these changes are tests and
 documentation only; a final serial rerun is required after commit.
+
+## Current physical integration run at 4f416f8
+
+The current source delta was reproduced against the attached ESP32-S3 N16R8
+and a runtime-ready out-of-tree staging image. The physical board identity was
+ESP32-S3 revision v0.2, flash 16 MiB, PSRAM 8 MiB, USB MAC
+`98:A3:16:F5:C1:50`. The existing full-chip erase and complete compatible image
+set had already been verified before this run. The final application image was
+then written only at `0x10000` with DIO mode and `--verify`; no NVS, partition
+table, LittleFS, or SD write was included in that operation.
+
+Runtime-ready image:
+
+```text
+environment: sigap_n16r8_sd_https_staging (out of tree)
+firmware SHA-256: 21446d761fb6cd7952c4230b15c55db5adf5f50a509ec6c7e15da596d9e24d6c
+RAM: 52,300 / 327,680 bytes
+application flash: 1,368,205 / 4,194,304 bytes
+upload: esptool write_flash --flash_mode dio --verify 0x10000 firmware.bin
+result: PASS, hash of data verified
+```
+
+Target evidence caused these bounded source fixes: SD probing moved out of
+setup, the HTTPS task stack increased to 4096 words, TLS polling waits for a
+valid wall clock, and filesystem polling pauses while asynchronous network
+transport owns the Arduino VFS. File-backed persistence no longer calls the
+Arduino LittleFS `flush()` path that reproduced an `lfs_file_sync` assertion;
+`close()` is the persistence boundary. Native storage and journal tests cover
+the same paths.
+
+Fresh software verification on this source:
+
+```text
+pio test -e native --without-uploading                         PASS 450/450
+temporary ASan/UBSan PlatformIO configuration                   PASS 450/450
+pio check -e native --fail-on-defect=low                        PASS, no defects
+six standard firmware environments                              PASS
+runtime-ready SD+HTTPS staging build                            PASS
+go test -count=1 ./...                                          PASS
+go test -race -count=1 ./...                                    PASS
+go vet ./...                                                    PASS
+npm test                                                         PASS 21 files / 115 tests
+npm run typecheck                                                PASS
+npm run export:web                                               PASS
+git diff --check                                                 PASS
+```
+
+Direct physical evidence is classified separately:
+
+| Gate | Result | Evidence |
+| --- | --- | --- |
+| CLEAN_FLASH | PASS | Authorized full-chip erase and compatible bootloader, partition, app, and empty LittleFS images were verified before the final app-only release write. |
+| BOOT | PASS | Release image booted; flash/PSRAM reported 16 MiB/8 MiB and no reboot loop or LittleFS corruption error appeared. |
+| LITTLEFS | PASS | `LittleFS.begin(false)` mounted after the approved empty image initialization; missing test-owned files are expected on an empty store. |
+| DEVICE_CONTROL_JOURNAL | PARTIAL | Production composition is present and empty-slot recovery is observed, but physical persist, reboot, and acknowledged-clear cycles were not completed. |
+| BLE_PAIRING | HUMAN_ACTION_REQUIRED | Service and characteristics advertise; authenticated MITM pairing still needs the local operator passkey gesture. |
+| GET_DEVICE_ID | NOT RUN | Must follow authenticated pairing; passkey was not captured or logged. |
+| REAL_WIFI | PASS | Device associated with the provisioned network and obtained `192.168.0.109`; reconnect behavior was observed. Password was not logged. |
+| REAL_SD | BLOCKED | The bounded storage probe reached the SD recovery path but produced no final response within 125 seconds. No format, erase, or unrelated write was attempted. |
+| REAL_HTTPS | BLOCKED | Device WiFi was up, but TCP/TLS ingress from `192.168.0.109` to host `192.168.0.101:18443` did not reach either Go TLS or `openssl s_server`; host curl succeeded. Network/firewall approval is required. |
+| REAL_E2E | BLOCKED | The first physical transaction cannot complete until authenticated BLE identity, SD probe completion, and private-LAN HTTPS ingress are available. |
+
+The prior attached-card SD result (`us=106507021`) belongs to an older image
+and is historical evidence only. It is not evidence for the final
+runtime-ready image. Frozen telemetry record and body hashes remain unchanged:
+`sha256:a3a2593618943cc7a1d5f8bc0c90216dc22eb4c3297fb874887c11b7b6ef6883`
+and `sha256:3620edf0548b8a15eb1638fc7d239b1995372a28982f7f1e194949160f166c7c`.
+
+Task 9 remains HOLD. No sensor calibration, heater, actuator, physical NVS or
+SD destructive operation, public staging deployment, or PR merge was performed.

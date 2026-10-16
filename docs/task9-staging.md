@@ -87,3 +87,14 @@ preserved without secrets.
 
 The physical ESP32 commissioning, upload, reboot, BLE pairing, WiFi change,
 SD write, and HTTPS transmission remain separate owner-authorized operations.
+
+## Physical staging attempt at 4f416f8
+
+An out-of-tree staging image was built with a non-empty disposable CA and
+private endpoint configuration. The board associated with WiFi and received
+`192.168.0.109`. Host-side curl and an independent OpenSSL TLS listener both
+accepted local connections on `192.168.0.101:18443`, but neither listener saw a
+TCP connection from the board. The firmware reported bounded TLS connect
+timeouts. This is a private-LAN ingress or firewall prerequisite, not evidence
+of a successful device HTTPS transaction. No public exposure or insecure TLS
+fallback was used.

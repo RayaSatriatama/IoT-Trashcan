@@ -85,7 +85,10 @@ class LittleFsArchiveStore : public IArchiveStore {
       return AppendStatus::Retryable;
     }
     const std::size_t written = file.write(record.bytes.data(), record.size);
-    file.flush();
+    // Arduino-ESP32's LittleFS VFS flush path can issue a second
+    // lfs_file_sync after fflush and assert on a valid append handle.
+    // fclose() finalizes the buffered transaction and is the persistence
+    // boundary used here for both LittleFS and SD-backed stores.
     file.close();
     if (written != record.size) {
       health_ = ArchiveHealth::Degraded;
@@ -202,7 +205,6 @@ class LittleFsArchiveStore : public IArchiveStore {
     write_u32(frame.data() + 80U, archive_crc32(frame.data(), 80U));
     write_u32(frame.data() + 84U, kGapMarker);
     const bool written = file.write(frame.data(), frame.size()) == frame.size();
-    file.flush();
     file.close();
     if (!written) {
       health_ = ArchiveHealth::Degraded;
@@ -224,7 +226,6 @@ class LittleFsArchiveStore : public IArchiveStore {
     const uint64_t value = pending_bytes_;
     const bool written = marker.write(
         reinterpret_cast<const uint8_t*>(&value), sizeof(value)) == sizeof(value);
-    marker.flush();
     marker.close();
     return written;
 #else
@@ -488,7 +489,6 @@ class LittleFsArchiveStore : public IArchiveStore {
         break;
       }
     }
-    destination.flush();
     destination.close();
     source.close();
     if (!copied || !filesystem_->rename(path_, backup) ||
@@ -775,7 +775,6 @@ class LittleFsArchiveStore : public IArchiveStore {
     if (!file) return false;
     const bool written = file.write(frame.data(), frame.size()) ==
                          static_cast<int>(frame.size());
-    if (written) file.flush();
     file.close();
     return written;
   }
@@ -895,7 +894,6 @@ class LittleFsArchiveStore : public IArchiveStore {
       }
       remaining -= chunk;
     }
-    destination.flush();
     const bool size_matches = destination.size() == valid_bytes;
     source.close();
     destination.close();
