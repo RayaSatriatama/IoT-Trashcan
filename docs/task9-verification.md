@@ -1,5 +1,78 @@
 # Task 9 verification ledger
 
+## Physical LittleFS initialization (`4df9888`, 2026-10-16)
+
+The authorized LittleFS-only recovery was executed after a fresh read-only
+preflight. The board identity was ESP32-S3 revision v0.2, MAC
+`98:a3:16:f5:c1:50`, USB-Serial/JTAG, with 16 MiB flash and 8 MiB PSRAM.
+`esptool.py v4.11.0 get_security_info` reported secure boot disabled and flash
+encryption disabled.
+
+The installed table was read from `0x8000` and matched
+`firmware/partitions_n16r8.csv` exactly:
+
+```text
+nvs       0x00009000 0x00005000
+phy_init  0x0000e000 0x00001000
+factory   0x00010000 0x00400000
+spiffs    0x00410000 0x00800000
+```
+
+The fresh pre-write dump at `0x410000`, size `0x800000`, was 8,388,608 bytes,
+all `0xFF`, and matched the previously recorded backup hash
+`9f9b02f5ee6cbef5e018c1ee424095fc21a842ea6968c0d36114b5930dab2ba1`.
+A byte-identical copy was retained outside the repository at
+`/tmp/sigap-littlefs-backup-before-init-4df9888.bin`. Pre-write preservation
+hashes were captured for the partition table, NVS, PHY data, and factory app.
+
+An empty filesystem image was generated with PlatformIO's `mklittlefs` 2.3
+using block size 4096, page size 256, and size 8,388,608 bytes. The image hash
+was `a65d2210306c433023a5be96b22392e03b673ae61471f1676f3f727487c7eade`.
+The repository `buildfs` target could not run because no `firmware/data`
+directory exists; the direct PlatformIO-provided tool produced and listed a
+valid empty image offline without credentials or production files.
+
+The only write was:
+
+```text
+esptool.py --chip esp32s3 --port <USB-by-id> --baud 921600 \
+  --before default_reset --after no_reset write_flash \
+  --flash_mode keep --flash_freq keep --flash_size keep --verify \
+  0x410000 /tmp/sigap-lfs-preflight.AVUMV5/littlefs-empty.bin
+```
+
+esptool reported erase range `0x00410000` through `0x00c0ffff`, wrote exactly
+8,388,608 bytes, and verified the data. A full post-write readback matched the
+image hash. `verify_flash` also matched the pre-write partition table, NVS,
+PHY data, and complete factory app. No SD operation was performed.
+
+After one controlled hard reset, the boot log reported the expected board
+memory and contained no `Corrupted dir pair`, `Mounting LittleFS failed`, or
+`LittleFS begin() failed` message. A post-boot 8 MiB readback remained readable
+by `mklittlefs` with the configured geometry, confirming a mountable physical
+filesystem. The installed application is the non-HTTPS build, confirmed by the
+absence of the HTTPS endpoint and device-control journal path in the app image.
+Its compile guard therefore does not initialize the production
+`FsDeviceControlResultJournal`; physical journal persistence and replay could
+not be exercised without an application upload and runtime credentials.
+
+```text
+LITTLEFS_BACKUP: PASS
+PARTITION_LAYOUT: PASS
+LITTLEFS_IMAGE: PASS
+LITTLEFS_WRITE: PASS
+LITTLEFS_MOUNT: PASS (boot evidence, no mount error)
+LITTLEFS_INTEGRITY: PASS (readback and offline listing)
+DEVICE_CONTROL_JOURNAL: BLOCKED (installed app is non-HTTPS)
+NVS_PRESERVATION: PASS
+SD_PRESERVATION: PASS (no SD access or mutation)
+SOFTWARE_REGRESSION: PASS (450/450 native, 6/6 target builds, Cppcheck)
+```
+
+The P0 LittleFS filesystem recovery is operational. The Task 9 journal
+acceptance remains blocked until a separately authorized HTTPS-enabled image
+can be installed and its journal recovery exercised.
+
 ## Final pushed source (`9f80ee9`, 2026-10-10)
 
 The identity-gate implementation and its focused tests were committed and

@@ -1,5 +1,40 @@
 # Task 9 commissioning and HIL procedure
 
+## Physical LittleFS recovery result (`2026-10-16`)
+
+Owner-approved initialization was limited to the blank `spiffs` partition at
+`0x410000` with size `0x800000`. The board was identified read-only as ESP32-S3
+revision v0.2, MAC `98:A3:16:F5:C1:50`, 16 MiB flash, and 8 MiB PSRAM. The
+installed partition table matched the repository CSV, and flash encryption was
+disabled.
+
+The pre-write 8 MiB dump was entirely `0xFF` and matched
+`9f9b02f5ee6cbef5e018c1ee424095fc21a842ea6968c0d36114b5930dab2ba1`. The
+preservation copy is outside the repository at
+`/tmp/sigap-littlefs-backup-before-init-4df9888.bin`. NVS, PHY, partition
+table, and factory app hashes were captured before the write and verified again
+afterward.
+
+The image was generated offline with PlatformIO `mklittlefs` 2.3 using block
+4096, page 256, and an 8 MiB size. Image SHA-256:
+`a65d2210306c433023a5be96b22392e03b673ae61471f1676f3f727487c7eade`.
+Only `write_flash 0x410000 <image>` was used. Full-chip erase, application
+upload, NVS write, partition-table write, profile mutation, WiFi change, and SD
+write were not performed.
+
+After a controlled reset, the board booted with matching memory diagnostics and
+without the previous LittleFS corrupted-directory or mount-failure messages.
+A full post-boot partition readback was accepted by `mklittlefs` with the same
+geometry. This establishes physical filesystem mount and integrity, not HTTPS
+transport acceptance.
+
+The currently installed application is not HTTPS-enabled, so the production
+device-control result journal is not instantiated by its compile-time guard.
+Journal save, replay, and corrupted-record recovery therefore remain blocked
+until a separately approved HTTPS-enabled application image and disposable
+runtime credentials are available. Do not upload an application image as part
+of this filesystem-only recovery.
+
 ## Current physical storage finding (`2026-10-10`)
 
 The board's LittleFS partition was backed up read-only before any repair
