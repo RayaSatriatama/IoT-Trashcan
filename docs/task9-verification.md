@@ -1,5 +1,71 @@
 # Task 9 verification ledger
 
+## Runtime-ready SD+HTTPS application upload (`62b26d3`, 2026-10-16)
+
+An out-of-tree staging configuration combined the N16R8 SD_MMC target with
+HTTPS, BLE, USB maintenance, telemetry, and the production LittleFS result
+journal. The staging certificate and endpoint were generated outside the
+repository. No device token, Wi-Fi password, or private key was committed or
+logged. The image used the approved factory application range only:
+`0x10000..0x410000`.
+
+The first runtime image (`ff54d6d8feaa2b39d1f18e9fc6080742f8b3ce92f9476812625d3758aa2a9c4b`)
+booted into a repeatable Arduino `loopTask` stack-canary panic while the
+journal initialized. The decoded backtrace ended at
+`FsDeviceControlResultJournal::begin()` in `device_control_journal.h:382`.
+The cause was two large local `DeviceControlCommand` and
+`DeviceControlResult` objects allocated on the loop task stack during the
+empty-journal probe.
+
+The source fix keeps the bounded journal slot scan in `begin()` and leaves
+authoritative decoding to the poller's instance-owned buffers during recovery.
+The corrected image was built with RAM 52,260 bytes, flash 1,364,489 bytes,
+size 1,364,848 bytes, and SHA-256
+`4985967c9190ff1a04a67ec4c64306ce30ef11567dd8880e10b6cd5e9550324a`.
+Application-only upload used `esptool.py v4.11.0 write_flash 0x10000` with
+`--verify`; esptool reported `Hash of data verified`.
+
+The factory slot was read back after upload and matched the image byte-for-byte.
+Read-only post-upload hashes also matched the pre-upload backups:
+
+```text
+partition table  6bf459c4b3a310be176f97c5141ab33548273fe1042891e3c4c5e97fc299b5a7
+NVS              23936c3ba364a79b313894c1d40cd0c166f73a4982a1a0db8076c032673f6def
+LittleFS         c79337fffce8e7ef9610f99078ab4e7e497e739c1af08618c8695c1aa3f1d361
+factory image    4985967c9190ff1a04a67ec4c64306ce30ef11567dd8880e10b6cd5e9550324a
+```
+
+After a controlled DTR reset, the corrected image booted for more than five
+seconds without a panic, stack-canary trigger, reboot loop, or LittleFS mount
+failure. The boot log showed the expected 16 MiB flash and 8 MiB PSRAM and
+empty journal-slot probes. BLE advertising was again discoverable at
+`98:A3:16:F5:C1:51`. The journal was not exercised with a real command/result
+because no private Go staging service, device token, or Wi-Fi configuration was
+available; no NVS or network mutation was attempted.
+
+```text
+APPLICATION_UPLOAD: PASS
+INSTALLED_FIRMWARE_IDENTITY: PASS (byte-identical factory readback)
+NVS_PRESERVATION: PASS
+LITTLEFS_PRESERVATION: PASS
+PARTITION_TABLE_PRESERVATION: PASS
+LITTLEFS_MOUNT: PASS (no mount error after upload)
+DEVICE_CONTROL_JOURNAL_INITIALIZATION: PASS (empty recovery path, no panic)
+DEVICE_CONTROL_JOURNAL_DURABILITY: BLOCKED (no backend/token and no result POST)
+REAL_BLE_ADVERTISEMENT: PASS
+REAL_BLE_AUTHENTICATED_DEVICE_ID: NOT_RUN (pairing not authorized in this task)
+REAL_WIFI: BLOCKED (no credential mutation authorized)
+REAL_HTTPS: BLOCKED (no private backend/token/Wi-Fi path)
+REAL_SD: NOT_RUN (no SD operation authorized in this task)
+```
+
+Fresh software evidence after the source fix: native PlatformIO 450/450,
+Cppcheck no defects, six firmware environments PASS, frontend Vitest 21 files
+and 115 tests PASS, TypeScript typecheck PASS, web export PASS, and Go 1.27.1
+tests, race, and vet PASS using the verified user-owned executable at
+`/home/raya/.local/go1.27.1-verified/bin/go` (the `go` shell command remains
+absent from PATH).
+
 ## Physical LittleFS initialization (`4df9888`, 2026-10-16)
 
 The authorized LittleFS-only recovery was executed after a fresh read-only

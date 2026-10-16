@@ -378,9 +378,12 @@ class FsDeviceControlResultJournal final : public IDeviceControlResultJournal {
     }
     std::strncpy(path_.data(), path, path_.size() - 1U);
     path_[path_.size() - 1U] = '\0';
-    DeviceControlCommand command{};
-    DeviceControlResult result{};
-    (void)load(command, result);
+    // Do not decode into large command/result objects on Arduino's loopTask
+    // stack.  Poller::begin() performs the authoritative decode into its
+    // instance-owned buffers after recovery.  The bounded slot scan here
+    // validates the journal frame and classifies empty/corrupt/I/O states.
+    SlotInfo selected{};
+    (void)scan(selected);
     return state_ != DeviceControlJournalState::IoError &&
            state_ != DeviceControlJournalState::Corrupt;
   }

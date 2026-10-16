@@ -1,5 +1,38 @@
 # Task 9 commissioning and HIL procedure
 
+## Runtime-ready application upload (`2026-10-16`)
+
+The approved application-only upload was performed after read-only identity,
+partition, and preservation checks. Board identity was ESP32-S3 v0.2,
+`98:A3:16:F5:C1:50`, 16 MiB flash, and 8 MiB PSRAM. The installed table
+matched `nvs 0x9000/0x5000`, `factory 0x10000/0x400000`, and
+`spiffs 0x410000/0x800000`. Secure boot and flash encryption were disabled.
+
+The runtime image was built out of tree with a disposable private certificate
+and endpoint. The image SHA-256 is
+`4985967c9190ff1a04a67ec4c64306ce30ef11567dd8880e10b6cd5e9550324a`; it is
+not a production staging credential package. The exact write was factory-app
+only at `0x10000`; no bootloader, partition table, NVS, LittleFS, or SD bytes
+were targeted. The factory readback matched the image exactly.
+
+The first image exposed a loop-task stack overflow in empty journal startup.
+The source fix removed the large temporary command/result decode objects from
+`FsDeviceControlResultJournal::begin()`. The corrected image booted without
+the panic and without a LittleFS mount error. Empty journal slots were
+observed as missing files, which is the expected empty state for a newly
+initialized journal.
+
+Preservation readbacks after upload matched the pre-upload hashes for the
+partition table, NVS, and LittleFS. BLE advertisement returned at the expected
+address. Authenticated pairing, Wi-Fi association, HTTPS result submission,
+and SD access were not performed because this upload authorization did not
+include BLE pairing, NVS credential mutation, network credentials, or SD writes.
+
+Required next gates are a separately authorized disposable Wi-Fi/token
+configuration and private backend for real HTTPS, plus a separate operator
+authorization for authenticated BLE pairing. No scientific calibration or
+COMMIT may be attempted without physical sensors and reference instruments.
+
 ## Physical LittleFS recovery result (`2026-10-16`)
 
 Owner-approved initialization was limited to the blank `spiffs` partition at
