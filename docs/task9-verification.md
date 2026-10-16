@@ -69,6 +69,11 @@ SD_PRESERVATION: PASS (no SD access or mutation)
 SOFTWARE_REGRESSION: PASS (450/450 native, 6/6 target builds, Cppcheck)
 ```
 
+The fresh frontend run also passed 21 files and 115 tests, TypeScript
+typecheck, and web export. Go full, race, and vet checks were not rerun in this
+environment because no `go` executable or retained Go 1.27.1 toolchain was
+available; the prior current-source Go result remains historical evidence.
+
 The P0 LittleFS filesystem recovery is operational. The Task 9 journal
 acceptance remains blocked until a separately authorized HTTPS-enabled image
 can be installed and its journal recovery exercised.
