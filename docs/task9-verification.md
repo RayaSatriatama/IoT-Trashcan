@@ -1052,3 +1052,21 @@ Required verdicts for this run:
 | GO_REQUEST_RECEIVED | FAIL | LAN-bound Go listener received no device request. |
 | TELEMETRY_ACK | NOT_RUN | No device request reached the backend. |
 | FIRST_REAL_E2E | BLOCKED | The first failed transition is device-to-host TCP reachability. |
+
+## Read-only HTTPS connectivity check after `22cc8c3`
+
+No firewall or network policy was changed. The host remained on `wlan0` at
+`192.168.0.101/24` with the default route through `192.168.0.1`; the board
+remained reachable at `192.168.0.109` and the WiFi association was
+`rumah_iwan` on BSSID `40:3f:8c:96:38:52`. A temporary OpenSSL TLS 1.2 listener
+bound to `192.168.0.101:18443` and returned HTTP 200 to a host curl using the
+same CA. During a 90-second observation window, no board TCP connection or
+TLS session appeared in `ss`, and OpenSSL emitted no board handshake.
+
+The earlier physical debug trace remains important: the firmware did start
+both HTTPS paths, constructed the expected device-control and telemetry URLs,
+and timed out in `start_ssl_client()` while opening the socket. This rules out
+the firmware startup guard and identifies the unresolved boundary as LAN TCP
+reachability between the ESP32 and host. Packet-level SYN classification was
+not possible without separately approved capture privileges. No alternate
+endpoint was available during this run.
