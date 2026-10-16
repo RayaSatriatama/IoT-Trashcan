@@ -916,7 +916,7 @@ not ESP32 HTTPS transmission or physical Web Bluetooth pairing. The full
 fresh suite listed above remains applicable because these changes are tests and
 documentation only; a final serial rerun is required after commit.
 
-## Current physical integration run at 4f416f8
+## Current physical integration run from 4f416f8, published at adb0e85
 
 The current source delta was reproduced against the attached ESP32-S3 N16R8
 and a runtime-ready out-of-tree staging image. The physical board identity was

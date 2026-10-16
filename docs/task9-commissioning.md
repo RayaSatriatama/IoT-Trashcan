@@ -253,7 +253,7 @@ and interface identity, exact bounded action, redacted output, expected result,
 actual result, and classification. Keep secrets and raw passkeys outside the
 repository. A missing prerequisite is `BLOCKED` or `NOT RUN`, never PASS.
 
-## Latest authorized application-only run
+## Latest authorized application-only run, published at adb0e85
 
 The final out-of-tree `sigap_n16r8_sd_https_staging` image was built with SD_MMC
 1-bit, BLE provisioning, native USB maintenance, telemetry, HTTPS device
