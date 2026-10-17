@@ -23,7 +23,11 @@ type BleCharacteristic = {
 type BleService = { getCharacteristic: (uuid: string) => Promise<BleCharacteristic> };
 type BleServer = { getPrimaryService: (uuid: string) => Promise<BleService>; disconnect?: () => void };
 type BleDevice = { name?: string; gatt?: { connect: () => Promise<BleServer> }; addEventListener: (event: string, listener: () => void) => void };
-type BluetoothAdapter = { requestDevice: (options: { filters: Array<{ services: string[] }> }) => Promise<BleDevice> };
+type BluetoothRequestOptions = {
+  filters: Array<{ namePrefix?: string }>;
+  optionalServices: string[];
+};
+type BluetoothAdapter = { requestDevice: (options: BluetoothRequestOptions) => Promise<BleDevice> };
 
 export type BleProvisioningClientOptions = {
   requestTimeoutMs?: number;
@@ -81,7 +85,10 @@ export class BleProvisioningClient {
     // A device switch invalidates the previous authenticated identity before
     // any new GATT session is opened.
     if (this.device || this.server) this.close();
-    const device = await bluetooth().requestDevice({ filters: [{ services: [SIGAP_BLE_SERVICE_UUID] }] });
+    const device = await bluetooth().requestDevice({
+      filters: [{ namePrefix: 'SIGAP-' }],
+      optionalServices: [SIGAP_BLE_SERVICE_UUID],
+    });
     if (!device.gatt) throw new Error('Perangkat BLE tidak menyediakan GATT');
     const server = await device.gatt.connect();
     this.server = server;

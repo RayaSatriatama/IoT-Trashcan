@@ -1,5 +1,23 @@
 # Task 9 commissioning and HIL procedure
 
+## BlueZ UUID discovery-filter mitigation (2026-10-17)
+
+The Web Bluetooth client no longer sends the SIGAP service UUID as a BlueZ
+discovery filter. It uses the `SIGAP-` name prefix for chooser discovery and
+declares the SIGAP service through `optionalServices`; the service is still
+retrieved by UUID after connection. The browser then performs the existing
+authenticated `GET_DEVICE_ID` check before status or Wi-Fi operations. This
+avoids the BlueZ 5.87 UUID-filter crash path documented in [issue
+#2282](https://github.com/bluez/bluez/issues/2282) while preserving the
+firmware MITM and identity requirements.
+
+The rebuilt rendered page opened the real chooser without a new
+`bluetoothd` SIGSEGV during the bounded observation. Selection, passkey entry,
+GATT commands, and device identity verification remain pending because the
+chooser was cancelled and the NVS authorization gate remains unresolved for
+additional physical provisioning mutation. Do not delete bonds or weaken
+BLE security.
+
 ## BlueZ host diagnosis (2026-10-17)
 
 The commissioning host runs BlueZ `5.87-2.1` on kernel

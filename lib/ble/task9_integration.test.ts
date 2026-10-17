@@ -252,8 +252,10 @@ describe('Task 9 Web Bluetooth provisioning boundary', () => {
       configurable: true,
       value: {
         bluetooth: {
-          requestDevice: async (options: { filters: Array<{ services: string[] }> }) => {
-            requestedService = options.filters[0].services[0];
+          requestDevice: async (options: { filters: Array<{ namePrefix?: string }>; optionalServices: string[] }) => {
+            expect(options.filters).toEqual([{ namePrefix: 'SIGAP-' }]);
+            expect(options.optionalServices).toEqual(['7d3f0001-7d3f-4a53-9a4b-534947415000']);
+            requestedService = options.optionalServices[0];
             requestCount += 1;
             return harness.device;
           },

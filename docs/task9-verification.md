@@ -1,5 +1,41 @@
 # Task 9 verification ledger
 
+## BlueZ UUID discovery-filter mitigation (2026-10-17)
+
+The host crash pattern matches the upstream BlueZ 5.87 UUID-filter regression:
+`SetDiscoveryFilter` with a matching UUID could pass the UUID string in the
+wrong `queue_find` argument position and execute it as a function pointer.
+The upstream correction adds an explicit UUID matcher. See [BlueZ issue
+#2282](https://github.com/bluez/bluez/issues/2282) and [fix commit
+82af2be](https://github.com/bluez/bluez/commit/82af2beafc39510e2c4a439bf44faea711d6503f).
+
+The browser-side mitigation removes the UUID from `requestDevice().filters`.
+The client now requests `{ filters: [{ namePrefix: 'SIGAP-' }],
+optionalServices: [SIGAP_BLE_SERVICE_UUID] }`. The service UUID remains
+required for GATT service access, while the advertised name remains only a
+discovery hint. Authenticated `GET_DEVICE_ID`, canonical identity comparison,
+MITM requirements, and fail-closed access checks are unchanged.
+
+Fresh source and browser evidence:
+
+```text
+BLUEZ_CRASH_BEFORE=PASS (prior repeated SIGSEGV/restart evidence)
+UUID_FILTER_REMOVED=PASS (client source and exact request-options regression)
+NAME_FILTER_DISCOVERY=PASS (client source, integration assertion, Chromium bundle)
+BLUETOOTHD_STABLE_AFTER=PASS (no new bluetoothd crash/restart in the bounded
+  chooser observation from 14:01:25 through 14:03:10 WIB)
+GATT_CONNECTION=NOT_RUN (chooser was cancelled before selection)
+BLE_MITM_AUTHENTICATED=NOT_RUN
+DEVICE_ID_VERIFIED=NOT_RUN
+NVS_AUTHORIZATION=BLOCKED for further physical pairing/provisioning mutation
+```
+
+The actual rendered Chromium page loaded the rebuilt bundle containing both
+`namePrefix` and `optionalServices`, and the Web Bluetooth chooser was opened
+from the Wi-Fi dialog. No device was selected, no passkey was requested or
+logged, no bond was deleted, and no Bluetooth service or host package was
+changed. The bounded stability result is not a physical pairing or GATT PASS.
+
 ## BlueZ SIGSEGV diagnosis (2026-10-17)
 
 Read-only host diagnostics from the BLE retry window:

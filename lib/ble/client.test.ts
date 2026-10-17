@@ -4,6 +4,7 @@ import {
   assembleBleFrames,
   decodeBleFrame,
   encodeBleFrames,
+  SIGAP_BLE_SERVICE_UUID,
   type BleFrame,
 } from './protocol';
 import { BleProvisioningClient } from './client';
@@ -50,8 +51,11 @@ class FailingNotificationCharacteristic extends FakeCharacteristic {
 }
 
 class FakeServer {
+  requestedServiceUuid: string | null = null;
+
   constructor(private readonly control: FakeCharacteristic, private readonly events: FakeCharacteristic) {}
-  async getPrimaryService(_uuid: string): Promise<{ getCharacteristic: (uuid: string) => Promise<FakeCharacteristic> }> {
+  async getPrimaryService(uuid: string): Promise<{ getCharacteristic: (uuid: string) => Promise<FakeCharacteristic> }> {
+    this.requestedServiceUuid = uuid;
     return { getCharacteristic: async (uuid: string) => uuid.includes('0002-') ? this.control : this.events };
   }
 }
@@ -67,6 +71,33 @@ afterEach(() => {
 });
 
 describe('BLE provisioning client', () => {
+  it('uses a name-prefix discovery filter and requests the SIGAP service optionally', async () => {
+    const control = new FakeCharacteristic();
+    const events = new FakeCharacteristic();
+    const server = new FakeServer(control, events);
+    let requestedOptions: unknown;
+    Object.defineProperty(globalThis, 'isSecureContext', { configurable: true, value: true });
+    Object.defineProperty(globalThis, 'navigator', {
+      configurable: true,
+      value: {
+        bluetooth: {
+          requestDevice: async (options: unknown) => {
+            requestedOptions = options;
+            return { gatt: { connect: async () => server }, addEventListener: () => {} };
+          },
+        },
+      },
+    });
+
+    await new BleProvisioningClient().connect();
+
+    expect(requestedOptions).toEqual({
+      filters: [{ namePrefix: 'SIGAP-' }],
+      optionalServices: [SIGAP_BLE_SERVICE_UUID],
+    });
+    expect(server.requestedServiceUuid).toBe(SIGAP_BLE_SERVICE_UUID);
+  });
+
   it('writes framed chunks and waits for persisted CONNECTED status', async () => {
     let statusRequests = 0;
     let control: FakeCharacteristic;
