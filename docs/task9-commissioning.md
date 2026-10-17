@@ -1,5 +1,17 @@
 # Task 9 commissioning and HIL procedure
 
+## Host Bluetooth transport blocker (2026-10-17)
+
+During the Chromium retry, the page reached the BLE connect path but ended in
+`GATT Server is disconnected`. Read-only host logs showed repeated signal-11
+crashes of `bluetoothd` followed by systemd restarts. The device remained
+paired/bonded/trusted but disconnected. This is a host BlueZ transport
+failure, not a reason to remove the firmware passkey or disable MITM.
+
+Do not continue authenticated GATT validation until the Bluetooth daemon is
+stable. Bond deletion remains unauthorized, and passkeys must remain local to
+the operator.
+
 ## BLE upload gate and automatic NVS write (2026-10-17)
 
 The application-only BLE remediation image was uploaded at `0x10000` and

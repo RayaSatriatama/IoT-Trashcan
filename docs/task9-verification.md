@@ -1,5 +1,33 @@
 # Task 9 verification ledger
 
+## BLE host transport blocker (2026-10-17)
+
+The authenticated BLE retry was not completed. Chromium reported:
+`GATT Server is disconnected. Cannot retrieve services. (Re)connect first
+with \`device.gatt.connect\`.` The local BlueZ device record still showed
+`SIGAP-A398` as paired, bonded, and trusted, but `Connected: no`.
+
+Read-only `journalctl -u bluetooth` evidence showed repeated `bluetoothd`
+process crashes with signal 11 followed by systemd restarts during the test
+window. This host transport failure explains the disconnected GATT state; it
+does not justify removing the firmware passkey or weakening MITM
+authentication. No bond was deleted and no passkey was logged.
+
+Current BLE gates remain:
+
+```text
+BLE_PASSKEY_PROMPT=NOT_OBSERVED (host daemon crashed before authenticated GATT)
+REAL_BLE_PAIRING=NOT_RUN
+BLE_MITM_AUTHENTICATED=NOT_RUN
+REAL_GET_DEVICE_ID=NOT_RUN
+REAL_GET_STATUS=NOT_RUN
+BLE_RECONNECT=NOT_RUN
+HOST_BLUETOOTH_DAEMON=FAIL (repeated SIGSEGV and restart)
+```
+
+The next prerequisite is host-level BlueZ recovery or a stable authorized
+Bluetooth host. Firmware passkey protection remains required.
+
 ## Authorized BLE image upload and NVS preservation blocker (2026-10-17)
 
 The corrected out-of-tree SD+HTTPS staging image was built and uploaded under
