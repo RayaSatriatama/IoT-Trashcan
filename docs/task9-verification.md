@@ -1,5 +1,37 @@
 # Task 9 verification ledger
 
+## BlueZ SIGSEGV diagnosis (2026-10-17)
+
+Read-only host diagnostics from the BLE retry window:
+
+```text
+BLUEZ_VERSION=5.87-2.1 (bluez, bluez-utils, bluez-libs)
+KERNEL_VERSION=7.2.7-1-cachyos
+BLUETOOTHD_CRASH_REPRODUCED=PASS (12 recorded SIGSEGV restarts in this boot)
+COREDUMP_AVAILABLE=METADATA_ONLY (payload inaccessible)
+CRASH_BACKTRACE=INCONCLUSIVE (kernel and coredump metadata expose one stripped frame)
+```
+
+The adapter is a Realtek USB Bluetooth Radio (`0bda:c123`) using the loaded
+`btusb`/`btrtl` stack. `bluetoothctl show` reports the controller powered and
+not rfkill-blocked. Package integrity checks report zero altered files. The
+journal records `bluetoothd` signal 11 exits followed by systemd restarts;
+one kernel line also reports `security requested but not available`. No
+per-event BlueZ trace identifies whether the crash occurs during pairing,
+service discovery, or disconnect, and the stored coredump is inaccessible.
+
+Therefore:
+
+```text
+FIRST_FAILING_COMPONENT=bluetoothd host daemon
+ROOT_CAUSE=host BlueZ/adapter integration defect; exact internal trigger INCONCLUSIVE
+SAFE_RECOVERY_ACTION=owner-authorized BlueZ host recovery or alternate stable Bluetooth host
+```
+
+No service restart, package change, bond deletion, firmware change, or host
+configuration change was performed. BLE MITM and passkey requirements remain
+unchanged.
+
 ## BLE host transport blocker (2026-10-17)
 
 The authenticated BLE retry was not completed. Chromium reported:

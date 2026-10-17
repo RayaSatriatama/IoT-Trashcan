@@ -1,5 +1,16 @@
 # Task 9 commissioning and HIL procedure
 
+## BlueZ host diagnosis (2026-10-17)
+
+The commissioning host runs BlueZ `5.87-2.1` on kernel
+`7.2.7-1-cachyos` with a Realtek USB Bluetooth adapter (`0bda:c123`).
+Package integrity is clean and the adapter is powered and not rfkill-blocked.
+The journal and kernel log record repeated signal-11 crashes of
+`bluetoothd`; systemd restarts it. Coredump metadata exists, but the payload
+is inaccessible and no symbolic backtrace is available. The exact internal
+trigger is therefore inconclusive. Do not remove the SIGAP bond or weaken
+MITM while diagnosing this host fault.
+
 ## Host Bluetooth transport blocker (2026-10-17)
 
 During the Chromium retry, the page reached the BLE connect path but ended in
