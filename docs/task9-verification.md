@@ -1093,3 +1093,34 @@ Required verdicts:
 | REQUIRED_FIX | OWNER_TOOL_PREREQUISITE | Install or provide authorized `tcpdump` capability, then run a listener and one bounded capture window. |
 | FIREWALL_UNCHANGED | PASS | No firewall, nftables, iptables, routing, or network policy command was executed. |
 | FIRST_REAL_E2E | BLOCKED | TCP evidence is unavailable and no staging listener was active. |
+
+## Authorized TCP capture attempt after `4be0834`
+
+The capture prerequisite changed: `/usr/bin/tcpdump` is now installed. A
+disposable Go staging backend was started on `192.168.0.101:18443` using the
+existing staging certificate and database. Host-local curl verified the TLS
+chain and hostname with `ssl_verify_result=0` (success); the root route returned HTTP 404, as
+expected for a router without a root handler. The listener was then stopped.
+
+The authorized header-only capture could not start because the current sudo
+session required an interactive password:
+
+```text
+sudo: a password is required
+```
+
+An unprivileged capture was also rejected because `CAP_NET_RAW` is unavailable.
+No packet payload was captured. No firewall, routing, or network policy was
+changed.
+
+| Gate | Result | Evidence |
+| --- | --- | --- |
+| TCP_SYN_OBSERVED | BLOCKED_PRIVILEGE | `sudo -n tcpdump ...` required a password; unprivileged tcpdump lacked `CAP_NET_RAW`. |
+| TCP_SYN_ACK_OBSERVED | BLOCKED_PRIVILEGE | No capture socket could be opened. |
+| TCP_ESTABLISHED | BLOCKED_PRIVILEGE | No packet headers were observed. |
+| TLS_HANDSHAKE | PASS_HOST_ONLY | Host curl completed CA and hostname verification; no device TLS evidence. |
+| GO_REQUEST_RECEIVED | NOT_RUN | No physical-device request was observed or accepted during the capture attempt. |
+| ROOT_CAUSE | UNRESOLVED | TCP path cannot be classified without privileged capture. |
+| REQUIRED_ACTION | OWNER_PRIVILEGE_PREREQUISITE | Run the bounded tcpdump command from a terminal with authorized sudo access, while the staging listener is active. |
+| FIREWALL_UNCHANGED | PASS | No firewall, nftables, iptables, route, or policy command was executed. |
+| FIRST_REAL_E2E | BLOCKED | Device-originated TCP and HTTPS remain unverified. |
