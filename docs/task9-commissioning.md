@@ -195,6 +195,25 @@ redacted command/response evidence:
 Required disposable test inputs must be supplied out of band. Do not place
 passwords in logs, fixtures, URLs, analytics, or browser local storage.
 
+## Independent TCP, BLE, and SD follow-up (`2026-10-17`)
+
+The host route and neighbor table resolve the ESP32 through `wlan0`; the Go
+listener remains bound to `192.168.0.101:18443`. Kernel TCP drop counters read
+without privilege are zero, while the header-only capture still shows ESP32
+SYN without SYN-ACK. The host firewall ruleset could not be inspected without
+interactive sudo. No policy change was made. A second trusted LAN client was
+not available, so host-wide ingress behavior remains unverified.
+
+BlueZ rediscovered the SIGAP service at `98:A3:16:F5:C1:51`, but reports no
+pairing, bond, trust, or connection. Authenticated `GET_DEVICE_ID` and
+`GET_STATUS` remain pending the one local operator passkey action. The staging
+database identity is prepared as canonical `000098a316f5c150`; no passkey was
+recorded.
+
+The SD probe was not repeated blindly. Existing output ends during the SD
+archive recovery path with no final response. Operation-level timing for the
+current image is therefore incomplete and remains a separate diagnostic gate.
+
 ## Latest HTTPS runtime blocker (`2026-10-17`)
 
 The current runtime-ready image reaches `DEVICE_CONTROL_READY` and

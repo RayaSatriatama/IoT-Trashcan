@@ -1,5 +1,44 @@
 # Task 9 verification ledger
 
+## Independent TCP, BLE, and SD follow-up (`06ff6bb`, 2026-10-17)
+
+Host read-only diagnostics confirm `wlan0` is `192.168.0.101/24`, the route
+to `192.168.0.109` selects `wlan0`, and the neighbor entry resolves to the
+ESP32 MAC `98:a3:16:f5:c1:50`. The Go process remains bound only to
+`192.168.0.101:18443`. Kernel counters read without privilege reported zero
+`ListenOverflows`, `ListenDrops`, and `TCPBacklogDrop`. `nft` and `iptables`
+rulesets were not readable without interactive sudo, and no privileged policy
+command was executed.
+
+No second trusted LAN client was available in this session. The prior packet
+capture remains the authoritative ingress evidence: ESP32 SYN packets arrive,
+but no SYN-ACK or RST is observed. The status remains
+`BLOCKED_BY_NETWORK_POLICY_OR_HOST_TCP_RESPONSE`; no firewall or routing
+change was made.
+
+BLE discovery was repeated with BlueZ without pairing or bond mutation:
+
+```text
+REAL_BLE_DISCOVERY=PASS
+address=98:A3:16:F5:C1:51
+service=7d3f0001-7d3f-4a53-9a4b-534947415000
+Paired=no, Bonded=no, Trusted=no, Connected=no
+REAL_BLE_PAIRING=HUMAN_ACTION_REQUIRED
+REAL_BLE_DEVICE_ID=NOT_RUN (authenticated GATT required)
+```
+
+The disposable staging database previously contained a 12-hex BLE identity.
+It was corrected to the canonical 16-hex value `000098a316f5c150`, derived
+from the board eFuse MAC formatting required by the firmware protocol. No
+production database or device NVS was changed.
+
+The current SD probe was not repeated. Existing physical logs show Wi-Fi and
+LittleFS startup succeeded, then the SD archive path reached a missing
+`/sdcard/sigap/archive-sd.bin.recover` probe and produced no terminal response
+within the bounded observation. The exact SD operation that consumed the
+remaining time is still unverified. `REAL_SD=INCOMPLETE`; no SD format,
+erase, or unrelated write occurred.
+
 ## Runtime startup and HTTPS retry diagnosis (`16c5276`, 2026-10-17)
 
 The runtime-ready SD+HTTPS application was rebuilt after a reproducible
