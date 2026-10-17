@@ -1156,3 +1156,38 @@ the window.
 | REQUIRED_ACTION | DEVICE_RETRY_CORRELATION | Run one capture aligned with a fresh, timestamped ESP32 HTTPS retry log; do not change firewall policy. |
 | FIREWALL_UNCHANGED | PASS | No firewall, nftables, iptables, routing, or network policy command was executed. |
 | FIRST_REAL_E2E | BLOCKED | No physical HTTPS request was observed. |
+
+## Aligned TCP capture with fresh ESP32 reset
+
+The capture window and device reset were aligned. `tcpdump` began at
+`09:03:28 +0700`; the serial reader opened at the same second and caused the
+observed `USB_UART_CHIP_RESET`. Serial output was collected for 100 seconds
+while the backend remained bound to `192.168.0.101:18443`.
+
+The board reached the boot banner and reported flash/PSRAM identity, then
+reported:
+
+```text
+[386][E][vfs_api.cpp:105] open(): /littlefs/sigap/archive.bin.recover does not exist, no permits for creation
+```
+
+No WiFi, SNTP, `start_ssl_client`, GET, or POST diagnostic appeared during the
+same window. `tcpdump` again reported zero matching packets. The source gate
+requires `network_ready_` and `network_time_ready_` before HTTPS polling, while
+device-control also requires successful LittleFS journal recovery. The aligned
+evidence proves that the firmware did not reach an HTTPS attempt in this boot;
+it does not identify which readiness gate remained false.
+
+| Gate | Result | Evidence |
+| --- | --- | --- |
+| TCP_CAPTURE | PASS | Header-only capture ran for the requested window. |
+| TCP_SYN_OBSERVED | FAIL | Zero matching packets while a fresh board reset was observed. |
+| TCP_SYN_ACK_OBSERVED | NOT_RUN | No SYN was emitted. |
+| TCP_ESTABLISHED | NOT_RUN | No matching TCP flow existed. |
+| TLS_HANDSHAKE | NOT_RUN | Firmware did not reach the HTTPS client. |
+| GO_REQUEST_RECEIVED | FAIL | Backend received no device request. |
+| TELEMETRY_ACK | NOT_RUN | No telemetry request was emitted. |
+| ROOT_CAUSE | PRE_HTTPS_RUNTIME_GATE | Fresh boot stopped at or before network readiness; exact gate remains uninstrumented. |
+| REQUIRED_ACTION | FIRMWARE_RUNTIME_DIAGNOSTIC | Expose bounded, non-secret readiness diagnostics for LittleFS journal, WiFi/IP, SNTP epoch, and transport readiness before any network policy conclusion. |
+| FIREWALL_UNCHANGED | PASS | No firewall, routing, or network policy command was executed. |
+| FIRST_REAL_E2E | BLOCKED | No physical HTTPS request was attempted in the aligned window. |
