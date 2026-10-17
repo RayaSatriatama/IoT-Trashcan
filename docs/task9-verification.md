@@ -1124,3 +1124,35 @@ changed.
 | REQUIRED_ACTION | OWNER_PRIVILEGE_PREREQUISITE | Run the bounded tcpdump command from a terminal with authorized sudo access, while the staging listener is active. |
 | FIREWALL_UNCHANGED | PASS | No firewall, nftables, iptables, route, or policy command was executed. |
 | FIRST_REAL_E2E | BLOCKED | Device-originated TCP and HTTPS remain unverified. |
+
+## Bounded TCP capture after `a181e43`
+
+The operator ran the authorized capture with interactive sudo while the Go
+staging backend was listening on `192.168.0.101:18443`. The capture completed
+after the requested 95-second timeout and reported:
+
+```text
+0 packets captured
+0 packets received by filter
+0 packets dropped by kernel
+```
+
+No SYN, RST, established TCP flow, TLS handshake, or HTTP request was observed.
+The available ESP32 retry log predates this exact capture window, so the result
+cannot distinguish an idle device from traffic absent on `wlan0`. No firewall,
+routing, or network policy was changed. The staging backend was stopped after
+the window.
+
+| Gate | Result | Evidence |
+| --- | --- | --- |
+| TCP_CAPTURE | PASS | Operator-authenticated tcpdump completed for approximately 95 seconds. |
+| TCP_SYN_OBSERVED | INCONCLUSIVE | Zero matching packets; an ESP32 retry was not timestamped within this window. |
+| TCP_SYN_ACK_OBSERVED | INCONCLUSIVE | No SYN was available to classify. |
+| TCP_ESTABLISHED | INCONCLUSIVE | No matching TCP flow was observed. |
+| TLS_HANDSHAKE | BLOCKED | No TCP flow reached TLS. |
+| GO_REQUEST_RECEIVED | FAIL | Backend received no device request. |
+| TELEMETRY_ACK | NOT_RUN | No device request reached the backend. |
+| ROOT_CAUSE | UNRESOLVED | Capture proves no matching traffic during the window, but not why the device produced none. |
+| REQUIRED_ACTION | DEVICE_RETRY_CORRELATION | Run one capture aligned with a fresh, timestamped ESP32 HTTPS retry log; do not change firewall policy. |
+| FIREWALL_UNCHANGED | PASS | No firewall, nftables, iptables, routing, or network policy command was executed. |
+| FIRST_REAL_E2E | BLOCKED | No physical HTTPS request was observed. |
