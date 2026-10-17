@@ -1070,3 +1070,26 @@ the firmware startup guard and identifies the unresolved boundary as LAN TCP
 reachability between the ESP32 and host. Packet-level SYN classification was
 not possible without separately approved capture privileges. No alternate
 endpoint was available during this run.
+
+## Authorized TCP capture preflight after `2ad7de9`
+
+The requested read-only packet capture could not start. Preflight confirmed
+`wlan0=192.168.0.101/24`, the route to `192.168.0.109`, and the board ARP
+neighbor. No process was listening on `192.168.0.101:18443` at capture time.
+`tcpdump` is not installed, and the authorization explicitly prohibits package
+installation. No sudo command, firewall operation, route change, listener
+start, or packet capture was performed.
+
+Required verdicts:
+
+| Gate | Result | Evidence |
+| --- | --- | --- |
+| TCP_SYN_OBSERVED | BLOCKED_TOOL_UNAVAILABLE | `command -v tcpdump` returned no executable. |
+| TCP_SYN_ACK_OBSERVED | BLOCKED_TOOL_UNAVAILABLE | No capture tool available. |
+| TCP_ESTABLISHED | BLOCKED_TOOL_UNAVAILABLE | No capture tool and no listener. |
+| TLS_HANDSHAKE | NOT_RUN | No listener was active and no packet capture was possible. |
+| GO_REQUEST_RECEIVED | NOT_RUN | Staging backend was not running in this bounded capture attempt. |
+| ROOT_CAUSE | UNRESOLVED | Packet-level distinction between absent traffic, AP path filtering, and host response failure remains unavailable. |
+| REQUIRED_FIX | OWNER_TOOL_PREREQUISITE | Install or provide authorized `tcpdump` capability, then run a listener and one bounded capture window. |
+| FIREWALL_UNCHANGED | PASS | No firewall, nftables, iptables, routing, or network policy command was executed. |
+| FIRST_REAL_E2E | BLOCKED | TCP evidence is unavailable and no staging listener was active. |
