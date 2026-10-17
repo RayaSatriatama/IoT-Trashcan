@@ -10,6 +10,7 @@
 
 #ifdef ARDUINO
 #include <FS.h>
+#include <sys/stat.h>
 #endif
 
 namespace sigap::storage {
@@ -22,6 +23,27 @@ class LittleFsArchiveStore : public IArchiveStore {
   static constexpr std::size_t kGapFrameBytes{88U};
   static constexpr std::size_t kGapReserveBytes{4096U};
 
+#ifdef ARDUINO
+  struct RecoveryEntryState final {
+    bool marker{false};
+    bool gap{false};
+    bool archive{false};
+    bool archive_directory{false};
+    uint64_t archive_size{0U};
+    bool archive_size_known{false};
+    bool migration_backup{false};
+    bool migration_temporary{false};
+    std::array<bool, 4U> quarantine{};
+
+    bool has_quarantine() const noexcept {
+      for (const bool present : quarantine) {
+        if (present) return true;
+      }
+      return false;
+    }
+  };
+#endif
+
   explicit LittleFsArchiveStore(const char* path = "/sigap/archive.bin") noexcept
       : path_(path) {}
 
@@ -33,7 +55,7 @@ class LittleFsArchiveStore : public IArchiveStore {
     }
     filesystem_ = &filesystem;
     quota_bytes_ = quota_bytes;
-    if (!filesystem_->exists("/sigap") && !filesystem_->mkdir("/sigap")) {
+    if (!entry_exists("/sigap") && !filesystem_->mkdir("/sigap")) {
       filesystem_ = nullptr;
       health_ = ArchiveHealth::Degraded;
       return false;
@@ -57,12 +79,17 @@ class LittleFsArchiveStore : public IArchiveStore {
       return *existing == record.hash ? AppendStatus::Durable
                                       : AppendStatus::Invalid;
     }
-    const bool same_boot_sequence =
+    const bool same_device_boot =
         have_last_identity_ &&
         record.identity.device_id.bytes == last_identity_.device_id.bytes &&
-        record.identity.boot_id.bytes == last_identity_.boot_id.bytes &&
-        record.identity.sequence > last_identity_.sequence;
-    if (!same_boot_sequence) {
+        record.identity.boot_id.bytes == last_identity_.boot_id.bytes;
+    const bool same_boot_sequence =
+        same_device_boot && record.identity.sequence > last_identity_.sequence;
+    // Boot IDs are freshly generated for every boot and are part of the
+    // immutable record identity. A transition to a new boot therefore cannot
+    // be an in-session duplicate. Only an out-of-order record within the same
+    // boot needs a bounded on-disk duplicate lookup.
+    if (same_device_boot && !same_boot_sequence) {
       bool disk_read_ok = true;
       config::ConfigHash disk_hash{};
       if (find_on_disk(record.identity, SIZE_MAX, disk_hash, disk_read_ok)) {
@@ -242,17 +269,62 @@ class LittleFsArchiveStore : public IArchiveStore {
     gap_repair_pending_ = false;
     have_last_identity_ = false;
     last_identity_ = ArchiveIdentity{};
-    bool marked_recovery{false};
-    if (!recover_marked_quarantine(marked_recovery)) {
+    RecoveryEntryState entries{};
+    if (!scan_recovery_entries(entries)) {
       health_ = ArchiveHealth::Degraded;
       return false;
     }
+    bool marked_recovery{false};
+    if (!recover_marked_quarantine(entries, marked_recovery)) {
+      health_ = ArchiveHealth::Degraded;
+      return false;
+    }
+#ifdef ESP_PLATFORM
+    Serial.printf(
+        "[SIGAP][RUNTIME] ARCHIVE_ENTRIES archive=%u dir=%u size_known=%u size=%llu gap=%u backup=%u temp=%u tail=%u%u%u%u\n",
+        entries.archive ? 1U : 0U, entries.archive_directory ? 1U : 0U,
+        entries.archive_size_known ? 1U : 0U,
+        static_cast<unsigned long long>(entries.archive_size),
+        entries.gap ? 1U : 0U,
+        entries.migration_backup ? 1U : 0U,
+        entries.migration_temporary ? 1U : 0U,
+        entries.quarantine[0U] ? 1U : 0U, entries.quarantine[1U] ? 1U : 0U,
+        entries.quarantine[2U] ? 1U : 0U, entries.quarantine[3U] ? 1U : 0U);
+#endif
     if (marked_recovery) return recover();
-    File gap_file = filesystem_->open(gap_path_, FILE_READ);
+    File gap_file{};
+    if (entries.gap) {
+#ifdef ESP_PLATFORM
+      const uint64_t gap_open_started_us = static_cast<uint64_t>(esp_timer_get_time());
+      Serial.println("[SIGAP][RUNTIME] ARCHIVE_GAP_OPEN=START");
+#endif
+      gap_file = filesystem_->open(gap_path_, FILE_READ);
+#ifdef ESP_PLATFORM
+      Serial.printf("[SIGAP][RUNTIME] ARCHIVE_GAP_OPEN=%s elapsed_ms=%llu\n",
+                    gap_file ? "PASS" : "FAIL",
+                    static_cast<unsigned long long>(
+                        (static_cast<uint64_t>(esp_timer_get_time()) -
+                         gap_open_started_us) /
+                        1000U));
+#endif
+    }
     bool gap_valid = true;
     if (gap_file) {
+#ifdef ESP_PLATFORM
+      const uint64_t gap_validate_started_us =
+          static_cast<uint64_t>(esp_timer_get_time());
+      Serial.println("[SIGAP][RUNTIME] ARCHIVE_GAP_VALIDATE=START");
+#endif
       gap_valid = validate_gap_file(gap_file, gap_bytes_);
       gap_file.close();
+#ifdef ESP_PLATFORM
+      Serial.printf("[SIGAP][RUNTIME] ARCHIVE_GAP_VALIDATE=%s elapsed_ms=%llu\n",
+                    gap_valid ? "PASS" : "FAIL",
+                    static_cast<unsigned long long>(
+                        (static_cast<uint64_t>(esp_timer_get_time()) -
+                         gap_validate_started_us) /
+                        1000U));
+#endif
       if (!gap_valid && !repair_gap_prefix(gap_bytes_)) {
         // Keep the corrupt source in place for forensic recovery.  Archive
         // records remain recoverable, but the reserve path is degraded until
@@ -262,8 +334,25 @@ class LittleFsArchiveStore : public IArchiveStore {
       }
     }
     index_count_ = 0U;
-    File file = filesystem_->open(path_, FILE_READ);
-    if (file && file.size() == 0U && has_quarantine()) {
+    const bool archive_present = entries.archive;
+    File file{};
+    if (archive_present) {
+#ifdef ESP_PLATFORM
+      const uint64_t archive_open_started_us =
+          static_cast<uint64_t>(esp_timer_get_time());
+      Serial.println("[SIGAP][RUNTIME] ARCHIVE_FILE_OPEN=START");
+#endif
+      file = filesystem_->open(path_, FILE_READ);
+#ifdef ESP_PLATFORM
+      Serial.printf("[SIGAP][RUNTIME] ARCHIVE_FILE_OPEN=%s elapsed_ms=%llu\n",
+                    file ? "PASS" : "FAIL",
+                    static_cast<unsigned long long>(
+                        (static_cast<uint64_t>(esp_timer_get_time()) -
+                         archive_open_started_us) /
+                        1000U));
+#endif
+    }
+    if (file && file.size() == 0U && entries.has_quarantine()) {
       // A recovery marker is handled before opening the archive. Reaching an
       // empty primary here therefore means an earlier repair completed and a
       // later legitimate reclaim removed the final pending frame. The tail
@@ -274,10 +363,10 @@ class LittleFsArchiveStore : public IArchiveStore {
       return true;
     }
     if (!file) {
-      if (!filesystem_->exists(path_)) {
+      if (!archive_present) {
         char backup[96]{};
         if (make_related_path(backup, sizeof(backup), ".migrate.bak") &&
-            filesystem_->exists(backup)) {
+            entries.migration_backup) {
           // A backup is forensic evidence after a reclaim transaction. It is
           // not an authority to resurrect a record that was already copied to
           // the destination. Only a still-pending replacement is eligible
@@ -285,7 +374,7 @@ class LittleFsArchiveStore : public IArchiveStore {
           // durable migration receipt decide the next action.
           char temporary[96]{};
           if (make_related_path(temporary, sizeof(temporary), ".migrate") &&
-              filesystem_->exists(temporary)) {
+              entries.migration_temporary) {
             File replacement = filesystem_->open(temporary, FILE_READ);
             if (!replacement) {
               health_ = ArchiveHealth::Degraded;
@@ -307,7 +396,7 @@ class LittleFsArchiveStore : public IArchiveStore {
         // Never choose a quarantine by size or age.  A marked recovery is
         // replayed above; an unmarked tail remains forensic-only until an
         // explicit repair path is available.
-        if (has_quarantine()) {
+        if (entries.has_quarantine()) {
           health_ = ArchiveHealth::Degraded;
           return false;
         }
@@ -321,6 +410,13 @@ class LittleFsArchiveStore : public IArchiveStore {
     std::size_t valid_bytes = 0U;
     bool tail_corrupt = false;
     bool conflict_seen = false;
+    std::size_t archive_records = 0U;
+    std::size_t fallback_lookups = 0U;
+#ifdef ESP_PLATFORM
+    const uint64_t archive_scan_started_us =
+        static_cast<uint64_t>(esp_timer_get_time());
+    Serial.println("[SIGAP][RUNTIME] ARCHIVE_SCAN=START");
+#endif
     while (file.available()) {
       ImmutableRecordBytes& record = scan_record_;
       record.bytes.fill(0U);
@@ -351,6 +447,7 @@ class LittleFsArchiveStore : public IArchiveStore {
         tail_corrupt = true;
         break;
       }
+      const std::size_t record_number = ++archive_records;
       decode_identity(record);
       record.hash = telemetry_contract::sha256(std::string_view(
           reinterpret_cast<const char*>(record.bytes.data()), record.size));
@@ -362,19 +459,42 @@ class LittleFsArchiveStore : public IArchiveStore {
       }
       // Normal production records use the shared monotonic sequence allocator
       // and therefore arrive in sequence order. Avoid an O(n^2) full-prefix
-      // scan while rebuilding a large archive. Only an out-of-order sequence
-      // can be a late duplicate/conflict, so use the bounded on-disk lookup
-      // for that exceptional case.
-      const bool same_boot_sequence =
+      // scan while rebuilding a large archive. A new boot ID is a distinct
+      // immutable identity, so only an out-of-order record within the same
+      // boot can be a late duplicate or conflict.
+      const bool same_device_boot =
           have_last_identity_ &&
           record.identity.device_id.bytes == last_identity_.device_id.bytes &&
-          record.identity.boot_id.bytes == last_identity_.boot_id.bytes &&
-          record.identity.sequence > last_identity_.sequence;
-      if (!same_boot_sequence) {
+          record.identity.boot_id.bytes == last_identity_.boot_id.bytes;
+      const bool same_boot_sequence =
+          same_device_boot && record.identity.sequence > last_identity_.sequence;
+      if (same_device_boot && !same_boot_sequence) {
+        ++fallback_lookups;
+#ifdef ESP_PLATFORM
+        const bool trace_lookup = record_number <= 2U ||
+                                  (record_number % 64U) == 0U;
+        const uint64_t lookup_started_us =
+            trace_lookup ? static_cast<uint64_t>(esp_timer_get_time()) : 0U;
+        if (trace_lookup) {
+          Serial.printf("[SIGAP][RUNTIME] ARCHIVE_LOOKUP=START record=%u valid_bytes=%u\n",
+                        static_cast<unsigned>(record_number),
+                        static_cast<unsigned>(valid_bytes));
+        }
+#endif
         bool prior_read_ok = true;
         config::ConfigHash prior_hash{};
         if (find_on_disk(record.identity, valid_bytes, prior_hash,
                          prior_read_ok)) {
+#ifdef ESP_PLATFORM
+          if (trace_lookup) {
+            Serial.printf("[SIGAP][RUNTIME] ARCHIVE_LOOKUP=PASS record=%u elapsed_ms=%llu\n",
+                          static_cast<unsigned>(record_number),
+                          static_cast<unsigned long long>(
+                              (static_cast<uint64_t>(esp_timer_get_time()) -
+                               lookup_started_us) /
+                              1000U));
+          }
+#endif
           if (prior_hash != record.hash) conflict_seen = true;
           valid_bytes += record.size;
           last_identity_ = record.identity;
@@ -385,6 +505,16 @@ class LittleFsArchiveStore : public IArchiveStore {
           tail_corrupt = true;
           break;
         }
+#ifdef ESP_PLATFORM
+        if (trace_lookup) {
+          Serial.printf("[SIGAP][RUNTIME] ARCHIVE_LOOKUP=MISS record=%u elapsed_ms=%llu\n",
+                        static_cast<unsigned>(record_number),
+                        static_cast<unsigned long long>(
+                            (static_cast<uint64_t>(esp_timer_get_time()) -
+                             lookup_started_us) /
+                            1000U));
+        }
+#endif
       }
       if (index_count_ < index_.size()) {
         index_[index_count_] = record.identity;
@@ -397,6 +527,17 @@ class LittleFsArchiveStore : public IArchiveStore {
       have_last_identity_ = true;
     }
     file.close();
+#ifdef ESP_PLATFORM
+    Serial.printf("[SIGAP][RUNTIME] ARCHIVE_SCAN=%s records=%u valid_bytes=%u fallback=%u elapsed_ms=%llu\n",
+                  tail_corrupt ? "DEGRADED" : "PASS",
+                  static_cast<unsigned>(archive_records),
+                  static_cast<unsigned>(valid_bytes),
+                  static_cast<unsigned>(fallback_lookups),
+                  static_cast<unsigned long long>(
+                      (static_cast<uint64_t>(esp_timer_get_time()) -
+                       archive_scan_started_us) /
+                      1000U));
+#endif
     if (tail_corrupt && !quarantine_tail(valid_bytes)) {
       health_ = ArchiveHealth::Degraded;
       return false;
@@ -469,7 +610,7 @@ class LittleFsArchiveStore : public IArchiveStore {
       source.close();
       return false;
     }
-    if (filesystem_->exists(temporary)) (void)filesystem_->remove(temporary);
+    if (entry_exists(temporary)) (void)filesystem_->remove(temporary);
     File destination = filesystem_->open(temporary, FILE_WRITE);
     if (!destination || !source.seek(0U, SeekSet)) {
       if (destination) destination.close();
@@ -493,8 +634,8 @@ class LittleFsArchiveStore : public IArchiveStore {
     source.close();
     if (!copied || !filesystem_->rename(path_, backup) ||
         !filesystem_->rename(temporary, path_)) {
-      if (filesystem_->exists(temporary)) (void)filesystem_->remove(temporary);
-      if (!filesystem_->exists(path_) && filesystem_->exists(backup)) {
+      if (entry_exists(temporary)) (void)filesystem_->remove(temporary);
+      if (!entry_exists(path_) && entry_exists(backup)) {
         (void)filesystem_->rename(backup, path_);
       }
       health_ = ArchiveHealth::Degraded;
@@ -638,6 +779,116 @@ class LittleFsArchiveStore : public IArchiveStore {
     }
     return nullptr;
   }
+#ifdef ARDUINO
+  bool scan_recovery_entries(RecoveryEntryState& entries) const noexcept {
+    if (filesystem_ == nullptr) return false;
+    char marker_path[96]{};
+    char backup_path[96]{};
+    char temporary_path[96]{};
+    if (!recovery_marker_path(marker_path, sizeof(marker_path)) ||
+        !make_related_path(backup_path, sizeof(backup_path), ".migrate.bak") ||
+        !make_related_path(temporary_path, sizeof(temporary_path), ".migrate")) {
+      return false;
+    }
+    const auto basename = [](const char* path) noexcept -> const char* {
+      const char* separator = std::strrchr(path, '/');
+      return separator == nullptr ? path : separator + 1U;
+    };
+    File directory = filesystem_->open("/sigap", FILE_READ);
+    if (!directory) {
+      if (directory) directory.close();
+      return false;
+    }
+    const char* archive_name = basename(path_);
+    const char* gap_name = basename(gap_path_);
+    const char* marker_name = basename(marker_path);
+    const char* backup_name = basename(backup_path);
+    const char* temporary_name = basename(temporary_path);
+    for (std::size_t index = 0U; index < 64U; ++index) {
+      bool is_directory{false};
+      const auto entry_name = directory.getNextFileName(&is_directory);
+      if (entry_name.length() == 0U) break;
+      const char* name = basename(entry_name.c_str());
+      if (std::strcmp(name, archive_name) == 0) {
+        entries.archive = true;
+        entries.archive_directory = is_directory;
+        struct stat metadata{};
+        char physical_entry[128]{};
+        const int physical_length =
+            std::snprintf(physical_entry, sizeof(physical_entry), "/littlefs%s",
+                          entry_name.c_str());
+        if (physical_length > 0 &&
+            static_cast<std::size_t>(physical_length) < sizeof(physical_entry) &&
+            ::stat(physical_entry, &metadata) == 0) {
+          entries.archive_size = static_cast<uint64_t>(metadata.st_size);
+          entries.archive_size_known = true;
+        }
+      }
+      if (std::strcmp(name, gap_name) == 0) entries.gap = true;
+      if (std::strcmp(name, marker_name) == 0) entries.marker = true;
+      if (std::strcmp(name, backup_name) == 0) entries.migration_backup = true;
+      if (std::strcmp(name, temporary_name) == 0) {
+        entries.migration_temporary = true;
+      }
+      for (unsigned suffix = 0U; suffix < 4U; ++suffix) {
+        char quarantine[64]{};
+        if (std::snprintf(quarantine, sizeof(quarantine), "%s.tail%u",
+                          path_, suffix) > 0 &&
+            std::strcmp(name, basename(quarantine)) == 0) {
+          entries.quarantine[suffix] = true;
+        }
+      }
+    }
+    directory.close();
+    return true;
+  }
+
+  bool entry_exists(const char* path) const noexcept {
+    if (filesystem_ == nullptr || path == nullptr) return false;
+    const char* separator = std::strrchr(path, '/');
+    if (separator == nullptr || separator[1] == '\0') return false;
+    char directory_path[96]{};
+    const std::size_t directory_length =
+        separator == path ? 1U : static_cast<std::size_t>(separator - path);
+    if (directory_length >= sizeof(directory_path)) return false;
+    std::memcpy(directory_path, path, directory_length);
+    directory_path[directory_length] = '\0';
+    if (directory_length == 1U && path[0] == '/') {
+      directory_path[1] = '\0';
+    }
+    File directory = filesystem_->open(directory_path, FILE_READ);
+    if (!directory) {
+      return false;
+    }
+    const char* mounted_directory = directory.path();
+    if (mounted_directory == nullptr) {
+      directory.close();
+      return false;
+    }
+    char expected_path[160]{};
+    const std::size_t mounted_length = std::strlen(mounted_directory);
+    const int written = std::snprintf(
+        expected_path, sizeof(expected_path), "%s%s%s", mounted_directory,
+        mounted_length != 0U && mounted_directory[mounted_length - 1U] == '/'
+            ? ""
+            : "/",
+        separator + 1U);
+    if (written <= 0 || static_cast<std::size_t>(written) >= sizeof(expected_path)) {
+      directory.close();
+      return false;
+    }
+    for (std::size_t index = 0U; index < 64U; ++index) {
+      const auto entry_name = directory.getNextFileName();
+      if (entry_name.length() == 0U) break;
+      if (std::strcmp(entry_name.c_str(), expected_path) == 0) {
+        directory.close();
+        return true;
+      }
+    }
+    directory.close();
+    return false;
+  }
+#endif
   bool find_on_disk(const ArchiveIdentity& identity,
                     std::size_t limit_bytes,
                     config::ConfigHash& hash,
@@ -647,7 +898,7 @@ class LittleFsArchiveStore : public IArchiveStore {
       read_ok = false;
       return false;
     }
-    if (!filesystem_->exists(path_)) return false;
+    if (!entry_exists(path_)) return false;
     File file = filesystem_->open(path_, FILE_READ);
     if (!file) {
       read_ok = false;
@@ -708,7 +959,7 @@ class LittleFsArchiveStore : public IArchiveStore {
       if (written <= 0 || static_cast<std::size_t>(written) >= size) {
         return false;
       }
-      if (!filesystem_->exists(output)) return true;
+      if (!entry_exists(output)) return true;
     }
     return false;
   }
@@ -719,7 +970,7 @@ class LittleFsArchiveStore : public IArchiveStore {
       const int written = std::snprintf(quarantine, sizeof(quarantine),
                                         "%s.tail%u", path_, suffix);
       if (written > 0 && static_cast<std::size_t>(written) < sizeof(quarantine) &&
-          filesystem_->exists(quarantine)) {
+          entry_exists(quarantine)) {
         return true;
       }
     }
@@ -730,7 +981,7 @@ class LittleFsArchiveStore : public IArchiveStore {
         valid_bytes > kGapReserveBytes) return false;
     char temporary[96]{};
     if (std::snprintf(temporary, sizeof(temporary), "%s.repair", gap_path_) <= 0 ||
-        filesystem_->exists(temporary) ||
+        entry_exists(temporary) ||
         !copy_valid_prefix(gap_path_, temporary, valid_bytes)) {
       return false;
     }
@@ -740,15 +991,15 @@ class LittleFsArchiveStore : public IArchiveStore {
       const int written = std::snprintf(backup, sizeof(backup), "%s.bak%u",
                                         gap_path_, suffix);
       if (written > 0 && static_cast<std::size_t>(written) < sizeof(backup) &&
-          !filesystem_->exists(backup)) {
+          !entry_exists(backup)) {
         backup_available = true;
         break;
       }
     }
     if (!backup_available || !filesystem_->rename(gap_path_, backup) ||
         !filesystem_->rename(temporary, gap_path_)) {
-      if (filesystem_->exists(temporary)) (void)filesystem_->remove(temporary);
-      if (!filesystem_->exists(gap_path_) && filesystem_->exists(backup)) {
+      if (entry_exists(temporary)) (void)filesystem_->remove(temporary);
+      if (!entry_exists(gap_path_) && entry_exists(backup)) {
         (void)filesystem_->rename(backup, gap_path_);
       }
       return false;
@@ -779,13 +1030,23 @@ class LittleFsArchiveStore : public IArchiveStore {
     return written;
   }
 
-  bool recover_marked_quarantine(bool& marker_found) noexcept {
+  bool recover_marked_quarantine(const RecoveryEntryState& entries,
+                                 bool& marker_found) noexcept {
     marker_found = false;
     char marker_path[96]{};
     if (filesystem_ == nullptr || !recovery_marker_path(marker_path,
                                                          sizeof(marker_path))) {
       return false;
     }
+    // Arduino VFS may emit an error and block while opening a missing read
+    // path. The absent marker is the normal empty-recovery state, so check
+    // existence before opening it.
+    const bool marker_present = entries.marker;
+#ifdef ESP_PLATFORM
+    Serial.printf("[SIGAP][RUNTIME] ARCHIVE_MARKER_PRESENT=%s\n",
+                  marker_present ? "PASS" : "FAIL");
+#endif
+    if (!marker_present) return true;
     File marker = filesystem_->open(marker_path, FILE_READ);
     if (!marker) return true;
     marker_found = true;
@@ -809,7 +1070,7 @@ class LittleFsArchiveStore : public IArchiveStore {
     const std::size_t valid_bytes = static_cast<std::size_t>(
         read_u64(frame.data() + 6U));
     if (written <= 0 || static_cast<std::size_t>(written) >= sizeof(quarantine) ||
-        !filesystem_->exists(quarantine) ||
+        !entries.quarantine[frame[5U]] ||
         !copy_valid_prefix(quarantine, path_, valid_bytes) ||
         !verify_valid_prefix(path_, valid_bytes)) {
       return false;
@@ -820,7 +1081,7 @@ class LittleFsArchiveStore : public IArchiveStore {
   bool verify_valid_prefix(const char* source_path,
                            std::size_t expected_bytes) noexcept {
     if (filesystem_ == nullptr || source_path == nullptr ||
-        !filesystem_->exists(source_path)) return false;
+        !entry_exists(source_path)) return false;
     File file = filesystem_->open(source_path, FILE_READ);
     if (!file || file.size() != expected_bytes) {
       if (file) file.close();

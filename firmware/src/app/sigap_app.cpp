@@ -317,12 +317,43 @@ void SigapApp::refresh_model_profiles() noexcept {
       safety_model_present_ ? &safety_model_ : nullptr);
 }
 
+#ifdef ARDUINO
+void SigapApp::log_runtime_diagnostic(RuntimeDiagnosticEvent event, bool ready,
+                                       uint64_t now_us) noexcept {
+  if (!runtime_diagnostics_.first(event)) return;
+  const char* name = "UNKNOWN";
+  switch (event) {
+    case RuntimeDiagnosticEvent::SetupComplete: name = "SETUP_COMPLETE"; break;
+    case RuntimeDiagnosticEvent::LoopAlive: name = "LOOP_ALIVE"; break;
+    case RuntimeDiagnosticEvent::FilesystemRecovery: name = "FILESYSTEM_RECOVERY"; break;
+    case RuntimeDiagnosticEvent::ConfigRuntimeReady: name = "CONFIG_RUNTIME_READY"; break;
+    case RuntimeDiagnosticEvent::LittlefsMounted: name = "LITTLEFS_MOUNTED"; break;
+    case RuntimeDiagnosticEvent::JournalReady: name = "JOURNAL_READY"; break;
+    case RuntimeDiagnosticEvent::NetworkSecretsLoaded: name = "NETWORK_SECRETS_LOADED"; break;
+    case RuntimeDiagnosticEvent::NetworkReady: name = "NETWORK_READY"; break;
+    case RuntimeDiagnosticEvent::WifiConnected: name = "WIFI_CONNECTED"; break;
+    case RuntimeDiagnosticEvent::SntpTimeReady: name = "SNTP_TIME_READY"; break;
+    case RuntimeDiagnosticEvent::DeviceControlReady: name = "DEVICE_CONTROL_READY"; break;
+    case RuntimeDiagnosticEvent::HttpsPollEntered: name = "HTTPS_POLL_ENTERED"; break;
+    case RuntimeDiagnosticEvent::Count: break;
+  }
+  const uint64_t elapsed_ms = now_us >= runtime_diagnostics_started_us_
+                                  ? (now_us - runtime_diagnostics_started_us_) / 1000U
+                                  : 0U;
+  Serial.printf("[SIGAP][RUNTIME] %s=%s elapsed_ms=%llu\n", name,
+                ready ? "PASS" : "FAIL",
+                static_cast<unsigned long long>(elapsed_ms));
+}
+#endif
+
 // cppcheck-suppress unusedFunction
 void SigapApp::setup() noexcept {
 #ifdef ARDUINO
   Serial.begin(115200);
   board::log_runtime_board_memory();
   const int64_t started_us = esp_timer_get_time();
+  runtime_diagnostics_started_us_ =
+      started_us < 0 ? 0U : static_cast<uint64_t>(started_us);
   provisioning_clock_.set_now(
       started_us < 0 ? 0U : static_cast<uint64_t>(started_us));
   (void)wifi_manager_.begin();
@@ -380,14 +411,21 @@ void SigapApp::setup() noexcept {
 #ifdef ARDUINO
   ble_session_.set_calibration_backend(&ble_calibration_backend_);
 #endif
-  if (!config_manager_.runtime_ready()) {
-    acquisition_.disable();
-    return;
-  }
   const acquisition::ConfigRef ref =
       acquisition::active_config_ref(config_manager_);
-  if (!ref.present) {
+  const bool config_runtime_ready =
+      config_manager_.runtime_ready() && ref.present;
+#ifdef ARDUINO
+  log_runtime_diagnostic(RuntimeDiagnosticEvent::ConfigRuntimeReady,
+                         config_runtime_ready,
+                         static_cast<uint64_t>(esp_timer_get_time()));
+#endif
+  if (!config_runtime_ready) {
     acquisition_.disable();
+#ifdef ARDUINO
+    log_runtime_diagnostic(RuntimeDiagnosticEvent::SetupComplete, false,
+                           static_cast<uint64_t>(esp_timer_get_time()));
+#endif
     return;
   }
   record_context_.config_ref = ref;
@@ -407,19 +445,59 @@ void SigapApp::setup() noexcept {
   // command fetch.  LittleFS is mounted without formatting; a failed mount
   // keeps device-control disabled while archive and acquisition remain safe.
   const bool littlefs_mounted = LittleFS.begin(false);
+  log_runtime_diagnostic(RuntimeDiagnosticEvent::LittlefsMounted,
+                         littlefs_mounted,
+                         static_cast<uint64_t>(esp_timer_get_time()));
+  bool filesystem_recovery_ready{false};
   if (littlefs_mounted) {
     (void)migration_journal_.begin(LittleFS);
-    (void)littlefs_store_.begin(
+    const auto log_storage_stage = [](const char* stage, uint64_t started_us,
+                                      bool ready) noexcept {
+      const uint64_t now_us = static_cast<uint64_t>(esp_timer_get_time());
+      const uint64_t elapsed_ms = now_us >= started_us
+                                      ? (now_us - started_us) / 1000U
+                                      : 0U;
+      Serial.printf("[SIGAP][RUNTIME] %s=%s elapsed_ms=%llu\n", stage,
+                    ready ? "PASS" : "FAIL",
+                    static_cast<unsigned long long>(elapsed_ms));
+    };
+    const uint64_t archive_started_us =
+        static_cast<uint64_t>(esp_timer_get_time());
+    Serial.println("[SIGAP][RUNTIME] LITTLEFS_ARCHIVE_RECOVERY=START");
+    const bool archive_ready = littlefs_store_.begin(
         LittleFS, config_manager_.active().storage.flash_pending_quota_bytes);
-    (void)batch_store_.begin(
+    log_storage_stage("LITTLEFS_ARCHIVE_RECOVERY", archive_started_us,
+                      archive_ready);
+    const uint64_t batch_started_us =
+        static_cast<uint64_t>(esp_timer_get_time());
+    Serial.println("[SIGAP][RUNTIME] BATCH_RECOVERY=START");
+    const bool batch_ready = batch_store_.begin(
         LittleFS, config_manager_.active().storage.flash_pending_quota_bytes);
-    (void)ack_journal_.begin(LittleFS);
+    log_storage_stage("BATCH_RECOVERY", batch_started_us, batch_ready);
+    const uint64_t ack_started_us = static_cast<uint64_t>(esp_timer_get_time());
+    Serial.println("[SIGAP][RUNTIME] ACK_RECOVERY=START");
+    const bool ack_ready = ack_journal_.begin(LittleFS);
+    log_storage_stage("ACK_RECOVERY", ack_started_us, ack_ready);
 #if defined(SIGAP_NETWORK_ENDPOINT) && defined(SIGAP_NETWORK_CA_CERT)
+    const uint64_t journal_started_us =
+        static_cast<uint64_t>(esp_timer_get_time());
+    Serial.println("[SIGAP][RUNTIME] RESULT_JOURNAL_RECOVERY=START");
     device_control_journal_ready_ =
         device_control_result_journal_.begin(LittleFS) &&
         device_control_result_journal_.recover();
+    log_storage_stage("RESULT_JOURNAL_RECOVERY", journal_started_us,
+                      device_control_journal_ready_);
 #endif
+    filesystem_recovery_ready = archive_ready && batch_ready && ack_ready;
   }
+  log_runtime_diagnostic(RuntimeDiagnosticEvent::FilesystemRecovery,
+                         filesystem_recovery_ready,
+                         static_cast<uint64_t>(esp_timer_get_time()));
+#if defined(SIGAP_NETWORK_ENDPOINT) && defined(SIGAP_NETWORK_CA_CERT)
+  log_runtime_diagnostic(RuntimeDiagnosticEvent::JournalReady,
+                         device_control_journal_ready_,
+                         static_cast<uint64_t>(esp_timer_get_time()));
+#endif
 #else
   (void)littlefs_store_.begin(
       config_manager_.active().storage.flash_pending_quota_bytes);
@@ -429,7 +507,14 @@ void SigapApp::setup() noexcept {
   // Network credentials are loaded only into the worker boundary. They are
   // never serialized, logged, or exposed through maintenance responses.
   provisioning::NetworkSecrets network_secrets{};
-  if (secret_store_.load_for_network(network_secrets)) {
+  const bool network_secrets_loaded =
+      secret_store_.load_for_network(network_secrets);
+#ifdef ARDUINO
+  log_runtime_diagnostic(RuntimeDiagnosticEvent::NetworkSecretsLoaded,
+                         network_secrets_loaded,
+                         static_cast<uint64_t>(esp_timer_get_time()));
+#endif
+  if (network_secrets_loaded) {
     std::size_t token_size{0U};
     while (token_size < network_secrets.device_token.size() &&
            network_secrets.device_token[token_size] != '\0') {
@@ -475,6 +560,15 @@ void SigapApp::setup() noexcept {
                               network_secrets.device_token.size());
   }
 #ifdef ARDUINO
+  log_runtime_diagnostic(RuntimeDiagnosticEvent::NetworkReady, network_ready_,
+                         static_cast<uint64_t>(esp_timer_get_time()));
+#if defined(SIGAP_NETWORK_ENDPOINT) && defined(SIGAP_NETWORK_CA_CERT)
+  log_runtime_diagnostic(RuntimeDiagnosticEvent::DeviceControlReady,
+                         device_control_ready_,
+                         static_cast<uint64_t>(esp_timer_get_time()));
+#endif
+#endif
+#ifdef ARDUINO
 #ifdef SIGAP_USE_SD
   // SD_MMC probing is intentionally lazy.  Card initialization and archive
   // recovery can block for an unbounded media timeout, so doing them in setup
@@ -519,6 +613,10 @@ void SigapApp::setup() noexcept {
     // bounded loop slice after all runtime services are available.
     (void)metadata_status;
   }
+#ifdef ARDUINO
+  log_runtime_diagnostic(RuntimeDiagnosticEvent::SetupComplete, true,
+                         static_cast<uint64_t>(esp_timer_get_time()));
+#endif
 }
 
 // cppcheck-suppress unusedFunction
@@ -526,8 +624,15 @@ void SigapApp::loop() noexcept {
 #ifdef ARDUINO
   const acquisition::ArduinoMonotonicClock clock{};
   const uint64_t now_us = clock.now_us();
+  log_runtime_diagnostic(RuntimeDiagnosticEvent::LoopAlive, true, now_us);
   provisioning_clock_.set_now(now_us);
   wifi_manager_.poll();
+  const bool wifi_connected =
+      wifi_manager_.state() == provisioning::WifiState::Connected;
+  if (wifi_connected || now_us >= runtime_diagnostics_started_us_ + 5000000U) {
+    log_runtime_diagnostic(RuntimeDiagnosticEvent::WifiConnected,
+                           wifi_connected, now_us);
+  }
   ble_service_.poll();
   maintenance_service_.poll(now_us);
   std::size_t audit_budget{2U};
@@ -567,8 +672,15 @@ void SigapApp::loop() noexcept {
   const std::time_t wall_clock = std::time(nullptr);
   network_time_ready_ = wall_clock >= static_cast<std::time_t>(1700000000);
   tls_time_ready = network_time_ready_;
+  if (network_time_ready_ ||
+      now_us >= runtime_diagnostics_started_us_ + 30000000U) {
+    log_runtime_diagnostic(RuntimeDiagnosticEvent::SntpTimeReady,
+                           network_time_ready_, now_us);
+  }
 #endif
   if (network_ready_ && tls_time_ready && network_worker_.has_value()) {
+    log_runtime_diagnostic(RuntimeDiagnosticEvent::HttpsPollEntered, true,
+                           now_us);
     (void)network_worker_->poll();
   }
   // The shared controller owns session expiry for every transport, including
@@ -577,6 +689,8 @@ void SigapApp::loop() noexcept {
   calibration_controller_.poll(now_us);
 #if defined(SIGAP_NETWORK_ENDPOINT) && defined(SIGAP_NETWORK_CA_CERT)
   if (device_control_ready_ && tls_time_ready) {
+    log_runtime_diagnostic(RuntimeDiagnosticEvent::HttpsPollEntered, true,
+                           now_us);
     (void)device_control_poller_.poll();
   }
 #endif

@@ -236,6 +236,30 @@ void test_target_archive_short_append_recovers_valid_prefix() {
   TEST_ASSERT_TRUE(restarted.contains(second.identity, second.hash));
 }
 
+void test_target_archive_does_not_open_missing_recovery_marker() {
+  fs::FS filesystem{};
+  filesystem.track_missing_read_path("/sigap/archive.bin.recover");
+  LittleFsArchiveStore store("/sigap/archive.bin");
+  TEST_ASSERT_TRUE(store.begin(filesystem, 1024U * 1024U));
+  TEST_ASSERT_EQUAL_UINT32(0U, filesystem.missing_read_count());
+}
+
+void test_target_archive_does_not_open_missing_gap_file() {
+  fs::FS filesystem{};
+  filesystem.track_missing_read_path("/sigap/gaps.bin");
+  LittleFsArchiveStore store("/sigap/archive.bin");
+  TEST_ASSERT_TRUE(store.begin(filesystem, 1024U * 1024U));
+  TEST_ASSERT_EQUAL_UINT32(0U, filesystem.missing_read_count());
+}
+
+void test_target_archive_does_not_open_missing_archive_file() {
+  fs::FS filesystem{};
+  filesystem.track_missing_read_path("/sigap/archive.bin");
+  LittleFsArchiveStore store("/sigap/archive.bin");
+  TEST_ASSERT_TRUE(store.begin(filesystem, 1024U * 1024U));
+  TEST_ASSERT_EQUAL_UINT32(0U, filesystem.missing_read_count());
+}
+
 void test_target_archive_failed_reclaim_preserves_source() {
   fs::FS filesystem{};
   LittleFsArchiveStore store("/sigap/archive.bin");
@@ -556,6 +580,9 @@ void test_target_device_control_journal_unavailable_blocks_poller() {
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_target_archive_failed_recovery_copy_is_restart_safe);
+  RUN_TEST(test_target_archive_does_not_open_missing_recovery_marker);
+  RUN_TEST(test_target_archive_does_not_open_missing_gap_file);
+  RUN_TEST(test_target_archive_does_not_open_missing_archive_file);
   RUN_TEST(test_target_archive_reclaims_non_head_probe_record);
   RUN_TEST(test_target_archive_short_append_recovers_valid_prefix);
   RUN_TEST(test_target_archive_failed_reclaim_preserves_source);

@@ -195,6 +195,24 @@ redacted command/response evidence:
 Required disposable test inputs must be supplied out of band. Do not place
 passwords in logs, fixtures, URLs, analytics, or browser local storage.
 
+## Latest HTTPS runtime blocker (`2026-10-17`)
+
+The current runtime-ready image reaches `DEVICE_CONTROL_READY` and
+`HTTPS_POLL_ENTERED` after LittleFS archive recovery. The ESP32 later obtains
+`192.168.0.109`; a read-only host check receives 3/3 pings and resolves the
+expected board MAC on `wlan0`.
+
+The Go staging listener is bound to `192.168.0.101:18443` and passes host-local
+CA verification. A bounded header-only capture records ESP32 SYN packets on
+`wlan0`, but no SYN-ACK or RST. No firewall or routing change was made. The
+next physical step is an owner-approved host/network policy adjustment or an
+approved private endpoint that returns a SYN-ACK to `192.168.0.109`; no TLS or
+HTTP acceptance can be claimed before that packet-level prerequisite passes.
+
+Keep SD and BLE checks independent from this network blocker. Do not run
+calibration COMMIT, expose credentials, or repeat the archive probe without a
+new diagnostic purpose.
+
 ## SD and archive checklist
 
 The attached-only probe is complete. It mounted without auto-format, used the

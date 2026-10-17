@@ -16,6 +16,18 @@ inline constexpr const char* FILE_APPEND = "a";
 
 namespace fs {
 
+class String final {
+ public:
+  String() noexcept = default;
+  explicit String(const char* value) : value_(value == nullptr ? "" : value) {}
+  explicit String(std::string value) : value_(std::move(value)) {}
+  std::size_t length() const noexcept { return value_.size(); }
+  const char* c_str() const noexcept { return value_.c_str(); }
+
+ private:
+  std::string value_{};
+};
+
 class FS;
 
 class File final {
@@ -30,12 +42,20 @@ class File final {
   std::size_t write(const uint8_t* source, std::size_t length) noexcept;
   bool flush() noexcept;
   void close() noexcept { owner_ = nullptr; }
+  bool isDirectory() const noexcept { return directory_; }
+  File openNextFile(const char* mode = FILE_READ) noexcept;
+  String getNextFileName() noexcept;
+  String getNextFileName(bool* is_directory) noexcept;
+  const char* name() const noexcept;
+  const char* path() const noexcept { return path_.c_str(); }
   bool seek(std::size_t position, SeekMode mode) noexcept;
 
  private:
   FS* owner_{nullptr};
   std::string path_{};
   std::size_t cursor_{0U};
+  bool directory_{false};
+  std::vector<std::string> directory_entries_{};
 };
 
 class FS final {
@@ -65,6 +85,11 @@ class FS final {
     faults_.fail_open = true;
     faults_.fail_open_path = path == nullptr ? std::string{} : path;
   }
+  void track_missing_read_path(const char* path) noexcept {
+    tracked_missing_read_path_ = path == nullptr ? std::string{} : path;
+    missing_read_count_ = 0U;
+  }
+  std::size_t missing_read_count() const noexcept { return missing_read_count_; }
   void fail_next_rename() noexcept { faults_.fail_rename = true; }
   void fail_next_flush() noexcept { faults_.fail_flush = true; }
   void short_read_once(std::size_t maximum) noexcept {
@@ -91,11 +116,15 @@ class FS final {
   const Entry* find(const std::string& path) const noexcept;
   std::unordered_map<std::string, Entry> entries_{};
   Faults faults_{};
+  std::string tracked_missing_read_path_{};
+  std::size_t missing_read_count_{0U};
 };
 
 inline File::File(FS* owner, std::string path, const char* mode) noexcept
     : owner_(owner), path_(std::move(path)) {
   if (owner_ == nullptr || mode == nullptr) return;
+  const auto* existing = owner_->find(path_);
+  directory_ = existing != nullptr && existing->directory;
   if (std::string(mode) == FILE_WRITE) {
     auto* entry = owner_->find(path_);
     if (entry == nullptr) {
@@ -108,6 +137,58 @@ inline File::File(FS* owner, std::string path, const char* mode) noexcept
     const auto* entry = owner_->find(path_);
     cursor_ = entry == nullptr ? 0U : entry->bytes.size();
   }
+}
+
+inline const char* File::name() const noexcept {
+  const std::size_t separator = path_.find_last_of('/');
+  return separator == std::string::npos ? path_.c_str()
+                                        : path_.c_str() + separator + 1U;
+}
+
+inline File File::openNextFile(const char* mode) noexcept {
+  if (owner_ == nullptr || !directory_ || mode == nullptr) return File{};
+  if (directory_entries_.empty()) {
+    std::string prefix = path_;
+    if (prefix.empty() || prefix.back() != '/') prefix.push_back('/');
+    for (const auto& [path, entry] : owner_->entries_) {
+      if (path.rfind(prefix, 0U) != 0U) continue;
+      const std::string child = path.substr(prefix.size());
+      if (child.empty() || child.find('/') != std::string::npos) continue;
+      directory_entries_.push_back(path);
+    }
+    std::sort(directory_entries_.begin(), directory_entries_.end());
+  }
+  if (cursor_ >= directory_entries_.size()) return File{};
+  return File(owner_, directory_entries_[cursor_++], mode);
+}
+
+inline String File::getNextFileName() noexcept {
+  if (owner_ == nullptr || !directory_) return String{};
+  if (directory_entries_.empty()) {
+    std::string prefix = path_;
+    if (prefix.empty() || prefix.back() != '/') prefix.push_back('/');
+    for (const auto& [path, entry] : owner_->entries_) {
+      if (path.rfind(prefix, 0U) != 0U) continue;
+      const std::string child = path.substr(prefix.size());
+      if (child.empty() || child.find('/') != std::string::npos) continue;
+      directory_entries_.push_back(path);
+    }
+    std::sort(directory_entries_.begin(), directory_entries_.end());
+  }
+  if (cursor_ >= directory_entries_.size()) return String{};
+  return String(directory_entries_[cursor_++]);
+}
+
+inline String File::getNextFileName(bool* is_directory) noexcept {
+  if (is_directory != nullptr) *is_directory = false;
+  if (owner_ == nullptr || !directory_) return String{};
+  const std::size_t before = cursor_;
+  const String result = getNextFileName();
+  if (is_directory != nullptr && before < directory_entries_.size()) {
+    const auto* entry = owner_->find(directory_entries_[before]);
+    *is_directory = entry != nullptr && entry->directory;
+  }
+  return result;
 }
 
 inline FS::Entry* FS::find(const std::string& path) noexcept {
@@ -131,7 +212,13 @@ inline File FS::open(const char* path, const char* mode) noexcept {
   }
   const std::string key(path);
   const bool write_mode = std::string(mode) != FILE_READ;
-  if (!write_mode && find(key) == nullptr) return File{};
+  if (!write_mode && find(key) == nullptr) {
+    if (!tracked_missing_read_path_.empty() &&
+        tracked_missing_read_path_ == key) {
+      ++missing_read_count_;
+    }
+    return File{};
+  }
   if (write_mode && find(key) == nullptr) entries_.emplace(key, Entry{});
   return File(this, key, mode);
 }

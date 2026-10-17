@@ -1,5 +1,75 @@
 # Task 9 verification ledger
 
+## Runtime startup and HTTPS retry diagnosis (`16c5276`, 2026-10-17)
+
+The runtime-ready SD+HTTPS application was rebuilt after a reproducible
+archive-recovery stall was isolated on the physical board. The archive had
+26,364 records and a 6,291,396-byte payload. Prefix duplicate lookups were
+being performed across boot boundaries even though the boot ID is part of the
+immutable record identity, producing an O(n²) recovery path. Recovery now
+skips that lookup for a new boot ID and retains it for out-of-order records
+within the same device boot. The physical retry completed archive recovery in
+8,794 ms and reached the HTTPS poller.
+
+Fresh physical runtime evidence after the app-only upload:
+
+```text
+CONFIG_RUNTIME_READY=PASS
+LITTLEFS_MOUNTED=PASS
+FILESYSTEM_RECOVERY=PASS (9054 ms)
+JOURNAL_READY=PASS
+NETWORK_SECRETS_LOADED=PASS
+NETWORK_READY=PASS
+DEVICE_CONTROL_READY=PASS
+SETUP_COMPLETE=PASS
+LOOP_ALIVE=PASS
+SNTP_TIME_READY=PASS
+HTTPS_POLL_ENTERED=PASS
+```
+
+The one-shot startup diagnostic reported `WIFI_CONNECTED=FAIL` at 9.1 s,
+before association completed. Subsequent read-only host evidence showed
+`192.168.0.109` reachable on `wlan0` with 3/3 ICMP replies and a matching
+ESP32 MAC in the ARP neighbor table. This is therefore classified as
+`WIFI_CONNECTED=PASS_AFTER_RETRY`, not as a persistent Wi-Fi failure.
+
+The private Go service was listening on `192.168.0.101:18443`; host-local
+CA-verified curl returned `HTTP=404` with `SSL_VERIFY=0`. A redacted TCP
+header-only capture on `wlan0` recorded four SYN packets from
+`192.168.0.109` to `192.168.0.101:18443`, followed by no SYN-ACK, RST, or
+completed handshake. No firewall, routing, or AP policy was changed. Read-only
+firewall inspection from the agent shell was unavailable because `sudo -n`
+required an interactive password.
+
+```text
+TCP_SYN_OBSERVED=PASS
+TCP_SYN_ACK_OBSERVED=FAIL
+TCP_ESTABLISHED=FAIL
+TLS_HANDSHAKE=NOT_RUN (TCP handshake did not complete)
+GO_REQUEST_RECEIVED=NOT_RUN
+TELEMETRY_ACK=NOT_RUN
+FIRST_REAL_E2E=BLOCKED_BY_HOST_TCP_RESPONSE
+```
+
+The required external action is narrow: permit inbound TCP 18443 from
+`192.168.0.109` to the approved private staging listener, or provide an
+approved private endpoint with equivalent routing. The change must preserve
+TLS certificate and hostname validation and must not expose the service
+publicly. Until a SYN-ACK and a device-originated TLS request are observed,
+physical HTTPS and journal durability remain unverified.
+
+Fresh focused source verification after this remediation:
+
+```text
+pio test -e native -f native/test_arduino_storage_adapters \
+  -f native/test_network_runtime                     PASS 23/23
+git diff --check                                       PASS
+```
+
+The runtime staging image used for this retry was built out-of-tree and kept
+outside tracked configuration. Its SHA-256 was
+`60aee5dc6ce0580036dd1bbea251ba1716488998401f9b71e38dea3830257e53`.
+
 ## Runtime-ready SD+HTTPS application upload (`62b26d3`, 2026-10-16)
 
 An out-of-tree staging configuration combined the N16R8 SD_MMC target with

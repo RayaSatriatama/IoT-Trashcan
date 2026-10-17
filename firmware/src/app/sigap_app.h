@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <optional>
 #include <string_view>
 
@@ -114,6 +115,39 @@ class ApplicationNetworkJitter final : public network::IRandomJitter {
 
  private:
   uint32_t state_{0x6D2B79F5U};
+};
+
+enum class RuntimeDiagnosticEvent : uint8_t {
+  SetupComplete,
+  LoopAlive,
+  FilesystemRecovery,
+  ConfigRuntimeReady,
+  LittlefsMounted,
+  JournalReady,
+  NetworkSecretsLoaded,
+  NetworkReady,
+  WifiConnected,
+  SntpTimeReady,
+  DeviceControlReady,
+  HttpsPollEntered,
+  Count,
+};
+
+class RuntimeDiagnosticLatch final {
+ public:
+  bool first(RuntimeDiagnosticEvent event) noexcept {
+    const auto index = static_cast<uint8_t>(event);
+    if (index >= static_cast<uint8_t>(RuntimeDiagnosticEvent::Count)) {
+      return false;
+    }
+    const uint16_t bit = static_cast<uint16_t>(1U << index);
+    if ((seen_ & bit) != 0U) return false;
+    seen_ = static_cast<uint16_t>(seen_ | bit);
+    return true;
+  }
+
+ private:
+  uint16_t seen_{0U};
 };
 
 // Network provisioning is intentionally conservative until an endpoint and
@@ -307,8 +341,16 @@ class SigapApp final {
 #endif
   maintenance::MaintenanceService maintenance_service_;
   uint32_t profile_generation_{0U};
+#ifdef ARDUINO
+  RuntimeDiagnosticLatch runtime_diagnostics_{};
+  uint64_t runtime_diagnostics_started_us_{0U};
+#endif
 
   void refresh_model_profiles() noexcept;
+#ifdef ARDUINO
+  void log_runtime_diagnostic(RuntimeDiagnosticEvent event, bool ready,
+                              uint64_t now_us) noexcept;
+#endif
 };
 
 }  // namespace sigap
