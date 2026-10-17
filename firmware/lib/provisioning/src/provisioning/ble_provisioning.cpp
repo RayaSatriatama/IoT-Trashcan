@@ -704,11 +704,11 @@ bool ArduinoBleProvisioningService::begin(BleProvisioningSession& session,
   if (service == nullptr) return false;
   auto* command = service->createCharacteristic(
       kProvisioningCommandUuid,
-      NIMBLE_PROPERTY::WRITE_ENC | NIMBLE_PROPERTY::WRITE_NR,
+      NIMBLE_PROPERTY::WRITE_AUTHEN | NIMBLE_PROPERTY::WRITE_NR,
       192U);
   auto* response = service->createCharacteristic(
       kProvisioningResponseUuid,
-      NIMBLE_PROPERTY::READ_ENC | NIMBLE_PROPERTY::NOTIFY,
+      NIMBLE_PROPERTY::READ_AUTHEN | NIMBLE_PROPERTY::NOTIFY,
       512U);
   if (command == nullptr || response == nullptr) return false;
   session_ = &session;
@@ -740,8 +740,15 @@ void CommandCallbacks::onWrite(NimBLECharacteristic* characteristic,
                                       conn_info.isAuthenticated());
 }
 
-void ServerCallbacks::onConnect(NimBLEServer*, NimBLEConnInfo&) {
+void ServerCallbacks::onConnect(NimBLEServer*, NimBLEConnInfo& conn_info) {
   owner_.handle_connect();
+  // Start the authenticated security procedure before Web Bluetooth begins
+  // GATT discovery.  The characteristic permissions remain the final access
+  // control, while this makes a fresh connection request the configured MITM
+  // passkey instead of first reaching the session-level AUTH_REQUIRED guard.
+  if (!conn_info.isAuthenticated()) {
+    (void)NimBLEDevice::startSecurity(conn_info.getConnHandle());
+  }
 }
 
 void ServerCallbacks::onDisconnect(NimBLEServer* server, NimBLEConnInfo&, int) {

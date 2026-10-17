@@ -1,5 +1,55 @@
 # Task 9 verification ledger
 
+## BLE MITM pairing remediation (`c5090c1`, source verification 2026-10-17)
+
+The physical `AUTH_REQUIRED` behavior has a confirmed source-level cause. The
+application callback required `isEncrypted() && isAuthenticated()`, while the
+NimBLE-Arduino 2.5.1 command and response characteristics requested only
+`WRITE_ENC` and `READ_ENC`. An encrypted but unauthenticated link could
+therefore reach the application and be rejected without an ATT authenticated
+permission that forces the configured MITM procedure.
+
+The remediation changes the GATT permissions to `WRITE_AUTHEN | WRITE_NR` and
+`READ_AUTHEN | NOTIFY`. A new connection also explicitly starts NimBLE
+security before Web Bluetooth GATT discovery when the connection is not yet
+authenticated. Existing bonding, secure connections, configured passkey,
+application `isAuthenticated()` checks, and fail-closed identity checks remain
+in place. Stale bonds are not deleted automatically.
+
+Fresh evidence on the current source:
+
+```text
+PIO native: 455/455 PASS
+Frontend BLE and integration tests: 15/15 PASS
+Frontend full suite: 118/118 PASS
+TypeScript typecheck: PASS
+Cppcheck: PASS
+sigap_n16r8: PASS, RAM 49,496 / 327,680, flash 1,111,181 / 4,194,304
+sigap_n16r8_sd: PASS, RAM 50,036 / 327,680, flash 1,184,445 / 4,194,304
+sigap_n16r8_sd_spi: PASS, RAM 49,792 / 327,680, flash 1,163,857 / 4,194,304
+sigap_bench: PASS, RAM 49,496 / 327,680, flash 1,111,181 / 4,194,304
+sigap_n16r8_https_compile: PASS, RAM 51,860 / 327,680, flash 1,313,213 / 4,194,304
+sigap_n16r8_sd_https_compile: PASS, RAM 52,300 / 327,680, flash 1,371,521 / 4,194,304
+```
+
+The installed physical firmware predates this source change. BlueZ currently
+reports the disposable peer as `Paired: yes`, `Bonded: yes`, and `Trusted: yes`;
+these fields do not prove MITM authentication. No passkey was logged and no
+bond was deleted. Consequently:
+
+```text
+REAL_BLE_DISCOVERY=PASS
+REAL_BLE_PAIRING=NOT_RUN (new image not uploaded)
+BLE_MITM_AUTHENTICATED=NOT_RUN
+GET_DEVICE_ID=NOT_RUN
+GET_STATUS=NOT_RUN
+BLE_RECONNECT=NOT_RUN
+```
+
+An application-only upload of the rebuilt N16R8 image and, if required, a
+separately authorized deletion of the confirmed disposable stale bond are
+required before the physical pairing verdict can change.
+
 ## Independent TCP, BLE, and SD follow-up (`06ff6bb`, 2026-10-17)
 
 Host read-only diagnostics confirm `wlan0` is `192.168.0.101/24`, the route

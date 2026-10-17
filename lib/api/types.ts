@@ -153,7 +153,7 @@ export interface ResearchSlotDTO {
   fis_version: string | null;
   dominant_reason: string | null;
   safety_state: string | null;
-  sensors: SensorReadingDTO[];
+  sensors: SensorReadingDTO[] | null;
   derived_parameters: {
     ogi: number | null;
     accumulation_hours: number | null;

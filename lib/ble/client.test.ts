@@ -43,6 +43,12 @@ class FakeCharacteristic {
   }
 }
 
+class FailingNotificationCharacteristic extends FakeCharacteristic {
+  override async startNotifications(): Promise<FakeCharacteristic> {
+    throw new Error('AUTH_REQUIRED');
+  }
+}
+
 class FakeServer {
   constructor(private readonly control: FakeCharacteristic, private readonly events: FakeCharacteristic) {}
   async getPrimaryService(_uuid: string): Promise<{ getCharacteristic: (uuid: string) => Promise<FakeCharacteristic> }> {
@@ -131,6 +137,22 @@ describe('BLE provisioning client', () => {
     await client.connect();
     await client.verifyDeviceIdentity('0000000000000001');
     await expect(client.connectWifi('TestNetwork', 'test-password')).rejects.toThrow('Koneksi Wi-Fi tidak selesai');
+  });
+
+  it('fails closed when authenticated notification setup is rejected', async () => {
+    const control = new FakeCharacteristic();
+    const events = new FailingNotificationCharacteristic();
+    const server = new FakeServer(control, events);
+    Object.defineProperty(globalThis, 'isSecureContext', { configurable: true, value: true });
+    Object.defineProperty(globalThis, 'navigator', {
+      configurable: true,
+      value: { bluetooth: { requestDevice: async () => ({ gatt: { connect: async () => server }, addEventListener: () => {} }) } },
+    });
+
+    const client = new BleProvisioningClient();
+    await expect(client.connect()).rejects.toThrow('AUTH_REQUIRED');
+    expect(client.verifiedDeviceId).toBeNull();
+    client.close();
   });
 
   it('reassembles an asynchronous scan response after the pending acknowledgement', async () => {

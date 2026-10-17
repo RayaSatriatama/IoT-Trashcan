@@ -355,6 +355,7 @@ describe('Task 9 Web Bluetooth provisioning boundary', () => {
     await client.connect();
     await client.verifyDeviceIdentity('0000000000000001');
     harness.device.disconnect();
+    expect(client.verifiedDeviceId).toBeNull();
     await expect(client.status()).rejects.toThrow('Hubungkan perangkat');
     await client.connect();
     await client.verifyDeviceIdentity('0000000000000001');

@@ -206,6 +206,34 @@ void test_session_requires_encrypted_authenticated_link() {
   TEST_ASSERT_NOT_NULL(std::strstr(gather_response(session, response).c_str(), "SETUP_REQUIRED"));
 }
 
+void test_reconnect_does_not_reuse_authenticated_session() {
+  Backend backend;
+  Clock clock;
+  BleProvisioningSession session(backend, clock);
+  session.set_device_id(0x1234ULL);
+  BleResponse response{};
+
+  session.on_connect(clock.now);
+  session.on_authenticated(true);
+  TEST_ASSERT_EQUAL_INT(BleParseStatus::Accepted,
+                        session.receive("GET_DEVICE_ID", response));
+  TEST_ASSERT_EQUAL_STRING("OK DEVICE_ID id=0000000000001234",
+                           gather_response(session, response).c_str());
+
+  session.on_disconnect();
+  session.on_connect(clock.now);
+  TEST_ASSERT_EQUAL_INT(BleParseStatus::Invalid,
+                        session.receive("GET_DEVICE_ID", response));
+  TEST_ASSERT_NOT_NULL(std::strstr(gather_response(session, response).c_str(),
+                                   "AUTH_REQUIRED"));
+
+  session.on_authenticated(true);
+  TEST_ASSERT_EQUAL_INT(BleParseStatus::Accepted,
+                        session.receive("GET_DEVICE_ID", response));
+  TEST_ASSERT_EQUAL_STRING("OK DEVICE_ID id=0000000000001234",
+                           gather_response(session, response).c_str());
+}
+
 void test_authenticated_identity_is_canonical_and_bounded() {
   Backend backend;
   Clock clock;
@@ -389,6 +417,7 @@ int main() {
   RUN_TEST(test_known_wifi_and_retry_commands_are_bounded);
   RUN_TEST(test_completed_request_id_cannot_be_replayed);
   RUN_TEST(test_session_requires_encrypted_authenticated_link);
+  RUN_TEST(test_reconnect_does_not_reuse_authenticated_session);
   RUN_TEST(test_authenticated_identity_is_canonical_and_bounded);
   RUN_TEST(test_identity_is_unavailable_when_application_has_not_bound_it);
   RUN_TEST(test_scan_is_bounded_and_returns_result);

@@ -24,43 +24,14 @@ import { getStatusBadgePresentation } from '../../components/StatusBadge';
 import { WifiSettingsDialog } from '../../components/device/WifiSettingsDialog';
 import { CalibrationWizard } from '../../components/device/CalibrationWizard';
 import { SensorDiagnosticsPanel } from '../../components/device/SensorDiagnosticsPanel';
-import { CALIBRATION_SENSOR_IDS, createCalibrationApi, type CalibrationSensorId, type SensorDiagnostic } from '../../lib/api/calibration';
+import { CALIBRATION_SENSOR_IDS, createCalibrationApi } from '../../lib/api/calibration';
 import { BleProvisioningClient } from '../../lib/ble/client';
 import { isWebBluetoothAvailable } from '../../lib/ble/protocol';
+import { diagnosticFromResearch } from '../../lib/api/research';
 
 export const DEVICE_STREAM_LABELS = { organic: 'Organik', inorganic: 'Anorganik', b3: 'B3' } as const;
 export const DEVICE_UNAVAILABLE_COPY = 'Belum tersedia';
 export function getDeviceStatusLabel(status: CanonicalStatus | null | undefined): string { return getStatusBadgePresentation(status).label; }
-
-function sensorStream(sensorId: string): string {
-  if (sensorId.endsWith('_inorganic')) return 'inorganic';
-  if (sensorId.endsWith('_b3') || sensorId === 'mq8') return 'b3';
-  return 'organic';
-}
-
-function diagnosticFromResearch(sensorId: CalibrationSensorId, research: ResearchResponse | null | undefined): SensorDiagnostic | null {
-  const sensor = research?.slots.flatMap((slot) => slot.sensors).find((entry) => entry.sensor_id === sensorId);
-  if (!sensor) return null;
-  const quality = sensor.sensor_state === 'VALID' ? 'READY' : sensor.sensor_state === 'WARMING_UP' ? 'CALIBRATING' : sensor.sensor_state === 'STALE' ? 'STALE' : 'INVALID';
-  return {
-    sensor_id: sensorId,
-    stream: sensorStream(sensorId),
-    quality,
-    reason: quality === 'READY' ? 'DATA_READY' : quality,
-    raw: { present: sensor.raw_value !== null, value: sensor.raw_value, unit: sensor.raw_unit },
-    converted_value: sensor.engineering_value,
-    converted_unit: sensor.unit || null,
-    fresh: quality !== 'STALE' && quality !== 'INVALID',
-    age_ms: null,
-    last_sequence: null,
-    profile_present: Boolean(sensor.calibration_version),
-    profile_version: sensor.calibration_version ?? null,
-    profile_hash: null,
-    calibration_state: 'IDLE',
-    accepted_samples: 0,
-    rejected_samples: 0,
-  };
-}
 
 function StaleNotice({ onRetry }: { onRetry: () => void }) {
   return <Card borderWidth={1} borderColor="$statusWaspada" backgroundColor="$statusWaspadaSoft" borderRadius="$4" paddingHorizontal="$4" paddingVertical="$3" role="status"><XStack alignItems="center" justifyContent="space-between" gap="$3" flexWrap="wrap"><Text color="$color" fontSize="$2" flex={1}>Data terbaru belum tersedia. Menampilkan detail device terakhir.</Text><AppButton variant="ghost" size="sm" onPress={onRetry} ariaLabel="Coba perbarui detail device">Coba perbarui</AppButton></XStack></Card>;

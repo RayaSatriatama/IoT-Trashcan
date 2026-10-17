@@ -1,5 +1,33 @@
 # Task 9 commissioning and HIL procedure
 
+## BLE MITM pairing remediation gate (`2026-10-17`)
+
+The BLE GATT security contract now requires authenticated permissions on both
+directions: `WRITE_AUTHEN | WRITE_NR` for the command characteristic and
+`READ_AUTHEN | NOTIFY` for the response characteristic. NimBLE security starts
+on a new unauthenticated connection before Web Bluetooth discovery, and the
+application still rejects every request unless the connection is encrypted and
+authenticated. This prevents an encrypted Just Works link from reaching
+identity or Wi-Fi operations.
+
+The current board has a BlueZ bond, but `Paired`, `Bonded`, and `Trusted` are
+not evidence of MITM. Do not delete that bond automatically. Before physical
+verification, obtain owner authorization for the application-only upload of the
+rebuilt image and, only if the bond is confirmed stale and disposable, its
+targeted removal. The operator must enter the one-shot passkey locally; the
+passkey must not be captured in logs, screenshots, repository files, or chat.
+
+After the upload, verify in Chromium through the real GATT path, in order:
+
+1. Pair with MITM and confirm the local passkey dialog.
+2. Read `GET_DEVICE_ID` and compare with `000098a316f5c150`.
+3. Read `GET_STATUS` only after identity succeeds.
+4. Disconnect and reconnect, then repeat identity verification.
+5. Confirm the website clears the verified identity after disconnect.
+
+Until these steps run against the rebuilt image, the physical BLE result is
+`NOT_RUN`; synthetic and native tests do not count as physical pairing.
+
 ## Runtime-ready application upload (`2026-10-16`)
 
 The approved application-only upload was performed after read-only identity,

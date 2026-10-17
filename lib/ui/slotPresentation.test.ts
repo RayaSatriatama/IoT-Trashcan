@@ -65,6 +65,10 @@ const baseResearchSlot: ResearchSlotDTO = {
 };
 
 describe('slot presentation helpers', () => {
+  it('renders unavailable sensor collections without throwing', () => {
+    expect(buildResearchSensorRows({ ...baseResearchSlot, sensors: null })).toEqual([]);
+  });
+
   it('keeps physical sensor rows distinct from derived research values', () => {
     const rows = buildResearchSensorRows({
       stream: 'organic', recorded_at: null,
