@@ -1,5 +1,26 @@
 # Task 9 commissioning and HIL procedure
 
+## BLE upload gate and automatic NVS write (2026-10-17)
+
+The application-only BLE remediation image was uploaded at `0x10000` and
+verified by readback. Image SHA-256:
+
+```text
+407dfa560c8bd1dbc07906d5132b88a36af238f3712d7ee65fb01cefb40c9adf
+```
+
+The board identity and partition layout matched the approved preflight. The
+application reached `mode=RUN`, `SNTP_TIME_READY=PASS`, and
+`HTTPS_POLL_ENTERED=PASS`.
+
+Post-boot NVS hashing showed a change. Source review traces it to the normal
+first-boot `sigap_ble/setup_secret` creation in
+`NvsProvisioningSecretStore::load_or_create()`. This is not a bond deletion,
+but it is still an NVS mutation. Under the current authorization,
+`NVS_PRESERVED` is therefore `FAIL`, and MITM pairing is paused before local
+passkey entry. A scope decision allowing this specific setup-secret write is
+required before continuing. Bond deletion remains separately unauthorized.
+
 ## BLE MITM pairing remediation gate (`2026-10-17`)
 
 The BLE GATT security contract now requires authenticated permissions on both

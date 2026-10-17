@@ -1,5 +1,60 @@
 # Task 9 verification ledger
 
+## Authorized BLE image upload and NVS preservation blocker (2026-10-17)
+
+The corrected out-of-tree SD+HTTPS staging image was built and uploaded under
+the explicit application-only authorization. The board reported ESP32-S3 rev
+v0.2, MAC `98:a3:16:f5:c1:50`, 16 MiB flash, and 8 MiB PSRAM. The physical
+partition table matched `factory 0x10000/0x400000` and
+`spiffs 0x410000/0x800000`. The image was 1,373,136 bytes and was written
+only at `0x10000`; esptool reported `Hash of data verified`.
+
+Image SHA-256:
+
+```text
+407dfa560c8bd1dbc07906d5132b88a36af238f3712d7ee65fb01cefb40c9adf
+```
+
+Readback of exactly the image range matched the same SHA-256. Runtime output
+confirmed `SNTP_TIME_READY=PASS` and `HTTPS_POLL_ENTERED=PASS`; maintenance
+`status` returned `mode=RUN`. Wi-Fi remained unconfigured and no credentials
+were changed.
+
+The NVS preservation check did not pass. Read-only hashes changed after boot:
+
+```text
+before 0c02bfe486af2508bcd69c65efeecac48e1ef787acb929f5f0625c3bc618ec66
+after  37087a6db11d19b4b1145e0592b19e7f60726ac22c1cabeed8a9ab38b22f5f4e
+```
+
+Source review identifies the write path: `NvsProvisioningSecretStore::load_or_create()`
+opens namespace `sigap_ble` read-write and creates `setup_secret` when absent.
+No agent command erased NVS or deleted a bond, but the application performed
+this automatic first-boot write. The current authorization prohibits NVS
+mutation, so authenticated pairing is paused before passkey entry and
+`NVS_PRESERVED=FAIL`. No physical BLE GATT result is claimed.
+
+Current physical gates:
+
+```text
+APPLICATION_UPLOAD=PASS
+FLASH_VERIFICATION=PASS
+REAL_BLE_DISCOVERY=PASS (SIGAP-A398, SIGAP service visible)
+BLE_PASSKEY_PROMPT=HUMAN_ACTION_REQUIRED (chooser opened, pairing paused)
+REAL_BLE_PAIRING=NOT_RUN
+BLE_MITM_AUTHENTICATED=NOT_RUN
+REAL_GET_DEVICE_ID=NOT_RUN
+REAL_GET_STATUS=NOT_RUN
+BLE_RECONNECT=NOT_RUN
+NVS_PRESERVED=FAIL
+LITTLEFS_PRESERVED=NOT_RUN after this upload
+FIREWALL_UNCHANGED=PASS
+```
+
+Further BLE pairing requires an explicit scope decision allowing the
+firmware's first-boot `sigap_ble/setup_secret` write. Bond deletion remains
+unauthorized and was not attempted.
+
 ## BLE MITM pairing remediation (`c5090c1`, source verification 2026-10-17)
 
 The physical `AUTH_REQUIRED` behavior has a confirmed source-level cause. The
