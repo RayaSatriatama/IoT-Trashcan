@@ -5,11 +5,29 @@
 #include <unity.h>
 
 #include "../../../src/app/archive_runtime.h"
+#include "debug/types.h"
 
 namespace {
 
 using namespace sigap;
 using namespace sigap::acquisition;
+
+struct StorageSink final : debug::IEventSink {
+  bool accept{true};
+  unsigned attempts{};
+  std::array<debug::EventInput, 32U> events{};
+  std::size_t count{};
+  bool emit(const debug::EventInput& event) noexcept override {
+    ++attempts;
+    if (!accept) return false;
+    if (count < events.size()) events[count++] = event;
+    return true;
+  }
+};
+struct StorageClock { uint64_t now{123U}; };
+uint64_t read_storage_clock(void* context) noexcept {
+  return static_cast<StorageClock*>(context)->now;
+}
 
 DeviceId device() {
   DeviceId value{};
@@ -352,6 +370,185 @@ void test_audit_waiting_for_worker_preserves_scratch_until_durable() {
   TEST_ASSERT_EQUAL_UINT32(0U, audit.size());
 }
 
+void test_storage_events_follow_real_worker_ownership_and_completion() {
+  storage::MemoryArchiveStore<4U> store(64U * 1024U);
+  ArchiveRuntime runtime(&store);
+  StorageSink sink{};
+  StorageClock clock{};
+  runtime.bind_debug(&sink, InjectedMonotonicClock{read_storage_clock, &clock});
+  TEST_ASSERT_EQUAL_UINT32(2U, sink.count);
+  TEST_ASSERT_EQUAL_UINT16(30U, sink.events[0].event_code);
+  TEST_ASSERT_EQUAL_INT32(1, sink.events[0].arg0);
+  TEST_ASSERT_EQUAL_INT32(0, sink.events[0].arg1);
+  TEST_ASSERT_EQUAL_UINT64(clock.now, sink.events[0].monotonic_us);
+  TEST_ASSERT_EQUAL_UINT32(2U, sink.count);
+  TEST_ASSERT_EQUAL_UINT16(31U, sink.events[1].event_code);
+  TEST_ASSERT_EQUAL_INT32(0, sink.events[1].arg0);
+  TEST_ASSERT_EQUAL_INT32(1, sink.events[1].arg1);
+
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(storage::AppendStatus::Durable),
+                        static_cast<int>(runtime.poll_storage()));
+  TEST_ASSERT_EQUAL_UINT32(2U, sink.count);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(storage::AppendStatus::Queued),
+                        static_cast<int>(runtime.append_sample(sample())));
+  TEST_ASSERT_EQUAL_UINT32(3U, sink.count);
+  TEST_ASSERT_EQUAL_UINT16(31U, sink.events[2].event_code);
+  TEST_ASSERT_EQUAL_INT32(1, sink.events[2].arg0);
+  const auto* pending = runtime.storage_worker().queue().peek();
+  TEST_ASSERT_NOT_NULL(pending);
+  TEST_ASSERT_NOT_NULL(pending->record);
+  const auto frozen = *pending->record;
+  TEST_ASSERT_EQUAL_UINT32(1U, runtime.storage_worker().queue().size());
+  ArchiveRuntime::SampleHandoff full_handoff{};
+  auto blocked_sample = sample();
+  blocked_sample.header.sequence = 11U;
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(HandoffStatus::Enqueued),
+                        static_cast<int>(full_handoff.try_push(blocked_sample)));
+  TEST_ASSERT_FALSE(runtime.drain_samples(full_handoff));
+  TEST_ASSERT_EQUAL_UINT32(1U, full_handoff.size());
+  TEST_ASSERT_EQUAL_UINT32(3U, sink.count);
+  store.set_fault(storage::StoreFault::ShortWrite);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(storage::AppendStatus::Retryable),
+                        static_cast<int>(runtime.poll_storage()));
+  TEST_ASSERT_EQUAL_UINT32(1U, runtime.storage_worker().queue().size());
+  TEST_ASSERT_EQUAL_UINT32(4U, sink.count);
+  TEST_ASSERT_EQUAL_UINT16(30U, sink.events[3].event_code);
+  TEST_ASSERT_EQUAL_INT32(2, sink.events[3].arg0);
+  TEST_ASSERT_EQUAL_INT32(0, sink.events[3].arg1);
+  TEST_ASSERT_EQUAL_UINT32(frozen.size,
+                           runtime.storage_worker().queue().peek()->record->size);
+  TEST_ASSERT_EQUAL_INT(0, std::memcmp(
+      frozen.bytes.data(), runtime.storage_worker().queue().peek()->record->bytes.data(),
+      frozen.size));
+  store.set_fault(storage::StoreFault::None);
+  clock.now += 10U;
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(storage::AppendStatus::Durable),
+                        static_cast<int>(runtime.poll_storage()));
+  TEST_ASSERT_EQUAL_UINT32(0U, runtime.storage_worker().queue().size());
+  TEST_ASSERT_EQUAL_UINT32(1U, store.size());
+  TEST_ASSERT_EQUAL_UINT32(6U, sink.count);
+  TEST_ASSERT_EQUAL_UINT16(32U, sink.events[4].event_code);
+  TEST_ASSERT_EQUAL_INT32(0, sink.events[4].arg0);
+  TEST_ASSERT_EQUAL_INT32(1, sink.events[4].arg1);
+  TEST_ASSERT_EQUAL_UINT16(31U, sink.events[5].event_code);
+  TEST_ASSERT_EQUAL_INT32(0, sink.events[5].arg0);
+  TEST_ASSERT_EQUAL_UINT32(6U, sink.count);
+}
+
+void test_storage_terminal_event_uses_actual_worker_invalid_completion() {
+  storage::MemoryArchiveStore<4U> store(64U * 1024U);
+  const auto original = sample();
+  const auto attempted = sample();
+  auto conflicting = attempted;
+  conflicting.raw.adc_counts = static_cast<uint16_t>(conflicting.raw.adc_counts + 1U);
+  storage::ImmutableRecordBytes existing{};
+  storage::ImmutableRecordBytes conflict{};
+  TEST_ASSERT_TRUE(storage::RecordCodec::encode_sample(original, existing));
+  TEST_ASSERT_TRUE(storage::RecordCodec::encode_sample(conflicting, conflict));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(storage::AppendStatus::Durable),
+                        static_cast<int>(store.append(existing)));
+
+  ArchiveRuntime runtime(&store);
+  StorageSink sink{};
+  StorageClock clock{};
+  runtime.bind_debug(&sink, InjectedMonotonicClock{read_storage_clock, &clock});
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(storage::AppendStatus::Queued),
+                        static_cast<int>(runtime.append_record(conflict)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(storage::AppendStatus::Invalid),
+                        static_cast<int>(runtime.poll_storage()));
+  TEST_ASSERT_EQUAL_UINT32(1U, store.size());
+  TEST_ASSERT_EQUAL_UINT32(0U, runtime.storage_worker().queue().size());
+  bool terminal_event{false};
+  for (std::size_t index = 0U; index < sink.count; ++index) {
+    if (sink.events[index].event_code == 32U && sink.events[index].arg0 == 3) {
+      terminal_event = true;
+      TEST_ASSERT_EQUAL_INT32(1, sink.events[index].arg1);
+    }
+  }
+  TEST_ASSERT_TRUE(terminal_event);
+}
+
+void test_storage_state_null_to_blocked_reason_transition_is_reported() {
+  ArchiveRuntime runtime{};
+  StorageSink sink{};
+  StorageClock clock{};
+  runtime.bind_debug(&sink, InjectedMonotonicClock{read_storage_clock, &clock});
+  TEST_ASSERT_EQUAL_UINT16(30U, sink.events[0].event_code);
+  TEST_ASSERT_EQUAL_INT32(0, sink.events[0].arg0);
+  TEST_ASSERT_EQUAL_INT32(2, sink.events[0].arg1);
+
+  storage::MemoryArchiveStore<4U> store(0U);
+  const auto record = sample();
+  storage::ImmutableRecordBytes encoded{};
+  TEST_ASSERT_TRUE(storage::RecordCodec::encode_sample(record, encoded));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(storage::AppendStatus::LoggingBlocked),
+                        static_cast<int>(store.append(encoded)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(storage::ArchiveHealth::Blocked),
+                        static_cast<int>(store.health()));
+  runtime.set_store(&store);
+  TEST_ASSERT_EQUAL_UINT32(3U, sink.count);
+  TEST_ASSERT_EQUAL_UINT16(30U, sink.events[2].event_code);
+  TEST_ASSERT_EQUAL_INT32(0, sink.events[2].arg0);
+  TEST_ASSERT_EQUAL_INT32(0, sink.events[2].arg1);
+  const unsigned attempts = sink.attempts;
+  runtime.set_store(&store);
+  TEST_ASSERT_EQUAL_UINT32(attempts, sink.attempts);
+  TEST_ASSERT_EQUAL_UINT32(3U, sink.count);
+}
+
+void test_storage_state_refused_reason_transition_retries_on_later_attempt() {
+  ArchiveRuntime runtime{};
+  StorageSink sink{};
+  StorageClock clock{};
+  runtime.bind_debug(&sink, InjectedMonotonicClock{read_storage_clock, &clock});
+  storage::MemoryArchiveStore<4U> store(0U);
+  storage::ImmutableRecordBytes encoded{};
+  TEST_ASSERT_TRUE(storage::RecordCodec::encode_sample(sample(), encoded));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(storage::AppendStatus::LoggingBlocked),
+                        static_cast<int>(store.append(encoded)));
+  sink.accept = false;
+  runtime.set_store(&store);
+  const unsigned refused_attempts = sink.attempts;
+  TEST_ASSERT_EQUAL_UINT32(2U, sink.count);
+  sink.accept = true;
+  runtime.set_store(&store);
+  TEST_ASSERT_EQUAL_UINT32(refused_attempts + 1U, sink.attempts);
+  TEST_ASSERT_EQUAL_UINT32(3U, sink.count);
+  TEST_ASSERT_EQUAL_INT32(0, sink.events[2].arg0);
+  TEST_ASSERT_EQUAL_INT32(0, sink.events[2].arg1);
+  const unsigned accepted_attempts = sink.attempts;
+  runtime.set_store(&store);
+  TEST_ASSERT_EQUAL_UINT32(accepted_attempts, sink.attempts);
+  TEST_ASSERT_EQUAL_UINT32(3U, sink.count);
+}
+
+void test_storage_state_null_and_health_recovery_are_reported_without_business_change() {
+  ArchiveRuntime runtime{};
+  StorageSink sink{};
+  StorageClock clock{};
+  runtime.bind_debug(&sink, InjectedMonotonicClock{read_storage_clock, &clock});
+  TEST_ASSERT_EQUAL_UINT16(30U, sink.events[0].event_code);
+  TEST_ASSERT_EQUAL_INT32(0, sink.events[0].arg0);
+  TEST_ASSERT_EQUAL_INT32(2, sink.events[0].arg1);
+  storage::MemoryArchiveStore<4U> store(64U * 1024U);
+  runtime.set_store(&store);
+  TEST_ASSERT_EQUAL_UINT32(3U, sink.count);
+  TEST_ASSERT_EQUAL_UINT16(30U, sink.events[2].event_code);
+  TEST_ASSERT_EQUAL_INT32(1, sink.events[2].arg0);
+  TEST_ASSERT_EQUAL_INT32(0, sink.events[2].arg1);
+
+  sink.accept = false;
+  const auto record = sample();
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(storage::AppendStatus::Queued),
+                        static_cast<int>(runtime.append_sample(record)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(storage::AppendStatus::Durable),
+                        static_cast<int>(runtime.poll_storage()));
+  TEST_ASSERT_EQUAL_UINT32(1U, store.size());
+  TEST_ASSERT_EQUAL_UINT64(1U, runtime.durable_records());
+  TEST_ASSERT_EQUAL_UINT32(3U, sink.count);
+  TEST_ASSERT_TRUE(sink.attempts >= 5U);
+}
+
 }  // namespace
 
 int main() {
@@ -367,5 +564,10 @@ int main() {
   RUN_TEST(test_audit_event_stays_queued_across_retry_and_archives_once);
   RUN_TEST(test_audit_pending_reuses_encoder_without_corrupting_sample);
   RUN_TEST(test_audit_waiting_for_worker_preserves_scratch_until_durable);
+  RUN_TEST(test_storage_events_follow_real_worker_ownership_and_completion);
+  RUN_TEST(test_storage_terminal_event_uses_actual_worker_invalid_completion);
+  RUN_TEST(test_storage_state_null_to_blocked_reason_transition_is_reported);
+  RUN_TEST(test_storage_state_refused_reason_transition_retries_on_later_attempt);
+  RUN_TEST(test_storage_state_null_and_health_recovery_are_reported_without_business_change);
   return UNITY_END();
 }

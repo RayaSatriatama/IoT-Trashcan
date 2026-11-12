@@ -10,6 +10,8 @@
 #include <string_view>
 
 #include "immutable_batch.h"
+#include "acquisition/clock.h"
+#include "debug/types.h"
 #include "acquisition/profiles.h"
 #include "telemetry/canonical_writer.h"
 #include "storage/archive_codec.h"
@@ -387,7 +389,18 @@ class BatchJsonBuilder final {
       return out.append("{\"counts\":") && append_signed(out, sample.raw.signed_counts) && out.append('}');
     }
     if (sample.header.kind == acquisition::SampleKind::MqAdc) {
-      return out.append("{\"adc_counts\":") && append_unsigned(out, sample.raw.adc_counts) && out.append('}');
+      if (sample.header.sensor != acquisition::SensorId::Mq7)
+        return out.append("{\"adc_counts\":") && append_unsigned(out, sample.raw.adc_counts) && out.append('}');
+      if (!sample.raw.heater_phase_available) return false;
+      const char* phase = "FAULT";
+      switch (sample.raw.heater_phase) {
+        case acquisition::Mq7HeaterPhase::Preheat: phase = "PREHEAT"; break;
+        case acquisition::Mq7HeaterPhase::HighClean: phase = "HIGH_CLEAN"; break;
+        case acquisition::Mq7HeaterPhase::LowDetect: phase = "LOW_DETECT"; break;
+        case acquisition::Mq7HeaterPhase::Fault: phase = "FAULT"; break;
+      }
+      return out.append("{\"adc_counts\":") && append_unsigned(out, sample.raw.adc_counts) &&
+             out.append(",\"heater_phase\":\"") && out.append(phase) && out.append("\"}");
     }
     if (sample.header.kind == acquisition::SampleKind::UltrasonicEcho) {
       return out.append("{\"echo_us\":") && append_unsigned(out, sample.raw.distance_us) && out.append('}');
@@ -407,14 +420,15 @@ class BatchJsonBuilder final {
              out.append('}');
     }
     if (sample.header.kind == acquisition::SampleKind::Sht31) {
+      if (!sample.raw.sht31_ticks_available) return false;
       return out.append("{\"humidity_crc_valid\":") &&
              out.append(sample.raw.humidity_crc_valid ? "true" : "false") &&
              out.append(",\"humidity_ticks\":") &&
-             append_unsigned(out, static_cast<uint32_t>(std::max(0, sample.raw.humidity_centi_pct))) &&
+             append_unsigned(out, sample.raw.sht31_humidity_ticks) &&
              out.append(",\"temperature_crc_valid\":") &&
              out.append(sample.raw.temperature_crc_valid ? "true" : "false") &&
              out.append(",\"temperature_ticks\":") &&
-             append_unsigned(out, static_cast<uint32_t>(std::max(0, sample.raw.temperature_centi_c))) &&
+             append_unsigned(out, sample.raw.sht31_temperature_ticks) &&
              out.append('}');
     }
     return out.append("null");
@@ -450,6 +464,11 @@ class BatchJsonBuilder final {
       if (!sample.converted.primary_available || !sample.converted.secondary_available) return out.append("null");
       return out.append("{\"humidity_percent\":") && append_float(out, sample.converted.secondary_value) &&
              out.append(",\"temperature_c\":") && append_float(out, sample.converted.primary_value) && out.append('}');
+    }
+    if (sample.header.kind == acquisition::SampleKind::Ds18b20) {
+      if (!sample.converted.primary_available) return out.append("{\"temperature_c\":null}");
+      if (sample.converted.primary_kind != acquisition::ConvertedKind::Celsius) return false;
+      return out.append("{\"temperature_c\":") && append_float(out, sample.converted.primary_value) && out.append('}');
     }
     return out.append("null");
   }
@@ -936,6 +955,12 @@ class ArchiveBatchRuntime final {
     journal_ = journal;
   }
 
+  void bind_debug(debug::IEventSink* sink,
+                  acquisition::InjectedMonotonicClock clock) noexcept {
+    debug_sink_ = sink;
+    debug_clock_ = clock;
+  }
+
   BatchRuntimeStatus poll() noexcept {
     if (archive_ == nullptr || batches_ == nullptr || journal_ == nullptr) {
       return BatchRuntimeStatus::Retryable;
@@ -955,7 +980,7 @@ class ArchiveBatchRuntime final {
   }
 
   AckPersistStatus apply_ack(const Ack& ack) noexcept {
-    if (journal_ == nullptr || batches_ == nullptr) {
+    if (archive_ == nullptr || journal_ == nullptr || batches_ == nullptr) {
       return AckPersistStatus::Retryable;
     }
     const auto status = journal_->apply_ack(ack);
@@ -971,8 +996,12 @@ class ArchiveBatchRuntime final {
     const storage::ArchiveIdentity bound_source{
         batch_.source.device_id, batch_.source.boot_id, batch_.source.sequence,
         static_cast<storage::ArchiveRecordKind>(batch_.source.record_kind)};
+    emit_storage_outcome(1, ack.record_count);
     if (archive_ != nullptr) {
-      if (!archive_->reclaim_pending(bound_source, batch_.source.record_hash) &&
+      const bool archive_reclaimed =
+          archive_->reclaim_pending(bound_source, batch_.source.record_hash);
+      if (archive_reclaimed) emit_storage_outcome(2, 1U);
+      if (!archive_reclaimed &&
           archive_->contains(bound_source, batch_.source.record_hash)) {
         return AckPersistStatus::Retryable;
       }
@@ -990,7 +1019,20 @@ class ArchiveBatchRuntime final {
   const ImmutableBatch& batch() const noexcept { return batch_; }
 
  private:
+  void emit_storage_outcome(int32_t result, uint32_t count) noexcept {
+    if (debug_sink_ == nullptr) return;
+    debug::EventInput event{};
+    event.monotonic_us = debug_clock_.now_us();
+    event.module = debug::Module::Storage;
+    event.event_code = 32U;
+    event.arg0 = result;
+    event.arg1 = static_cast<int32_t>(count);
+    (void)debug_sink_->emit(event);
+  }
+
   storage::IArchiveStore* archive_{nullptr};
+  debug::IEventSink* debug_sink_{nullptr};
+  acquisition::InjectedMonotonicClock debug_clock_{nullptr, nullptr};
   BatchStore* batches_{nullptr};
   AckJournal* journal_{nullptr};
   BatchJsonBuilder builder_{};

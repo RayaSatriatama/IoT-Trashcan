@@ -4,6 +4,9 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -41,6 +44,87 @@ func TestDatabaseAuthorizerEnforcesPermissionExpiryRevocationAndCSRF(t *testing.
 	}
 	if err := RevokeOperatorSession(context.Background(), db, "session", now); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDatabaseAuthorizerBoundsInvalidTokenStateWithoutEvictingExistingQuota(t *testing.T) {
+	const capacity = 4096
+	_, db, now := testStore(t)
+	if err := ProvisionOperatorSession(t.Context(), db, "bounded-session", "operator-1", "bounded-operator-token", "csrf-token", now.Add(time.Hour), []string{"DEV-01"}); err != nil {
+		t.Fatal(err)
+	}
+	a := NewDatabaseAuthorizer(db).WithClock(func() time.Time { return now }).WithRateLimit(2)
+	valid := httptest.NewRequest(http.MethodGet, "/", nil)
+	valid.Header.Set("Authorization", "Bearer bounded-operator-token")
+	if _, err := a.AuthorizeOperator(t.Context(), valid, "DEV-01"); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < capacity+8; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("Authorization", "Bearer TEST_ONLY_INVALID_TOKEN_"+strconv.Itoa(i))
+		if i%2 == 0 {
+			if _, err := a.AuthorizeOperator(t.Context(), req, "DEV-01"); err == nil {
+				t.Fatal("invalid operator token accepted")
+			}
+		} else if err := a.AuthorizeDevice(t.Context(), req, "DEV-01"); err == nil {
+			t.Fatal("invalid device token accepted")
+		}
+	}
+	if len(a.requests) != capacity {
+		t.Fatalf("tracked token keys=%d, want bounded capacity=%d", len(a.requests), capacity)
+	}
+	if _, err := a.AuthorizeOperator(t.Context(), valid, "DEV-01"); err != nil {
+		t.Fatalf("capacity rejected an existing key below quota: %v", err)
+	}
+	if _, err := a.AuthorizeOperator(t.Context(), valid, "DEV-01"); err == nil {
+		t.Fatal("capacity handling reset an existing quota")
+	}
+}
+
+func TestDatabaseAuthorizerRateKeyCapacityResetsOnlyAtMinuteRollover(t *testing.T) {
+	const capacity = 4096
+	now := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
+	a := NewDatabaseAuthorizer(nil).WithRateLimit(1)
+	for i := 0; i < capacity; i++ {
+		if !a.allowRate("key-"+strconv.Itoa(i), now) {
+			t.Fatal("new key rejected below capacity")
+		}
+	}
+	if a.allowRate("overflow", now) || len(a.requests) != capacity {
+		t.Fatal("full window admitted an untracked key")
+	}
+	next := now.Add(time.Minute)
+	if !a.allowRate("next-window", next) || len(a.requests) != 1 {
+		t.Fatal("minute rollover did not release the old bounded table")
+	}
+	if !a.allowRate("key-0", next) || a.allowRate("key-0", next) {
+		t.Fatal("per-key quota changed after minute rollover")
+	}
+}
+
+func TestDatabaseAuthorizerRateKeyCapacityIsAtomic(t *testing.T) {
+	const capacity = 4096
+	now := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
+	a := NewDatabaseAuthorizer(nil)
+	var workers sync.WaitGroup
+	var admitted atomic.Int64
+	start := make(chan struct{})
+	for worker := 0; worker < 32; worker++ {
+		workers.Add(1)
+		go func(worker int) {
+			defer workers.Done()
+			<-start
+			for i := worker; i < capacity*2; i += 32 {
+				if a.allowRate("concurrent-key-"+strconv.Itoa(i), now) {
+					admitted.Add(1)
+				}
+			}
+		}(worker)
+	}
+	close(start)
+	workers.Wait()
+	if admitted.Load() != capacity || len(a.requests) != capacity {
+		t.Fatalf("capacity race: admitted=%d tracked=%d", admitted.Load(), len(a.requests))
 	}
 }
 

@@ -8,6 +8,8 @@ import { Image as RNImage } from 'react-native';
 import { Card, Text, XStack, YStack } from 'tamagui';
 
 import { MetricBar } from './MetricBar';
+import { FirmwareMonitoringPanel } from './device/FirmwareMonitoringPanel';
+import { FirmwareResultsPanel } from './device/FirmwareResultsPanel';
 import { StatusBadge } from './StatusBadge';
 import { textStyles } from '../lib/ui/typography';
 import { useReducedMotion } from '../lib/ui/motionContext';
@@ -81,12 +83,14 @@ export function DeviceCard({ device, onPress, locationName }: DeviceCardProps) {
           device.slots.map((slot) => (
             <MetricBar key={slot.stream} label={getStreamLabel(slot.stream)} value={slot.fill} tone={getStreamTone(slot.stream)} />
           ))
-        ) : (
+        ) : device.firmware_monitoring?.length ? null : (
           <Text color="$colorMuted" {...textStyles.bodySecondary}>
             Belum ada data slot
           </Text>
         )}
       </YStack>
+      {device.firmware_monitoring?.length ? <FirmwareMonitoringPanel samples={device.firmware_monitoring} compact /> : null}
+      {device.firmware_results?.length ? <FirmwareResultsPanel results={device.firmware_results} compact /> : null}
     </Card>
   );
 }

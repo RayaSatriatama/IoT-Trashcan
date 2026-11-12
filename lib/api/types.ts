@@ -1,3 +1,22 @@
+import type { CALIBRATION_SENSOR_IDS } from './calibration';
+
+export interface FirmwareMonitoringSample {
+  sensor_id: typeof CALIBRATION_SENSOR_IDS[number];
+  stream: string;
+  boot_id: string;
+  last_sequence: string;
+  quality: string;
+  reason: string;
+  sample_origin: 'PHYSICAL' | 'SIMULATED' | 'UNKNOWN';
+  origin_firmware_version: string | null;
+  raw: Record<string, number> | null;
+  converted_value: Record<string, number> | null;
+  fresh: boolean | null;
+  age_ms: number | null;
+  ordering_unknown: boolean;
+  future_clock_skew: boolean;
+}
+
 export type CanonicalStatus =
   | 'Normal'
   | 'Waspada'
@@ -45,6 +64,27 @@ export interface DeviceDetail {
   last_seen: string | null;
   status: CanonicalStatus | null;
   slots: SlotDTO[];
+  // Missing means an older API; an empty list means no accepted samples.
+  firmware_monitoring?: FirmwareMonitoringSample[];
+  firmware_results?: FirmwareResult[];
+}
+
+export interface FirmwareResultTrace {
+  model_ref: { version: string; hash: string };
+  memberships: { input: string; set: string; value: number }[];
+  rules: { id: string; strength: number; output_id: string }[];
+  aggregate: { output_id: string; area: number | null; centroid: number | null } | null;
+}
+
+export interface FirmwareResult {
+  stream: 'organic' | 'inorganic' | 'b3'; boot_id: string; sequence: string; monotonic_us: string;
+  recorded_at: string | null; time_quality: 'UNSYNCED' | 'SYNCED' | 'RECONSTRUCTED';
+  source_sample_ids: string[];
+  result_origin: 'PHYSICAL' | 'SIMULATED' | 'UNKNOWN'; origin_firmware_version: string | null; fresh: boolean | null; age_ms: number | null; future_clock_skew: boolean;
+  processed: { fill_pct: number | null; weight_kg: number | null; weight_utilization_pct: number | null; ogi: number | null; accumulation_hours: number | null; temperature_c: number | null };
+  fuzzy: { state: 'UNAVAILABLE' | 'UNCONFIGURED' | 'READY'; score: number | null; label: string | null; reason: string; model_state: 'UNCONFIGURED' | 'TEST_ONLY' | 'PRODUCTION'; trace: FirmwareResultTrace | null };
+  safety: { state: 'UNCONFIGURED' | 'UNAVAILABLE' | 'FAULT' | 'CLEAR' | 'ALERT'; reason: string; model_state: 'UNCONFIGURED' | 'TEST_ONLY' | 'PRODUCTION'; trace: FirmwareResultTrace | null };
+  ordering_unknown: boolean;
 }
 
 export interface DeviceSummary extends DeviceDetail {

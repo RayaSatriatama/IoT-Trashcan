@@ -136,10 +136,12 @@ class FsImmutableBatchStore final : public IImmutableBatchStore {
  public:
 #ifdef ARDUINO
   bool begin(fs::FS& filesystem, uint64_t quota_bytes,
-             const char* path = "/sigap/batches.bin") noexcept {
+             const char* path = "/sigap/batches.bin",
+             const char* checkpoint = "/sigap/batches.ckp") noexcept {
     filesystem_ = &filesystem;
     quota_bytes_ = quota_bytes;
     path_ = path;
+    checkpoint_path_ = checkpoint;
     return recover();
   }
 #else
@@ -377,6 +379,30 @@ class FsImmutableBatchStore final : public IImmutableBatchStore {
   }
   bool load_manifest(const Ack& ack, ImmutableBatch& output) noexcept override {
     return load_selected(0U, &ack, output);
+  }
+
+  // Only the opt-in single-flight runtime calls this, after durable journal
+  // completion and exact source reclaim. Never remove another pending batch.
+  bool retire_completed(const Ack& ack) noexcept {
+    if (filesystem_ == nullptr || path_ == nullptr) return false;
+    if (!filesystem_->exists(path_)) return pending_bytes_ == 0U;
+    if (pending_bytes_ == 0U) return index_count_ == 0U;
+    if (index_count_ != 1U) return false;
+    const auto& entry = index_[0U];
+    if (ack.status != AckStatus::Durable || !ack.device_id.present ||
+        entry.device_id.bytes != ack.device_id.bytes ||
+        entry.batch_id_size != ack.batch_id_size ||
+        entry.record_count != ack.record_count || entry.body_hash != ack.body_hash ||
+        !std::equal(entry.batch_id.begin(), entry.batch_id.begin() + entry.batch_id_size,
+                    ack.batch_id.begin()) ||
+        pending_bytes_ != kBatchFrameHeaderBytes + entry.batch_id_size +
+                              entry.body_size + kBatchFrameTrailerBytes) return false;
+    File file = filesystem_->open(path_, FILE_WRITE);
+    if (!file) return false;
+    file.close();
+    index_count_ = 0U;
+    pending_bytes_ = 0U;
+    return true;
   }
 
  private:

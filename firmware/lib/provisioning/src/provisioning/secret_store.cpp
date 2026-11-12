@@ -230,6 +230,20 @@ bool PersistentSecretStore::load_for_network(NetworkSecrets& output) {
   return true;
 }
 
+bool PersistentSecretStore::load_wifi_for_network(NetworkSecrets& output) {
+  secure_zero(&output, sizeof(output));
+  NetworkSecrets candidate{};
+  if (!read_slot(SecretSlot::Wifi, candidate)) {
+    secure_zero(&candidate, sizeof(candidate));
+    return false;
+  }
+  output.ssid = candidate.ssid;
+  output.password = candidate.password;
+  secure_zero(&candidate, sizeof(candidate));
+  set_result(SecretStoreResult::Ok);
+  return true;
+}
+
 SecretPresence PersistentSecretStore::status() const noexcept {
   SecretPresence presence{};
   NetworkSecrets ignored{};

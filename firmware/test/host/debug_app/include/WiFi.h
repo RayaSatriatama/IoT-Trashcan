@@ -1,0 +1,5 @@
+#pragma once
+#include "Arduino.h"
+inline constexpr int WL_CONNECTED=3,WL_CONNECT_FAILED=4,WL_NO_SSID_AVAIL=1,WL_CONNECTION_LOST=5,WL_DISCONNECTED=6,WIFI_STA=1,WIFI_SCAN_RUNNING=-1,WIFI_SCAN_FAILED=-2,WIFI_AUTH_OPEN=0;
+struct IPAddress {unsigned value;IPAddress(int a=1,int=0,int=0,int=0):value(a){} operator uint32_t()const{return value;} bool operator==(const IPAddress&x)const{return value==x.value;} bool operator!=(const IPAddress&x)const{return value!=x.value;}};
+struct WiFiClass {void persistent(bool){} bool mode(int){return true;}void setAutoReconnect(bool){} bool disconnect(bool=false,bool=false){return true;}void begin(const char*,const char*){}bool isConnected()const{return test_platform::wifi_up;}int status()const{return test_platform::wifi_up?WL_CONNECTED:WL_DISCONNECTED;}IPAddress localIP()const{return IPAddress(test_platform::wifi_up?1:0);}int scanNetworks(bool=false,bool=false){return 0;}int scanComplete(){return 0;}void scanDelete(){}String SSID(int){return String("TEST");}int RSSI(int){return -50;}int encryptionType(int){return WIFI_AUTH_OPEN;}};inline WiFiClass WiFi;

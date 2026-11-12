@@ -2,10 +2,21 @@
 
 #include "calibration/calibration_replay_store.h"
 #include "calibration/calibration_transport.h"
+#include "debug/types.h"
 
 namespace {
 
 using namespace sigap::calibration;
+
+class EventSink final : public sigap::debug::IEventSink {
+ public:
+  bool emit(const sigap::debug::EventInput& input) noexcept override {
+    if (count < events.size()) events[count++] = input;
+    return true;
+  }
+  std::array<sigap::debug::EventInput, 16U> events{};
+  std::size_t count{};
+};
 
 class FakeWorkflow final : public ICalibrationTransportWorkflow {
  public:
@@ -29,7 +40,8 @@ class FakeWorkflow final : public ICalibrationTransportWorkflow {
     return proposal.present;
   }
   bool start(CalibrationTarget target, uint64_t now_us) noexcept override {
-    if (status_.active) return false;
+    ++start_attempts;
+    if (!start_allowed || status_.active) return false;
     status_.active = true;
     status_.state = CalibrationState::Capture;
     status_.target = target;
@@ -80,6 +92,8 @@ class FakeWorkflow final : public ICalibrationTransportWorkflow {
   DiagnosticEvidence evidence_{};
   bool evidence_available_{true};
   uint32_t start_calls{0U};
+  uint32_t start_attempts{0U};
+  bool start_allowed{true};
   uint32_t commit_calls{0U};
   uint32_t cancel_calls{0U};
 };
@@ -159,13 +173,20 @@ void test_session_owner_binds_authenticated_principal() {
 
 void test_expiry_cancels_workflow_and_disconnect_is_local() {
   FakeWorkflow workflow{};
+  EventSink sink{};
   CalibrationTransportController controller(workflow, 0x1234U);
+  controller.set_debug_sink(&sink);
   CalibrationResultEnvelope result{};
   auto start = command(CalibrationOperation::Start, CalibrationTransport::Usb, 10U);
   TEST_ASSERT_TRUE(controller.execute(start, 100U, result));
   controller.poll(100U + CalibrationSession::kSessionTimeoutUs + 1U);
   TEST_ASSERT_FALSE(controller.active());
   TEST_ASSERT_EQUAL_UINT32(1U, workflow.cancel_calls);
+  TEST_ASSERT_EQUAL_UINT32(4U, sink.count);
+  TEST_ASSERT_EQUAL_UINT32(50U, sink.events[2].event_code);
+  TEST_ASSERT_EQUAL_INT(4, sink.events[2].arg1);
+  TEST_ASSERT_EQUAL_UINT32(51U, sink.events[3].event_code);
+  TEST_ASSERT_EQUAL_INT(0, sink.events[3].arg0);
 
   start.request_id = 11U;
   TEST_ASSERT_TRUE(controller.execute(start, 200U, result));
@@ -375,6 +396,41 @@ void test_commit_returns_terminal_status_and_profile_identity() {
   TEST_ASSERT_EQUAL_UINT32(1U, result.profile.version);
 }
 
+void test_controller_observes_committed_profile_without_replaying_transition() {
+  FakeWorkflow workflow{};
+  AllowAuthorizer authorizer{};
+  EventSink sink{};
+  CalibrationTransportController controller(workflow, 0x1234U, &authorizer);
+  controller.set_debug_sink(&sink);
+  CalibrationResultEnvelope result{};
+  auto start = command(CalibrationOperation::Start,
+                       CalibrationTransport::Https, 501U);
+  TEST_ASSERT_TRUE(controller.execute(start, 1U, result));
+  auto commit = command(CalibrationOperation::Commit,
+                        CalibrationTransport::Https, 502U, result.session_id);
+  workflow.proposal.present = true;
+  workflow.proposal.version = 2U;
+  commit.expected_profile_present = true;
+  commit.expected_profile = workflow.proposal;
+  sink.count = 0U;
+  TEST_ASSERT_TRUE(controller.execute(commit, 2U, result));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CalibrationCommandStatus::Committed),
+                        static_cast<int>(result.status));
+  TEST_ASSERT_EQUAL_UINT32(3U, sink.count);
+  TEST_ASSERT_EQUAL_UINT32(50U, sink.events[0].event_code);
+  TEST_ASSERT_EQUAL_UINT32(52U, sink.events[1].event_code);
+  TEST_ASSERT_EQUAL_UINT32(51U, sink.events[2].event_code);
+  TEST_ASSERT_EQUAL_INT(0, sink.events[1].arg0);
+  TEST_ASSERT_EQUAL_INT(10, sink.events[1].arg1);
+
+  sink.count = 0U;
+  TEST_ASSERT_TRUE(controller.execute(commit, 3U, result));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CalibrationCommandStatus::Replayed),
+                        static_cast<int>(result.status));
+  TEST_ASSERT_EQUAL_UINT32(1U, sink.count);
+  TEST_ASSERT_EQUAL_UINT32(50U, sink.events[0].event_code);
+}
+
 void test_request_id_reuse_with_changed_payload_digest_is_conflict() {
   FakeWorkflow workflow{};
   AllowAuthorizer authorizer{};
@@ -391,11 +447,118 @@ void test_request_id_reuse_with_changed_payload_digest_is_conflict() {
   TEST_ASSERT_EQUAL_UINT32(1U, workflow.start_calls);
 }
 
+void test_generic_workflow_failure_does_not_claim_internal_cause() {
+  FakeWorkflow workflow{};
+  AllowAuthorizer authorizer{};
+  EventSink sink{};
+  CalibrationTransportController controller(workflow, 0x1234U, &authorizer);
+  controller.set_debug_sink(&sink);
+  CalibrationResultEnvelope result{};
+  auto start = command(CalibrationOperation::Start, CalibrationTransport::Usb, 90U);
+  workflow.status_.active = true;  // workflow rejects this start; no typed cause exists.
+  TEST_ASSERT_FALSE(controller.execute(start, 100U, result));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CalibrationCommandStatus::Failed),
+                        static_cast<int>(result.status));
+  TEST_ASSERT_EQUAL_UINT32(1U, sink.count);
+  TEST_ASSERT_EQUAL_INT(0, sink.events[0].arg1);
+}
+
+void test_owner_events_report_acquire_and_release_without_countdown_noise() {
+  FakeWorkflow workflow{};
+  EventSink sink{};
+  CalibrationTransportController controller(workflow, 0x1234U);
+  controller.set_debug_sink(&sink);
+  CalibrationResultEnvelope result{};
+  auto start = command(CalibrationOperation::Start, CalibrationTransport::Usb, 91U);
+  TEST_ASSERT_TRUE(controller.execute(start, 10U, result));
+  TEST_ASSERT_EQUAL_UINT32(2U, sink.count);
+  TEST_ASSERT_EQUAL_UINT32(50U, sink.events[0].event_code);
+  TEST_ASSERT_EQUAL_UINT32(51U, sink.events[1].event_code);
+  TEST_ASSERT_EQUAL_INT(1, sink.events[1].arg0);
+  TEST_ASSERT_EQUAL_INT(300000, sink.events[1].arg1);
+  auto cancel = command(CalibrationOperation::Cancel, CalibrationTransport::Usb,
+                        92U, result.session_id);
+  TEST_ASSERT_TRUE(controller.execute(cancel, 20U, result));
+  TEST_ASSERT_EQUAL_UINT32(4U, sink.count);
+  TEST_ASSERT_EQUAL_UINT32(51U, sink.events[3].event_code);
+  TEST_ASSERT_EQUAL_INT(0, sink.events[3].arg0);
+  TEST_ASSERT_EQUAL_INT(0, sink.events[3].arg1);
+}
+
+void test_controller_observes_results_without_changing_replay_or_owner() {
+  FakeWorkflow workflow{};
+  AllowAuthorizer authorizer{};
+  EventSink sink{};
+  CalibrationTransportController controller(workflow, 0x1234U, &authorizer);
+  controller.set_debug_sink(&sink);
+  CalibrationResultEnvelope result{};
+  auto start = command(CalibrationOperation::Start, CalibrationTransport::Ble,
+                       UINT32_MAX, 0U);
+  TEST_ASSERT_TRUE(controller.execute(start, 100U, result));
+  TEST_ASSERT_EQUAL_UINT32(2U, sink.count);
+  TEST_ASSERT_EQUAL_UINT32(50U, sink.events[0].event_code);
+  TEST_ASSERT_EQUAL_UINT32(51U, sink.events[1].event_code);
+  TEST_ASSERT_EQUAL_UINT32(UINT32_MAX, sink.events[0].request_id);
+  TEST_ASSERT_EQUAL_UINT32(sigap::debug::kHasRequestId, sink.events[0].presence);
+  TEST_ASSERT_TRUE(controller.active());
+
+  TEST_ASSERT_TRUE(controller.execute(start, 101U, result));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CalibrationCommandStatus::Replayed),
+                        static_cast<int>(result.status));
+  TEST_ASSERT_EQUAL_UINT32(3U, sink.count);
+  TEST_ASSERT_EQUAL_INT(2, sink.events[1].arg0);
+
+  auto too_wide = command(CalibrationOperation::GetStatus,
+                          CalibrationTransport::Ble,
+                          static_cast<uint64_t>(UINT32_MAX) + 1U);
+  TEST_ASSERT_TRUE(controller.execute(too_wide, 102U, result));
+  TEST_ASSERT_EQUAL_UINT32(0U, sink.events[3].request_id);
+  TEST_ASSERT_EQUAL_UINT32(0U, sink.events[3].presence);
+  TEST_ASSERT_TRUE(controller.active());
+}
+
+void test_failed_start_replay_remains_failed_without_second_workflow_call() {
+  FakeWorkflow workflow{};
+  workflow.start_allowed = false;
+  AllowAuthorizer authorizer{};
+  CalibrationTransportController controller(workflow, 0x1234U, &authorizer);
+  const auto start = command(CalibrationOperation::Start, CalibrationTransport::Https, 901U);
+  CalibrationResultEnvelope result{};
+  TEST_ASSERT_FALSE(controller.execute(start, 10U, result));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CalibrationCommandStatus::Failed), static_cast<int>(result.status));
+  TEST_ASSERT_FALSE(controller.execute(start, 11U, result));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CalibrationCommandStatus::Failed), static_cast<int>(result.status));
+  TEST_ASSERT_EQUAL_UINT32(1U, workflow.start_attempts);
+  TEST_ASSERT_EQUAL_UINT32(0U, workflow.start_calls);
+  TEST_ASSERT_FALSE(controller.active());
+}
+
+void test_persisted_failed_replay_is_not_promoted_after_controller_recreation() {
+  FakeWorkflow workflow{};
+  AllowAuthorizer authorizer{};
+  MemoryCalibrationReplayStore store{};
+  const auto start = command(CalibrationOperation::Start, CalibrationTransport::Https, 902U);
+  CalibrationResultEnvelope failed{};
+  failed.request_id = start.request_id;
+  failed.status = CalibrationCommandStatus::Failed;
+  TEST_ASSERT_TRUE(store.save(start, failed));
+  for (unsigned attempt = 0U; attempt < 2U; ++attempt) {
+    CalibrationTransportController controller(workflow, 0x1234U, &authorizer, &store);
+    CalibrationResultEnvelope result{};
+    TEST_ASSERT_FALSE(controller.execute(start, 10U + attempt, result));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(CalibrationCommandStatus::Failed), static_cast<int>(result.status));
+    TEST_ASSERT_FALSE(controller.active());
+  }
+  TEST_ASSERT_EQUAL_UINT32(0U, workflow.start_attempts);
+}
+
 }  // namespace
 
 void setup() {
   UNITY_BEGIN();
   RUN_TEST(test_owner_and_idempotent_start);
+  RUN_TEST(test_failed_start_replay_remains_failed_without_second_workflow_call);
+  RUN_TEST(test_persisted_failed_replay_is_not_promoted_after_controller_recreation);
   RUN_TEST(test_session_owner_binds_authenticated_principal);
   RUN_TEST(test_expiry_cancels_workflow_and_disconnect_is_local);
   RUN_TEST(test_expected_profile_conflict_and_preview);
@@ -407,8 +570,12 @@ void setup() {
   RUN_TEST(test_prepared_intent_cannot_be_replaced_by_another_request);
   RUN_TEST(test_replay_still_requires_current_authorization);
   RUN_TEST(test_commit_returns_terminal_status_and_profile_identity);
+  RUN_TEST(test_controller_observes_committed_profile_without_replaying_transition);
   RUN_TEST(test_request_id_reuse_with_changed_payload_digest_is_conflict);
+  RUN_TEST(test_generic_workflow_failure_does_not_claim_internal_cause);
+  RUN_TEST(test_owner_events_report_acquire_and_release_without_countdown_noise);
   RUN_TEST(test_committed_replay_survives_controller_recreation);
+  RUN_TEST(test_controller_observes_results_without_changing_replay_or_owner);
   UNITY_END();
 }
 

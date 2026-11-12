@@ -159,6 +159,7 @@ NetworkPolicy journal_policy() {
 void test_target_archive_failed_recovery_copy_is_restart_safe() {
   fs::FS filesystem{};
   LittleFsArchiveStore initial("/sigap/archive.bin");
+  initial.set_capacity_probe([](uint64_t& n, void*) noexcept { n=UINT64_MAX; return true; }, nullptr);
   TEST_ASSERT_TRUE(initial.begin(filesystem, 1024U * 1024U));
   TEST_ASSERT_TRUE(filesystem.exists("/sigap"));
   const auto first = record(1U);
@@ -175,17 +176,20 @@ void test_target_archive_failed_recovery_copy_is_restart_safe() {
   // copy, which is deliberately short so the source remains authoritative.
   filesystem.short_write_after(1U, 13U);
   LittleFsArchiveStore failed("/sigap/archive.bin");
+  failed.set_capacity_probe([](uint64_t& n, void*) noexcept { n=UINT64_MAX; return true; }, nullptr);
   TEST_ASSERT_FALSE(failed.begin(filesystem, 1024U * 1024U));
   TEST_ASSERT_TRUE(filesystem.exists("/sigap/archive.bin.tail0"));
 
   filesystem.clear_faults();
   LittleFsArchiveStore restarted("/sigap/archive.bin");
+  restarted.set_capacity_probe([](uint64_t& n, void*) noexcept { n=UINT64_MAX; return true; }, nullptr);
   TEST_ASSERT_TRUE(restarted.begin(filesystem, 1024U * 1024U));
   TEST_ASSERT_TRUE(restarted.contains(first.identity, first.hash));
   TEST_ASSERT_TRUE(restarted.contains(second.identity, second.hash));
 
   TEST_ASSERT_TRUE(restarted.reclaim_pending(first.identity, first.hash));
   LittleFsArchiveStore after_reclaim("/sigap/archive.bin");
+  after_reclaim.set_capacity_probe([](uint64_t& n, void*) noexcept { n=UINT64_MAX; return true; }, nullptr);
   TEST_ASSERT_TRUE(after_reclaim.begin(filesystem, 1024U * 1024U));
   TEST_ASSERT_FALSE(after_reclaim.contains(first.identity, first.hash));
   TEST_ASSERT_TRUE(after_reclaim.contains(second.identity, second.hash));
@@ -194,6 +198,7 @@ void test_target_archive_failed_recovery_copy_is_restart_safe() {
 void test_target_archive_reclaims_non_head_probe_record() {
   fs::FS filesystem{};
   LittleFsArchiveStore store("/sigap/archive.bin");
+  store.set_capacity_probe([](uint64_t& n, void*) noexcept { n=UINT64_MAX; return true; }, nullptr);
   TEST_ASSERT_TRUE(store.begin(filesystem, 1024U * 1024U));
   const auto first = record(101U);
   const auto second = record(102U);
@@ -204,6 +209,8 @@ void test_target_archive_reclaims_non_head_probe_record() {
   TEST_ASSERT_TRUE(store.reclaim_pending(second.identity, second.hash));
 
   LittleFsArchiveStore restarted("/sigap/archive.bin");
+
+  restarted.set_capacity_probe([](uint64_t& n, void*) noexcept { n=UINT64_MAX; return true; }, nullptr);
   TEST_ASSERT_TRUE(restarted.begin(filesystem, 1024U * 1024U));
   TEST_ASSERT_TRUE(restarted.contains(first.identity, first.hash));
   TEST_ASSERT_FALSE(restarted.contains(second.identity, second.hash));
@@ -212,6 +219,7 @@ void test_target_archive_reclaims_non_head_probe_record() {
 void test_target_archive_short_append_recovers_valid_prefix() {
   fs::FS filesystem{};
   LittleFsArchiveStore store("/sigap/archive.bin");
+  store.set_capacity_probe([](uint64_t& n, void*) noexcept { n=UINT64_MAX; return true; }, nullptr);
   TEST_ASSERT_TRUE(store.begin(filesystem, 1024U * 1024U));
   const auto first = record(103U);
   const auto second = record(104U);
@@ -224,6 +232,8 @@ void test_target_archive_short_append_recovers_valid_prefix() {
   filesystem.clear_faults();
 
   LittleFsArchiveStore recovered("/sigap/archive.bin");
+
+  recovered.set_capacity_probe([](uint64_t& n, void*) noexcept { n=UINT64_MAX; return true; }, nullptr);
   TEST_ASSERT_TRUE(recovered.begin(filesystem, 1024U * 1024U));
   TEST_ASSERT_TRUE(recovered.contains(first.identity, first.hash));
   TEST_ASSERT_FALSE(recovered.contains(second.identity, second.hash));
@@ -231,6 +241,8 @@ void test_target_archive_short_append_recovers_valid_prefix() {
                         static_cast<int>(recovered.append(second)));
 
   LittleFsArchiveStore restarted("/sigap/archive.bin");
+
+  restarted.set_capacity_probe([](uint64_t& n, void*) noexcept { n=UINT64_MAX; return true; }, nullptr);
   TEST_ASSERT_TRUE(restarted.begin(filesystem, 1024U * 1024U));
   TEST_ASSERT_TRUE(restarted.contains(first.identity, first.hash));
   TEST_ASSERT_TRUE(restarted.contains(second.identity, second.hash));
@@ -240,6 +252,7 @@ void test_target_archive_does_not_open_missing_recovery_marker() {
   fs::FS filesystem{};
   filesystem.track_missing_read_path("/sigap/archive.bin.recover");
   LittleFsArchiveStore store("/sigap/archive.bin");
+  store.set_capacity_probe([](uint64_t& n, void*) noexcept { n=UINT64_MAX; return true; }, nullptr);
   TEST_ASSERT_TRUE(store.begin(filesystem, 1024U * 1024U));
   TEST_ASSERT_EQUAL_UINT32(0U, filesystem.missing_read_count());
 }
@@ -248,6 +261,7 @@ void test_target_archive_does_not_open_missing_gap_file() {
   fs::FS filesystem{};
   filesystem.track_missing_read_path("/sigap/gaps.bin");
   LittleFsArchiveStore store("/sigap/archive.bin");
+  store.set_capacity_probe([](uint64_t& n, void*) noexcept { n=UINT64_MAX; return true; }, nullptr);
   TEST_ASSERT_TRUE(store.begin(filesystem, 1024U * 1024U));
   TEST_ASSERT_EQUAL_UINT32(0U, filesystem.missing_read_count());
 }
@@ -256,6 +270,7 @@ void test_target_archive_does_not_open_missing_archive_file() {
   fs::FS filesystem{};
   filesystem.track_missing_read_path("/sigap/archive.bin");
   LittleFsArchiveStore store("/sigap/archive.bin");
+  store.set_capacity_probe([](uint64_t& n, void*) noexcept { n=UINT64_MAX; return true; }, nullptr);
   TEST_ASSERT_TRUE(store.begin(filesystem, 1024U * 1024U));
   TEST_ASSERT_EQUAL_UINT32(0U, filesystem.missing_read_count());
 }
@@ -263,6 +278,7 @@ void test_target_archive_does_not_open_missing_archive_file() {
 void test_target_archive_failed_reclaim_preserves_source() {
   fs::FS filesystem{};
   LittleFsArchiveStore store("/sigap/archive.bin");
+  store.set_capacity_probe([](uint64_t& n, void*) noexcept { n=UINT64_MAX; return true; }, nullptr);
   TEST_ASSERT_TRUE(store.begin(filesystem, 1024U * 1024U));
   const auto first = record(105U);
   const auto second = record(106U);
@@ -276,6 +292,8 @@ void test_target_archive_failed_reclaim_preserves_source() {
   filesystem.clear_faults();
 
   LittleFsArchiveStore after_copy_failure("/sigap/archive.bin");
+
+  after_copy_failure.set_capacity_probe([](uint64_t& n, void*) noexcept { n=UINT64_MAX; return true; }, nullptr);
   TEST_ASSERT_TRUE(after_copy_failure.begin(filesystem, 1024U * 1024U));
   TEST_ASSERT_TRUE(after_copy_failure.contains(first.identity, first.hash));
   TEST_ASSERT_TRUE(after_copy_failure.contains(second.identity, second.hash));
@@ -284,6 +302,7 @@ void test_target_archive_failed_reclaim_preserves_source() {
   TEST_ASSERT_FALSE(after_copy_failure.reclaim_pending(first.identity,
                                                         first.hash));
   LittleFsArchiveStore after_rename_failure("/sigap/archive.bin");
+  after_rename_failure.set_capacity_probe([](uint64_t& n, void*) noexcept { n=UINT64_MAX; return true; }, nullptr);
   TEST_ASSERT_TRUE(after_rename_failure.begin(filesystem, 1024U * 1024U));
   TEST_ASSERT_TRUE(after_rename_failure.contains(first.identity, first.hash));
   TEST_ASSERT_TRUE(after_rename_failure.contains(second.identity, second.hash));
@@ -292,6 +311,7 @@ void test_target_archive_failed_reclaim_preserves_source() {
 void test_target_archive_empty_after_legitimate_reclaim_keeps_tail_forensic() {
   fs::FS filesystem{};
   LittleFsArchiveStore store("/sigap/archive.bin");
+  store.set_capacity_probe([](uint64_t& n, void*) noexcept { n=UINT64_MAX; return true; }, nullptr);
   TEST_ASSERT_TRUE(store.begin(filesystem, 1024U * 1024U));
   const auto only = record(107U);
   TEST_ASSERT_EQUAL_INT(static_cast<int>(AppendStatus::Durable),
@@ -307,6 +327,7 @@ void test_target_archive_empty_after_legitimate_reclaim_keeps_tail_forensic() {
   // treating that tail as pending data on the next recovery.
   TEST_ASSERT_TRUE(store.reclaim_pending(only.identity, only.hash));
   LittleFsArchiveStore restarted("/sigap/archive.bin");
+  restarted.set_capacity_probe([](uint64_t& n, void*) noexcept { n=UINT64_MAX; return true; }, nullptr);
   TEST_ASSERT_TRUE(restarted.begin(filesystem, 1024U * 1024U));
   TEST_ASSERT_FALSE(restarted.contains(only.identity, only.hash));
   TEST_ASSERT_TRUE(filesystem.exists("/sigap/archive.bin.tail0"));

@@ -5,7 +5,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <type_traits>
 
+#include "sigap/build/build_config.h"
 #include "sigap/board/board_pins.h"
 #include "config/config_types.h"
 #include "acquisition/handoff.h"
@@ -19,6 +21,9 @@
 #include "acquisition/sensors/sht31.h"
 #include "acquisition/target_protocol.h"
 #include "acquisition/sensors/ultrasonic.h"
+#include "acquisition/simulated_readers.h"
+#include "acquisition/inactive_readers.h"
+#include "debug/types.h"
 
 #ifdef ARDUINO
 #include <Arduino.h>
@@ -52,12 +57,65 @@ struct TargetProfileSet {
   const Mq7HeaterProfile* heater{nullptr};
 };
 
+class AcquisitionDebugCounters final {
+ public:
+  void bind_sink(debug::IEventSink* sink) noexcept { sink_ = sink; }
+  void reset(uint64_t now_us) noexcept {
+    produced_ = 0U;
+    dropped_ = 0U;
+    last_flush_us_ = now_us;
+    last_poll_us_ = now_us;
+  }
+  void record(HandoffStatus status) noexcept {
+    increment(produced_);
+    if (status == HandoffStatus::Full) increment(dropped_);
+  }
+  void poll(uint64_t now_us) noexcept {
+    const bool regressed = now_us < last_poll_us_;
+    last_poll_us_ = now_us;
+    if (regressed) {
+      last_flush_us_ = now_us;
+      return;
+    }
+    if (now_us - last_flush_us_ < 1000000U) return;
+    last_flush_us_ = now_us;
+    const auto produced = produced_;
+    const auto dropped = dropped_;
+    produced_ = 0U;
+    dropped_ = 0U;
+    emit(now_us, 0, produced);
+    emit(now_us, 1, dropped);
+  }
+
+ private:
+  static void increment(uint32_t& count) noexcept {
+    if (count < static_cast<uint32_t>(INT32_MAX)) ++count;
+  }
+  void emit(uint64_t now_us, int32_t kind, uint32_t count) noexcept {
+    if (sink_ == nullptr || count == 0U) return;
+    debug::EventInput event{};
+    event.monotonic_us = now_us;
+    event.module = debug::Module::Acquisition;
+    event.level = debug::Level::Debug;
+    event.event_code = 41U;
+    event.arg0 = kind;
+    event.arg1 = static_cast<int32_t>(count);
+    (void)sink_->emit(event);
+  }
+  debug::IEventSink* sink_{nullptr};
+  uint32_t produced_{0U};
+  uint32_t dropped_{0U};
+  uint64_t last_flush_us_{0U};
+  uint64_t last_poll_us_{0U};
+};
+
 template <typename Acquirer, std::size_t Capacity>
 struct AcquisitionJob final {
   Acquirer* acquirer{nullptr};
   SampleRing<Capacity>* handoff{nullptr};
   SensorHealthState* health{nullptr};
   ISampleObserver* observer{nullptr};
+  AcquisitionDebugCounters* counters{nullptr};
 
   static void run(void* context, uint64_t now_us) noexcept {
     auto* job = static_cast<AcquisitionJob*>(context);
@@ -70,7 +128,8 @@ struct AcquisitionJob final {
         job->health->observe(now_us, record.quality);
       }
       if (job->observer != nullptr) job->observer->observe(record);
-      (void)job->handoff->try_push(record);
+      const auto status = job->handoff->try_push(record);
+      if (job->counters != nullptr) job->counters->record(status);
     }
   }
 };
@@ -100,7 +159,7 @@ struct UltrasonicTriggerJob final {
 class TargetAcquisitionGraph final {
  public:
   static constexpr std::size_t kHandoffCapacity{16};
-  static constexpr std::size_t kJobCount{14};
+  static constexpr std::size_t kJobCount{build::kPhysicalReferenceOnly ? 4U : 14U};
 
   TargetAcquisitionGraph(RecordFactory& factory,
                          const TargetReaderSet& readers,
@@ -134,6 +193,7 @@ class TargetAcquisitionGraph final {
       ds_channel_state_ = DsChannelState::Ready;
     }
 
+    debug_counters_.reset(first_due_us);
     scheduler_ = CooperativeScheduler{};
     registered_jobs_ = 0U;
     health_ = {};
@@ -168,22 +228,30 @@ class TargetAcquisitionGraph final {
                      ds_channel_state_, calibration_);
     sht31_44_.emplace(0x44U, StreamId::Organic, *readers_.sht31[0], factory_, profiles_.sht31[0], calibration_);
     sht31_45_.emplace(0x45U, StreamId::B3, *readers_.sht31[1], factory_, profiles_.sht31[1], calibration_);
-    hx_jobs_[0] = {&*hx_org_, &handoff_, &health_[0], observer_};
-    hx_jobs_[1] = {&*hx_inorganic_, &handoff_, &health_[1], observer_};
-    hx_jobs_[2] = {&*hx_b3_, &handoff_, &health_[2], observer_};
+    hx_jobs_[0] = {&*hx_org_, &handoff_, &health_[0], observer_, &debug_counters_};
+    hx_jobs_[1] = {&*hx_inorganic_, &handoff_, &health_[1], observer_, &debug_counters_};
+    hx_jobs_[2] = {&*hx_b3_, &handoff_, &health_[2], observer_, &debug_counters_};
     us_jobs_[0] = {&*us_org_};
     us_jobs_[1] = {&*us_inorganic_};
     us_jobs_[2] = {&*us_b3_};
-    mq_jobs_[0] = {&*mq4_, &handoff_, &health_[6], observer_};
-    mq_jobs_[1] = {&*mq135_, &handoff_, &health_[7], observer_};
-    mq_jobs_[2] = {&*mq7_, &handoff_, &health_[8], observer_};
-    mq_jobs_[3] = {&*mq8_, &handoff_, &health_[9], observer_};
+    mq_jobs_[0] = {&*mq4_, &handoff_, &health_[6], observer_, &debug_counters_};
+    mq_jobs_[1] = {&*mq135_, &handoff_, &health_[7], observer_, &debug_counters_};
+    mq_jobs_[2] = {&*mq7_, &handoff_, &health_[8], observer_, &debug_counters_};
+    mq_jobs_[3] = {&*mq8_, &handoff_, &health_[9], observer_, &debug_counters_};
     heater_job_.controller = &*heater_;
-    ds_job_ = {&*ds18b20_, &handoff_, &health_[10], observer_};
-    sht_jobs_[0] = {&*sht31_44_, &handoff_, &health_[11], observer_};
-    sht_jobs_[1] = {&*sht31_45_, &handoff_, &health_[12], observer_};
+    ds_job_ = {&*ds18b20_, &handoff_, &health_[10], observer_, &debug_counters_};
+    sht_jobs_[0] = {&*sht31_44_, &handoff_, &health_[11], observer_, &debug_counters_};
+    sht_jobs_[1] = {&*sht31_45_, &handoff_, &health_[12], observer_, &debug_counters_};
 
     bool ok = true;
+    if constexpr (build::kPhysicalReferenceOnly) {
+      ok = add(hx_period, &AcquisitionJob<Hx711Acquirer, kHandoffCapacity>::run, &hx_jobs_[0], first_due_us) && ok;
+      ok = add(ultrasonic_period, &UltrasonicTriggerJob::run, &us_jobs_[0], first_due_us) && ok;
+      ok = add(mq_period, &AcquisitionJob<MqAdcAcquirer, kHandoffCapacity>::run, &mq_jobs_[1], first_due_us) && ok;
+      ok = add(sht_period, &AcquisitionJob<Sht31Acquirer, kHandoffCapacity>::run, &sht_jobs_[0], first_due_us) && ok;
+      enabled_ = ok;
+      return enabled_;
+    }
     ok = add(hx_period, &AcquisitionJob<Hx711Acquirer, kHandoffCapacity>::run, &hx_jobs_[0], first_due_us) && ok;
     ok = add(hx_period, &AcquisitionJob<Hx711Acquirer, kHandoffCapacity>::run, &hx_jobs_[1], first_due_us) && ok;
     ok = add(hx_period, &AcquisitionJob<Hx711Acquirer, kHandoffCapacity>::run, &hx_jobs_[2], first_due_us) && ok;
@@ -206,13 +274,23 @@ class TargetAcquisitionGraph final {
   void poll(uint64_t now_us) noexcept {
     if (enabled_) {
       service_ultrasonic(*us_org_, now_us, health_[3]);
-      service_ultrasonic(*us_inorganic_, now_us, health_[4]);
-      service_ultrasonic(*us_b3_, now_us, health_[5]);
+      if constexpr (!build::kPhysicalReferenceOnly) {
+        service_ultrasonic(*us_inorganic_, now_us, health_[4]);
+        service_ultrasonic(*us_b3_, now_us, health_[5]);
+      }
       scheduler_.poll(now_us);
+      debug_counters_.poll(now_us);
     }
   }
 
-  void disable() noexcept { enabled_ = false; }
+  void disable() noexcept {
+    enabled_ = false;
+    debug_counters_.reset(0U);
+  }
+
+  void bind_debug_sink(debug::IEventSink* sink) noexcept {
+    debug_counters_.bind_sink(sink);
+  }
 
   void set_sample_observer(ISampleObserver* observer) noexcept {
     observer_ = observer;
@@ -225,7 +303,7 @@ class TargetAcquisitionGraph final {
 
   bool refresh_profiles(uint64_t now_us) noexcept {
     if (!enabled_) return false;
-    if (profiles_.heater != nullptr && heater_.has_value()) {
+    if (!build::kPhysicalReferenceOnly && profiles_.heater != nullptr && heater_.has_value()) {
       heater_->set_profile(*profiles_.heater, now_us);
     }
     us_gate_.set_minimum_gap(effective_ultrasonic_gap(profiles_.ultrasonic));
@@ -283,7 +361,8 @@ class TargetAcquisitionGraph final {
     if (acquirer.service(now_us, record) == DriverPollStatus::Produced) {
       health.observe(now_us, record.quality);
       if (observer_ != nullptr) observer_->observe(record);
-      (void)handoff_.try_push(record);
+      const auto status = handoff_.try_push(record);
+      debug_counters_.record(status);
     }
   }
 
@@ -327,6 +406,7 @@ class TargetAcquisitionGraph final {
   bool enabled_{false};
   ISampleObserver* observer_{nullptr};
   const ICalibrationStateProvider* calibration_{nullptr};
+  AcquisitionDebugCounters debug_counters_{};
 };
 
 // Minimal target GPIO adapters. They intentionally expose only bounded,
@@ -368,7 +448,7 @@ class TargetHx711Reader final : public IHx711Reader {
     delayMicroseconds(1U);
     digitalWrite(sck_, LOW);
     const int64_t signed_value = (value & 0x800000U) != 0U
-                                      ? static_cast<int64_t>(value | 0xff000000U)
+                                      ? static_cast<int64_t>(value) - 0x1000000LL
                                       : static_cast<int64_t>(value);
     return Hx711ReadResult{true, false, signed_value, 1U, 0U, SampleReason::DataReady};
   }
@@ -719,6 +799,10 @@ class TargetSht31Reader final : public ISht31Reader {
     result.humidity_crc_valid = decoded.humidity_crc_valid;
     result.temperature_centi_c = decoded.temperature_centi_c;
     result.humidity_centi_pct = decoded.humidity_centi_pct;
+    result.temperature_ticks = static_cast<uint16_t>(
+        (static_cast<uint16_t>(frame[0]) << 8U) | frame[1]);
+    result.humidity_ticks = static_cast<uint16_t>(
+        (static_cast<uint16_t>(frame[3]) << 8U) | frame[4]);
     return result;
   }
 
@@ -790,6 +874,16 @@ class TargetHeaterRail final : public IMq7HeaterRail {
 
 // Owns every target adapter and composes the complete graph. Profiles remain
 // injected so an unprovisioned/config-required boot can keep the graph off.
+using SelectedHx711Reader = std::conditional_t<build::kSensorSimulation, SimulatedHx711Reader, TargetHx711Reader>;
+using SelectedUltrasonicReader = std::conditional_t<build::kSensorSimulation, SimulatedUltrasonicReader, TargetUltrasonicReader>;
+using SelectedMqAdcReader = std::conditional_t<build::kSensorSimulation, SimulatedMqAdcReader, TargetMqAdcReader>;
+using SelectedDs18b20Reader = std::conditional_t<build::kPhysicalReferenceOnly, InactiveDs18b20Reader, std::conditional_t<build::kSensorSimulation, SimulatedDs18b20Reader, TargetDs18b20Reader>>;
+using SelectedSht31Reader = std::conditional_t<build::kSensorSimulation, SimulatedSht31Reader, TargetSht31Reader>;
+using SelectedHeaterRail = std::conditional_t<build::kPhysicalReferenceOnly, InactiveHeaterRail, std::conditional_t<build::kSensorSimulation, SimulatedHeaterRail, TargetHeaterRail>>;
+using SecondaryHx711Reader = std::conditional_t<build::kPhysicalReferenceOnly, InactiveHx711Reader, SelectedHx711Reader>;
+using SecondaryUltrasonicReader = std::conditional_t<build::kPhysicalReferenceOnly, InactiveUltrasonicReader, SelectedUltrasonicReader>;
+using SecondaryMqAdcReader = std::conditional_t<build::kPhysicalReferenceOnly, InactiveMqAdcReader, SelectedMqAdcReader>;
+
 class TargetAcquisition final {
  public:
   static constexpr std::size_t kHandoffCapacity{TargetAcquisitionGraph::kHandoffCapacity};
@@ -815,16 +909,30 @@ class TargetAcquisition final {
         graph_(factory, readers_, profiles, handoff) {}
 
   bool begin(const config::SamplingConfig& sampling, uint64_t first_due_us) noexcept {
+#if SIGAP_SENSOR_SIMULATION
+    hx_org_.reset(); hx_inorganic_.reset(); hx_b3_.reset();
+    us_org_.reset(); us_inorganic_.reset(); us_b3_.reset();
+    mq4_.reset(); mq135_.reset(); mq7_.reset(); mq8_.reset(); sht31_.reset();
+    ds18b20_.set_now(first_due_us); sht31_.set_now(first_due_us);
+#endif
     ds18b20_.set_profile(profiles_.ds18b20);
     return graph_.begin(sampling, first_due_us);
   }
   void disable() noexcept { graph_.disable(); }
-  void poll(uint64_t now_us) noexcept { graph_.poll(now_us); }
+  void poll(uint64_t now_us) noexcept {
+#if SIGAP_SENSOR_SIMULATION
+    ds18b20_.set_now(now_us); sht31_.set_now(now_us);
+#endif
+    graph_.poll(now_us);
+  }
   bool refresh_profiles(uint64_t now_us) noexcept {
     return graph_.refresh_profiles(now_us);
   }
   void set_sample_observer(ISampleObserver* observer) noexcept {
     graph_.set_sample_observer(observer);
+  }
+  void bind_debug_sink(debug::IEventSink* sink) noexcept {
+    graph_.bind_debug_sink(sink);
   }
   void set_calibration_state_provider(
       const ICalibrationStateProvider* provider) noexcept {
@@ -836,19 +944,19 @@ class TargetAcquisition final {
 
  private:
   board::BoardPins pins_;
-  TargetHx711Reader hx_org_;
-  TargetHx711Reader hx_inorganic_;
-  TargetHx711Reader hx_b3_;
-  TargetUltrasonicReader us_org_;
-  TargetUltrasonicReader us_inorganic_;
-  TargetUltrasonicReader us_b3_;
-  TargetMqAdcReader mq4_;
-  TargetMqAdcReader mq135_;
-  TargetMqAdcReader mq7_;
-  TargetMqAdcReader mq8_;
-  TargetDs18b20Reader ds18b20_;
-  TargetSht31Reader sht31_;
-  TargetHeaterRail heater_rail_;
+  SelectedHx711Reader hx_org_;
+  SecondaryHx711Reader hx_inorganic_;
+  SecondaryHx711Reader hx_b3_;
+  SelectedUltrasonicReader us_org_;
+  SecondaryUltrasonicReader us_inorganic_;
+  SecondaryUltrasonicReader us_b3_;
+  SecondaryMqAdcReader mq4_;
+  SelectedMqAdcReader mq135_;
+  SecondaryMqAdcReader mq7_;
+  SecondaryMqAdcReader mq8_;
+  SelectedDs18b20Reader ds18b20_;
+  SelectedSht31Reader sht31_;
+  SelectedHeaterRail heater_rail_;
   const TargetProfileSet& profiles_;
   TargetReaderSet readers_{};
   TargetAcquisitionGraph graph_;

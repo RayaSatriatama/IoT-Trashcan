@@ -19,7 +19,7 @@ export type CalibrationTransport = 'ble' | 'https';
 export type CalibrationState = 'IDLE' | 'QUEUED' | 'DELIVERED' | 'ACCEPTED' | 'CAPTURING' | 'VALIDATING' | 'VALIDATED' | 'PREVIEW_READY' | 'COMMITTING' | 'COMMITTED' | 'CANCELLED' | 'EXPIRED' | 'FAILED';
 export type CalibrationQuality = 'READY' | 'WARMING_UP' | 'HEATER_PHASE' | 'CALIBRATING' | 'UNCALIBRATED' | 'STALE' | 'TIMEOUT' | 'DISCONNECTED' | 'CRC_ERROR' | 'OUT_OF_RANGE' | 'INVALID';
 
-export type RawEvidence = {
+export type RawEvidence = Record<string, unknown> & {
   present: boolean;
   value?: number | null;
   unit?: string;
@@ -37,10 +37,12 @@ export type SensorDiagnostic = {
   quality: CalibrationQuality;
   reason: string;
   raw: RawEvidence | null;
-  converted_value: number | null;
+  converted_value: number | Record<string, unknown> | null;
   converted_unit: string | null;
-  fresh: boolean;
+  fresh: boolean | null;
   age_ms: number | null;
+  ordering_unknown: boolean;
+  future_clock_skew: boolean;
   last_sequence: string | null;
   profile_present: boolean;
   profile_version: string | null;
@@ -48,6 +50,9 @@ export type SensorDiagnostic = {
   calibration_state: CalibrationState;
   accepted_samples: number;
   rejected_samples: number;
+  boot_id?: string;
+  sample_origin?: 'SIMULATED' | 'PHYSICAL' | 'UNKNOWN';
+  origin_firmware_version?: string | null;
 };
 
 export type CalibrationCapabilities = {

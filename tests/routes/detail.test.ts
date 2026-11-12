@@ -9,6 +9,7 @@ vi.mock('expo-router', () => ({
 vi.mock('react-native', () => ({
   Image: () => null,
 }));
+vi.mock('../../components/device/DeviceDebugPanel', () => ({ DeviceDebugPanel: () => null }));
 
 import {
   LOCATION_EMPTY_DEVICES_COPY,
@@ -18,6 +19,7 @@ import {
   DEVICE_STREAM_LABELS,
   DEVICE_UNAVAILABLE_COPY,
   getDeviceStatusLabel,
+  DeviceDetailSessionView,
 } from '../../app/devices/[id]';
 
 describe('location detail route contracts', () => {
@@ -47,5 +49,9 @@ describe('device detail route contracts', () => {
 
   it('uses explicit unavailable copy for nullable metrics', () => {
     expect(DEVICE_UNAVAILABLE_COPY).toBe('Belum tersedia');
+  });
+
+  it('exports the shared device session composition for the device route', () => {
+    expect(DeviceDetailSessionView).toBeTypeOf('function');
   });
 });

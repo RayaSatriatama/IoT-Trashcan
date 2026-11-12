@@ -545,15 +545,33 @@ func (s *Store) LatestDiagnostic(ctx context.Context, deviceID, sensorID string)
 	}
 	for _, sensors := range snapshot.Samples {
 		if raw, ok := sensors[sensorID]; ok {
-			return diagnosticFromSample(raw, s.now().UTC())
+			var identity struct {
+				DeviceID string `json:"device_id"`
+				BootID   string `json:"boot_id"`
+				Stream   string `json:"stream"`
+			}
+			origin := OriginUnknown
+			version := ""
+			if json.Unmarshal(raw, &identity) == nil && identity.DeviceID == deviceID {
+				origin, version = diagnosticOrigin(ctx, s.db, identity.DeviceID, identity.BootID)
+			}
+			orderingUnknown := false
+			for _, key := range snapshot.OrderingUnknown {
+				if key == identity.Stream+"/"+sensorID {
+					orderingUnknown = true
+					break
+				}
+			}
+			return diagnosticFromSample(raw, s.now().UTC(), origin, version, orderingUnknown)
 		}
 	}
 	return nil, ErrNotFound
 }
 
-func diagnosticFromSample(raw []byte, now time.Time) (json.RawMessage, error) {
+func diagnosticFromSample(raw []byte, now time.Time, origin SampleOrigin, firmwareVersion string, orderingUnknown bool) (json.RawMessage, error) {
 	var sample struct {
 		DeviceID    string          `json:"device_id"`
+		BootID      string          `json:"boot_id"`
 		SensorID    string          `json:"sensor_id"`
 		Stream      string          `json:"stream"`
 		Quality     string          `json:"quality"`
@@ -579,25 +597,29 @@ func diagnosticFromSample(raw []byte, now time.Time) (json.RawMessage, error) {
 		}
 	}
 	var age any
-	fresh := false
+	// No accepted age threshold exists; a valid timestamp alone cannot prove freshness.
+	var fresh any
+	futureClockSkew := false
+	if sample.Quality == "STALE" || sample.Quality == "TIMEOUT" || sample.Quality == "DISCONNECTED" || sample.Quality == "CRC_ERROR" || sample.Quality == "INVALID" {
+		fresh = false
+	}
 	if sample.RecordedAt != nil && *sample.RecordedAt != "" && sample.TimeQuality != "UNSYNCED" {
 		if recorded, err := time.Parse(time.RFC3339Nano, *sample.RecordedAt); err == nil {
-			milliseconds := now.Sub(recorded).Milliseconds()
-			if milliseconds < 0 {
-				milliseconds = 0
+			if recorded.After(now) {
+				futureClockSkew = true
+			} else {
+				age = now.Sub(recorded).Milliseconds()
 			}
-			age = milliseconds
-			fresh = sample.Quality != "STALE" && sample.Quality != "TIMEOUT" && sample.Quality != "DISCONNECTED" && sample.Quality != "CRC_ERROR" && sample.Quality != "INVALID"
 		}
-	}
-	if age == nil {
-		fresh = false
 	}
 	response := map[string]any{
 		"sensor_id": sample.SensorID, "stream": sample.Stream,
-		"quality": sample.Quality, "reason": sample.Reason,
+		"boot_id": sample.BootID, "sample_origin": origin,
+		"origin_firmware_version": nullableString(firmwareVersion),
+		"quality":                 sample.Quality, "reason": sample.Reason,
 		"raw": json.RawMessage(sample.Raw), "converted_value": json.RawMessage(sample.Converted),
 		"converted_unit": nil, "fresh": fresh, "age_ms": age,
+		"ordering_unknown": orderingUnknown, "future_clock_skew": futureClockSkew,
 		"last_sequence": sample.Sequence, "profile_present": profileVersion != "",
 		"profile_version": nullableString(profileVersion), "profile_hash": nullableString(profileHash),
 		"calibration_state": "IDLE", "accepted_samples": 0, "rejected_samples": 0,

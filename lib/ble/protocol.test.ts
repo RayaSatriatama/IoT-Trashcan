@@ -2,12 +2,14 @@ import { describe, expect, it } from 'vitest';
 import {
   assembleBleFrames,
   BLE_ATT_FRAME_BYTES,
+  BLE_CHUNK_ACK,
   BLE_FRAME_MAX_BYTES,
   decodeBleFrame,
   decodeBleResponse,
   encodeBleCommand,
   encodeCalibrationCommand,
   encodeBleFrames,
+  isBleChunkAcknowledgement,
   isWebBluetoothAvailable,
 } from './protocol';
 
@@ -42,6 +44,92 @@ describe('BLE provisioning protocol', () => {
     expect(() => assembleBleFrames([parsed[1], parsed[1], ...parsed.slice(2)])).toThrow();
   });
 
+  it('enforces firmware F1/R1 chunk counts, index relations, and decimal tokens', () => {
+    for (const version of ['F1', 'R1'] as const) {
+      for (const count of [127, 128]) {
+        expect(decodeBleFrame(new TextEncoder().encode(`${version}|9|${count - 1}|${count}|x`)))
+          .toMatchObject({ version, chunkIndex: count - 1, chunkCount: count });
+      }
+      for (const envelope of [
+        `${version}|9|0|0|x`, `${version}|9|0|129|x`,
+        `${version}|9|1|1|x`, `${version}|9|128|128|x`,
+        `${version}|9||1|x`, `${version}|9|+0|1|x`, `${version}|9|0|+1|x`,
+        `${version}|9|0.0|1|x`, `${version}|9|0|1e0|x`, `${version}|9|0|0x1|x`,
+        `${version}|9| |1|x`, `${version}|9|0| |x`,
+      ]) expect(() => decodeBleFrame(new TextEncoder().encode(envelope))).toThrow();
+      expect(decodeBleFrame(new TextEncoder().encode(`${version}|9|000|001|x`)))
+        .toMatchObject({ chunkIndex: 0, chunkCount: 1 });
+    }
+  });
+
+  it('matches firmware uint32 request IDs across F1/R1 encode, decode, and assembly', () => {
+    for (const version of ['F1', 'R1'] as const) {
+      for (const id of ['0', '9', '10', '0000000009', '4294967295']) {
+        const frames = encodeBleFrames(id, new Uint8Array([0x41]), version);
+        expect(decodeBleFrame(frames[0]).requestId).toBe(id);
+        expect(assembleBleFrames(frames.map(decodeBleFrame), version)).toEqual(new Uint8Array([0x41]));
+      }
+      for (const id of ['4294967296', '9999999999']) {
+        expect(() => encodeBleFrames(id, new Uint8Array([0x41]), version)).toThrow('BLE request id invalid');
+        expect(() => decodeBleFrame(new TextEncoder().encode(`${version}|${id}|0|1|A`)))
+          .toThrow('BLE request id invalid');
+        expect(() => assembleBleFrames([{
+          version, requestId: id, chunkIndex: 0, chunkCount: 1, payload: new Uint8Array([0x41]),
+        }], version)).toThrow('BLE request id invalid');
+      }
+    }
+  });
+
+  it('rejects unsupported split counts while preserving supported ID widths and body bounds', () => {
+    for (const id of ['9', '10', '123456789', '1234567890']) {
+      for (const version of ['F1', 'R1'] as const) {
+        for (const size of [0, 1, 18, 19, 20, 127, 128, 500]) {
+          const body = new Uint8Array(size);
+          let frames: Uint8Array[];
+          try {
+            frames = encodeBleFrames(id, body, version);
+          } catch {
+            continue;
+          }
+          expect(frames.length).toBeGreaterThanOrEqual(1);
+          expect(frames.length).toBeLessThanOrEqual(128);
+          expect(frames.every((frame) => frame.byteLength <= BLE_ATT_FRAME_BYTES)).toBe(true);
+          expect(assembleBleFrames(frames.map(decodeBleFrame), version)).toEqual(body);
+        }
+        if (id.length >= 9) expect(() => encodeBleFrames(id, new Uint8Array(512), version)).toThrow();
+        else {
+          const body = new Uint8Array(512);
+          const frames = encodeBleFrames(id, body, version);
+          expect(frames.length).toBeLessThanOrEqual(128);
+          expect(assembleBleFrames(frames.map(decodeBleFrame), version)).toEqual(body);
+        }
+      }
+    }
+  });
+
+  it('rejects direct assembly above the declared or actual frame bounds before allocation', () => {
+    const oversizedCount = Array.from({ length: 129 }, (_, chunkIndex) => ({
+      version: 'R1' as const, requestId: '9', chunkIndex, chunkCount: 129, payload: new Uint8Array([1]),
+    }));
+    expect(() => assembleBleFrames([{
+      version: 'R1', requestId: '9', chunkIndex: 0, chunkCount: 129, payload: new Uint8Array([1]),
+    }])).toThrow();
+    expect(() => assembleBleFrames(oversizedCount)).toThrow();
+    expect(() => assembleBleFrames([{
+      version: 'R1', requestId: '9', chunkIndex: 0, chunkCount: 1, payload: new Uint8Array(513),
+    }])).toThrow();
+  });
+
+  it('recognizes only a single-frame R1 chunk acknowledgement without making it terminal data', () => {
+    const bytes = new TextEncoder().encode(BLE_CHUNK_ACK);
+    const acknowledgement = decodeBleFrame(encodeBleFrames('12', bytes, 'R1')[0]);
+    expect(isBleChunkAcknowledgement(acknowledgement)).toBe(true);
+    expect(() => decodeBleResponse(bytes)).toThrow('BLE response envelope is invalid');
+    expect(isBleChunkAcknowledgement(decodeBleFrame(encodeBleFrames('12', bytes, 'F1')[0]))).toBe(false);
+    expect(isBleChunkAcknowledgement(decodeBleFrame(new TextEncoder().encode('R1|12|0|2|OK CHUNK')))).toBe(false);
+    expect(isBleChunkAcknowledgement(decodeBleFrame(encodeBleFrames('12', new TextEncoder().encode('OK CHUNK extra'), 'R1')[0]))).toBe(false);
+  });
+
   it('rejects oversized and malformed responses', () => {
     expect(() => decodeBleResponse(new Uint8Array(BLE_FRAME_MAX_BYTES + 1))).toThrow();
     expect(() => decodeBleResponse(new TextEncoder().encode('[]'))).toThrow();
@@ -52,7 +140,37 @@ describe('BLE provisioning protocol', () => {
     expect(() => decodeBleResponse(new TextEncoder().encode('OK LIST_KNOWN_WIFI count=1\nLab,1\nOther,0'))).toThrow('count');
   });
 
-  it('decodes only the canonical authenticated device identity response', () => {
+  it('keeps valid hidden scan rows in the raw count but omits them from selectable networks', () => {
+    expect(decodeBleResponse(new TextEncoder().encode(
+      'OK SCAN READY count=2\nCafe,-42,1\n,-88,0',
+    )).networks).toEqual([{ ssid: 'Cafe', rssi: -42, secure: true }]);
+  });
+
+  it('accepts an all-hidden scan as a successful empty selectable result with raw count', () => {
+    expect(decodeBleResponse(new TextEncoder().encode(
+      'OK SCAN READY count=2\n,-88,0\n,-91,1',
+    ))).toEqual({ ok: true, networks: [], rawCount: 2 });
+  });
+
+  it('still rejects malformed scan rows and count mismatches including hidden rows', () => {
+    for (const row of ['Cafe,,1', 'Cafe,nope,1', 'Cafe,-42,2']) {
+      expect(() => decodeBleResponse(new TextEncoder().encode(`OK SCAN READY count=1\n${row}`))).toThrow('BLE scan entry invalid');
+    }
+    expect(() => decodeBleResponse(new TextEncoder().encode(
+      'OK SCAN READY count=3\nCafe,-42,1\n\nHidden,-88,0',
+    ))).toThrow('BLE scan entry invalid');
+    expect(() => decodeBleResponse(new TextEncoder().encode(
+      'OK SCAN READY count=1\nCafe,-42,1\n,-88,0',
+    ))).toThrow('BLE scan count invalid');
+  });
+
+  it('preserves nonempty scan SSIDs exactly', () => {
+    expect(decodeBleResponse(new TextEncoder().encode(
+      'OK SCAN READY count=1\n Cafe,,-42,1',
+    )).networks).toEqual([{ ssid: ' Cafe,', rssi: -42, secure: true }]);
+  });
+
+  it('decodes only the canonical device identity routing response', () => {
     expect(decodeBleResponse(new TextEncoder().encode(
       'OK DEVICE_ID id=0000000000001234',
     ))).toEqual({ ok: true, deviceId: '0000000000001234' });

@@ -23,6 +23,9 @@ class AcquisitionFoundation final {
   void set_sample_observer(ISampleObserver* observer) noexcept {
     target_.set_sample_observer(observer);
   }
+  void bind_debug_sink(debug::IEventSink* sink) noexcept {
+    target_.bind_debug_sink(sink);
+  }
   void set_calibration_state_provider(
       const ICalibrationStateProvider* provider) noexcept {
     target_.set_calibration_state_provider(provider);

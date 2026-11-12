@@ -190,9 +190,11 @@ class MemoryAckJournalStore final {
 #ifdef ARDUINO
 class FsAckJournalStore final {
  public:
-  bool begin(fs::FS& filesystem, const char* path = "/sigap/acks.bin") noexcept {
+  bool begin(fs::FS& filesystem, const char* path = "/sigap/acks.bin",
+             const char* checkpoint = "/sigap/acks.ckp") noexcept {
     filesystem_ = &filesystem;
     path_ = path;
+    checkpoint_path_ = checkpoint;
     return recover();
   }
 
@@ -308,6 +310,62 @@ class FsAckJournalStore final {
     return nullptr;
   }
 
+  bool empty() const noexcept { return count_ == 0U; }
+
+  // 0: pending/unproven; 1: durable server ACK; 2: durable final reclaim.
+  // Historical reclaimed frames remain proof until the completed batch body
+  // is removed. A present Pending entry takes precedence over older frames.
+  uint8_t completion_proof(const Ack& ack) const noexcept {
+    if (filesystem_ == nullptr) return 0U;
+    const auto* current = find_manifest(ack);
+    if (current != nullptr) return current->state == JournalState::ServerAcked ? 1U : 0U;
+    File file = filesystem_->open(path_, FILE_READ);
+    if (!file) return 0U;
+    uint8_t state{0U};
+    std::array<uint8_t, kAckJournalFrameBytes> frame{};
+    while (file.available()) {
+      if (file.read(frame.data(), frame.size()) != static_cast<int>(frame.size()) ||
+          read_u32(frame.data()) != kAckJournalMagic ||
+          frame[4U] != kAckJournalVersion ||
+          read_u32(frame.data() + kAckJournalMarkerOffset) != kAckJournalMarker ||
+          read_u32(frame.data() + kAckJournalChecksumOffset) !=
+              ack_crc32(frame.data(), kAckJournalChecksumOffset)) break;
+      const std::size_t id_size = read_u16(frame.data() + 6U);
+      if (id_size == 0U || id_size >= kAckJournalIdBytes) break;
+      const bool same_id = id_size == ack.batch_id_size &&
+          std::equal(frame.begin() + 8U, frame.begin() + 8U + id_size,
+                     ack.batch_id.begin());
+      const auto owner_offset = 8U + kAckJournalIdBytes;
+      const bool same_owner = std::equal(frame.begin() + owner_offset,
+          frame.begin() + owner_offset + kAckJournalDeviceIdBytes,
+          ack.device_id.bytes.begin());
+      if (!same_id || !same_owner) continue;
+      const auto hash_offset = owner_offset + kAckJournalDeviceIdBytes;
+      const bool same_hash = std::equal(frame.begin() + hash_offset,
+          frame.begin() + hash_offset + ack.body_hash.size(), ack.body_hash.begin());
+      const uint16_t count = read_u16(frame.data() + hash_offset + 32U);
+      if (!same_hash || count != ack.record_count) { state = 0U; break; }
+      if (frame[5U] == kAckOpPending && state == 0U) state = 1U;
+      else if (frame[5U] == kAckOpServerAcked && state == 1U) state = 2U;
+      else if (frame[5U] == kAckOpReclaimed && state == 2U) state = 3U;
+      else { state = 0U; break; }
+    }
+    file.close();
+    return state == 3U ? 2U : (state == 2U ? 1U : 0U);
+  }
+
+  // Caller must first retire the exact completed immutable batch. Never
+  // truncate a journal containing any pending or server-acked manifest.
+  bool clear_completed() noexcept {
+    if (filesystem_ == nullptr || count_ != 0U) return false;
+    File file = filesystem_->open(path_, FILE_WRITE);
+    if (!file) return false;
+    file.close();
+    generation_ = 0U;
+    checkpointed_ = false;
+    return checkpoint();
+  }
+
   bool recover() noexcept {
     if (filesystem_ == nullptr) return false;
     count_ = 0U;
@@ -362,17 +420,31 @@ class FsAckJournalStore final {
       entry.record_count = read_u16(frame.data() + 8U + kAckJournalIdBytes +
                                     kAckJournalDeviceIdBytes + 32U);
       AckJournalEntry* current = find(entry);
-      if (op == kAckOpReclaimed) {
-        if (current != nullptr) remove(current);
-      } else if (current == nullptr && count_ < entries_.size()) {
-        entry.state = op == kAckOpServerAcked ? JournalState::ServerAcked
-                                              : JournalState::Pending;
+      if (current == nullptr) {
+        if (op != kAckOpPending || count_ == entries_.size()) {
+          clean = false;
+          break;
+        }
+        entry.state = JournalState::Pending;
         entries_[count_++] = entry;
-      } else if (current == nullptr) {
-        clean = false;
-        break;
-      } else if (current != nullptr && op == kAckOpServerAcked) {
-        current->state = JournalState::ServerAcked;
+      } else {
+        // Every transition must name the complete immutable manifest, not
+        // merely a batch ID. The writer emits one frame per transition.
+        if (current->body_hash != entry.body_hash ||
+            current->record_count != entry.record_count) {
+          clean = false;
+          break;
+        }
+        if (op == kAckOpServerAcked &&
+            current->state == JournalState::Pending) {
+          current->state = JournalState::ServerAcked;
+        } else if (op == kAckOpReclaimed &&
+                   current->state == JournalState::ServerAcked) {
+          remove(current);
+        } else {
+          clean = false;
+          break;
+        }
       }
       ++generation_;
       valid_bytes += frame.size();

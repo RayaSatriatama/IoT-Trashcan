@@ -43,6 +43,7 @@ pnpm-debug.log*
 .pioenvs/
 .piolibdeps/
 firmware/build/
+firmware/test/host/debug_http_transport/probe
 *.elf
 *.hex
 *.bin
@@ -57,6 +58,8 @@ Thumbs.db
 
 # Runtime output
 *.log
+playwright-report/
+test-results/
 tmp/
 temp/
 .worktrees/
@@ -72,3 +75,10 @@ expo-env.d.ts
 # @end expo-cli
 .vercel
 .env*
+
+# Local verification state, never publication inputs
+/current evidence/
+/cert-preparation/
+/local-device-e2e/commissioning/sigap-server
+/tests/.reclaim_workspace_probe
+/tooltip/*.exit

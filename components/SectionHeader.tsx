@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useRef, useState, type ReactNode } from 'react';
 import { Button, Text, Tooltip, XStack } from 'tamagui';
 import { Info } from '../lib/ui/icons';
 import { textStyles } from '../lib/ui/typography';
@@ -12,14 +12,16 @@ export function DescriptionHint({
   ariaLabel?: string;
 }) {
   const reduceMotion = useReducedMotion();
+  const [open, setOpen] = useState(false);
+  const pressedOpen = useRef<boolean | null>(null);
   return (
-    <Tooltip delay={0} restMs={120} placement="bottom-end" allowFlip zIndex={1000} focus={{ enabled: true }}>
+    <Tooltip open={open} onOpenChange={setOpen} delay={0} restMs={120} placement="bottom-end" allowFlip zIndex={1000} focus={{ enabled: true, visibleOnly: false }}>
       <Tooltip.Trigger asChild>
         <Button
-          minWidth={34}
-          minHeight={34}
-          width={34}
-          height={34}
+          minWidth={44}
+          minHeight={44}
+          width={44}
+          height={44}
           padding={0}
           borderRadius="$6"
           borderWidth={0}
@@ -27,6 +29,14 @@ export function DescriptionHint({
           alignItems="center"
           justifyContent="center"
           aria-label={ariaLabel}
+          onFocus={() => { pressedOpen.current = false; setOpen(true); }}
+          onBlur={() => { pressedOpen.current = null; setOpen(false); }}
+          onPressIn={() => { pressedOpen.current ??= open; }}
+          onPress={() => {
+            // Pointer focus can open the hint before the matching press fires.
+            setOpen(!(pressedOpen.current ?? open));
+            pressedOpen.current = null;
+          }}
           hoverStyle={{ backgroundColor: '$surfaceMuted' }}
           pressStyle={{ backgroundColor: '$primarySoft' }}
           focusStyle={{ backgroundColor: '$primarySoft', outlineColor: '$primary', outlineWidth: 2, outlineStyle: 'solid' }}
@@ -37,11 +47,15 @@ export function DescriptionHint({
         </Button>
       </Tooltip.Trigger>
       <Tooltip.Content
+        onEscapeKeyDown={() => setOpen(false)}
         transition={reduceMotion ? undefined : 'quick'}
         enterStyle={{ opacity: 0, scale: 0.98 }}
         exitStyle={{ opacity: 0, scale: 0.98 }}
-        elevate
-        bordered
+        borderWidth={1}
+        shadowColor="$shadowColor"
+        shadowRadius={10}
+        shadowOffset={{ height: 5, width: 0 }}
+        elevationAndroid={10}
         borderColor="$borderColor"
         backgroundColor="$surface"
         padding="$3"
@@ -67,7 +81,7 @@ export function SectionHeader({
   return (
     <XStack alignItems="center" justifyContent="space-between" gap="$3" flexWrap="wrap">
       <XStack alignItems="center" gap="$2" flex={1} minWidth={220}>
-        <Text color="$color" {...textStyles.sectionTitle} $compact={textStyles.sectionTitleCompact}>
+        <Text color="$color" {...textStyles.sectionTitle} $compact={textStyles.sectionTitleCompact} flexShrink={1}>
           {title}
         </Text>
         {description ? (

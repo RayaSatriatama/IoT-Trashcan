@@ -15,8 +15,9 @@ secret. The staging database must be separate from any production database.
 - Go 1.27.1 (or the repository toolchain) is available.
 - A disposable device identity and token are supplied out-of-band.
 - For BLE-enabled records, provision `devices.ble_device_id` with the exact
-  canonical 16-hex EFUSE identity returned by authenticated GATT. The value is
-  not inferred from `device_code`, advertising names, or service UUIDs.
+  canonical 16-hex EFUSE identity read over ordinary GATT. Treat it as a
+  device-reported routing check, not authentication; never infer it from
+  `device_code`, advertising names, or service UUIDs.
 - A trusted CA and server certificate for a local staging hostname are
   supplied or generated in a user-owned temporary directory.
 - The firmware endpoint and CA are configured separately in the authorized
@@ -79,14 +80,15 @@ the staging process through a public tunnel.
 ## Evidence and cleanup
 
 Capture only redacted HTTP status, batch identity, ACK status, and database
-path. Never print bearer tokens, WiFi passwords, BLE setup secrets, private
-keys, or full Authorization headers. Replay uses the exact frozen request
-bytes. The staging SQLite file and temporary TLS directory are disposable and
-must be removed only after the authorized run has completed and evidence is
-preserved without secrets.
+path. Never print bearer tokens, Wi-Fi passwords, private keys, or full
+Authorization headers. Replay uses the exact frozen request bytes. The staging
+SQLite file and temporary TLS directory are disposable and must be removed only
+after the authorized run has completed and evidence is preserved without
+secrets.
 
-The physical ESP32 commissioning, upload, reboot, BLE pairing, WiFi change,
-SD write, and HTTPS transmission remain separate owner-authorized operations.
+The physical ESP32 commissioning, upload, reboot, BLE discovery/ordinary GATT,
+Wi-Fi change, SD write, and HTTPS transmission remain separate operations with
+their own authorization and acceptance gates.
 
 ## Physical staging attempt at 4f416f8
 

@@ -13,6 +13,8 @@ import (
 	"time"
 )
 
+const maxRateLimitKeys = 4096
+
 // DatabaseAuthorizer validates short-lived operator sessions and device
 // credentials against the same SQLite database as command persistence. Token
 // material is never persisted or returned. A missing session or permission
@@ -65,10 +67,12 @@ func (a *DatabaseAuthorizer) allowRate(key string, now time.Time) bool {
 		a.window = minute
 		clear(a.requests)
 	}
-	if a.requests[key] >= a.maxPerMin {
+	count, tracked := a.requests[key]
+	// Reject new keys at capacity without evicting another token's quota.
+	if count >= a.maxPerMin || (!tracked && len(a.requests) >= maxRateLimitKeys) {
 		return false
 	}
-	a.requests[key]++
+	a.requests[key] = count + 1
 	return true
 }
 

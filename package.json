@@ -6,7 +6,9 @@
   "scripts": {
     "start": "expo start",
     "web": "expo start --web",
+    "ble:manual": "bash scripts/serve-ble-manual.sh",
     "test": "vitest run",
+    "test:e2e": "playwright test",
     "typecheck": "tsc --noEmit",
     "export:web": "expo export --platform web"
   },
@@ -31,6 +33,7 @@
     "tamagui": "2.7.7"
   },
   "devDependencies": {
+    "@playwright/test": "1.64.1",
     "@tamagui/babel-plugin": "2.7.7",
     "@types/react": "~19.2.2",
     "babel-preset-expo": "~57.0.12",

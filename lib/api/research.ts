@@ -21,6 +21,8 @@ export function diagnosticFromResearch(sensorId: CalibrationSensorId, research: 
     converted_unit: sensor.unit || null,
     fresh: quality !== 'STALE' && quality !== 'INVALID',
     age_ms: null,
+    ordering_unknown: false,
+    future_clock_skew: false,
     last_sequence: null,
     profile_present: Boolean(sensor.calibration_version),
     profile_version: sensor.calibration_version ?? null,

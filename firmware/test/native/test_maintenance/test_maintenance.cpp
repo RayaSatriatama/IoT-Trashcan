@@ -16,6 +16,10 @@
 #include "config/config_store.h"
 #include "config/config_validator.h"
 #include "provisioning/secret_store.h"
+#include "debug/commands.h"
+#include "debug/service.cpp"
+#include "debug/codec.cpp"
+#include "debug/commands.cpp"
 
 namespace {
 
@@ -189,26 +193,6 @@ sigap::acquisition::SampleRecord diagnostic_sample(
   return sample;
 }
 
-struct FakePasskeyHandoff final
-    : sigap::provisioning::ILocalPasskeyHandoff {
-  sigap::provisioning::PasskeyDisclosureStatus next{
-      sigap::provisioning::PasskeyDisclosureStatus::Ready};
-  std::size_t calls{0U};
-
-  sigap::provisioning::PasskeyDisclosureStatus disclose_once(
-      char* output, std::size_t capacity) noexcept override {
-    ++calls;
-    if (next != sigap::provisioning::PasskeyDisclosureStatus::Ready) return next;
-    if (output == nullptr || capacity < 7U) {
-      return sigap::provisioning::PasskeyDisclosureStatus::Unavailable;
-    }
-    const char value[] = "654321";
-    for (std::size_t i = 0U; i < 7U; ++i) output[i] = value[i];
-    next = sigap::provisioning::PasskeyDisclosureStatus::AlreadyDisclosed;
-    return sigap::provisioning::PasskeyDisclosureStatus::Ready;
-  }
-};
-
 void drain(MaintenanceService& service, FakeTransport& transport,
            uint64_t now_us = 100U) {
   while (transport.available()) service.poll(now_us);
@@ -241,103 +225,18 @@ void test_storage_sd_probe_command_is_bounded_and_explicit() {
                         static_cast<int>(sink.last.kind));
 }
 
-void test_ble_passkey_command_requires_maintenance_and_discloses_once() {
-  sigap::config::MemoryConfigStore config_store{};
-  sigap::config::ConfigManager config_manager(config_store, kValidationContext);
-  TEST_ASSERT_EQUAL_INT(
-      static_cast<int>(sigap::config::ConfigBootResult::BootstrapDefaults),
-      static_cast<int>(config_manager.begin()));
-  sigap::provisioning::MemorySecretBlobStore secret_backend{};
-  sigap::provisioning::PersistentSecretStore secrets(secret_backend);
-  FakePasskeyHandoff handoff{};
-  CommandRouter router(config_manager, secrets, nullptr, nullptr, nullptr,
-                       nullptr, nullptr, nullptr, nullptr, &handoff);
-
-  MaintenanceCommand command{};
-  command.kind = CommandKind::BlePasskey;
-  MaintenanceResponse response{};
-  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Rejected),
-                        static_cast<int>(router.execute(command, 0U, response)));
-  TEST_ASSERT_TRUE(response.view().find("MAINTENANCE_REQUIRED") !=
-                   std::string_view::npos);
-  TEST_ASSERT_EQUAL_UINT(0U, handoff.calls);
-
-  MaintenanceCommand enter{};
-  enter.kind = CommandKind::MaintenanceEnter;
-  response = MaintenanceResponse{};
-  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),
-                        static_cast<int>(router.execute(enter, 0U, response)));
-  response = MaintenanceResponse{};
-  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),
-                        static_cast<int>(router.execute(command, 0U, response)));
-  TEST_ASSERT_EQUAL_STRING("ble_passkey=654321\n", response.c_str());
-  TEST_ASSERT_TRUE(response.view().find("[REDACTED]") == std::string_view::npos);
-  response = MaintenanceResponse{};
-  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Rejected),
-                        static_cast<int>(router.execute(command, 0U, response)));
-  TEST_ASSERT_TRUE(response.view().find("ALREADY_DISCLOSED") !=
-                   std::string_view::npos);
-  TEST_ASSERT_EQUAL_UINT(2U, handoff.calls);
-}
-
-void test_ble_passkey_parser_and_unavailable_path_do_not_leak() {
-  FakeTransport transport{};
-  transport.input = "ble passkey\n";
-  FakeSink sink{};
-  MaintenanceService service(transport, sink);
-  drain(service, transport);
-  TEST_ASSERT_EQUAL_UINT32(1U, sink.calls);
-  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandKind::BlePasskey),
-                        static_cast<int>(sink.last.kind));
-
-  sigap::config::MemoryConfigStore config_store{};
-  sigap::config::ConfigManager config_manager(config_store, kValidationContext);
-  TEST_ASSERT_EQUAL_INT(
-      static_cast<int>(sigap::config::ConfigBootResult::BootstrapDefaults),
-      static_cast<int>(config_manager.begin()));
-  sigap::provisioning::MemorySecretBlobStore secret_backend{};
-  sigap::provisioning::PersistentSecretStore secrets(secret_backend);
-  FakePasskeyHandoff handoff{};
-  handoff.next = sigap::provisioning::PasskeyDisclosureStatus::Unavailable;
-  CommandRouter router(config_manager, secrets, nullptr, nullptr, nullptr,
-                       nullptr, nullptr, nullptr, nullptr, &handoff);
-  MaintenanceCommand enter{};
-  enter.kind = CommandKind::MaintenanceEnter;
-  MaintenanceResponse response{};
-  (void)router.execute(enter, 0U, response);
-  MaintenanceCommand command{};
-  command.kind = CommandKind::BlePasskey;
-  response = MaintenanceResponse{};
-  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Rejected),
-                        static_cast<int>(router.execute(command, 0U, response)));
-  TEST_ASSERT_TRUE(response.view().find("UNAVAILABLE") != std::string_view::npos);
-  TEST_ASSERT_TRUE(response.view().find("654321") == std::string_view::npos);
-}
-
-void test_ble_passkey_authorization_survives_config_required_refresh() {
-  sigap::config::MemoryConfigStore config_store{};
-  config_store.set_provisioned(true);
-  sigap::config::ConfigManager config_manager(config_store, kValidationContext);
-  TEST_ASSERT_EQUAL_INT(
-      static_cast<int>(sigap::config::ConfigBootResult::ConfigRequired),
-      static_cast<int>(config_manager.begin()));
-  sigap::provisioning::MemorySecretBlobStore secret_backend{};
-  sigap::provisioning::PersistentSecretStore secrets(secret_backend);
-  FakePasskeyHandoff handoff{};
-  CommandRouter router(config_manager, secrets, nullptr, nullptr, nullptr,
-                       nullptr, nullptr, nullptr, nullptr, &handoff);
-
-  MaintenanceCommand enter{};
-  enter.kind = CommandKind::MaintenanceEnter;
-  MaintenanceResponse response{};
-  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),
-                        static_cast<int>(router.execute(enter, 0U, response)));
-  MaintenanceCommand command{};
-  command.kind = CommandKind::BlePasskey;
-  response = MaintenanceResponse{};
-  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),
-                        static_cast<int>(router.execute(command, 1U, response)));
-  TEST_ASSERT_EQUAL_STRING("ble_passkey=654321\n", response.c_str());
+void test_ble_passkey_command_is_no_longer_parsed() {
+  MaintenanceParser parser{};
+  ParseEvent event{};
+  bool emitted{false};
+  for (const char character : std::string("ble passkey\n")) {
+    emitted = parser.consume(character, event) || emitted;
+  }
+  TEST_ASSERT_TRUE(emitted);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::UnknownCommand),
+                        static_cast<int>(event.status));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandKind::Unknown),
+                        static_cast<int>(event.command.kind));
 }
 
 void test_service_polls_without_input_and_reports_disconnect_once() {
@@ -1220,6 +1119,114 @@ void test_sensor_status_counts_only_physical_evidence() {
   TEST_ASSERT_NOT_EQUAL(std::string_view::npos, response.view().find("x=1\n"));
 }
 
+void test_debug_parser_router_backend_is_volatile_and_side_effect_isolated() {
+  struct DebugLock final : sigap::debug::IDebugLock {
+    void lock() noexcept override { ++depth; }
+    void unlock() noexcept override { --depth; }
+    unsigned depth{0U};
+  };
+  sigap::config::MemoryConfigStore config_store{};
+  sigap::config::ConfigManager config_manager(config_store, kValidationContext);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(sigap::config::ConfigBootResult::BootstrapDefaults), static_cast<int>(config_manager.begin()));
+  sigap::provisioning::MemorySecretBlobStore secret_store{};
+  sigap::provisioning::PersistentSecretStore secrets(secret_store);
+  sigap::acquisition::BootId boot{}; boot.present=true; boot.bytes[15]=1U;
+  DebugLock lock;
+  sigap::debug::DebugService debug_service(boot,"TEST",sigap::debug::Level::Info,lock);
+  sigap::debug::CommandBackend backend(debug_service);
+  CommandRouter router(config_manager,secrets);
+  MaintenanceCommand missing{}; missing.kind=CommandKind::DebugMeta;
+  MaintenanceResponse response{};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Rejected),static_cast<int>(router.execute(missing,10U,response)));
+  TEST_ASSERT_EQUAL_STRING("ERR DEBUG_UNAVAILABLE\n",response.c_str());
+  router.set_debug_commands(&backend);
+  MaintenanceCommand calibration_start{};
+  calibration_start.kind=CommandKind::CalibrationStart;
+  TEST_ASSERT_TRUE(calibration_start.target.assign("hx711_organic"));
+  response=MaintenanceResponse{};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),static_cast<int>(router.execute(calibration_start,0U,response)));
+  response=MaintenanceResponse{};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),static_cast<int>(run_router_line(router,"debug level ERROR\n",1U,response)));
+  TEST_ASSERT_EQUAL_STRING("SIGAP_DEBUG DBG1|L|0\n",response.c_str());
+  const uint64_t expired_at = sigap::calibration::CalibrationSession::kSessionTimeoutUs + 1U;
+  TEST_ASSERT_TRUE(router.is_calibrating(sigap::acquisition::SensorId::Hx711Organic));
+  response=MaintenanceResponse{};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),static_cast<int>(run_router_line(router,"debug meta\n",expired_at,response)));
+  TEST_ASSERT_TRUE(response.view().find("SIGAP_DEBUG DBG1|M|") == 0U);
+  TEST_ASSERT_TRUE(response.size() <= kMaxResponseBytes);
+  TEST_ASSERT_TRUE(router.is_calibrating(sigap::acquisition::SensorId::Hx711Organic));
+  router.poll(expired_at);
+  TEST_ASSERT_FALSE(router.is_calibrating(sigap::acquisition::SensorId::Hx711Organic));
+  TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(sigap::debug::Level::Info),static_cast<uint8_t>(sigap::debug::DebugService(boot,"TEST",sigap::debug::Level::Info,lock).meta(0U).level));
+  TEST_ASSERT_EQUAL_UINT32(0U,lock.depth);
+}
+
+void test_debug_router_counted_store_and_audit_isolation() {
+  struct ConfigSpy final : sigap::config::IConfigSlotStore {
+    explicit ConfigSpy(sigap::config::IConfigSlotStore& value) : inner(value) {}
+    sigap::config::StoreReadStatus read_activation_metadata(sigap::config::ActivationMetadata& v) const noexcept override { ++reads; return inner.read_activation_metadata(v); }
+    sigap::config::StoreReadStatus read_slot(sigap::config::ConfigSlot s,sigap::config::EncodedConfig& v) const noexcept override { ++reads; return inner.read_slot(s,v); }
+    bool write_slot(sigap::config::ConfigSlot s,const sigap::config::EncodedConfig& v) noexcept override { ++writes; return inner.write_slot(s,v); }
+    bool write_activation_metadata(const sigap::config::ActivationMetadata& v) noexcept override { ++writes; return inner.write_activation_metadata(v); }
+    sigap::config::ProvisioningStatus provisioning_status() const noexcept override { ++reads; return inner.provisioning_status(); }
+    bool mark_provisioned() noexcept override { ++writes; return inner.mark_provisioned(); }
+    sigap::config::IConfigSlotStore& inner; mutable unsigned reads{0}; unsigned writes{0};
+  };
+  struct SecretSpy final : sigap::provisioning::ISecretBlobStore {
+    explicit SecretSpy(sigap::provisioning::ISecretBlobStore& value) : inner(value) {}
+    sigap::provisioning::SecretBlobReadStatus read(sigap::provisioning::SecretSlot s,uint8_t* o,size_t c,size_t& n) const noexcept override { ++reads; return inner.read(s,o,c,n); }
+    bool write(sigap::provisioning::SecretSlot s,const uint8_t* b,size_t n) noexcept override { ++writes; return inner.write(s,b,n); }
+    bool clear_all() noexcept override { ++writes; return inner.clear_all(); }
+    sigap::provisioning::ISecretBlobStore& inner; mutable unsigned reads{0}; unsigned writes{0};
+  };
+  struct ProfileSpy final : sigap::acquisition::IProfileSlotStore {
+    explicit ProfileSpy(sigap::acquisition::IProfileSlotStore& value) : inner(value) {}
+    sigap::acquisition::ProfileReadStatus read_activation(sigap::acquisition::ProfileTarget t,sigap::acquisition::ProfileActivationMetadata& v) const noexcept override { ++reads; return inner.read_activation(t,v); }
+    sigap::acquisition::ProfileReadStatus read_slot(sigap::acquisition::ProfileTarget t,sigap::acquisition::ProfileSlot s,sigap::acquisition::EncodedProfile& v) const noexcept override { ++reads; return inner.read_slot(t,s,v); }
+    bool write_slot(sigap::acquisition::ProfileTarget t,sigap::acquisition::ProfileSlot s,const sigap::acquisition::EncodedProfile& v) noexcept override { ++writes; return inner.write_slot(t,s,v); }
+    bool write_activation(sigap::acquisition::ProfileTarget t,const sigap::acquisition::ProfileActivationMetadata& v) noexcept override { ++writes; return inner.write_activation(t,v); }
+    sigap::acquisition::ProfileReadStatus read_activation(sigap::acquisition::ProfileKey k,sigap::acquisition::ProfileActivationMetadata& v) const noexcept override { ++reads; return inner.read_activation(k,v); }
+    sigap::acquisition::ProfileReadStatus read_slot(sigap::acquisition::ProfileKey k,sigap::acquisition::ProfileSlot s,sigap::acquisition::EncodedProfile& v) const noexcept override { ++reads; return inner.read_slot(k,s,v); }
+    bool write_slot(sigap::acquisition::ProfileKey k,sigap::acquisition::ProfileSlot s,const sigap::acquisition::EncodedProfile& v) noexcept override { ++writes; return inner.write_slot(k,s,v); }
+    bool write_activation(sigap::acquisition::ProfileKey k,const sigap::acquisition::ProfileActivationMetadata& v) noexcept override { ++writes; return inner.write_activation(k,v); }
+    sigap::acquisition::IProfileSlotStore& inner; mutable unsigned reads{0}; unsigned writes{0};
+  };
+  struct AuditSpy final : sigap::acquisition::IProfileAuditSink {
+    void set_context(uint64_t,const sigap::acquisition::ConfigRef&) noexcept override { ++calls; }
+    void profile_activated(const sigap::acquisition::ProfileRef&,const sigap::acquisition::ProfileRef&) noexcept override { ++calls; }
+    void profile_rolled_back(const sigap::acquisition::ProfileRef&,const sigap::acquisition::ProfileRef&) noexcept override { ++calls; }
+    void profile_reset(const sigap::acquisition::ProfileRef&) noexcept override { ++calls; }
+    void config_committed(const sigap::acquisition::ConfigRef&) noexcept override { ++calls; }
+    unsigned calls{0};
+  };
+  sigap::config::MemoryConfigStore config_memory{}; ConfigSpy config_store(config_memory);
+  sigap::config::ConfigManager config(config_store,kValidationContext);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(sigap::config::ConfigBootResult::BootstrapDefaults),static_cast<int>(config.begin()));
+  sigap::provisioning::MemorySecretBlobStore secret_memory{}; SecretSpy secret_store(secret_memory);
+  sigap::provisioning::PersistentSecretStore secrets(secret_store);
+  sigap::acquisition::MemoryProfileStore profile_memory{}; ProfileSpy profile_store(profile_memory);
+  sigap::acquisition::ProfilePersistence persistence(profile_store);
+  AuditSpy audit{};
+  sigap::acquisition::ProfileManager profiles(persistence,sigap::acquisition::ProfilePersistence::default_codec(),&audit);
+  sigap::acquisition::BootId boot{}; boot.present=true; boot.bytes[15]=1U;
+  struct Lock final : sigap::debug::IDebugLock { void lock() noexcept override {} void unlock() noexcept override {} } lock;
+  sigap::debug::DebugService service(boot,"TEST",sigap::debug::Level::Info,lock);
+  sigap::debug::CommandBackend backend(service);
+  CommandRouter router(config,secrets,&profiles,nullptr,nullptr,&audit);
+  router.set_debug_commands(&backend);
+  const unsigned cr=config_store.reads,cw=config_store.writes,sr=secret_store.reads,sw=secret_store.writes;
+  const unsigned pr=profile_store.reads,pw=profile_store.writes,ac=audit.calls;
+  for(const char* line : {"debug meta\n","debug page 00000000000000000000000000000001 0\n","debug level DEBUG\n"}) {
+    MaintenanceResponse response{};
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(CommandStatus::Accepted),static_cast<int>(run_router_line(router,line,10U,response)));
+    TEST_ASSERT_TRUE(response.view().find("SIGAP_DEBUG ")==0U);
+  }
+  TEST_ASSERT_EQUAL_UINT32(cr,config_store.reads); TEST_ASSERT_EQUAL_UINT32(cw,config_store.writes);
+  TEST_ASSERT_EQUAL_UINT32(sr,secret_store.reads); TEST_ASSERT_EQUAL_UINT32(sw,secret_store.writes);
+  TEST_ASSERT_EQUAL_UINT32(pr,profile_store.reads); TEST_ASSERT_EQUAL_UINT32(pw,profile_store.writes);
+  TEST_ASSERT_EQUAL_UINT32(ac,audit.calls);
+}
+
 void test_maintenance_memory_footprint_is_bounded() {
   std::printf("memory MaintenanceParser=%zu MaintenanceResponse=%zu "
               "CommandRouter=%zu MaintenanceService=%zu\n",
@@ -1239,9 +1246,7 @@ void setup() {
   RUN_TEST(test_fragmented_input_is_buffered_until_line_end);
   RUN_TEST(test_profile_lifecycle_commands_parse_as_explicit_steps);
   RUN_TEST(test_storage_sd_probe_command_is_bounded_and_explicit);
-  RUN_TEST(test_ble_passkey_command_requires_maintenance_and_discloses_once);
-  RUN_TEST(test_ble_passkey_parser_and_unavailable_path_do_not_leak);
-  RUN_TEST(test_ble_passkey_authorization_survives_config_required_refresh);
+  RUN_TEST(test_ble_passkey_command_is_no_longer_parsed);
   RUN_TEST(test_service_polls_without_input_and_reports_disconnect_once);
   RUN_TEST(test_disconnect_discards_partial_parser_line);
   RUN_TEST(test_profile_import_round_trip_uses_real_router_and_explicit_activation);
@@ -1269,6 +1274,8 @@ void setup() {
   RUN_TEST(test_sensor_status_accepts_longer_active_mq7_heater_cycle);
   RUN_TEST(test_sensor_status_keeps_calibration_state_target_local);
   RUN_TEST(test_sensor_status_counts_only_physical_evidence);
+  RUN_TEST(test_debug_parser_router_backend_is_volatile_and_side_effect_isolated);
+  RUN_TEST(test_debug_router_counted_store_and_audit_isolation);
   RUN_TEST(test_maintenance_memory_footprint_is_bounded);
   UNITY_END();
 }

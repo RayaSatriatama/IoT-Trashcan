@@ -6,6 +6,7 @@
 #include <type_traits>
 
 #include "calibration/calibration_session.h"
+#include "debug/types.h"
 
 namespace sigap::calibration {
 
@@ -71,8 +72,8 @@ struct CalibrationCommandEnvelope final {
   uint16_t protocol_version{kProtocolVersion};
   uint64_t request_id{0U};
   uint64_t device_id{0U};
-  // Stable authenticated principal identity. USB may leave this zero, while
-  // BLE/HTTPS adapters bind it to their authenticated operator/session.
+  // Stable transport principal identity used by replay/arbitration metadata.
+  // It is not proof of operator authentication for the BLE prototype.
   uint64_t principal_id{0U};
   uint64_t session_id{0U};
   uint64_t expires_at_us{0U};
@@ -248,14 +249,21 @@ class CalibrationTransportController final {
                CalibrationResultEnvelope& output) noexcept;
   void poll(uint64_t now_us) noexcept;
   void disconnect(CalibrationTransport transport) noexcept;
+  void disconnect(CalibrationTransport transport, uint64_t now_us) noexcept;
   void set_device_id(uint64_t device_id) noexcept { device_id_ = device_id; }
   bool active() const noexcept { return owner_active_; }
   CalibrationTransport owner() const noexcept { return owner_; }
   uint64_t device_id() const noexcept { return device_id_; }
+  void set_debug_sink(debug::IEventSink* sink) noexcept { debug_sink_ = sink; }
 
  private:
   bool owns(const CalibrationCommandEnvelope& command) const noexcept;
   void expire(uint64_t now_us) noexcept;
+  void emit_result(const CalibrationCommandEnvelope& command,
+                   CalibrationCommandStatus status, uint64_t now_us,
+                   const CalibrationProfileRef* profile = nullptr) noexcept;
+  void emit_owner(uint64_t now_us, bool active,
+                  CalibrationTransport owner) noexcept;
   void fill(const CalibrationCommandEnvelope& command,
             CalibrationResultEnvelope& output) const noexcept;
   bool expected_profile_matches(
@@ -279,6 +287,7 @@ class CalibrationTransportController final {
   uint64_t device_id_{0U};
   const ICalibrationTransportAuthorizer* authorizer_{nullptr};
   ICalibrationTransportReplayStore* replay_store_{nullptr};
+  debug::IEventSink* debug_sink_{nullptr};
   CalibrationTransport owner_{CalibrationTransport::Usb};
   bool owner_active_{false};
   uint64_t session_id_{0U};

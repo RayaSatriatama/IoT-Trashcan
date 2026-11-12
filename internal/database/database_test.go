@@ -177,6 +177,40 @@ func TestHistoryReadingTimeIndexSupportsNewestFirstOrdering(t *testing.T) {
 	}
 }
 
+func TestDeviceDebugMigrationCreatesBoundedHistorySchemaIdempotently(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "debug.db")
+	first, err := database.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	second, err := database.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	var applied int
+	if err := second.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE name='008_device_debug.sql'`).Scan(&applied); err != nil {
+		t.Fatal(err)
+	}
+	if applied != 1 {
+		t.Fatalf("debug migration application count=%d, want 1", applied)
+	}
+	for table, wanted := range map[string][]string{
+		"device_debug_history":    {"ingestion_id", "device_code", "boot_id", "sequence_text", "event_json", "build_id", "received_at", "snapshot_level", "captured_monotonic_us", "oldest_sequence", "overwritten", "delivery_lost"},
+		"device_debug_watermarks": {"device_code", "pruned_through"},
+	} {
+		columns := tableColumns(t, second, table)
+		for _, name := range wanted {
+			if !columns[name] {
+				t.Errorf("%s missing %q", table, name)
+			}
+		}
+	}
+}
+
 func TestInitialSchemaMatchesSDDContract(t *testing.T) {
 	db, err := database.Open(filepath.Join(t.TempDir(), "sigap.db"))
 	if err != nil {

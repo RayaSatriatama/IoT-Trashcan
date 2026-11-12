@@ -12,6 +12,8 @@ IoT-Trashcan memuat dokumentasi dan aset SIGAP Smart Bin, sistem pengelolaan sam
 
 ## Status project
 
+Status integrasi sensor terbaru, urutan prioritas, dan batas penerimaan fisik: [current sensor integration checkpoint](docs/task9-current-status.md). Publikasi source bukan bukti bahwa seluruh sensor sudah streaming ke web atau menghasilkan FIS produksi.
+
 SIGAP MVP memiliki satu runtime Go dengan SQLite embedded, authenticated ingest, monitoring read APIs, history, CSV export, dan frontend Expo Web yang di-embed saat release build. Kontrak ingest mendukung bukti sensor fisik opsional, nilai turunan, trace keputusan FIS, dan kanal safety B3. Nilai dan threshold production final untuk FIS, safety, OGI, offline duration, verified-empty, dan event transition tetap deferred.
 
 ## Menjalankan development
@@ -25,11 +27,20 @@ npm run typecheck
 npm run web
 ```
 
+Task 9 desktop/mobile browser checks and isolated-runtime instructions: [Playwright E2E](docs/task9-playwright.md).
+
 Go API:
 
 ```bash
 SIGAP_DB_PATH=./sigap.db SIGAP_HTTP_ADDR=:8080 go run ./cmd/sigap
 ```
+
+`ALLOWED_ORIGIN` menerima origin HTTP/HTTPS eksplisit yang dipisahkan koma dan dicocokkan persis, termasuk scheme serta port. Default tetap `http://localhost:8081`. Nilai `*` hanya membuka CORS publik tanpa `Access-Control-Allow-Credentials`; origin mirip, malformed, atau header Origin ganda tidak mendapat grant.
+
+
+API kontrol/debug memakai limiter default 60 request per key per menit dengan
+state maksimal 4096 key per proses. Perilaku saat kapasitas penuh dijelaskan pada
+[kontrol akses operator](docs/task9-web-calibration.md#operator-security).
 
 Firmware foundation:
 
@@ -38,6 +49,23 @@ cd firmware
 uv tool run --from platformio pio test -e native
 uv tool run --from platformio pio run -e sigap_n16r8
 ```
+
+Build image diagnostik BLE-only dari direktori `firmware/` dengan
+`pio run -e sigap_ble_diag` setelah meninjau [laporan verifikasi BLE tanpa
+passkey](docs/task9-ble-no-passkey-verification.md).
+Build ini menggunakan NimBLE-Arduino 2.5.1 dengan patch lokal yang memeriksa
+hash sumber. Hasil build bukan izin untuk upload atau pengujian fisik; Task 9
+tetap HOLD sampai gerbang NVS dan persetujuan perangkat terpenuhi.
+
+Uji manual untuk image BLE-only yang sudah ditinjau tersedia melalui
+`npm run ble:manual`, lalu buka `http://localhost:8765` pada profil Chromium
+khusus pengujian. Helper memakai GATT biasa tanpa passkey atau autentikasi BLE,
+dan hanya menyediakan verifikasi identitas serta status diagnostik setelah aksi
+operator. Langkah browser tanpa passkey, reconnect, dan batas fisik tersedia di
+[panduan uji manual BLE](docs/task9-ble-manual-testing.md). Server ini tidak
+memerlukan Go API atau token; kesiapan environment bukan PASS HIL.
+
+Kandidat BLE + Wi-Fi terisolasi dibangun dengan `pio run -e sigap_ble_wifi_test` dari `firmware/`. Target itu memakai provisioning BLE/Wi-Fi produksi dan guard erase terpisah; tidak menjalankan SigapApp/sensor/aktuator. Build host tidak memberi izin flash. Label profil PlatformIO generik `ESP32-S3-DevKitC-1-N8` bukan bukti ukuran flash aktual. Retained `esptool image_info --version 2` untuk image kandidat menunjukkan flash 16 MB dan header aplikasi DIO; build mewarisi permintaan `qio`/`qio_opi`. Jangan mengubah flag board/flash berdasarkan label N8 atau byte header mentah. Halaman kandidat dan izin NVS yang dibutuhkan dijelaskan pada panduan manual BLE.
 
 The first firmware slice targets the ESP32-S3 DevKitC-1 PlatformIO profile,
 typed AppConfig persistence, deterministic codec/hash, and native-testable NVS
@@ -64,6 +92,27 @@ SIGAP_DB_PATH=./sigap.db SIGAP_HTTP_ADDR=:8080 /tmp/sigap-release
 Runtime production menggunakan `SIGAP_DB_PATH`, `SIGAP_HTTP_ADDR`, dan optional `OFFLINE_AFTER_SECONDS`. Database SQLite tetap file external dan persistent, bukan bagian dari binary.
 
 Production FIS dan safety numeric configuration tetap research-blocked. Release runtime tidak menggunakan test fixture thresholds dan tidak memalsukan keputusan valid ketika engine production belum dikonfigurasi.
+
+## Firmware sensor simulation
+
+ESP32 sensor-reader simulation is a separate, default-OFF build option. From
+`firmware/`, `pio run -e sigap_n16r8_sensor_sim` selects simulated readers;
+`pio run -e sigap_n16r8` selects the physical readers. Changing mode requires
+building and installing the corresponding image, not a runtime web toggle.
+Build success is not permission to flash or evidence of HIL acceptance.
+
+The [sensor configuration and simulation guide](docs/firmware-sensor-simulation.md)
+lists all 13 sensor identities, pins, sampling defaults, units, safety limits,
+and current archive/API integration blockers. Full firmware-to-web acceptance
+is not complete: real ingestion currently rejects the MQ-7 batch because its
+required heater phase is missing. Do not substitute the Go demo below for
+firmware-origin acceptance.
+
+## Firmware HTTPS dengan arsip historis penuh
+
+Mode opt-in antrean aktif terpisah, batas ruang reclaim, debug HTTPS, dan batas
+pemasangan dijelaskan dalam [panduan live archive](docs/live-archive-delivery.md).
+Arsip historis dipertahankan `UNDELIVERED`, bukan dianggap sudah terkirim.
 
 ## Simulation mode
 

@@ -6,6 +6,7 @@
 #include <string_view>
 
 #include "config/config_manager.h"
+#include "sigap/config/config_defaults.h"
 #include "config/nvs_config_store.h"
 #include "acquisition/boot_identity.h"
 #include "acquisition/record.h"
@@ -18,16 +19,27 @@
 #include "calibration/calibration_session.h"
 #include "sigap/board/board_pins.h"
 #include "processing_runtime.h"
+#ifdef ARDUINO
+#include "runtime_debug_observer.h"
+#endif
 #include "models/model_lifecycle.h"
 #include "maintenance/model_runtime.h"
 #include "maintenance/ble_calibration_backend.h"
 #ifdef ARDUINO
+#include "debug/http_transport.h"
+#include "debug/commands.h"
+#include "debug/usb_sink.h"
+#include "sigap/build/build_config.h"
 #include "device_control_executor.h"
 #include "calibration/calibration_replay_store.h"
 #include "network/device_control_http.h"
 #include "network/device_control_journal.h"
 #endif
 #include "storage/archive_media.h"
+#include "storage/legacy_pending_store.h"
+#include "storage/live_archive_store.h"
+#include "telemetry_archive/live_batch_runtime.h"
+#include <type_traits>
 #include "archive_runtime.h"
 #include "telemetry_archive/ack_journal_store.h"
 #include "telemetry_archive/runtime.h"
@@ -99,6 +111,82 @@ class ApplicationProvisioningClock final
  private:
   uint64_t now_us_{0U};
 };
+#endif
+
+#ifdef ARDUINO
+class ApplicationDebugLock final : public debug::IDebugLock {
+ public:
+  void lock() noexcept override { portENTER_CRITICAL(&mux_); }
+  void unlock() noexcept override { portEXIT_CRITICAL(&mux_); }
+ private:
+  portMUX_TYPE mux_ = portMUX_INITIALIZER_UNLOCKED;
+};
+
+// Candidate success persists on a later poll; defer admission during TLS cleanup.
+class ApplicationWifiBackend final : public provisioning::IBleProvisioningBackend {
+ public:
+  ApplicationWifiBackend(provisioning::WifiConnectionManager& manager,
+                         debug::RuntimeIoGate& gate) noexcept
+      : backend_(manager), gate_(gate) {}
+  provisioning::WifiState wifi_state() const noexcept override { return backend_.wifi_state(); }
+  std::string_view current_ssid() const noexcept override { return backend_.current_ssid(); }
+  provisioning::WifiScanStatus request_scan() noexcept override { return backend_.request_scan(); }
+  provisioning::WifiScanStatus poll_scan(provisioning::WifiNetwork* out,
+      std::size_t capacity, std::size_t& count) noexcept override {
+    return backend_.poll_scan(out, capacity, count);
+  }
+  provisioning::WifiScanStatus list_known_wifi(provisioning::WifiNetwork* out,
+      std::size_t capacity, std::size_t& count) noexcept override {
+    return backend_.list_known_wifi(out, capacity, count);
+  }
+  bool request_connect(std::string_view ssid, std::string_view password) noexcept override {
+    return !gate_.active(debug::IoOwner::DebugHttp) && backend_.request_connect(ssid, password);
+  }
+  bool retry_wifi() noexcept override {
+    return !gate_.active(debug::IoOwner::DebugHttp) && backend_.retry_wifi();
+  }
+  void cancel() noexcept override { backend_.cancel(); }
+ private:
+  provisioning::WifiProvisioningBackend backend_;
+  debug::RuntimeIoGate& gate_;
+};
+
+#if defined(SIGAP_NETWORK_ENDPOINT) && defined(SIGAP_NETWORK_CA_CERT)
+// Polling cleanup must continue after readiness loss, without admitting a new TLS task.
+class ApplicationControlTransport final : public network::IDeviceControlTransport {
+ public:
+  ApplicationControlTransport(network::WiFiDeviceControlHttpTransport& transport,
+                              debug::RuntimeIoGate& gate) noexcept
+      : transport_(transport), gate_(gate) {}
+  void set_time_valid(bool valid) noexcept { time_valid_ = valid; }
+  network::TransportResult start_next_command(std::string_view device,
+      std::string_view token, uint32_t timeout, network::DeviceControlHttpResponse& out) noexcept override {
+    return may_start() ? transport_.start_next_command(device, token, timeout, out)
+                       : network::TransportResult::Failed;
+  }
+  network::TransportResult poll_next_command(network::DeviceControlHttpResponse& out) noexcept override {
+    return transport_.poll_next_command(out);
+  }
+  network::TransportResult start_command_result(std::string_view device,
+      std::string_view token, const network::DeviceControlCommand& command,
+      const network::DeviceControlResult& result, uint32_t timeout,
+      network::DeviceControlHttpResponse& out) noexcept override {
+    return may_start() ? transport_.start_command_result(device, token, command, result, timeout, out)
+                       : network::TransportResult::Failed;
+  }
+  network::TransportResult poll_command_result(network::DeviceControlHttpResponse& out) noexcept override {
+    return transport_.poll_command_result(out);
+  }
+  void cancel_command_request() noexcept override { transport_.cancel_command_request(); }
+ private:
+  bool may_start() const noexcept {
+    return time_valid_ && gate_.active(debug::IoOwner::ControlHttp);
+  }
+  network::WiFiDeviceControlHttpTransport& transport_;
+  debug::RuntimeIoGate& gate_;
+  bool time_valid_{false};
+};
+#endif
 #endif
 
 class ApplicationNetworkJitter final : public network::IRandomJitter {
@@ -209,6 +297,14 @@ static_assert(sizeof(ArduinoSdProbe) <= 1024U,
               "SD probe workspace must remain bounded and instance-owned");
 #endif
 
+#ifdef ARDUINO
+class ApplicationDebugUsbWriter final : public debug::IUsbDebugWriter {
+ public:
+  std::size_t writable() noexcept override;
+  std::size_t write(const char* bytes, std::size_t size) noexcept override;
+};
+#endif
+
 class SigapApp final {
  public:
   SigapApp() noexcept;
@@ -234,11 +330,15 @@ class SigapApp final {
   }
 
  private:
+#ifdef SIGAP_DEBUG_APP_HOST_TEST
+  friend struct DebugAppProbe;
+#endif
 #ifdef ARDUINO
   using BatchStore = telemetry_archive::FsImmutableBatchStore;
   using AckJournal = telemetry_archive::FsAckJournalStore;
-  using BatchRuntime = telemetry_archive::ArchiveBatchRuntime<
-      BatchStore, AckJournal>;
+  using BatchRuntime = std::conditional_t<build::kLiveArchiveSplit,
+      telemetry_archive::LiveBatchRuntime,
+      telemetry_archive::ArchiveBatchRuntime<BatchStore, AckJournal>>;
 #else
   using BatchStore = telemetry_archive::MemoryImmutableBatchStore<8U>;
   using AckJournal = telemetry_archive::MemoryAckJournalStore<8U>;
@@ -249,17 +349,42 @@ class SigapApp final {
   config::ConfigManager config_manager_;
   provisioning::NvsSecretStore secret_store_{};
   acquisition::BootRuntimeIdentity boot_identity_{};
+#ifdef ARDUINO
+  debug::RuntimeIoGate io_gate_{};
+  ApplicationDebugLock debug_lock_{};
+  debug::DebugService debug_service_{boot_identity_.boot_id,
+      build::kFirmwareBuildId, build::kDebugDefaultLevel, debug_lock_};
+  debug::CommandBackend debug_command_backend_{debug_service_};
+  ApplicationDebugUsbWriter debug_usb_writer_{};
+  debug::UsbDebugSink debug_usb_sink_{debug_service_, debug_usb_writer_};
+  std::optional<debug::DebugHttpsTransport> debug_transport_{};
+  std::optional<debug::DebugHttpWorker> debug_worker_{};
+#endif
   acquisition::RecordContext record_context_{};
   acquisition::RecordFactory record_factory_;
   calibration::CalibrationEvidenceCache evidence_cache_{};
+#ifdef ARDUINO
+  RuntimeDebugObserver runtime_debug_observer_{debug_service_, evidence_cache_};
+#endif
   acquisition::TargetProfileSet profiles_{};
+#if SIGAP_SENSOR_SIMULATION
+  acquisition::Ds18b20Profile simulated_ds_profile_{};
+#endif
   acquisition::ProfileAuditRing<16U> audit_ring_{};
   acquisition::NvsProfileStore profile_store_{};
   acquisition::ProfilePersistence profile_persistence_;
   acquisition::ProfileManager profile_manager_;
   acquisition::AcquisitionFoundation acquisition_;
   ProcessingRuntime processing_runtime_{};
+#ifdef ARDUINO
+  telemetry_archive::BatchJsonBuilder legacy_eligibility_builder_{};
+  telemetry_archive::ImmutableBatch legacy_eligibility_scratch_{};
+  std::conditional_t<build::kLiveArchiveSplit, storage::LiveArchiveStore,
+                     storage::LegacyPendingArchiveStore> littlefs_store_{};
+  bool legacy_retention_reported_{false};
+#else
   storage::LittleFsArchiveStore littlefs_store_{};
+#endif
   storage::SdArchiveStore sd_store_{};
   storage::MediaFailoverStore archive_store_;
   storage::ArchiveStoreMigrationSource migration_source_;
@@ -286,7 +411,7 @@ class SigapApp final {
   ApplicationProvisioningClock provisioning_clock_{};
   provisioning::ArduinoWifiStation wifi_station_{};
   provisioning::WifiConnectionManager wifi_manager_;
-  provisioning::WifiProvisioningBackend wifi_backend_;
+  ApplicationWifiBackend wifi_backend_;
   provisioning::BleProvisioningSession ble_session_;
   provisioning::ArduinoBleProvisioningService ble_service_{};
 #endif
@@ -301,7 +426,7 @@ class SigapApp final {
 #endif
   std::optional<network::NetworkWorker> network_worker_{};
   bool network_ready_{false};
-#if defined(ARDUINO) && defined(SIGAP_NETWORK_ENDPOINT) && defined(SIGAP_NETWORK_CA_CERT)
+#ifdef ARDUINO
   bool network_time_ready_{false};
 #endif
   models::NvsModelProfilePersistence model_persistence_{};
@@ -314,6 +439,9 @@ class SigapApp final {
   bool fis_model_present_{false};
   bool safety_model_present_{false};
 #ifdef ARDUINO
+  std::array<uint32_t, 4U> observed_model_versions_{};
+  std::array<uint8_t, 4U> observed_model_states_{};
+  std::array<bool, 4U> observed_model_valid_{};
   maintenance::ArduinoUsbTransport maintenance_transport_{};
   maintenance::ArduinoRebootController reboot_controller_{};
 #else
@@ -332,6 +460,7 @@ class SigapApp final {
 #if defined(SIGAP_NETWORK_ENDPOINT) && defined(SIGAP_NETWORK_CA_CERT)
   ApplicationCalibrationExecutor device_control_executor_;
   network::WiFiDeviceControlHttpTransport device_control_transport_{};
+  ApplicationControlTransport control_transport_boundary_{device_control_transport_, io_gate_};
   network::FsDeviceControlResultJournal device_control_result_journal_{};
   network::DeviceControlPoller device_control_poller_;
   bool device_control_ready_{false};
@@ -344,12 +473,16 @@ class SigapApp final {
 #ifdef ARDUINO
   RuntimeDiagnosticLatch runtime_diagnostics_{};
   uint64_t runtime_diagnostics_started_us_{0U};
+  uint64_t previous_loop_entry_us_{0U};
+  uint8_t last_loop_gap_class_{255U};
+  bool loop_gap_baseline_valid_{false};
 #endif
 
   void refresh_model_profiles() noexcept;
 #ifdef ARDUINO
   void log_runtime_diagnostic(RuntimeDiagnosticEvent event, bool ready,
                               uint64_t now_us) noexcept;
+  void observe_loop_gap(uint64_t now_us) noexcept;
 #endif
 };
 

@@ -34,13 +34,14 @@ bool append_hex(network::DeviceControlResult& output,
 // Locate exactly one key in the root JSON object. Substring lookup is not
 // sufficient for device control because a nested or duplicate field could
 // otherwise change the meaning of a command while retaining the same digest.
-bool root_key(std::string_view payload, std::string_view key,
-              std::size_t& value_start) noexcept {
+enum class RootKeyStatus { Missing, Found, Invalid };
+RootKeyStatus root_key(std::string_view payload, std::string_view key,
+                       std::size_t& value_start) noexcept {
   std::size_t begin = 0U;
   while (begin < payload.size() &&
          (payload[begin] == ' ' || payload[begin] == '\t' ||
           payload[begin] == '\r' || payload[begin] == '\n')) ++begin;
-  if (begin >= payload.size() || payload[begin] != '{') return false;
+  if (begin >= payload.size() || payload[begin] != '{') return RootKeyStatus::Invalid;
   int depth{0};
   bool in_string{false};
   bool escaped{false};
@@ -62,14 +63,14 @@ bool root_key(std::string_view payload, std::string_view key,
         else if (payload[token_end] == '\\') token_escaped = true;
         else if (payload[token_end] == '"') break;
       }
-      if (token_end >= payload.size()) return false;
+      if (token_end >= payload.size()) return RootKeyStatus::Invalid;
       std::size_t cursor = token_end + 1U;
       while (cursor < payload.size() &&
              (payload[cursor] == ' ' || payload[cursor] == '\t' ||
               payload[cursor] == '\r' || payload[cursor] == '\n')) ++cursor;
       if (depth == 1 && cursor < payload.size() && payload[cursor] == ':') {
         if (payload.substr(token_begin, token_end - token_begin) == key) {
-          if (found) return false;
+          if (found) return RootKeyStatus::Invalid;
           found = true;
           value_start = cursor + 1U;
         }
@@ -79,11 +80,12 @@ bool root_key(std::string_view payload, std::string_view key,
     }
     if (byte == '{' || byte == '[') ++depth;
     else if (byte == '}' || byte == ']') {
-      if (depth == 0) return false;
+      if (depth == 0) return RootKeyStatus::Invalid;
       --depth;
     }
   }
-  return found && depth == 0;
+  if (depth != 0) return RootKeyStatus::Invalid;
+  return found ? RootKeyStatus::Found : RootKeyStatus::Missing;
 }
 
 }  // namespace
@@ -127,7 +129,7 @@ bool ApplicationCalibrationExecutor::sensor_target(
 bool ApplicationCalibrationExecutor::json_number(
     std::string_view payload, std::string_view key, int64_t& output) noexcept {
   std::size_t cursor{0U};
-  if (!root_key(payload, key, cursor)) return false;
+  if (root_key(payload, key, cursor) != RootKeyStatus::Found) return false;
   while (cursor < payload.size() && (payload[cursor] == ' ' || payload[cursor] == '\t')) ++cursor;
   const auto begin = cursor;
   if (cursor < payload.size() && payload[cursor] == '-') ++cursor;
@@ -143,7 +145,7 @@ bool ApplicationCalibrationExecutor::json_number(
 bool ApplicationCalibrationExecutor::json_string(
     std::string_view payload, std::string_view key, std::string_view& output) noexcept {
   std::size_t cursor{0U};
-  if (!root_key(payload, key, cursor)) return false;
+  if (root_key(payload, key, cursor) != RootKeyStatus::Found) return false;
   while (cursor < payload.size() && (payload[cursor] == ' ' || payload[cursor] == '\t')) ++cursor;
   if (cursor >= payload.size() || payload[cursor] != '"') return false;
   const auto begin = ++cursor;
@@ -200,13 +202,13 @@ bool ApplicationCalibrationExecutor::dispatch_line(
   }
   if (!parser_.consume('\n', event) ||
       event.status != maintenance::CommandStatus::Accepted) return false;
-  return router_.execute(event.command, now_us, response) ==
+  return router_.execute_calibration_internal(event.command, now_us, response) ==
          maintenance::CommandStatus::Accepted;
 }
 
 bool ApplicationCalibrationExecutor::apply_setup_fields(
     const network::DeviceControlCommand& command,
-    calibration::CalibrationTarget target, uint64_t now_us) noexcept {
+    calibration::CalibrationTarget target, uint64_t now_us, bool apply) noexcept {
   const std::string_view payload(
       reinterpret_cast<const char*>(command.payload.data()), command.payload_size);
   constexpr std::array<std::string_view, 12U> keys{{
@@ -217,8 +219,29 @@ bool ApplicationCalibrationExecutor::apply_setup_fields(
       "divider_denominator"}};
   (void)target;
   for (const auto key : keys) {
+    std::size_t value_start{};
+    const auto lookup = root_key(payload, key, value_start);
+    if (lookup == RootKeyStatus::Missing) continue;
+    if (lookup != RootKeyStatus::Found) return false;
     int64_t value{0};
-    if (!json_number(payload, key, value)) continue;
+    if (!json_number(payload, key, value)) return false;
+    // Match the typed router's bounds before START can acquire ownership.
+    if (key == "reference_mass_mg") {
+      if (value <= 0) return false;
+    } else if (key == "reference_temperature_centi_c") {
+      if (value < INT32_MIN || value > INT32_MAX) return false;
+    } else if (key == "reference_humidity_centi_pct") {
+      if (value < 0 || value > INT32_MAX) return false;
+    } else if (key == "resolution_bits") {
+      if (value < 9 || value > 12) return false;
+    } else if (key == "echo_mm_per_us_milli") {
+      if (value <= 0 || value > 1000) return false;
+    } else if (key == "overshoot_tolerance_mm_milli") {
+      if (value < 0 || value > UINT32_MAX) return false;
+    } else if (value <= 0 || value > UINT32_MAX) {
+      return false;
+    }
+    if (!apply) continue;
     std::array<char, 128U> line{};
     const int written = std::snprintf(line.data(), line.size(),
                                       "calibration criteria %.*s %lld",
@@ -389,6 +412,13 @@ bool ApplicationCalibrationExecutor::execute(
                       anchor == "empty" ? calibration::CalibrationAnchor::Empty :
                       anchor == "full" ? calibration::CalibrationAnchor::Full : calibration::CalibrationAnchor::Primary;
   }
+  if (envelope.operation == calibration::CalibrationOperation::Start &&
+      !apply_setup_fields(command, target, now_us, false)) return false;
+  // This guards controller replay lookup and START setup as one admission.
+  if (io_gate_ != nullptr && io_gate_->active(debug::IoOwner::DebugHttp)) {
+    result.status = network::DeviceControlStatus::Failed;
+    return false;
+  }
   calibration::CalibrationResultEnvelope response{};
   if (!controller_.execute(envelope, now_us, response)) return false;
   if (response.status == calibration::CalibrationCommandStatus::Replayed &&
@@ -397,10 +427,16 @@ bool ApplicationCalibrationExecutor::execute(
     result.status = network::DeviceControlStatus::Committed;
     return append_result_json(response, command.sensor_id.view(), result);
   }
+  const bool accepted = response.status == calibration::CalibrationCommandStatus::Accepted ||
+                        response.status == calibration::CalibrationCommandStatus::Replayed;
   if (envelope.operation == calibration::CalibrationOperation::Start &&
-      !apply_setup_fields(command, target, now_us)) return false;
+      response.status != calibration::CalibrationCommandStatus::Replayed &&
+      !apply_setup_fields(command, target, now_us, true)) {
+    controller_.disconnect(calibration::CalibrationTransport::Https);
+    return false;
+  }
   if (envelope.operation == calibration::CalibrationOperation::Preview &&
-      response.status == calibration::CalibrationCommandStatus::Accepted) {
+      accepted) {
     maintenance::MaintenanceResponse preview{};
     if (!router_.append_calibration_preview_response(preview) ||
         !append_preview_json(command.sensor_id.view(), preview, result)) return false;
@@ -409,7 +445,7 @@ bool ApplicationCalibrationExecutor::execute(
   }
   result.status = response.status == calibration::CalibrationCommandStatus::Committed
                       ? network::DeviceControlStatus::Committed
-                      : response.status == calibration::CalibrationCommandStatus::Accepted
+                      : accepted
                             ? envelope.operation == calibration::CalibrationOperation::Capture
                                   ? network::DeviceControlStatus::Capturing
                                   : envelope.operation == calibration::CalibrationOperation::Validate

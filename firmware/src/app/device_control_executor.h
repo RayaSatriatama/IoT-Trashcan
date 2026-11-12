@@ -10,6 +10,7 @@
 #include "calibration/calibration_transport.h"
 #include "maintenance/runtime.h"
 #include "network/device_control.h"
+#include "debug/io_gate.h"
 
 namespace sigap {
 
@@ -38,6 +39,7 @@ class ApplicationCalibrationExecutor final
   bool execute(const network::DeviceControlCommand& command,
                uint64_t now_us,
                network::DeviceControlResult& result) noexcept override;
+  void set_io_gate(debug::RuntimeIoGate* gate) noexcept { io_gate_ = gate; }
 
  private:
   static bool sensor_target(std::string_view value,
@@ -59,10 +61,11 @@ class ApplicationCalibrationExecutor final
                                   network::DeviceControlResult& output) noexcept;
   bool apply_setup_fields(const network::DeviceControlCommand& command,
                           calibration::CalibrationTarget target,
-                          uint64_t now_us) noexcept;
+                          uint64_t now_us, bool apply) noexcept;
 
   maintenance::CommandRouter& router_;
   calibration::CalibrationTransportController& controller_;
+  debug::RuntimeIoGate* io_gate_{nullptr};
   maintenance::MaintenanceParser parser_{};
 };
 

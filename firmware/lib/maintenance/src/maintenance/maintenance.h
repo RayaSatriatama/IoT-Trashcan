@@ -44,7 +44,6 @@ enum class CommandKind : std::uint8_t {
   Unknown,
   Status,
   SensorStatus,
-  BlePasskey,
   MaintenanceEnter,
   MaintenanceExit,
   ConfigActive,
@@ -88,6 +87,9 @@ enum class CommandKind : std::uint8_t {
   ModelCommit,
   ModelCancel,
   ModelRollback,
+  DebugMeta,
+  DebugPage,
+  DebugLevel,
   StorageSdTest,
   Reboot,
 };
@@ -205,6 +207,14 @@ class IModelCommandHandler {
                                       MaintenanceResponse& response) noexcept = 0;
   virtual void poll_model(std::uint64_t now_us) noexcept = 0;
   virtual void cancel_model() noexcept = 0;
+};
+
+class IDebugCommandHandler {
+ public:
+  virtual ~IDebugCommandHandler() = default;
+  virtual CommandStatus execute_debug(const MaintenanceCommand& command,
+                                      std::uint64_t now_us,
+                                      MaintenanceResponse& response) noexcept = 0;
 };
 
 struct MaintenancePollStats final {

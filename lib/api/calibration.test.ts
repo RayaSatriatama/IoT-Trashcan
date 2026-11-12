@@ -12,7 +12,7 @@ describe('operator calibration API client', () => {
     let requestInit: RequestInit | undefined;
     const diagnostic: SensorDiagnostic = {
       sensor_id: 'sht31_44', stream: 'organic', quality: 'UNCALIBRATED', reason: 'PROFILE_MISSING', raw: { present: true },
-      converted_value: null, converted_unit: null, fresh: true, age_ms: 4, last_sequence: '7', profile_present: false,
+      converted_value: null, converted_unit: null, fresh: true, age_ms: 4, ordering_unknown: false, future_clock_skew: false, last_sequence: '7', profile_present: false,
       profile_version: null, profile_hash: null, calibration_state: 'IDLE', accepted_samples: 0, rejected_samples: 0,
     };
     const client = createCalibrationApi({ bearerToken: 'test-only-token' }, async (input, init) => {

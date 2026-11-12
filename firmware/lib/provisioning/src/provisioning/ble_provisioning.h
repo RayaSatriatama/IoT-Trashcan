@@ -6,10 +6,13 @@
 #include <string_view>
 
 #include "provisioning_policy.h"
-#include "provisioning_secret_store.h"
 #include "wifi_manager.h"
+#include "debug/commands.h"
+#include "ble_service_queue.h"
 
 #ifdef ARDUINO
+#include <freertos/FreeRTOS.h>
+#include <freertos/portmacro.h>
 class NimBLECharacteristic;
 class NimBLEServer;
 class NimBLEConnInfo;
@@ -45,38 +48,9 @@ enum class BleCommandKind : uint8_t {
   CalibrationCancel,
   CalibrationHistory,
   CalibrationRollback,
-};
-
-enum class PasskeyDisclosureStatus : uint8_t {
-  Ready,
-  AlreadyDisclosed,
-  Unavailable,
-};
-
-// The only supported passkey handoff is a single, explicitly requested local
-// disclosure.  The underlying NVS setup secret remains private.
-class ILocalPasskeyHandoff {
- public:
-  virtual ~ILocalPasskeyHandoff() = default;
-  virtual PasskeyDisclosureStatus disclose_once(
-      char* output, std::size_t capacity) noexcept = 0;
-};
-
-class LocalPasskeyHandoff final : public ILocalPasskeyHandoff {
- public:
-  void configure(uint32_t passkey) noexcept {
-    passkey_ = passkey;
-    configured_ = passkey <= 999999U;
-    disclosed_ = false;
-  }
-
-  PasskeyDisclosureStatus disclose_once(
-      char* output, std::size_t capacity) noexcept override;
-
- private:
-  uint32_t passkey_{0U};
-  bool configured_{false};
-  bool disclosed_{false};
+  DebugMeta,
+  DebugPage,
+  DebugLevel,
 };
 
 struct BleCommand final {
@@ -87,6 +61,8 @@ struct BleCommand final {
   std::size_t password_size{0U};
   std::array<char, 128> calibration_arguments{};
   std::size_t calibration_arguments_size{0U};
+  debug::Cursor debug_cursor{};
+  debug::Level debug_level{debug::Level::Info};
 };
 
 struct BleWireFrame final {
@@ -113,10 +89,20 @@ class BleCommandParser final {
                               BleCommand& output) noexcept;
 };
 
+enum class BleCloseReason : uint8_t { Normal = 0U, Timeout = 1U, Error = 2U, Unknown = 3U };
+
+struct BleResponseObservation final {
+  uint64_t started_us{};
+  uint32_t request_id{};
+  uint16_t chunk_index{}, chunk_total{};
+  bool eligible{}, request_id_present{};
+};
+
 struct BleResponse final {
   std::array<char, 512> bytes{};
   std::size_t size{0U};
   bool notify{false};
+  BleResponseObservation observation{};
 };
 
 class IBleProvisioningBackend {
@@ -138,9 +124,9 @@ class IBleProvisioningBackend {
 
 // Calibration is deliberately exposed as a narrow transport seam.  The
 // authoritative session/controller remains owned by the calibration module;
-// this adapter only forwards a bounded, authenticated command and receives a
-// bounded response.  A single controller can therefore arbitrate USB, BLE,
-// and HTTPS callers without duplicating calibration state here.
+// this adapter only forwards bounded commands and receives a bounded response.
+// A single controller can arbitrate USB, BLE, and HTTPS callers without
+// duplicating calibration state here.
 class IBleCalibrationBackend {
  public:
   virtual ~IBleCalibrationBackend() = default;
@@ -159,7 +145,7 @@ class WifiProvisioningBackend final : public IBleProvisioningBackend {
     return manager_.current_ssid();
   }
   WifiScanStatus request_scan() noexcept override {
-    return manager_.request_scan();
+    return manager_.request_scan(WifiScanSource::Operator);
   }
   WifiScanStatus poll_scan(WifiNetwork* output, std::size_t capacity,
                            std::size_t& count) noexcept override {
@@ -194,18 +180,28 @@ class BleProvisioningSession final {
       : backend_(backend), clock_(clock), policy_(policy) {}
 
   void on_connect(uint64_t now_us) noexcept;
-  void on_authenticated(bool authenticated) noexcept { authenticated_ = authenticated; }
-  // The canonical device identity is injected by the application composition
-  // from the same EFUSE identity used by telemetry and device-control.  The
-  // identity is only disclosed after the encrypted/authenticated GATT link is
-  // established.
+  // The canonical device identity is an ordinary routing identifier, not an
+  // authentication credential. It is injected from the EFUSE identity used
+  // by telemetry and device-control.
   void set_device_id(uint64_t device_id) noexcept { device_id_ = device_id; }
+  void set_read_only_diagnostic(bool enabled) noexcept {
+    read_only_diagnostic_ = enabled;
+  }
   void set_calibration_backend(IBleCalibrationBackend* backend) noexcept {
     calibration_backend_ = backend;
   }
-  void on_disconnect() noexcept;
+  void set_debug_backend(debug::CommandBackend* backend) noexcept { debug_backend_ = backend; }
+  void bind_debug_sink(debug::IEventSink* sink) noexcept { debug_sink_ = sink; }
+  int32_t pending_request_count() const noexcept { return scan_waiting_ ? 1 : 0; }
+  // Called by the owning service immediately after its notification attempt.
+  void observe_notification(const BleResponse& response, bool admitted) noexcept;
+  bool consume_disconnect_request() noexcept {
+    const bool requested = disconnect_requested_;
+    disconnect_requested_ = false;
+    return requested;
+  }
+  void on_disconnect(BleCloseReason reason = BleCloseReason::Unknown) noexcept;
   bool connected() const noexcept { return connected_; }
-  bool authenticated() const noexcept { return authenticated_; }
   void poll(BleResponse& response) noexcept;
   BleParseStatus receive(std::string_view frame, BleResponse& response) noexcept;
 
@@ -223,7 +219,10 @@ class BleProvisioningSession final {
   void emit_response(BleResponse& response) noexcept;
   void reset_reassembly() noexcept;
   BleParseStatus dispatch(std::string_view payload, uint32_t request_id,
-                          BleResponse& response) noexcept;
+                          BleResponse& response, bool framed) noexcept;
+  void emit_ble(uint16_t code, int32_t arg0, int32_t arg1,
+                const BleResponseObservation& context = {}) noexcept;
+  void observe_result(bool accepted, bool pending = false) noexcept;
   bool timed_out(uint64_t now_us) const noexcept;
   bool calibration_command(BleCommandKind kind) const noexcept;
 
@@ -231,7 +230,8 @@ class BleProvisioningSession final {
   BleProvisioningClock& clock_;
   ProvisioningPolicy policy_{};
   bool connected_{false};
-  bool authenticated_{false};
+  bool disconnect_requested_{false};
+  bool read_only_diagnostic_{false};
   uint64_t device_id_{0U};
   uint64_t last_activity_us_{0U};
   bool scan_waiting_{false};
@@ -252,34 +252,57 @@ class BleProvisioningSession final {
   uint16_t pending_response_chunk_{0U};
   uint32_t response_request_id_{0U};
   IBleCalibrationBackend* calibration_backend_{nullptr};
+  debug::CommandBackend* debug_backend_{nullptr};
+  debug::IEventSink* debug_sink_{nullptr};
+  BleResponseObservation active_observation_{}, pending_observation_{}, scan_observation_{};
+  uint16_t admitted_response_chunks_{0U}, last_notification_chunk_{UINT16_MAX};
+  bool response_rendered_{false}, response_geometry_ok_{true};
   std::array<char, kMaxResponseBytes> calibration_response_{};
 };
 
 #ifdef ARDUINO
-class ArduinoBleProvisioningService final : public ILocalPasskeyHandoff {
+class ArduinoBleProvisioningService final {
  public:
   bool begin(BleProvisioningSession& session,
              std::string_view device_name) noexcept;
   void poll() noexcept;
-  void handle_write(::NimBLECharacteristic* characteristic,
-                    bool authenticated) noexcept;
-  void handle_connect() noexcept;
-  void handle_authenticated(bool authenticated) noexcept;
-  void handle_disconnect(::NimBLEServer* server) noexcept;
-  uint32_t setup_passkey() const noexcept { return setup_passkey_; }
-  PasskeyDisclosureStatus disclose_once(
-      char* output, std::size_t capacity) noexcept override {
-    return passkey_handoff_.disclose_once(output, capacity);
+#ifdef SIGAP_BLE_DIAGNOSTIC
+  const char* diagnostic_failure_reason() const noexcept {
+    return start_failure_reason_;
   }
+#endif
+  void handle_write(::NimBLECharacteristic* characteristic) noexcept;
+  void handle_write(::NimBLECharacteristic* characteristic,
+                    uint16_t connection_handle) noexcept;
+  void handle_connect(uint16_t connection_handle) noexcept;
+  void handle_disconnect(::NimBLEServer* server) noexcept;
+  void handle_disconnect(::NimBLEServer* server,
+                         uint16_t connection_handle) noexcept;
 
  private:
+  BleServiceConnection callback_connection() noexcept;
+  bool current_connection(const BleServiceConnection& expected) noexcept;
+  void close_session() noexcept;
+  void disconnect_connection(const BleServiceConnection& expected) noexcept;
+  void notify(const BleResponse& response,
+              const BleServiceConnection& expected) noexcept;
+
+  BleServiceQueue queue_{};
+  portMUX_TYPE queue_mux_ = portMUX_INITIALIZER_UNLOCKED;
+  BleServiceConnection active_connection_{};
+  bool session_owned_{false};
+  bool disconnect_observed_{false};
   BleProvisioningSession* session_{nullptr};
   void* server_{nullptr};
   void* command_{nullptr};
   void* response_{nullptr};
-  NvsProvisioningSecretStore secret_store_{};
-  LocalPasskeyHandoff passkey_handoff_{};
-  uint32_t setup_passkey_{0U};
+  const char* start_failure_reason_{"not_started"};
+#ifdef SIGAP_BLE_DIAGNOSTIC
+  bool fail_closed_{false};
+#endif
+#ifdef SIGAP_BLE_WIFI_TEST
+  bool wifi_test_fail_closed_{false};
+#endif
 };
 #endif
 

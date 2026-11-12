@@ -6,7 +6,7 @@ import type { CalibrationCommand, CalibrationPreview, SensorDiagnostic } from '.
 const diagnostic: SensorDiagnostic = {
   sensor_id: 'hx711_organic', stream: 'organic', quality: 'UNCALIBRATED', reason: 'PROFILE_MISSING',
   raw: { present: true, value: 123, unit: 'counts' }, converted_value: null, converted_unit: 'kg', fresh: true,
-  age_ms: 20, last_sequence: '4', profile_present: false, profile_version: null, profile_hash: null,
+  age_ms: 20, ordering_unknown: false, future_clock_skew: false, last_sequence: '4', profile_present: false, profile_version: null, profile_hash: null,
   calibration_state: 'IDLE', accepted_samples: 0, rejected_samples: 0,
 };
 

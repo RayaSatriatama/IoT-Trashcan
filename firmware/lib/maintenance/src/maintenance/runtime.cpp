@@ -1,4 +1,5 @@
 #include "maintenance/runtime.h"
+#include "sigap/build/build_config.h"
 #include <algorithm>
 #include <charconv>
 #include <cstdint>
@@ -29,6 +30,23 @@ bool is_calibration_mutation(CommandKind kind) noexcept {
     case CommandKind::CalibrationPreview:
     case CommandKind::CalibrationCommit:
     case CommandKind::CalibrationCancel:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool is_sensor_profile_mutation(CommandKind kind) noexcept {
+  switch (kind) {
+    case CommandKind::ProfileImport:
+    case CommandKind::ProfileImportBegin:
+    case CommandKind::ProfileImportChunk:
+    case CommandKind::ProfileImportFinish:
+    case CommandKind::ProfileValidate:
+    case CommandKind::ProfilePreview:
+    case CommandKind::ProfileCommit:
+    case CommandKind::ProfileRollback:
+    case CommandKind::ProfileReset:
       return true;
     default:
       return false;
@@ -492,6 +510,33 @@ CommandStatus CommandRouter::profile_transfer(
 CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
                                      uint64_t now_us,
                                      MaintenanceResponse& response) noexcept {
+  // All transports share this boundary; virtual observations cannot become
+  // persisted physical calibration or replace the stored sensor profiles.
+  if (build::kSensorSimulation &&
+      (is_calibration_mutation(command.kind) || is_sensor_profile_mutation(command.kind))) {
+    (void)response.append("ERR SENSOR_SIMULATION\n");
+    return CommandStatus::Rejected;
+  }
+  switch (command.kind) {
+    case CommandKind::DebugMeta:
+    case CommandKind::DebugPage:
+    case CommandKind::DebugLevel:
+      if (debug_commands_ == nullptr) {
+        (void)response.append("ERR DEBUG_UNAVAILABLE\n");
+        return CommandStatus::Rejected;
+      }
+      return debug_commands_->execute_debug(command, now_us, response);
+    default: break;
+  }
+  if (io_gate_ != nullptr && io_gate_->active(debug::IoOwner::DebugHttp) &&
+      command.kind != CommandKind::Status &&
+      command.kind != CommandKind::SensorStatus &&
+      command.kind != CommandKind::ModelStatus &&
+      command.kind != CommandKind::ModelCancel &&
+      command.kind != CommandKind::CalibrationCancel) {
+    (void)response.append("ERR STORAGE_BUSY\n");
+    return CommandStatus::Rejected;
+  }
   const acquisition::ConfigRef current_config =
       config_ref_from_identity(config_.identity());
   if (audit_ != nullptr) audit_->set_context(now_us, current_config);
@@ -526,33 +571,6 @@ CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
       return CommandStatus::Accepted;
     case CommandKind::SensorStatus:
       return sensor_status(command, now_us, response);
-    case CommandKind::BlePasskey: {
-      if (!maintenance_authorized_ || mode_ != DeviceMode::Maintenance) {
-        (void)response.append("ERR MAINTENANCE_REQUIRED\n");
-        return CommandStatus::Rejected;
-      }
-      if (passkey_handoff_ == nullptr) {
-        (void)response.append("ERR BLE_PASSKEY_UNAVAILABLE\n");
-        return CommandStatus::Rejected;
-      }
-      char passkey[7]{};
-      const auto disclosure = passkey_handoff_->disclose_once(
-          passkey, sizeof(passkey));
-      if (disclosure == provisioning::PasskeyDisclosureStatus::AlreadyDisclosed) {
-        (void)response.append("ERR BLE_PASSKEY_ALREADY_DISCLOSED\n");
-        return CommandStatus::Rejected;
-      }
-      if (disclosure != provisioning::PasskeyDisclosureStatus::Ready) {
-        (void)response.append("ERR BLE_PASSKEY_UNAVAILABLE\n");
-        return CommandStatus::Rejected;
-      }
-      if (!response.append("ble_passkey=") ||
-          !response.append(std::string_view(passkey, 6U)) ||
-          !response.append("\n")) {
-        return CommandStatus::Failed;
-      }
-      return CommandStatus::Accepted;
-    }
     case CommandKind::MaintenanceEnter:
       maintenance_authorized_ = true;
       mode_ = DeviceMode::Maintenance;

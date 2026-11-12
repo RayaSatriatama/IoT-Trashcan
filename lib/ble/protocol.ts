@@ -1,11 +1,18 @@
+import { decodeDebugResponse } from '../debug/codec';
+import type { DebugResponse } from '../debug/codec';
+
 export const SIGAP_BLE_SERVICE_UUID = '7d3f0001-7d3f-4a53-9a4b-534947415000';
 export const SIGAP_BLE_CONTROL_UUID = '7d3f0002-7d3f-4a53-9a4b-534947415000';
 export const SIGAP_BLE_EVENTS_UUID = '7d3f0003-7d3f-4a53-9a4b-534947415000';
 
 export const BLE_FRAME_MAX_BYTES = 512;
 export const BLE_ATT_FRAME_BYTES = 20;
+const BLE_MAX_CHUNKS = 128;
+const BLE_REQUEST_ID_MAX = 0xFFFFFFFF;
 export const BLE_REQUEST_FRAME_VERSION = 'F1';
 export const BLE_RESPONSE_FRAME_VERSION = 'R1';
+export const BLE_CHUNK_ACK = 'OK CHUNK';
+const BLE_CHUNK_ACK_BYTES = new TextEncoder().encode(BLE_CHUNK_ACK);
 const BLE_SCAN_RESULT_MAX = 16;
 
 export type BleFrame = {
@@ -34,7 +41,9 @@ export type BleResponse = {
   status?: WifiStatus;
   networks?: WifiNetwork[];
   scanPending?: boolean;
+  rawCount?: number;
   calibration?: BleCalibrationResponse;
+  debug?: DebugResponse;
 };
 
 export type BleCalibrationStatus = 'ACCEPTED' | 'ERROR';
@@ -53,11 +62,15 @@ export const BLE_CALIBRATION_OPERATIONS = [
   'VALIDATE', 'PREVIEW', 'COMMIT', 'CANCEL', 'HISTORY', 'ROLLBACK', 'ACTIVE_PROFILE',
 ] as const;
 export type BleCalibrationOperation = typeof BLE_CALIBRATION_OPERATIONS[number];
+export type { DebugCursor, DebugLevel, DebugMeta, DebugPage, DebugResponse } from '../debug/codec';
 
 function validateFrameHeader(version: string, requestId: string, chunkIndex: number, chunkCount: number): void {
   if (version !== BLE_REQUEST_FRAME_VERSION && version !== BLE_RESPONSE_FRAME_VERSION) throw new Error('BLE frame version invalid');
-  if (!/^\d{1,10}$/u.test(requestId)) throw new Error('BLE request id invalid');
-  if (!Number.isInteger(chunkIndex) || !Number.isInteger(chunkCount) || chunkCount < 1 || chunkIndex < 0 || chunkIndex >= chunkCount) {
+  if (!/^\d{1,10}$/u.test(requestId) || Number(requestId) > BLE_REQUEST_ID_MAX) {
+    throw new Error('BLE request id invalid');
+  }
+  if (!Number.isInteger(chunkIndex) || !Number.isInteger(chunkCount) || chunkCount < 1 ||
+      chunkCount > BLE_MAX_CHUNKS || chunkIndex < 0 || chunkIndex >= chunkCount) {
     throw new Error('BLE chunk bounds invalid');
   }
 }
@@ -68,6 +81,7 @@ function splitPayload(payload: Uint8Array, requestId: string, version: typeof BL
     const chunks: Uint8Array[] = [];
     let offset = 0;
     while (offset < payload.byteLength || chunks.length === 0) {
+      if (chunks.length >= BLE_MAX_CHUNKS) throw new Error('BLE chunk bounds invalid');
       const headerBytes = new TextEncoder().encode(`${version}|${requestId}|${chunks.length}|${chunkCount}|`);
       const available = BLE_ATT_FRAME_BYTES - headerBytes.byteLength;
       if (available <= 0) throw new Error('BLE frame header is too large');
@@ -112,8 +126,13 @@ export function decodeBleFrame(bytes: Uint8Array): BleFrame {
   const header = new TextDecoder('utf-8', { fatal: true });
   const version = header.decode(bytes.slice(0, separators[0])) as BleFrame['version'];
   const requestId = header.decode(bytes.slice(separators[0] + 1, separators[1]));
-  const chunkIndex = Number(header.decode(bytes.slice(separators[1] + 1, separators[2])));
-  const chunkCount = Number(header.decode(bytes.slice(separators[2] + 1, separators[3])));
+  const chunkIndexToken = header.decode(bytes.slice(separators[1] + 1, separators[2]));
+  const chunkCountToken = header.decode(bytes.slice(separators[2] + 1, separators[3]));
+  if (!/^\d+$/u.test(chunkIndexToken) || !/^\d+$/u.test(chunkCountToken)) {
+    throw new Error('BLE chunk bounds invalid');
+  }
+  const chunkIndex = Number(chunkIndexToken);
+  const chunkCount = Number(chunkCountToken);
   validateFrameHeader(version, requestId, chunkIndex, chunkCount);
   // Keep payload bytes opaque. A frame may end in the middle of UTF-8 codepoint.
   const payload = bytes.slice(separators[3] + 1);
@@ -121,24 +140,37 @@ export function decodeBleFrame(bytes: Uint8Array): BleFrame {
   return { version, requestId, chunkIndex, chunkCount, payload };
 }
 
+export function isBleChunkAcknowledgement(frame: BleFrame): boolean {
+  return frame.version === BLE_RESPONSE_FRAME_VERSION && frame.chunkIndex === 0 && frame.chunkCount === 1 &&
+    frame.payload.byteLength === BLE_CHUNK_ACK_BYTES.byteLength &&
+    BLE_CHUNK_ACK_BYTES.every((byte, index) => frame.payload[index] === byte);
+}
+
 export function assembleBleFrames(
   frames: readonly BleFrame[],
   expectedVersion: BleFrame['version'] = BLE_RESPONSE_FRAME_VERSION,
 ): Uint8Array {
   if (frames.length === 0) throw new Error('BLE response is empty');
+  if (frames.length > BLE_MAX_CHUNKS) throw new Error('BLE chunk bounds invalid');
   const first = frames[0];
+  validateFrameHeader(first.version, first.requestId, first.chunkIndex, first.chunkCount);
   if (first.version !== expectedVersion || frames.length !== first.chunkCount) throw new Error('BLE response chunks incomplete');
   const ordered = [...frames].sort((left, right) => left.chunkIndex - right.chunkIndex);
-  const output = new Uint8Array(ordered.reduce((sum, frame) => sum + frame.payload.byteLength, 0));
-  let offset = 0;
+  let outputSize = 0;
   ordered.forEach((frame, index) => {
+    validateFrameHeader(frame.version, frame.requestId, frame.chunkIndex, frame.chunkCount);
     if (frame.version !== first.version || frame.requestId !== first.requestId || frame.chunkCount !== first.chunkCount || frame.chunkIndex !== index) {
       throw new Error('BLE response chunks inconsistent');
     }
+    outputSize += frame.payload.byteLength;
+  });
+  if (outputSize > BLE_FRAME_MAX_BYTES) throw new Error('BLE response is too large');
+  const output = new Uint8Array(outputSize);
+  let offset = 0;
+  ordered.forEach((frame) => {
     output.set(frame.payload, offset);
     offset += frame.payload.byteLength;
   });
-  if (output.byteLength > BLE_FRAME_MAX_BYTES) throw new Error('BLE response is too large');
   return output;
 }
 
@@ -157,7 +189,8 @@ export function encodeBleCommand(_id: string, command: string, payload: Record<s
   if (normalizedBody !== 'STATUS' && normalizedBody !== 'GET_STATUS' && normalizedBody !== 'GET_DEVICE_ID' && normalizedBody !== 'SCAN' &&
       normalizedBody !== 'SCAN_WIFI' && normalizedBody !== 'PING' && normalizedBody !== 'LIST_KNOWN_WIFI' &&
       normalizedBody !== 'RETRY_WIFI' && !normalizedBody.startsWith('CONNECT ') &&
-      !normalizedBody.startsWith('CONNECT_WIFI ') && !normalizedBody.startsWith('CAL ')) {
+      !normalizedBody.startsWith('CONNECT_WIFI ') && !normalizedBody.startsWith('CAL ') &&
+      !normalizedBody.startsWith('GET_DEBUG ') && !normalizedBody.startsWith('SET_DEBUG_LEVEL ')) {
     throw new Error('BLE command tidak dikenal');
   }
   // Firmware's bounded CAL line accepts up to 254 bytes. Keep a small
@@ -215,7 +248,9 @@ export function encodeCalibrationCommand(
 
 export function decodeBleResponse(bytes: Uint8Array): BleResponse {
   if (bytes.byteLength > BLE_FRAME_MAX_BYTES) throw new Error('BLE response is too large');
-  const text = new TextDecoder().decode(bytes).trim();
+  const rawText = new TextDecoder('utf-8', { ignoreBOM: true }).decode(bytes);
+  if (rawText.startsWith('DBG1|')) return { ok: true, debug: decodeDebugResponse(rawText) };
+  const text = rawText.trim();
   if (!text) throw new Error('BLE response is empty');
   if (text.startsWith('ERR ')) return { ok: false, error: text.slice(4) };
   if (text === 'OK SCAN PENDING') return { ok: true, scanPending: true };
@@ -239,12 +274,15 @@ export function decodeBleResponse(bytes: Uint8Array): BleResponse {
       throw new Error('BLE scan count invalid');
     }
     if (lines.length > BLE_SCAN_RESULT_MAX) throw new Error('BLE scan result limit exceeded');
-    const networks = lines.map((line) => {
+    const rows = lines.map((line) => {
       const match = /^(.*),(-?\d+),(0|1)$/u.exec(line);
-      if (!match || !match[1]) throw new Error('BLE scan entry invalid');
-      return { ssid: match[1], rssi: Number(match[2]), secure: match[3] === '1' };
+      if (!match) throw new Error('BLE scan entry invalid');
+      const rssi = Number(match[2]);
+      if (!Number.isFinite(rssi)) throw new Error('BLE scan entry invalid');
+      return { ssid: match[1], rssi, secure: match[3] === '1' };
     });
-    return { ok: true, networks };
+    const networks = rows.filter((network) => network.ssid.length > 0);
+    return { ok: true, networks, rawCount: rows.length };
   }
   if (text.startsWith('OK LIST_KNOWN_WIFI')) {
     const parts = text.split('\n');

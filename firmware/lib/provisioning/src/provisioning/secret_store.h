@@ -74,6 +74,7 @@ class SecretStore {
   virtual ~SecretStore() = default;
   // Only internal network/auth services may receive plaintext secrets.
   virtual bool load_for_network(NetworkSecrets& output) = 0;
+  virtual bool load_wifi_for_network(NetworkSecrets& output) = 0;
   virtual SecretPresence status() const noexcept = 0;
   // Maintenance writes and clear operations are intentionally write-only.
   virtual bool set_wifi(const char* ssid, const char* password) = 0;
@@ -87,6 +88,7 @@ class PersistentSecretStore final : public SecretStore {
   explicit PersistentSecretStore(ISecretBlobStore& backend) noexcept
       : backend_(backend) {}
   bool load_for_network(NetworkSecrets& output) override;
+  bool load_wifi_for_network(NetworkSecrets& output) override;
   SecretPresence status() const noexcept override;
   bool set_wifi(const char* ssid, const char* password) override;
   bool rotate_device_token(const char* token) override;
@@ -145,6 +147,9 @@ class NvsSecretStore final : public SecretStore {
   NvsSecretStore() noexcept : store_(backend_) {}
   bool load_for_network(NetworkSecrets& output) override {
     return store_.load_for_network(output);
+  }
+  bool load_wifi_for_network(NetworkSecrets& output) override {
+    return store_.load_wifi_for_network(output);
   }
   SecretPresence status() const noexcept override { return store_.status(); }
   bool set_wifi(const char* ssid, const char* password) override {

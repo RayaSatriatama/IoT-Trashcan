@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <limits>
@@ -8,6 +9,7 @@
 #include "acquisition/record.h"
 #include "acquisition/target_runtime.h"
 #include "config/config_types.h"
+#include "debug/types.h"
 #include "fuzzy/fis.h"
 #include "models/model_profiles.h"
 #include "processing/processing_engine.h"
@@ -52,6 +54,8 @@ class ProcessingRuntime final : public acquisition::ISampleObserver {
     ResultEnvelope envelope{};
   };
 
+  void bind_debug_sink(debug::IEventSink* sink) noexcept { debug_sink_ = sink; }
+
   bool begin(const config::AppConfig& active,
              const acquisition::ConfigRef& config_ref,
              acquisition::SequenceAllocator& sequence,
@@ -92,6 +96,7 @@ class ProcessingRuntime final : public acquisition::ISampleObserver {
     window_.clear();
     retained_count_ = 0U;
     safety_evaluator_.reset();
+    availability_seen_ = false;
   }
 
   // Calibration evidence receives every acquisition attempt too. The
@@ -172,6 +177,126 @@ class ProcessingRuntime final : public acquisition::ISampleObserver {
   std::size_t retained_samples() const noexcept { return retained_count_; }
 
  private:
+  struct Availability final {
+    uint32_t total{};
+    uint32_t ready{};
+    int32_t reason{};
+    bool failed{};
+  };
+
+  static int32_t input_reason(processing::ProcessingReason reason) noexcept {
+    using processing::ProcessingReason;
+    switch (reason) {
+      case ProcessingReason::InputMissing:
+      case ProcessingReason::ProfileMissing:
+      case ProcessingReason::CapacityMissing: return 1;
+      case ProcessingReason::InputStale: return 2;
+      case ProcessingReason::InputCalibrating: return 3;
+      case ProcessingReason::InputUncalibrated: return 4;
+      case ProcessingReason::InputTimeout:
+      case ProcessingReason::InputDisconnected:
+      case ProcessingReason::InputCrcError:
+      case ProcessingReason::ProfileInvalid:
+      case ProcessingReason::CapacityInvalid:
+      case ProcessingReason::ConversionFailed: return 5;
+      case ProcessingReason::InputOutOfRange: return 6;
+      case ProcessingReason::Ready:
+      case ProcessingReason::SourceCapacityExceeded: return 0;
+    }
+    return 0;
+  }
+
+  static void add_metric(Availability& state,
+                         const processing::ProcessedMetric& metric) noexcept {
+    ++state.total;
+    if (metric.available && metric.disposition.operational()) {
+      ++state.ready;
+    } else {
+      state.reason = std::max(state.reason, input_reason(metric.disposition.reason));
+    }
+  }
+
+  static int32_t fis_reason(fuzzy::FisReason reason) noexcept {
+    using fuzzy::FisReason;
+    switch (reason) {
+      case FisReason::TraceOverflow: return 8;
+      case FisReason::InvalidModel: return 7;
+      case FisReason::InputOutOfDomain: return 6;
+      case FisReason::InputInvalid: return 5;
+      case FisReason::InputUncalibrated: return 4;
+      case FisReason::InputCalibrating: return 3;
+      case FisReason::InputStale: return 2;
+      case FisReason::InputMissing: return 1;
+      case FisReason::ModelNotConfigured:
+      case FisReason::ZeroArea:
+      case FisReason::Ready: return 0;
+    }
+    return 0;
+  }
+
+  static int32_t safety_reason(safety::SafetyReason reason) noexcept {
+    using safety::SafetyReason;
+    switch (reason) {
+      case SafetyReason::InvalidModel: return 7;
+      case SafetyReason::HazardInputInvalid:
+      case SafetyReason::HazardInputTimeout: return 5;
+      case SafetyReason::HazardInputUncalibrated: return 4;
+      case SafetyReason::HazardInputCalibrating: return 3;
+      case SafetyReason::HazardInputStale: return 2;
+      case SafetyReason::HazardInputMissing: return 1;
+      case SafetyReason::SafetyNotConfigured:
+      case SafetyReason::HazardThresholdExceeded:
+      case SafetyReason::AlertLatched:
+      case SafetyReason::AllValidatedChannelsClear: return 0;
+    }
+    return 0;
+  }
+
+  void collect_availability(Availability& state, acquisition::StreamId stream,
+                            bool has_fis, bool has_safety) const noexcept {
+    const auto& values = workspace_.envelope.result.processing.processed;
+    add_metric(state, values.fill_pct);
+    add_metric(state, values.weight_kg);
+    add_metric(state, values.weight_utilization_pct);
+    if (stream != acquisition::StreamId::Inorganic) {
+      add_metric(state, values.temperature_c);
+    }
+    if (stream == acquisition::StreamId::B3) {
+      add_metric(state, values.mq7_mv);
+      add_metric(state, values.mq8_mv);
+    }
+    const auto& fis = workspace_.pipeline.fuzzy_result;
+    if (has_fis && fis.state != fuzzy::FisState::Ready &&
+        fis.state != fuzzy::FisState::Unconfigured) {
+      state.failed = true;
+      state.reason = std::max(state.reason, fis_reason(fis.reason));
+    }
+    const auto& safety = workspace_.pipeline.safety_result;
+    if (has_safety && (safety.state == safety::SafetyState::Unavailable ||
+                       safety.state == safety::SafetyState::Fault)) {
+      state.failed = true;
+      state.reason = std::max(state.reason, safety_reason(safety.reason));
+    }
+  }
+
+  void emit_availability(uint64_t now_us, const Availability& state) noexcept {
+    if (debug_sink_ == nullptr || (state.total == 0U && !state.failed)) return;
+    const int32_t value = state.ready == 0U ? 2 :
+        state.ready == state.total && !state.failed ? 0 : 1;
+    if (availability_seen_ && value == availability_state_ &&
+        state.reason == availability_reason_) return;
+    availability_seen_ = true;
+    availability_state_ = value;
+    availability_reason_ = state.reason;
+    debug::EventInput event{};
+    event.monotonic_us = now_us;
+    event.module = debug::Module::Acquisition;
+    event.event_code = 42U;
+    event.arg0 = value;
+    event.arg1 = state.reason;
+    (void)debug_sink_->emit(event);
+  }
+
   static constexpr std::size_t stream_index(
       acquisition::StreamId stream) noexcept {
     switch (stream) {
@@ -277,6 +402,7 @@ class ProcessingRuntime final : public acquisition::ISampleObserver {
     }
     if (window_.empty()) return;
 
+    Availability availability{};
     for (const auto stream : {acquisition::StreamId::Organic,
                               acquisition::StreamId::Inorganic,
                               acquisition::StreamId::B3}) {
@@ -286,6 +412,7 @@ class ProcessingRuntime final : public acquisition::ISampleObserver {
           workspace_.profiles, workspace_.snapshot);
       if (snapshot_status != processing::ProcessingSnapshotStatus::Captured) {
         ++result_failures_;
+        availability.failed = true;
         continue;
       }
 
@@ -310,9 +437,11 @@ class ProcessingRuntime final : public acquisition::ISampleObserver {
       if (status == processing::ProcessStatus::NoSources) continue;
       if (status != processing::ProcessStatus::Produced) {
         ++result_failures_;
+        availability.failed = true;
         continue;
       }
 
+      collect_availability(availability, stream, fis != nullptr, safety != nullptr);
       processing::ResultRecordFactory factory(*sequence_, record_context_);
       if (factory.make(cycle_started_us, workspace_.envelope.result,
                        workspace_.envelope) !=
@@ -325,6 +454,7 @@ class ProcessingRuntime final : public acquisition::ISampleObserver {
         ++result_failures_;
       }
     }
+    emit_availability(cycle_started_us, availability);
   }
 
   void advance_due(uint64_t now_us) noexcept {
@@ -342,6 +472,10 @@ class ProcessingRuntime final : public acquisition::ISampleObserver {
   static constexpr uint64_t kMaximumSampleAgeUs{5000000U};
 
   bool enabled_{false};
+  debug::IEventSink* debug_sink_{nullptr};
+  bool availability_seen_{false};
+  int32_t availability_state_{0};
+  int32_t availability_reason_{0};
   acquisition::ConfigRef config_ref_{};
   processing::ResultRecordContext record_context_{};
   acquisition::SequenceAllocator* sequence_{nullptr};

@@ -479,9 +479,9 @@ bool CommandRouterBleCalibrationBackend::execute_controller(
   if (!target_from_sensor(sensor, target)) return false;
 
   calibration::CalibrationCommandEnvelope command{};
-  command.request_id = next_request_id_++;
+
   command.device_id = controller_->device_id();
-  command.principal_id = 1U;  // BLE authentication is established by GATT.
+  command.principal_id = 1U;  // Fixed local BLE transport identity, not authentication.
   command.transport = calibration::CalibrationTransport::Ble;
   command.target = target;
   command.expires_at_us = clock_.now_us() + calibration::CalibrationSession::kSessionTimeoutUs;
@@ -588,6 +588,13 @@ bool CommandRouterBleCalibrationBackend::execute_controller(
     return false;
   }
 
+  // The debug HTTP lease covers controller replay reads as well as writes.
+  // Reject before allocating request identity or touching controller state.
+  if (io_gate_ != nullptr && io_gate_->active(debug::IoOwner::DebugHttp)) {
+    return false;
+  }
+  command.request_id = next_request_id_++;
+
   calibration::CalibrationResultEnvelope result{};
   const bool accepted = controller_->execute(command, clock_.now_us(), result);
   const bool committed = result.status == calibration::CalibrationCommandStatus::Committed;
@@ -663,7 +670,7 @@ bool CommandRouterBleCalibrationBackend::execute_controller(
   const bool encoded = append_envelope(
       response, capacity, response_size, operation, succeeded, sensor,
       result_session, std::string_view(payload.data(), payload_size));
-  if (operation == "COMMIT" || operation == "CANCEL") {
+  if (succeeded && (operation == "COMMIT" || operation == "CANCEL")) {
     session_id_ = 0U;
     session_sensor_.fill('\0');
   }
@@ -674,7 +681,8 @@ void CommandRouterBleCalibrationBackend::disconnect() noexcept {
   parser_.reset();
   if (ble_session_owned_) {
     if (controller_ != nullptr) {
-      controller_->disconnect(calibration::CalibrationTransport::Ble);
+      controller_->disconnect(calibration::CalibrationTransport::Ble,
+                              clock_.now_us());
     } else {
       router_.transport_lost();
     }

@@ -39,6 +39,7 @@ enum class SampleReason : uint8_t {
 enum class TimeQuality : uint8_t { Unsynced, Synchronized, Estimated };
 enum class ConvertedKind : uint8_t { None, Kilograms, FillPercent, AdcMillivolts, Celsius, HumidityPercent };
 enum class DriverPollStatus : uint8_t { NoAttempt, Produced, Fault };
+enum class Mq7HeaterPhase : uint8_t { Preheat, HighClean, LowDetect, Fault };
 
 struct ConfigRef {
   uint32_t schema_version{0};
@@ -79,14 +80,18 @@ struct RawObservation {
   bool temperature_crc_valid{false};
   bool humidity_crc_valid{false};
   bool heater_ready{false};
+  bool heater_phase_available{false};
+  Mq7HeaterPhase heater_phase{Mq7HeaterPhase::Fault};
   int64_t signed_counts{0};
   uint16_t adc_counts{0};
   uint32_t distance_us{0};
   int32_t temperature_centi_c{0};
   int32_t humidity_centi_pct{0};
-  // DS18B20 wire evidence is optional and only present when the target reader
-  // captured the verified ROM and complete scratchpad. Keeping the explicit
-  // flag prevents a zero-filled array from being serialized as sensor data.
+  bool sht31_ticks_available{false};
+  uint16_t sht31_temperature_ticks{0U};
+  uint16_t sht31_humidity_ticks{0U};
+  // True means complete CRC-checked ROM/scratchpad bytes are available. The
+  // same shape can describe generated SIM input; it does not attest physical capture.
   bool ds_wire_evidence{false};
   std::array<uint8_t, 8> ds_rom{};
   std::array<uint8_t, 9> ds_scratchpad{};

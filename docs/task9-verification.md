@@ -1,5 +1,151 @@
 # Task 9 verification ledger
 
+## NVS write-path audit and authorization refinement (2026-10-17)
+
+Source HEAD remains `0257b9e5cc08b142348f85f6da184842c09ab420`.
+The lead inspected the Luna source-only audit, relevant production and installed
+dependency sources, and version-matched upstream NVS/NimBLE code. Detailed
+inventory, primary sources, exact rerun commands and owner decisions are in
+[`task9-nvs-authorization-audit.md`](task9-nvs-authorization-audit.md).
+
+The automatic `sigap_ble/setup_secret` write remains a verified source path,
+but the physical changed records were not decoded. Earlier text attributing
+the whole NVS hash change exclusively to that key is superseded as a causal
+conclusion. Other source candidates include read-write creation of the
+`nimble_bond` namespace, pairing/subscription persistence, and Wi-Fi driver
+configuration. Arduino and NimBLE also contain conditional erase/re-init
+fallbacks on specific NVS initialization errors. None of those additional
+branches is proven to have run during the recorded physical boot.
+
+A valid existing 32-byte setup secret is reused without a value write by
+`load_or_create()`; wrong size/type and storage errors fail closed. This is
+not a guarantee of raw partition-hash preservation. The host NVS mock stages
+writes until commit, unlike matched ESP-IDF 4.4.7, so its commit-failure case
+must not be presented as evidence of real flash rollback.
+
+Additional source risk, not a target reproduction: installed and upstream
+NimBLE-Arduino 2.5.1 `ble_store_nvs.c:587-588` index security arrays using
+`num_secs - 1` without a zero-count guard. Empty-store restoration can leave
+those counts zero. Review this path before a new boot/pairing campaign;
+do not delete a bond to manufacture a test or infer a device crash from source.
+This is independent of the host BlueZ SIGSEGV evidence.
+
+Fresh lead reruns, workdir `firmware/`:
+
+```text
+/home/raya/.local/bin/pio test -e native -f native/test_ble_provisioning
+  exit=0; 15 test cases, 15 succeeded
+g++ -std=c++17 -DARDUINO -Wall -Wextra -Werror ... test_secret_store_lead
+  compile exit=0; execution exit=0; RESULT cases=8 passed=8 failed=0
+```
+
+The full harness compile command is preserved in the linked audit. These
+checks cover native BLE contracts and the real setup-secret function against
+mocks, not physical NVS or the NimBLE C restore path. No full firmware,
+frontend or Go suites were rerun for this documentation-only integration.
+
+```text
+NVS_SOURCE_AUDIT=PASS (source reviewed; bounded host checks rerun)
+NVS_PRESERVED=FAIL (historical hash mismatch; unchanged)
+NVS_AUTHORIZATION=BLOCKED
+BLE_RESTORE_EMPTY_STORE_RISK=SOURCE_IDENTIFIED_NOT_TARGET_REPRODUCED
+REAL_BLE_PAIRING=NOT_RUN
+BLE_MITM_AUTHENTICATED=NOT_RUN
+REAL_GET_DEVICE_ID=NOT_RUN
+REAL_GET_STATUS=NOT_RUN
+BLE_RECONNECT=NOT_RUN
+PHYSICAL_OPERATIONS_THIS_AUDIT=NONE
+TASK9_STATUS=HOLD
+```
+
+Two owner decisions remain distinct: accepting retention/reuse of the existing
+secret without recreation/readout/rotation, and authorizing necessary
+target-specific BLE persistence for bounded authenticated reads/reconnect.
+Neither authorizes bond deletion/replacement, Wi-Fi/token provisioning, flash,
+reset, or calibration COMMIT. General hardware access excluding sensors and
+actuators does not waive these specific mutation gates. No current metadata-only
+NVS endpoint was found. Both audit agents have finished; their periodic local
+monitor was paused after completion rather than left running indefinitely.
+
+## MicroSD recovery source audit and lead rerun (2026-10-17)
+
+Audited source HEAD: `0257b9e5cc08b142348f85f6da184842c09ab420`.
+The parallel storage audit made no repository edits or physical accesses. The
+lead inspected its report/harness and independently rebuilt and reran the
+host-only check before recording this entry. No firmware behavior was changed.
+
+Verified source findings:
+
+- `firmware/lib/storage/src/storage/archive_media.h:1044-1050` skips opening
+  the recovery marker when the directory snapshot says it is absent. The old
+  `/sdcard/sigap/archive-sd.bin.recover does not exist` message is not proof
+  of the blocking operation. Correlation of that runtime observation with the
+  exact installed source/image remains unverified by this audit.
+- After the absent-marker branch, recovery conditionally opens/validates the
+  gap journal, then conditionally opens/scans the archive. Directory entry
+  scanning precedes the existing `ARCHIVE_ENTRIES` diagnostic
+  (`archive_media.h:272-293`). Individual filesystem calls can still block;
+  the host fixture does not establish physical latency.
+- `ArduinoSdProbe::run_sd_probe()` calls `begin()` again after appending its
+  probe record (`firmware/src/app/sigap_app.cpp:136-142`), but the same ready
+  filesystem/quota ordinarily makes that call return early
+  (`archive_media.h:51-55`). It is not a forced recovery at that point despite
+  the comment. The later `reclaim_pending()` does rewrite/rename the archive
+  and invoke `recover()` (`archive_media.h:578-645`); do not claim the entire
+  probe performs no recovery.
+- The full SD probe is mutating: archive append/reclaim, dedicated test-file
+  write/flush/readback/removal, and capacity queries. General permission to
+  access hardware is not authorization for these separately restricted writes.
+
+Fresh lead verification (GCC `16.2.1 20260810`; workdir `firmware/`):
+
+```sh
+g++ -std=c++17 -Wall -Wextra \
+  -Itest/native/test_arduino_storage \
+  -Ilib/config/src -Ilib/acquisition/src -Ilib/maintenance/src \
+  -Ilib/calibration/src -Ilib/provisioning/src -Ilib/processing/src \
+  -Ilib/models/src -Ilib/fuzzy/src -Ilib/safety/src -Ilib/storage/src \
+  -Ilib/telemetry_archive/src -Ilib/telemetry_contract/src \
+  -Ilib/network/src -Iinclude -Isrc/app \
+  /tmp/sigap-storage-audit-hhpmggjt/recovery_fakefs_check.cpp \
+  -Wl,--wrap=stat \
+  -o /tmp/sigap-storage-audit-hhpmggjt/recovery_fakefs_check_lead
+/tmp/sigap-storage-audit-hhpmggjt/recovery_fakefs_check_lead
+```
+
+Compilation and execution both exited 0. The production archive adapter plus
+existing in-memory `FS.h` passed 3 fixtures (empty, normal frame, corrupt tail),
+reporting `CHECKS_PASS=16 FIXTURES=3`. The 16 count covers the main scenario
+assertions; record-encoding prerequisite assertions also execute. Each fixture
+observed zero read-opens of the absent marker. The linker wrapper makes
+`stat()` fail without consulting real mount paths. Three existing host-build
+warnings remain (unused `record_number`, set-but-unused `fallback_lookups`,
+and signedness in the recovery-marker write comparison).
+
+Temporary audit artifacts (not committed fixtures or durable storage):
+`/tmp/sigap-storage-audit-hhpmggjt/report.md`, `recovery_fakefs_check.cpp`,
+and `host-check.log` in that directory. Reproduction requires preserving them.
+This targeted check is not a PlatformIO suite or evidence for FAT/SD latency,
+physical durability, AC19 endurance, or AC11 power loss.
+
+```text
+SD_SOURCE_AUDIT=PASS (callgraph and missing-marker host check reviewed)
+SD_MOUNT=HISTORICAL_PASS
+SD_RECOVERY=INCOMPLETE
+SD_READ_WRITE=CURRENT_IMAGE_NOT_RUN
+SD_PHYSICAL_BLOCKING_OPERATION=UNKNOWN
+PHYSICAL_OPERATIONS_THIS_AUDIT=NONE
+TASK9_STATUS=HOLD
+```
+
+Next diagnostic prerequisite: reconcile the prior observation with the exact
+runtime source/image. If a new instrumented image is justified, the narrow
+candidate is a START/END elapsed bracket around `scan_recovery_entries()`;
+that bracket alone does not identify an internal blocking filesystem call.
+No diagnostic firmware patch, upload, reset, or physical probe was performed
+or newly authorized by this source audit. Preserve the earlier physical
+evidence and do not blindly repeat the full mutating SD probe.
+
 ## BlueZ UUID discovery-filter mitigation (2026-10-17)
 
 The host crash pattern matches the upstream BlueZ 5.87 UUID-filter regression:

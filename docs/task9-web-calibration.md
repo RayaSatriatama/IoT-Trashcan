@@ -52,10 +52,23 @@ out-of-tree commissioning inputs.
 
 The operator API requires an authenticated operator session with per-device
 authorization and CSRF/origin/rate-limit controls. Device bearer tokens are
-never sent to the browser. Web Bluetooth requires a secure context, explicit
-user gesture, authenticated MITM GATT, and device-local proof of possession.
-Remote commands are durable before device acknowledgement, expire, and are
-idempotent by request ID and request hash.
+never sent to or stored in the browser. These HTTP/API controls remain separate
+from BLE security.
+
+The shared operator/device authorizer retains at most 4096 token-digest keys per
+process per UTC minute, including invalid-token attempts. The default quota is
+still 60 requests per key per minute. At capacity, untracked keys fail closed
+until the next minute; existing keys retain their remaining quota without
+eviction or reset. This bounds limiter state, not overall request volume or
+traffic across multiple processes.
+
+Web Bluetooth requires a secure context and explicit user gesture. The
+owner-approved prototype BLE link uses unauthenticated GATT without passkey or
+MITM. The selected-target device ID check is a routing check, not authentication
+or proof of possession. BLE security hardening is `DEFERRED_BY_OWNER` and is not
+a prerequisite for current prototype use. Remote commands remain durable
+before device acknowledgement, expire, and are idempotent by request ID and
+request hash.
 
 ## Sensor-specific references
 
@@ -76,7 +89,7 @@ missing a profile. Operational conversion remains unavailable in those states.
 | ID | Evidence target | Physical limitation |
 | --- | --- | --- |
 | WEB-CAL-01..09 | Native controller, profile builder, and frontend workflow tests | Physical references not connected |
-| WEB-CAL-10..12 | Auth/session/idempotency tests and BLE contract tests | BLE pairing deferred |
+| WEB-CAL-10..12 | Auth/session/idempotency tests and BLE contract tests | Physical BLE execution deferred |
 | WEB-CAL-13..14 | Profile provenance and telemetry-v3 API tests | No live device/backend |
 | WEB-CAL-15..18 | Offline, USB recovery, synthetic deterministic tests | Physical HIL deferred |
 
@@ -96,7 +109,7 @@ previously described firmware wiring as open.
 | Remote command durability | SQLite queue, idempotency hash, lease, expiry, session ownership, device result transitions | device-control store/HTTP tests and Go race suite | PASS backend queue; firmware poller seam tested, production transport/executor wiring remains open |
 | Website wizard | `CalibrationWizard`, diagnostics panel, bounded command polling, typed sensor capabilities, operator token in memory, BLE and HTTPS paths | 21 Vitest files / 103 tests, typecheck, web export | PASS UI software; live operator provider unavailable |
 | Exact evidence and no synthetic production readings | raw device result bytes preserved; native fixtures labelled synthetic | telemetry and device-control tests | PASS software boundary |
-| Physical commissioning | BLE pairing, WiFi, HTTPS device polling, sensor references, heater | no physical operations authorized | BLOCKED |
+| Physical commissioning | Physical BLE acceptance, Wi-Fi, HTTPS device polling, sensor references, heater | no physical operations authorized | BLOCKED |
 
 The authoritative USB maintenance parser remains the recovery path. BLE
 capabilities/history/rollback requests are rejected until a typed workflow
@@ -122,7 +135,7 @@ maintenance boundary and rejects missing or malformed COMMIT identity. The
 wizard transition table now uses operation plus device-confirmed status and
 cannot skip SET_CRITERIA or CAPTURE after QUEUED/DELIVERED responses.
 
-The production path remains software-only verified. Physical BLE pairing,
+The production path remains software-only verified. Physical BLE acceptance,
 private-network HTTPS staging, physical sensor evidence, NVS/SD mutation, and
 power-loss execution remain separate blocked gates. HISTORY and ROLLBACK remain
 explicitly unsupported because the current ProfileManager contract does not
@@ -144,8 +157,8 @@ the wizard, SHT31 address values are checked against the selected channel,
 and invalid controller commands return bounded CAL1 error envelopes.
 
 This closes the software-side gaps covered by the current source change. It
-does not turn the physical or deployment gates into PASS: browser pairing,
-endpoint transmission, operator identity provisioning, sensor evidence,
+does not turn the physical or deployment gates into PASS: manual BLE
+interaction, endpoint transmission, operator identity provisioning, sensor evidence,
 NVS/SD mutation, and power-loss execution remain BLOCKED or NOT RUN.
 
 The final source delta at `a2f9d35` makes HTTPS diagnostics consume the
@@ -197,10 +210,38 @@ Fresh source-only evidence for this revision is 428/428 native tests,
 21 frontend files/107 tests, TypeScript and web export passes, Go full/race/
 vet passes, and all four target builds. The controller also persists committed
 request identity and profile readback through the replay-store boundary, with
-native recreation coverage. Physical BLE pairing, a browser-driven
+native recreation coverage. Physical BLE acceptance, a browser-driven
 preview-to-commit journey, and an endpoint-enabled ESP32 HTTPS run remain
 unexecuted. A replay intent is now written before profile activation and the
 terminal profile identity is persisted afterward; a fault between those
 boundaries is reconciled only when active identity matches the intent. Physical
 power-loss execution remains untested. Task 9 stays HOLD until those integrated
 paths are exercised with an authorized non-production deployment.
+
+## Current UI workflow: V3.0 kit adaptation
+
+The calibration presentation groups the seven existing acknowledged protocol
+steps into two informative stages: **Kriteria & Capture** (diagnostics,
+criteria, capture) and **Validasi & Simpan** (validate, preview, commit, done).
+The stage renderer is presentation-only; it does not dispatch commands or skip
+ACKs. The current action and device-confirmed workflow state remain visible.
+
+Before COMMIT, the operator must explicitly approve the displayed device
+proposal. Approval is keyed to device, sensor, proposal hash, profile version,
+evidence hash, and expiry; replacement context/proposal clears it, and the
+existing validated-preview check is repeated at click time. Parameter values
+are listed individually instead of JSON. Expiry and transport/device
+acknowledgement remain authoritative; this UI does not claim server delivery or
+mock readback as active firmware confirmation.
+
+Wi-Fi uses direct compact connection, identity, scan, network selection, and
+credential controls rather than a stepper. BLE disconnect remains an explicit
+shared-session action; there is no Wi-Fi disconnect command. Description hints
+remain available by hover/focus and support tap toggle and Escape dismissal.
+The supplied V3.0 kit is simulated visual reference only; it is not an
+implementation or physical-device evidence.
+
+The independent preview check must verify desktop and 390x844 mobile layout,
+keyboard/touch tooltip behavior, long labels, reduced motion, and control bounds.
+Software tests and export alone do not close that browser or any physical HIL
+gate.

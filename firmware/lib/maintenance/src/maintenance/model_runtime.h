@@ -5,6 +5,7 @@
 
 #include "maintenance/maintenance.h"
 #include "models/model_lifecycle.h"
+#include "debug/io_gate.h"
 
 namespace sigap::maintenance {
 
@@ -23,6 +24,8 @@ class ModelMaintenanceRouter final : public IModelCommandHandler {
                               MaintenanceResponse& response) noexcept override;
   void poll_model(uint64_t now_us) noexcept override;
   void cancel_model() noexcept override;
+  // Optional app-owned admission binding; unbound preserves legacy behavior.
+  void set_io_gate(debug::RuntimeIoGate* gate) noexcept { io_gate_ = gate; }
 
  private:
   static bool key_from_text(const FixedText<64U>& text,
@@ -39,6 +42,7 @@ class ModelMaintenanceRouter final : public IModelCommandHandler {
 
   models::ModelProfileLifecycle& lifecycle_;
   const models::ModelProfileCodec& codec_;
+  debug::RuntimeIoGate* io_gate_{nullptr};
   models::ModelProfileKey transfer_key_{};
   models::EncodedModelProfile transfer_profile_{};
   config::ConfigHash expected_hash_{};

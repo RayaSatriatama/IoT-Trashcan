@@ -1,4 +1,5 @@
 #include "network/device_control_http.h"
+#include "network/network.h"
 
 #ifdef ARDUINO
 
@@ -11,11 +12,6 @@
 
 namespace sigap::network {
 namespace {
-
-// WiFiClientSecure and HTTPClient use more than 4 KiB of stack during TLS
-// setup on ESP32-S3.  Keep the control request isolated from loopTask while
-// leaving enough bounded headroom for certificate parsing and JSON framing.
-constexpr uint32_t kControlTaskStackWords{4096U};
 
 bool https_prefix(std::string_view value) noexcept {
   constexpr std::string_view prefix{"https://"};
@@ -122,7 +118,7 @@ bool WiFiDeviceControlHttpTransport::start(
   task_state_ = TaskState::Running;
   xSemaphoreGive(mutex_);
   if (xTaskCreate(&WiFiDeviceControlHttpTransport::task, "sigap_ctl",
-                  kControlTaskStackWords, this, 1U, nullptr) != pdPASS) {
+                  kTlsWorkerStackBytes, this, 1U, nullptr) != pdPASS) {
     if (xSemaphoreTake(mutex_, 0U) == pdTRUE) {
       task_state_ = TaskState::Idle;
       xSemaphoreGive(mutex_);

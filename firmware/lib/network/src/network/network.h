@@ -11,6 +11,8 @@
 
 namespace sigap::network {
 
+inline constexpr uint32_t kTlsWorkerStackBytes{16384U};
+
 // Network policy is an engineering policy snapshot. It is intentionally
 // independent from the immutable batch bytes and from sensor acquisition.
 struct NetworkPolicy final {

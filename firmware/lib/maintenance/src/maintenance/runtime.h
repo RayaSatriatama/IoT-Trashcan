@@ -11,6 +11,7 @@
 #include "provisioning/ble_provisioning.h"
 #include "calibration/calibration_session.h"
 #include "calibration/calibration_transport.h"
+#include "debug/io_gate.h"
 
 namespace sigap::maintenance {
 
@@ -81,12 +82,10 @@ class CommandRouter final : public IMaintenanceCommandSink,
                 acquisition::IProfileAuditSink* audit = nullptr,
                 const acquisition::BootId* boot_id = nullptr,
                 IModelCommandHandler* models = nullptr,
-                IStorageTestProbe* storage_probe = nullptr,
-                provisioning::ILocalPasskeyHandoff* passkey_handoff = nullptr) noexcept
+                IStorageTestProbe* storage_probe = nullptr) noexcept
       : config_(config), secrets_(secrets), profiles_(profiles),
         evidence_(evidence), reboot_(reboot), audit_(audit), boot_id_(boot_id),
-        models_(models), storage_probe_(storage_probe),
-        passkey_handoff_(passkey_handoff) {
+        models_(models), storage_probe_(storage_probe) {
     refresh_mode();
   }
 
@@ -104,6 +103,11 @@ class CommandRouter final : public IMaintenanceCommandSink,
       calibration::CalibrationTransportController* controller) noexcept {
     calibration_controller_ = controller;
   }
+  void set_debug_commands(IDebugCommandHandler* handler) noexcept {
+    debug_commands_ = handler;
+  }
+  // Bind the application-owned gate; an unbound router keeps legacy behavior.
+  void set_io_gate(debug::RuntimeIoGate* gate) noexcept { io_gate_ = gate; }
 
   void refresh_mode() noexcept;
   DeviceMode mode() const noexcept { return mode_; }
@@ -133,10 +137,6 @@ class CommandRouter final : public IMaintenanceCommandSink,
   bool rollback() noexcept override;
   bool append_calibration_preview_response(
       MaintenanceResponse& response) const noexcept;
-  void set_passkey_handoff(
-      provisioning::ILocalPasskeyHandoff* handoff) noexcept {
-    passkey_handoff_ = handoff;
-  }
 
  private:
   static bool field_from_text(const FixedText<64U>& text,
@@ -181,8 +181,9 @@ class CommandRouter final : public IMaintenanceCommandSink,
   const acquisition::BootId* boot_id_{nullptr};
   IModelCommandHandler* models_{nullptr};
   IStorageTestProbe* storage_probe_{nullptr};
-  provisioning::ILocalPasskeyHandoff* passkey_handoff_{nullptr};
   calibration::CalibrationTransportController* calibration_controller_{nullptr};
+  IDebugCommandHandler* debug_commands_{nullptr};
+  debug::RuntimeIoGate* io_gate_{nullptr};
   bool internal_calibration_dispatch_{false};
   calibration::CalibrationSession calibration_{};
   CalibrationProposal calibration_proposal_{};

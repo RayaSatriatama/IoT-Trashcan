@@ -86,6 +86,15 @@ class MqAdcAcquirer final {
     }
     raw.heater_ready = sensor_ != SensorId::Mq7 ||
                        (heater_ != nullptr && heater_->operational_ready());
+    if (sensor_ == SensorId::Mq7 && heater_ != nullptr) {
+      raw.heater_phase_available = true;
+      switch (heater_->state()) {
+        case Mq7HeaterState::Preheat: raw.heater_phase = Mq7HeaterPhase::Preheat; break;
+        case Mq7HeaterState::HighClean: raw.heater_phase = Mq7HeaterPhase::HighClean; break;
+        case Mq7HeaterState::LowDetect: raw.heater_phase = Mq7HeaterPhase::LowDetect; break;
+        case Mq7HeaterState::Fault: raw.heater_phase = Mq7HeaterPhase::Fault; break;
+      }
+    }
     return factory_.make(now_us, sensor_, stream_, SampleKind::MqAdc,
                          quality, reason, raw, converted,
                          active_profile == nullptr ? ProfileRef{} : active_profile->ref(), out);

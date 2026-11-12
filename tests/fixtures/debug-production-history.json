@@ -1,0 +1,147 @@
+{
+  "ack": {
+    "schema_version": 1,
+    "status": "DURABLE",
+    "device_id": "TEST-DEVICE",
+    "boot_id": "00000000000000000000000000000001",
+    "first_sequence": "2",
+    "last_sequence": "2",
+    "stored_count": 1,
+    "deduplicated_count": 0,
+    "request_sha256": "a48ea71d62b6f4a52bd63ce5e7c488d7a07f31e9ee15a98982161d4e1b98e5a3"
+  },
+  "boot_change_history": {
+    "device_id": "TEST-DEVICE",
+    "events": [
+      {
+        "sequence": "2",
+        "monotonic_us": "9007199254740993",
+        "level": "INFO",
+        "module": 1,
+        "event_code": 1,
+        "request_id": null,
+        "duration_us": 0,
+        "arg0": 1,
+        "arg1": 0,
+        "related_sequence": null,
+        "ingestion_id": "1",
+        "received_at": "2026-10-22T12:00:00.000000000Z",
+        "boot_id": "00000000000000000000000000000001",
+        "build_id": "TEST",
+        "snapshot_level": "INFO",
+        "captured_monotonic_us": "9007199254740993",
+        "oldest_sequence": "1",
+        "overwritten": "0",
+        "delivery_lost": "0"
+      },
+      {
+        "sequence": "2",
+        "monotonic_us": "9007199254740993",
+        "level": "INFO",
+        "module": 1,
+        "event_code": 1,
+        "request_id": null,
+        "duration_us": 0,
+        "arg0": 1,
+        "arg1": 0,
+        "related_sequence": null,
+        "ingestion_id": "2",
+        "received_at": "2026-10-22T12:00:00.000000000Z",
+        "boot_id": "00000000000000000000000000000002",
+        "build_id": "TEST",
+        "snapshot_level": "INFO",
+        "captured_monotonic_us": "9007199254740993",
+        "oldest_sequence": "1",
+        "overwritten": "0",
+        "delivery_lost": "0"
+      }
+    ],
+    "next_after": "2",
+    "oldest_available": "1",
+    "retention_gap": false,
+    "has_more": false
+  },
+  "device_id": "TEST-DEVICE",
+  "empty_history": {
+    "device_id": "TEST-DEVICE",
+    "events": [],
+    "next_after": "0",
+    "oldest_available": "0",
+    "retention_gap": false,
+    "has_more": false
+  },
+  "expired_operator_body": {
+    "error": "unauthorized"
+  },
+  "expired_operator_status": 401,
+  "history": {
+    "device_id": "TEST-DEVICE",
+    "events": [
+      {
+        "sequence": "2",
+        "monotonic_us": "9007199254740993",
+        "level": "INFO",
+        "module": 1,
+        "event_code": 1,
+        "request_id": null,
+        "duration_us": 0,
+        "arg0": 1,
+        "arg1": 0,
+        "related_sequence": null,
+        "ingestion_id": "1",
+        "received_at": "2026-10-22T12:00:00.000000000Z",
+        "boot_id": "00000000000000000000000000000001",
+        "build_id": "TEST",
+        "snapshot_level": "INFO",
+        "captured_monotonic_us": "9007199254740993",
+        "oldest_sequence": "1",
+        "overwritten": "0",
+        "delivery_lost": "0"
+      }
+    ],
+    "next_after": "1",
+    "oldest_available": "1",
+    "retention_gap": false,
+    "has_more": false
+  },
+  "producer_sha256": "a48ea71d62b6f4a52bd63ce5e7c488d7a07f31e9ee15a98982161d4e1b98e5a3",
+  "provenance": "TEST",
+  "retention_history": {
+    "device_id": "TEST-DEVICE",
+    "events": [
+      {
+        "sequence": "2",
+        "monotonic_us": "9007199254740993",
+        "level": "INFO",
+        "module": 1,
+        "event_code": 1,
+        "request_id": null,
+        "duration_us": 0,
+        "arg0": 1,
+        "arg1": 0,
+        "related_sequence": null,
+        "ingestion_id": "2",
+        "received_at": "2026-10-22T12:00:00.000000000Z",
+        "boot_id": "00000000000000000000000000000002",
+        "build_id": "TEST",
+        "snapshot_level": "INFO",
+        "captured_monotonic_us": "9007199254740993",
+        "oldest_sequence": "1",
+        "overwritten": "0",
+        "delivery_lost": "0"
+      }
+    ],
+    "next_after": "2",
+    "oldest_available": "2",
+    "retention_gap": true,
+    "has_more": false
+  },
+  "tail_history": {
+    "device_id": "TEST-DEVICE",
+    "events": [],
+    "next_after": "1",
+    "oldest_available": "1",
+    "retention_gap": false,
+    "has_more": false
+  }
+}

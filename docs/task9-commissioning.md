@@ -1,5 +1,91 @@
 # Task 9 commissioning and HIL procedure
 
+## Current source decision: no-passkey prototype (2026-10-18)
+
+The owner-authorized software change removes BLE passkey/setup-secret handling,
+forced pairing, MITM requirements, authenticated GATT permissions, and the USB
+passkey handoff. The BLE manual helper now describes ordinary GATT access.
+Authenticated BLE hardening is `DEFERRED_BY_OWNER`, not PASS. Existing text below
+that instructs passkey entry or authenticated GATT is historical and superseded
+for this prototype phase; preserve it as evidence of prior decisions, not as an
+active procedure.
+
+The change is host-only. It does not establish that a device image was flashed,
+or that physical discovery, GATT access, reconnect, or status reads work. Fresh
+software evidence is in the [scoped no-passkey report](task9-ble-no-passkey-verification.md);
+it supersedes older candidate software claims without changing historical
+physical observations. No NVS/bond record was read, erased, migrated, rotated,
+or deleted. Application configuration/profile persistence, the application
+SecretStore, HTTP/API authorization, and HTTPS validation remain separate. Task 9
+remains HOLD and all physical gates remain unverified until directly observed
+under the relevant permissions.
+
+## Current board image: standalone BLE minimal experiment (2026-10-18, evening)
+
+The owner subsequently authorized an app-only flash of the separate
+`/mnt/nvme0n1p4/Projects/Programming_Projects/sigap-ble-minimal` project.
+The board now runs `BLE-MINIMAL`, image SHA-256
+`c958aec3d216a0d81dd1ddbd320a95ae35a2d892dbeff70317e4e99c196ba69e`.
+App readback and bounded boot READY passed; connect/disconnect remain manual.
+This owner-scoped experiment has no passkey, persistent bonds, or SIGAP
+protocol. It does not weaken production requirements or satisfy authenticated
+Task 9 acceptance. Evidence is in the standalone project's
+`docs/physical-verification.md` and
+`/home/raya/.hermes/artifacts/sigap-ble-minimal-flash-20261018-194846/`.
+No automatic restore/reflash is authorized. Older image/run reports below
+remain historical evidence, not the currently installed application.
+
+## Historical commissioning ledger, not current procedure
+
+Sections below preserve decisions, commands, and observations from earlier
+authenticated BLE and physical runs. They are not active prerequisites or
+authorization for the current no-passkey prototype. Current source-only results
+and limits are recorded in [task9-ble-no-passkey-verification.md](task9-ble-no-passkey-verification.md).
+
+## Historical bounded BLE diagnostic run, prior authenticated image (2026-10-18)
+
+See [task9-ble-physical-verification.md](task9-ble-physical-verification.md) for
+the prior scoped authorization, strict no-erase image, app-only flash/readback
+and bounded boot PASS. These physical observations do not verify the current
+no-passkey source or its diagnostic build. Target discovery passed, but the link disconnected
+before service discovery completed. Authenticated identity/status and reconnect
+remain unverified; the existing bond was retained. This session-specific result
+supersedes older NOT_RUN labels only for the exact image/run in that report,
+not the historical NVS preservation failure or Task 9 HOLD.
+
+## Historical NVS authorization prerequisite (source audit, 2026-10-17)
+
+Read [`task9-nvs-authorization-audit.md`](task9-nvs-authorization-audit.md)
+before another boot/pairing campaign. The prior partition hash mismatch remains
+`NVS_PRESERVED=FAIL`; setup-secret creation is a source write candidate, not a
+decoded inventory or exclusive proof of what changed physically. BLE namespace
+initialization, necessary security/subscription persistence and Wi-Fi driver
+configuration are separate potential writes; conditional SDK erase fallbacks
+were identified but not observed executing.
+
+Keep these owner decisions separate:
+
+1. Accept retention/reuse of the existing setup secret without readout,
+   recreation, rotation, deletion or rewrite. Current code would still create
+   it if absent; this audit did not establish current physical presence.
+2. Authorize necessary target-specific BLE security/subscription persistence
+   for bounded authenticated identity/status reads and reconnect, after review
+   of the empty-store restore source risk and the exact procedure. Stop rather
+   than delete/replace a bond or clear a full store. No implicit Wi-Fi/token
+   provisioning, reset/flash, SD mutation, or calibration COMMIT permission.
+
+NimBLE-Arduino 2.5.1 contains a source-level zero-count indexing risk in its
+security-store restore path. It was not reproduced on the target and is not
+the host BlueZ crash explanation. Do not clear bonds to test it. Native/mock
+PASS does not clear this source-risk review or physical authorization gate.
+The current image has no metadata-only NVS endpoint; a hypothetical diagnostic
+image is not an approved zero-write procedure.
+
+This prerequisite supersedes older wording below that a setup-secret exception
+alone is sufficient to resume pairing. General hardware access is permitted
+except sensors and actuators, but the specific persistent-mutation limits
+remain. No new physical operation was performed by the source audit.
+
 ## BlueZ UUID discovery-filter mitigation (2026-10-17)
 
 The Web Bluetooth client no longer sends the SIGAP service UUID as a BlueZ
@@ -158,7 +244,7 @@ until a separately approved HTTPS-enabled application image and disposable
 runtime credentials are available. Do not upload an application image as part
 of this filesystem-only recovery.
 
-## Current physical storage finding (`2026-10-10`)
+## Historical physical storage finding (`2026-10-10`)
 
 The board's LittleFS partition was backed up read-only before any repair
 operation. The installed table matches the source layout, but the complete
@@ -171,7 +257,7 @@ firmware deliberately uses `LittleFS.begin(false)` and keeps HTTPS
 device-control disabled when the persistent result journal cannot initialize
 or recover. This prevents command execution without durable result replay.
 
-## Current BLE identity gate (`2026-10-10`)
+## Historical BLE identity gate (`2026-10-10`)
 
 The Wi-Fi maintenance dialog now requires the provisioned canonical
 `ble_device_id` and performs authenticated `GET_DEVICE_ID` verification before
@@ -380,7 +466,7 @@ and interface identity, exact bounded action, redacted output, expected result,
 actual result, and classification. Keep secrets and raw passkeys outside the
 repository. A missing prerequisite is `BLOCKED` or `NOT RUN`, never PASS.
 
-## Latest authorized application-only run, published at adb0e85
+## Historical latest authorized application-only run, published at adb0e85
 
 The final out-of-tree `sigap_n16r8_sd_https_staging` image was built with SD_MMC
 1-bit, BLE provisioning, native USB maintenance, telemetry, HTTPS device

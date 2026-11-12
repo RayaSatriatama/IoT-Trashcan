@@ -24,21 +24,21 @@ bool WifiConnectionManager::begin() noexcept {
   candidate_requires_persist_ = false;
   saved_ssid_size_ = 0U;
   candidate_ssid_size_ = 0U;
-  has_saved_ = secrets_.load_for_network(saved_);
+  has_saved_ = secrets_.load_wifi_for_network(saved_);
   if (!has_saved_) {
-    state_ = WifiState::SetupRequired;
+    set_state(WifiState::SetupRequired, 0);
     return true;
   }
   saved_ssid_size_ = bounded_string_size(saved_.ssid.data(), kMaxSsidBytes);
   if (saved_ssid_size_ == 0U) {
     has_saved_ = false;
-    state_ = WifiState::SetupRequired;
+    set_state(WifiState::SetupRequired, 0);
     return true;
   }
   if (!station_.begin_candidate(
           std::string_view(saved_.ssid.data(), saved_ssid_size_),
           std::string_view(saved_.password.data()))) {
-    state_ = WifiState::Backoff;
+    set_state(WifiState::Backoff, 2);
     next_retry_us_ = clock_.now_us() + 1000000U;
     return true;
   }
@@ -47,7 +47,7 @@ bool WifiConnectionManager::begin() noexcept {
   candidate_active_ = true;
   candidate_requires_persist_ = false;
   candidate_started_us_ = clock_.now_us();
-  state_ = WifiState::Connecting;
+  set_state(WifiState::Connecting, 0);
   return true;
 }
 
@@ -58,7 +58,7 @@ void WifiConnectionManager::poll() noexcept {
       if (station_.connected() && station_.has_ip()) {
         if (candidate_active_ && !candidate_requires_persist_) {
           clear_candidate();
-          state_ = WifiState::Connected;
+          set_state(WifiState::Connected, 0);
         } else if (candidate_active_ &&
             (candidate_.ssid[0] != '\0' || candidate_.password[0] != '\0') &&
             secrets_.set_wifi(candidate_.ssid.data(), candidate_.password.data())) {
@@ -66,11 +66,11 @@ void WifiConnectionManager::poll() noexcept {
           saved_ssid_size_ = candidate_ssid_size_;
           has_saved_ = true;
           clear_candidate();
-          state_ = WifiState::Connected;
+          set_state(WifiState::Connected, 0);
         } else {
           station_.disconnect();
           clear_candidate();
-          state_ = has_saved_ ? WifiState::Backoff : WifiState::SetupRequired;
+          set_state(has_saved_ ? WifiState::Backoff : WifiState::SetupRequired, 2);
           next_retry_us_ = now + 1000000U;
         }
         return;
@@ -79,14 +79,14 @@ void WifiConnectionManager::poll() noexcept {
           elapsed_ms(now, candidate_started_us_, policy_.wifi_connect_timeout_ms)) {
         station_.disconnect();
         clear_candidate();
-        state_ = has_saved_ ? WifiState::Backoff : WifiState::SetupRequired;
+        set_state(has_saved_ ? WifiState::Backoff : WifiState::SetupRequired, 2);
         next_retry_us_ = now + 1000000U;
       }
       return;
     case WifiState::Backoff:
       if (now < next_retry_us_) return;
       if (!has_saved_) {
-        state_ = WifiState::SetupRequired;
+        set_state(WifiState::SetupRequired, 0);
         return;
       }
       candidate_ = saved_;
@@ -97,7 +97,7 @@ void WifiConnectionManager::poll() noexcept {
       if (station_.begin_candidate(
               std::string_view(candidate_.ssid.data(), candidate_ssid_size_),
               std::string_view(candidate_.password.data()))) {
-        state_ = WifiState::Connecting;
+        set_state(WifiState::Connecting, 1);
       } else {
         clear_candidate();
         next_retry_us_ = now + 1000000U;
@@ -105,7 +105,7 @@ void WifiConnectionManager::poll() noexcept {
       return;
     case WifiState::Connected:
       if (!station_.connected() || !station_.has_ip()) {
-        state_ = has_saved_ ? WifiState::Backoff : WifiState::SetupRequired;
+        set_state(has_saved_ ? WifiState::Backoff : WifiState::SetupRequired, 1);
         next_retry_us_ = now;
       }
       return;
@@ -138,12 +138,12 @@ bool WifiConnectionManager::request_candidate(std::string_view ssid,
   station_.disconnect();
   if (!station_.begin_candidate(ssid, password)) {
     clear_candidate();
-    state_ = has_saved_ ? WifiState::Backoff : WifiState::SetupRequired;
+    set_state(has_saved_ ? WifiState::Backoff : WifiState::SetupRequired, 2);
     next_retry_us_ = clock_.now_us() + 1000000U;
     return false;
   }
   candidate_started_us_ = clock_.now_us();
-  state_ = WifiState::Connecting;
+  set_state(WifiState::Connecting, 0);
   return true;
 }
 
@@ -159,11 +159,11 @@ bool WifiConnectionManager::retry_saved() noexcept {
           std::string_view(candidate_.ssid.data(), candidate_ssid_size_),
           std::string_view(candidate_.password.data()))) {
     clear_candidate();
-    state_ = WifiState::Backoff;
+    set_state(WifiState::Backoff, 2);
     next_retry_us_ = clock_.now_us() + 1000000U;
     return false;
   }
-  state_ = WifiState::Connecting;
+  set_state(WifiState::Connecting, 1);
   return true;
 }
 
@@ -193,16 +193,40 @@ void WifiConnectionManager::cancel() noexcept {
 
 WifiScanStatus WifiConnectionManager::request_scan() noexcept {
   const uint64_t now = clock_.now_us();
-  if (scan_pending_) return WifiScanStatus::Pending;
+  if (scan_pending_) {
+    emit_wifi(21U, 0, elapsed_metric(now, scan_started_us_));
+    return WifiScanStatus::Pending;
+  }
   if (scan_ever_requested_ &&
       !elapsed_ms(now, last_scan_us_, policy_.scan_cooldown_ms)) {
+    const uint64_t elapsed = now >= last_scan_us_ ? now - last_scan_us_ : 0U;
+    const uint64_t cooldown = static_cast<uint64_t>(policy_.scan_cooldown_ms) * 1000U;
+    const uint64_t remaining = elapsed >= cooldown ? 0U : cooldown - elapsed;
+    const uint64_t seconds = remaining / 1000000U + (remaining % 1000000U != 0U);
+    emit_wifi(23U, static_cast<int32_t>(std::min<uint64_t>(seconds, INT32_MAX)), 0);
     return WifiScanStatus::RateLimited;
   }
-  if (!station_.begin_scan()) return WifiScanStatus::Failed;
+  if (!station_.begin_scan()) {
+    if (station_.scan_failure_observation() == ScanFailureObservation::Driver)
+      emit_wifi(24U, 0, 0);
+    return WifiScanStatus::Failed;
+  }
   scan_pending_ = true;
   scan_ever_requested_ = true;
   last_scan_us_ = now;
+  scan_started_us_ = now;
+  if (scan_attempts_ < static_cast<uint32_t>(INT32_MAX)) ++scan_attempts_;
+  if (scan_source_valid_)
+    emit_wifi(20U, static_cast<int32_t>(active_scan_source_), static_cast<int32_t>(scan_attempts_));
   return WifiScanStatus::Pending;
+}
+
+WifiScanStatus WifiConnectionManager::request_scan(WifiScanSource source) noexcept {
+  active_scan_source_ = source;
+  scan_source_valid_ = true;
+  const auto status = request_scan();
+  scan_source_valid_ = false;
+  return status;
 }
 
 WifiScanStatus WifiConnectionManager::poll_scan(WifiNetwork* output,
@@ -211,8 +235,42 @@ WifiScanStatus WifiConnectionManager::poll_scan(WifiNetwork* output,
   count = 0U;
   if (!scan_pending_) return WifiScanStatus::Idle;
   const auto status = station_.poll_scan(output, capacity, count);
+  if (status == WifiScanStatus::Ready) {
+    emit_wifi(22U, static_cast<int32_t>(std::min<std::size_t>(count, INT32_MAX)),
+              elapsed_metric(clock_.now_us(), scan_started_us_));
+  } else if (status == WifiScanStatus::Failed &&
+             station_.scan_failure_observation() == ScanFailureObservation::Driver) {
+    emit_wifi(24U, 0, 0);
+  }
   if (status != WifiScanStatus::Pending) scan_pending_ = false;
   return status;
+}
+
+void WifiConnectionManager::emit_wifi(uint16_t code, int32_t arg0,
+                                      int32_t arg1) noexcept {
+  if (debug_sink_ == nullptr) return;
+  debug::EventInput event{};
+  event.monotonic_us = clock_.now_us();
+  event.module = debug::Module::Wifi;
+  event.event_code = code;
+  event.level = debug::Level::Info;
+  event.arg0 = arg0;
+  event.arg1 = arg1;
+  (void)debug_sink_->emit(event);
+}
+
+int32_t WifiConnectionManager::elapsed_metric(uint64_t now,
+                                               uint64_t since) const noexcept {
+  const uint64_t elapsed = now >= since ? now - since : 0U;
+  return static_cast<int32_t>(std::min<uint64_t>(elapsed, INT32_MAX));
+}
+
+void WifiConnectionManager::set_state(WifiState state, int32_t reason) noexcept {
+  if (state_ == state) return;
+  state_ = state;
+  const int32_t coarse = state == WifiState::Connected ? 2 :
+                         state == WifiState::Connecting ? 1 : 0;
+  emit_wifi(25U, coarse, reason);
 }
 
 void WifiConnectionManager::clear_candidate() noexcept {
@@ -223,7 +281,8 @@ void WifiConnectionManager::clear_candidate() noexcept {
 }
 
 void WifiConnectionManager::restore_saved_or_setup() noexcept {
-  state_ = has_saved_ ? WifiState::Backoff : WifiState::SetupRequired;
+  clear_candidate();
+  set_state(has_saved_ ? WifiState::Backoff : WifiState::SetupRequired, 0);
 }
 
 bool WifiConnectionManager::elapsed_ms(uint64_t now_us, uint64_t since_us,
@@ -263,15 +322,20 @@ bool ArduinoWifiStation::failed() const noexcept {
 void ArduinoWifiStation::disconnect() noexcept { WiFi.disconnect(false, false); }
 
 bool ArduinoWifiStation::begin_scan() noexcept {
-  return WiFi.scanNetworks(true, true) == WIFI_SCAN_RUNNING;
+  scan_failure_ = ScanFailureObservation::Unknown;
+  const bool accepted = WiFi.scanNetworks(true, true) == WIFI_SCAN_RUNNING;
+  if (!accepted) scan_failure_ = ScanFailureObservation::Driver;
+  return accepted;
 }
 
 WifiScanStatus ArduinoWifiStation::poll_scan(WifiNetwork* output,
                                              std::size_t capacity,
                                              std::size_t& count) noexcept {
+  scan_failure_ = ScanFailureObservation::Unknown;
   const int result = WiFi.scanComplete();
   if (result == WIFI_SCAN_RUNNING) return WifiScanStatus::Pending;
   if (result < 0) {
+    scan_failure_ = ScanFailureObservation::Driver;
     WiFi.scanDelete();
     return WifiScanStatus::Failed;
   }

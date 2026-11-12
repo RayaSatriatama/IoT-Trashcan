@@ -1,5 +1,8 @@
 #include "maintenance/storage_probe_response.h"
 #include "sigap_app.h"
+#if SIGAP_SENSOR_SIMULATION
+#include "acquisition/simulation_profiles.h"
+#endif
 
 #include <array>
 #include <cstdio>
@@ -16,6 +19,7 @@
 #ifdef ARDUINO
 #include <Arduino.h>
 #include <LittleFS.h>
+#include <esp_littlefs.h>
 #include <esp_system.h>
 #include <esp_timer.h>
 #ifdef SIGAP_USE_SD
@@ -32,6 +36,18 @@
 #endif
 
 namespace sigap {
+
+#ifdef ARDUINO
+std::size_t ApplicationDebugUsbWriter::writable() noexcept {
+  const int available = Serial.availableForWrite();
+  return available < 384 ? 0U : static_cast<std::size_t>(available);
+}
+
+std::size_t ApplicationDebugUsbWriter::write(const char* bytes,
+                                              std::size_t size) noexcept {
+  return Serial.write(reinterpret_cast<const uint8_t*>(bytes), size);
+}
+#endif
 
 #ifdef ARDUINO
 namespace {
@@ -237,7 +253,7 @@ SigapApp::SigapApp() noexcept
                           &evidence_cache_, &reboot_controller_, &audit_ring_,
                           &boot_identity_.boot_id, &model_router_,
 #ifdef ARDUINO
-                          &sd_probe_, &ble_service_),
+                          &sd_probe_),
 #else
                           nullptr),
 #endif
@@ -250,14 +266,14 @@ SigapApp::SigapApp() noexcept
       device_control_executor_(maintenance_router_, calibration_controller_),
       device_control_poller_(
           network::NetworkPolicy{1000U, 60000U, 10000U, 60000U, 250U},
-          network_clock_, device_control_transport_, device_control_executor_,
+          network_clock_, control_transport_boundary_, device_control_executor_,
           &device_control_result_journal_),
 #endif
 #endif
       network_source_(batch_runtime_),
 #ifdef ARDUINO
       wifi_manager_(secret_store_, wifi_station_, provisioning_clock_),
-      wifi_backend_(wifi_manager_),
+      wifi_backend_(wifi_manager_, io_gate_),
       ble_session_(wifi_backend_, provisioning_clock_),
 #endif
       maintenance_service_(maintenance_transport_, maintenance_router_) {
@@ -266,8 +282,18 @@ SigapApp::SigapApp() noexcept
   network_link_.bind(&network_transport_);
 #endif
 #ifdef ARDUINO
+  ble_session_.bind_debug_sink(&debug_service_);
+  ble_session_.set_debug_backend(&debug_command_backend_);
+  maintenance_router_.set_debug_commands(&debug_command_backend_);
   maintenance_router_.set_calibration_transport_controller(
       &calibration_controller_);
+  calibration_controller_.set_debug_sink(&debug_service_);
+  maintenance_router_.set_io_gate(&io_gate_);
+  model_router_.set_io_gate(&io_gate_);
+  ble_calibration_backend_.set_io_gate(&io_gate_);
+#if defined(SIGAP_NETWORK_ENDPOINT) && defined(SIGAP_NETWORK_CA_CERT)
+  device_control_executor_.set_io_gate(&io_gate_);
+#endif
 #endif
   sd_probe_.bind_archive_store(
       sd_store_, config_manager_.active().storage.sd_pending_quota_bytes);
@@ -280,7 +306,11 @@ SigapApp::SigapApp() noexcept
   archive_runtime_.set_event_context(record_context_.device_id,
                                      record_context_.boot_id,
                                      record_context_.config_ref);
+#ifdef ARDUINO
+  processing_runtime_.set_downstream_observer(&runtime_debug_observer_);
+#else
   processing_runtime_.set_downstream_observer(&evidence_cache_);
+#endif
   acquisition_.set_sample_observer(&processing_runtime_);
   acquisition_.set_calibration_state_provider(&maintenance_router_);
 }
@@ -298,20 +328,52 @@ void SigapApp::refresh_model_profiles() noexcept {
   std::array<models::FisModelProfile*, 3U> fis_models{{
       &fis_model_, &fis_model_inorganic_, &fis_model_b3_}};
   std::array<const models::FisModelProfile*, 3U> fis_refs{};
+#ifdef ARDUINO
+  const auto observe_model = [this](std::size_t index,
+                                    const models::ModelProfileSnapshot& current,
+                                    bool usable) noexcept {
+    const uint8_t state = !current.present ? 1U : usable ? 0U : 2U;
+    const uint32_t version = current.present ? current.ref.profile_version : 0U;
+    if (observed_model_valid_[index] &&
+        observed_model_states_[index] == state &&
+        observed_model_versions_[index] == version) return;
+    observed_model_valid_[index] = true;
+    observed_model_states_[index] = state;
+    observed_model_versions_[index] = version;
+    debug::EventInput event{};
+    event.monotonic_us = acquisition::ArduinoMonotonicClock{}.now_us();
+    event.module = debug::Module::Calibration;
+    event.event_code = 53U;
+    event.level = debug::Level::Info;
+    event.arg0 = state;
+    event.arg1 = version > static_cast<uint32_t>(INT32_MAX)
+                     ? INT32_MAX : static_cast<int32_t>(version);
+    (void)debug_service_.emit(event);
+  };
+#endif
   for (std::size_t index = 0U; index < fis_keys.size(); ++index) {
     snapshot = models::ModelProfileSnapshot{};
-    if (model_lifecycle_.snapshot(fis_keys[index], snapshot) && snapshot.present &&
+    const bool found = model_lifecycle_.snapshot(fis_keys[index], snapshot);
+    const bool decoded = found && snapshot.present &&
         models::ModelProfilePersistence::default_codec().decode(
-            snapshot.encoded, *fis_models[index])) {
+            snapshot.encoded, *fis_models[index]);
+#ifdef ARDUINO
+    if (found) observe_model(index, snapshot, decoded);
+#endif
+    if (decoded) {
       fis_refs[index] = fis_models[index];
       fis_model_present_ = true;
     }
   }
   snapshot = models::ModelProfileSnapshot{};
-  if (model_lifecycle_.snapshot(safety_key, snapshot) && snapshot.present) {
+  const bool safety_found = model_lifecycle_.snapshot(safety_key, snapshot);
+  if (safety_found && snapshot.present) {
     safety_model_present_ = models::ModelProfilePersistence::default_codec().decode(
         snapshot.encoded, safety_model_);
   }
+#ifdef ARDUINO
+  if (safety_found) observe_model(3U, snapshot, safety_model_present_);
+#endif
   processing_runtime_.set_model_profiles(
       fis_refs,
       safety_model_present_ ? &safety_model_ : nullptr);
@@ -349,6 +411,28 @@ void SigapApp::log_runtime_diagnostic(RuntimeDiagnosticEvent event, bool ready,
 // cppcheck-suppress unusedFunction
 void SigapApp::setup() noexcept {
 #ifdef ARDUINO
+  previous_loop_entry_us_ = 0U;
+  last_loop_gap_class_ = 255U;
+  loop_gap_baseline_valid_ = false;
+  legacy_retention_reported_ = false;
+#endif
+  const auto emit_runtime_startup = [this](uint16_t code, int32_t arg0,
+                                            int32_t arg1) noexcept {
+    debug::EventInput event{};
+#ifdef ARDUINO
+    event.monotonic_us = acquisition::ArduinoMonotonicClock{}.now_us();
+#else
+    event.monotonic_us = 0U;
+#endif
+    event.module = debug::Module::Runtime;
+    event.event_code = code;
+    event.level = debug::Level::Info;
+    event.arg0 = arg0;
+    event.arg1 = arg1;
+    (void)debug_service_.emit(event);
+  };
+  emit_runtime_startup(1U, 0, 1);
+#ifdef ARDUINO
   Serial.begin(115200);
   board::log_runtime_board_memory();
   const int64_t started_us = esp_timer_get_time();
@@ -356,6 +440,14 @@ void SigapApp::setup() noexcept {
       started_us < 0 ? 0U : static_cast<uint64_t>(started_us);
   provisioning_clock_.set_now(
       started_us < 0 ? 0U : static_cast<uint64_t>(started_us));
+  const acquisition::InjectedMonotonicClock debug_clock{
+      [](void*) noexcept { return acquisition::ArduinoMonotonicClock{}.now_us(); },
+      nullptr};
+  archive_runtime_.bind_debug(&debug_service_, debug_clock);
+  batch_runtime_.bind_debug(&debug_service_, debug_clock);
+  acquisition_.bind_debug_sink(&debug_service_);
+  processing_runtime_.bind_debug_sink(&debug_service_);
+  wifi_manager_.bind_debug_sink(&debug_service_);
   (void)wifi_manager_.begin();
   char ble_name[32]{};
   const uint64_t device_mac = ESP.getEfuseMac();
@@ -380,6 +472,7 @@ void SigapApp::setup() noexcept {
 #endif
   (void)ble_service_.begin(ble_session_, std::string_view(ble_name));
 #endif
+  emit_runtime_startup(2U, 0, 2);
   const config::ConfigBootResult boot_result = config_manager_.begin();
   (void)boot_result;
 #ifdef ARDUINO
@@ -415,6 +508,7 @@ void SigapApp::setup() noexcept {
       acquisition::active_config_ref(config_manager_);
   const bool config_runtime_ready =
       config_manager_.runtime_ready() && ref.present;
+  emit_runtime_startup(2U, config_runtime_ready ? 1 : 2, 2);
 #ifdef ARDUINO
   log_runtime_diagnostic(RuntimeDiagnosticEvent::ConfigRuntimeReady,
                          config_runtime_ready,
@@ -422,6 +516,7 @@ void SigapApp::setup() noexcept {
 #endif
   if (!config_runtime_ready) {
     acquisition_.disable();
+    emit_runtime_startup(1U, 2, 2);
 #ifdef ARDUINO
     log_runtime_diagnostic(RuntimeDiagnosticEvent::SetupComplete, false,
                            static_cast<uint64_t>(esp_timer_get_time()));
@@ -464,20 +559,51 @@ void SigapApp::setup() noexcept {
     const uint64_t archive_started_us =
         static_cast<uint64_t>(esp_timer_get_time());
     Serial.println("[SIGAP][RUNTIME] LITTLEFS_ARCHIVE_RECOVERY=START");
+    littlefs_store_.set_selection_context(
+        record_context_.device_id, record_context_.boot_id,
+        [](const storage::ImmutableRecordBytes& record, void* context) noexcept {
+          auto& app = *static_cast<SigapApp*>(context);
+          return app.legacy_eligibility_builder_.build(
+              record, app.legacy_eligibility_scratch_);
+        }, this);
+    littlefs_store_.set_capacity_probe(
+        [](uint64_t& available, void*) noexcept {
+          size_t total{0U};
+          size_t used{0U};
+          if (esp_littlefs_info("spiffs", &total, &used) != ESP_OK ||
+              total == 0U || used > total) return false;
+          available = static_cast<uint64_t>(total - used);
+          return true;
+        }, nullptr);
     const bool archive_ready = littlefs_store_.begin(
         LittleFS, config_manager_.active().storage.flash_pending_quota_bytes);
     log_storage_stage("LITTLEFS_ARCHIVE_RECOVERY", archive_started_us,
                       archive_ready);
+#if SIGAP_LIVE_ARCHIVE_SPLIT
+    Serial.printf("[SIGAP][RUNTIME] HISTORICAL_ARCHIVE_PRESERVED=%s bytes=%llu status=UNDELIVERED\n",
+                  archive_ready ? "PASS" : "FAIL",
+                  static_cast<unsigned long long>(littlefs_store_.retained_legacy_bytes()));
+#endif
     const uint64_t batch_started_us =
         static_cast<uint64_t>(esp_timer_get_time());
     Serial.println("[SIGAP][RUNTIME] BATCH_RECOVERY=START");
     const bool batch_ready = batch_store_.begin(
-        LittleFS, config_manager_.active().storage.flash_pending_quota_bytes);
+        LittleFS, config_manager_.active().storage.flash_pending_quota_bytes,
+        build::kLiveArchiveSplit ? "/sigap/live-v3.batches" : "/sigap/batches.bin",
+        build::kLiveArchiveSplit ? "/sigap/live-v3.batches.ckp" : "/sigap/batches.ckp");
     log_storage_stage("BATCH_RECOVERY", batch_started_us, batch_ready);
     const uint64_t ack_started_us = static_cast<uint64_t>(esp_timer_get_time());
     Serial.println("[SIGAP][RUNTIME] ACK_RECOVERY=START");
-    const bool ack_ready = ack_journal_.begin(LittleFS);
+    const bool ack_ready = ack_journal_.begin(
+        LittleFS, build::kLiveArchiveSplit ? "/sigap/live-v3.acks" : "/sigap/acks.bin",
+        build::kLiveArchiveSplit ? "/sigap/live-v3.acks.ckp" : "/sigap/acks.ckp");
     log_storage_stage("ACK_RECOVERY", ack_started_us, ack_ready);
+#if SIGAP_LIVE_ARCHIVE_SPLIT
+    const bool live_ready = archive_ready && batch_ready && ack_ready &&
+        batch_runtime_.recover_completed(legacy_eligibility_scratch_);
+    Serial.printf("[SIGAP][RUNTIME] LIVE_DELIVERY_RECOVERY=%s\n", live_ready ? "PASS" : "FAIL");
+    if (!live_ready) batch_runtime_.bind(nullptr, &batch_store_, &ack_journal_);
+#endif
 #if defined(SIGAP_NETWORK_ENDPOINT) && defined(SIGAP_NETWORK_CA_CERT)
     const uint64_t journal_started_us =
         static_cast<uint64_t>(esp_timer_get_time());
@@ -544,8 +670,19 @@ void SigapApp::setup() noexcept {
     network_ready_ = transport_ready && token_size != 0U &&
                      network_worker_->begin(std::string_view(
                          network_secrets.device_token.data(), token_size));
-#if defined(SIGAP_NETWORK_ENDPOINT) && defined(SIGAP_NETWORK_CA_CERT)
-    if (network_ready_) {
+#if defined(ARDUINO) && defined(SIGAP_NETWORK_CA_CERT)
+    const auto& debug_config = build::kDebugUploadConfig;
+    if (debug_config.available() && SIGAP_NETWORK_CA_CERT[0] != '\0') {
+      debug_transport_.emplace(debug_config.endpoint, SIGAP_NETWORK_CA_CERT);
+      debug_worker_.emplace(debug_service_, *debug_transport_, io_gate_,
+                            debug_config.device_code);
+      if (!debug_worker_->configure(debug_config.endpoint,
+              std::string_view(network_secrets.device_token.data(), token_size))) {
+        debug_worker_.reset();
+        debug_transport_.reset();
+      }
+    }
+    if (network_ready_ || debug_worker_.has_value()) {
       // TLS certificate validity cannot be checked against the reset epoch.
       // SNTP starts asynchronously; loop() gates every HTTPS worker until a
       // trustworthy wall-clock value is available.
@@ -578,6 +715,14 @@ void SigapApp::setup() noexcept {
 #endif
 #endif
 
+#if SIGAP_SENSOR_SIMULATION
+  if (!acquisition::make_simulated_ds18b20_profile(simulated_ds_profile_)) {
+    acquisition_.disable();
+    emit_runtime_startup(1U, 2, 3);
+    return;
+  }
+  profiles_.ds18b20 = &simulated_ds_profile_;
+#endif
   const processing::ResultRecordContext result_context{
       record_context_.device_id,
       record_context_.boot_id,
@@ -588,17 +733,23 @@ void SigapApp::setup() noexcept {
   uint64_t now_us{0U};
   const acquisition::ArduinoMonotonicClock clock{};
   now_us = clock.now_us();
-  (void)processing_runtime_.begin(config_manager_.active(), ref,
-                                  boot_identity_.sequence, result_context,
-                                  profiles_, now_us);
-  (void)acquisition_.begin(config_manager_.active(), ref, now_us);
+  emit_runtime_startup(2U, 0, 3);
+  const bool processing_started = processing_runtime_.begin(
+      config_manager_.active(), ref, boot_identity_.sequence, result_context,
+      profiles_, now_us);
+  const bool acquisition_started = acquisition_.begin(
+      config_manager_.active(), ref, now_us);
 #else
   const uint64_t now_us{0U};
-  (void)acquisition_.begin(config_manager_.active(), ref, 0U);
-  (void)processing_runtime_.begin(config_manager_.active(), ref,
-                                  boot_identity_.sequence, result_context,
-                                  profiles_, 0U);
+  emit_runtime_startup(2U, 0, 3);
+  const bool acquisition_started = acquisition_.begin(config_manager_.active(), ref, 0U);
+  const bool processing_started = processing_runtime_.begin(
+      config_manager_.active(), ref, boot_identity_.sequence, result_context,
+      profiles_, 0U);
 #endif
+  const bool critical_startup_ready = config_runtime_ready &&
+                                      acquisition_started && processing_started;
+  emit_runtime_startup(2U, critical_startup_ready ? 1 : 2, 3);
   if (record_context_.device_id.present) {
     const auto metadata_status = archive_runtime_.append_boot_metadata(
         now_us, build::kFirmwareBuildId,
@@ -617,16 +768,47 @@ void SigapApp::setup() noexcept {
   log_runtime_diagnostic(RuntimeDiagnosticEvent::SetupComplete, true,
                          static_cast<uint64_t>(esp_timer_get_time()));
 #endif
+  emit_runtime_startup(1U, critical_startup_ready ? 1 : 2,
+                       critical_startup_ready ? 1 : 3);
 }
 
 // cppcheck-suppress unusedFunction
+void SigapApp::observe_loop_gap(uint64_t now_us) noexcept {
+  using runtime_debug_policy::LoopGapClass;
+  uint64_t gap_us{0U};
+  LoopGapClass classification{LoopGapClass::Healthy};
+  if (loop_gap_baseline_valid_) {
+    if (now_us < previous_loop_entry_us_) {
+      previous_loop_entry_us_ = now_us;
+      return;
+    }
+    gap_us = now_us - previous_loop_entry_us_;
+    classification = runtime_debug_policy::classify_loop_gap(gap_us);
+  } else {
+    loop_gap_baseline_valid_ = true;
+  }
+  previous_loop_entry_us_ = now_us;
+  const auto wire_class = static_cast<uint8_t>(classification);
+  if (last_loop_gap_class_ == wire_class) return;
+  last_loop_gap_class_ = wire_class;
+  debug::EventInput event{};
+  event.module = debug::Module::Runtime;
+  event.event_code = 3U;
+  event.level = debug::Level::Debug;
+  event.arg0 = static_cast<int32_t>(wire_class);
+  event.arg1 = gap_us > static_cast<uint64_t>(INT32_MAX) ? INT32_MAX : static_cast<int32_t>(gap_us);
+  event.monotonic_us = now_us;
+  (void)debug_service_.emit(event);
+}
+
 void SigapApp::loop() noexcept {
 #ifdef ARDUINO
   const acquisition::ArduinoMonotonicClock clock{};
   const uint64_t now_us = clock.now_us();
+  observe_loop_gap(now_us);
   log_runtime_diagnostic(RuntimeDiagnosticEvent::LoopAlive, true, now_us);
   provisioning_clock_.set_now(now_us);
-  wifi_manager_.poll();
+  if (!io_gate_.active(debug::IoOwner::DebugHttp)) wifi_manager_.poll();
   const bool wifi_connected =
       wifi_manager_.state() == provisioning::WifiState::Connected;
   if (wifi_connected || now_us >= runtime_diagnostics_started_us_ + 5000000U) {
@@ -635,8 +817,10 @@ void SigapApp::loop() noexcept {
   }
   ble_service_.poll();
   maintenance_service_.poll(now_us);
+  const bool filesystem_owned = io_gate_.try_acquire(debug::IoOwner::Filesystem);
   std::size_t audit_budget{2U};
-  while (audit_budget-- != 0U && archive_runtime_.drain_audit_events(audit_ring_)) {
+  while (filesystem_owned && audit_budget-- != 0U &&
+         archive_runtime_.drain_audit_events(audit_ring_)) {
   }
   refresh_model_profiles();
   if (profile_generation_ != profile_manager_.generation()) {
@@ -646,9 +830,9 @@ void SigapApp::loop() noexcept {
     (void)acquisition_.refresh_profiles(now_us);
   }
   acquisition_.poll(now_us);
-  (void)archive_runtime_.drain_samples(acquisition_.handoff());
+  if (filesystem_owned) (void)archive_runtime_.drain_samples(acquisition_.handoff());
   processing_runtime_.poll(now_us);
-  (void)archive_runtime_.drain_results(processing_runtime_.handoff());
+  if (filesystem_owned) (void)archive_runtime_.drain_results(processing_runtime_.handoff());
   // LittleFS and the Arduino VFS share the global descriptor table with the
   // asynchronous HTTPS workers. Keep filesystem ownership in loopTask while
   // either transport task is still active; this prevents a failed TLS socket
@@ -662,13 +846,23 @@ void SigapApp::loop() noexcept {
     filesystem_transport_busy = true;
   }
 #endif
-  if (!filesystem_transport_busy) {
+  if (filesystem_owned && !filesystem_transport_busy) {
     (void)archive_runtime_.poll_storage_slice(4U, 32U * 1024U);
     (void)batch_runtime_.poll();
+    if (!legacy_retention_reported_ && littlefs_store_.retained_records() != 0U) {
+      Serial.printf("[SIGAP][RUNTIME] LEGACY_PENDING_RETAINED=DEGRADED observed_records=%llu observed_bytes=%llu originals=UNDELIVERED\n",
+                    static_cast<unsigned long long>(littlefs_store_.retained_records()),
+                    static_cast<unsigned long long>(littlefs_store_.retained_bytes()));
+      legacy_retention_reported_ = true;
+    }
+  }
+  if (filesystem_owned) {
+    (void)archive_runtime_.poll_media_migration();
+    io_gate_.release(debug::IoOwner::Filesystem);
   }
   network_clock_.set_now(now_us);
   bool tls_time_ready{true};
-#if defined(SIGAP_NETWORK_ENDPOINT) && defined(SIGAP_NETWORK_CA_CERT)
+#ifdef SIGAP_NETWORK_CA_CERT
   const std::time_t wall_clock = std::time(nullptr);
   network_time_ready_ = wall_clock >= static_cast<std::time_t>(1700000000);
   tls_time_ready = network_time_ready_;
@@ -678,24 +872,43 @@ void SigapApp::loop() noexcept {
                            network_time_ready_, now_us);
   }
 #endif
-  if (network_ready_ && tls_time_ready && network_worker_.has_value()) {
+  if (network_worker_.has_value() &&
+      (network_worker_->transport_pending() || (network_ready_ && tls_time_ready)) &&
+      (io_gate_.active(debug::IoOwner::ArchiveHttp) ||
+       io_gate_.try_acquire(debug::IoOwner::ArchiveHttp))) {
     log_runtime_diagnostic(RuntimeDiagnosticEvent::HttpsPollEntered, true,
                            now_us);
     (void)network_worker_->poll();
+    if (!network_worker_->transport_pending()) io_gate_.release(debug::IoOwner::ArchiveHttp);
   }
   // The shared controller owns session expiry for every transport, including
   // BLE and USB builds that do not enable the optional HTTPS device-control
   // endpoint.
   calibration_controller_.poll(now_us);
 #if defined(SIGAP_NETWORK_ENDPOINT) && defined(SIGAP_NETWORK_CA_CERT)
-  if (device_control_ready_ && tls_time_ready) {
+  control_transport_boundary_.set_time_valid(tls_time_ready);
+  if (device_control_ready_ && (tls_time_ready || device_control_poller_.busy()) &&
+      (io_gate_.active(debug::IoOwner::ControlHttp) ||
+       io_gate_.try_acquire(debug::IoOwner::ControlHttp))) {
     log_runtime_diagnostic(RuntimeDiagnosticEvent::HttpsPollEntered, true,
                            now_us);
     (void)device_control_poller_.poll();
+    if (!device_control_poller_.busy()) io_gate_.release(debug::IoOwner::ControlHttp);
   }
 #endif
-  (void)archive_runtime_.poll_media_migration();
+  if (debug_worker_.has_value()) {
+    bool ca_ready{false};
+#ifdef SIGAP_NETWORK_CA_CERT
+    ca_ready = SIGAP_NETWORK_CA_CERT[0] != '\0';
+#endif
+    debug_worker_->poll(now_us, debug::DebugReadiness{
+        wifi_connected && wifi_station_.connected(), network_time_ready_, ca_ready,
+        config_manager_.runtime_ready() && build::kDebugUploadConfig.available(),
+        io_gate_.active(debug::IoOwner::ControlHttp) || calibration_controller_.active(),
+        io_gate_.active(debug::IoOwner::ArchiveHttp)});
+  }
   maintenance_service_.poll(now_us);
+  debug_usb_sink_.poll(now_us, 384U);
 #ifdef ARDUINO
   if (reboot_controller_.consume_request()) {
     ESP.restart();

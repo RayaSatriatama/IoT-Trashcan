@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SIGAP | Uji BLE + Wi-Fi</title>
+<style>
+:root{font:16px system-ui,sans-serif;color:#171717;background:#f7f7f7}*{box-sizing:border-box}body{margin:0}main{max-width:900px;margin:auto;padding:32px 18px}section{background:white;border:1px solid #ddd;border-radius:10px;padding:20px;margin:18px 0}button,input,select{font:inherit;min-height:42px;padding:8px 12px;border:1px solid #aaa;border-radius:6px}button{cursor:pointer;background:white;margin:4px}button:disabled{opacity:.5;cursor:not-allowed}input,select{width:100%;margin:5px 0 12px}label{display:block;font-weight:600}p{line-height:1.6;color:#444}pre{white-space:pre-wrap;background:#f2f2f2;padding:12px;border-radius:6px}#password{font-family:monospace}button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid #0671d5}
+</style></head>
+<body><main>
+<h1>Uji BLE + Wi-Fi SIGAP</h1>
+<p><b>Kandidat host-only, belum disetujui untuk flash.</b> GATT biasa tanpa passkey. Device ID hanya pemeriksaan routing. Tidak ada aksi otomatis saat halaman dibuka. Pembacaan identitas/status/scan memiliki batas 30 detik per percobaan dan maksimal 3 percobaan; CONNECT/simpan Wi-Fi dikirim sekali. Jangan gunakan kredensial nyata sebelum scope fisik disetujui.</p>
+<section><h2>BLE</h2><button id="connect">1. Pilih dan hubungkan</button><button id="identity" disabled>2. Verifikasi ID</button><button id="status" disabled>3. Baca status</button><button id="disconnect" disabled>Putuskan</button><p id="device">Belum terhubung</p><pre id="state" role="status" aria-live="polite">Menunggu aksi operator.</pre><h3>Jejak batas diagnostik klien</h3><p>Metadata aman di memori tab, maksimal 60 kejadian. Tidak berisi frame, SSID, password, atau isi respons.</p><pre id="trace" role="log" aria-live="polite">Belum ada kejadian BLE.</pre></section>
+<section><h2>Wi-Fi (production provisioning)</h2><button id="scan" disabled>Scan jaringan</button><label for="networks">Pilih SSID</label><select id="networks" disabled><option value="">Belum discan</option></select><label for="password">Password jaringan</label><input id="password" type="password" autocomplete="off" maxlength="64" disabled><button id="join" disabled>Hubungkan Wi-Fi</button><p id="wifi" role="status">Identitas BLE harus cocok sebelum aksi Wi-Fi.</p><p>Password hanya berada sementara di memori tab dan dikosongkan langsung saat request dikirim. Jangan screenshot saat password terisi.</p></section>
+<script type="module" src="./wifi.js"></script></main></body></html>

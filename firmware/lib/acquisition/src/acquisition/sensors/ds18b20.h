@@ -14,8 +14,8 @@ struct Ds18b20ReadResult {
   int32_t temperature_centi_c{0};
   bool resolution_matches{true};
   bool identity_valid{false};
-  // Populated only by a reader that actually captured the verified wire
-  // evidence. Native fakes leave this false rather than inventing bytes.
+  // Complete CRC-checked protocol bytes may be physical capture or generated
+  // SIM input; this flag is byte availability, not hardware attestation.
   bool wire_evidence{false};
   std::array<uint8_t, 8> rom{};
   std::array<uint8_t, 9> scratchpad{};

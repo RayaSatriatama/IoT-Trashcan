@@ -1,4 +1,5 @@
 #include "calibration/calibration_transport.h"
+#include "sigap/build/build_config.h"
 
 namespace sigap::calibration {
 namespace {
@@ -31,7 +32,9 @@ bool CalibrationTransportController::find_replay(
         return true;
       }
       output = entry.result;
-      output.status = CalibrationCommandStatus::Replayed;
+      if (output.status == CalibrationCommandStatus::Accepted ||
+          output.status == CalibrationCommandStatus::Committed)
+        output.status = CalibrationCommandStatus::Replayed;
       return true;
     }
   }
@@ -47,7 +50,9 @@ bool CalibrationTransportController::find_replay(
         return true;
       }
       output = persisted_result;
-      output.status = CalibrationCommandStatus::Replayed;
+      if (output.status == CalibrationCommandStatus::Accepted ||
+          output.status == CalibrationCommandStatus::Committed)
+        output.status = CalibrationCommandStatus::Replayed;
       return true;
     }
     CalibrationCommandEnvelope prepared_command{};
@@ -117,6 +122,16 @@ bool CalibrationTransportController::owns(
          command.transport == owner_ && command.principal_id == principal_id_;
 }
 
+void CalibrationTransportController::disconnect(
+    CalibrationTransport transport, uint64_t now_us) noexcept {
+  if (!owner_active_ || owner_ != transport) return;
+  (void)workflow_.cancel();
+  owner_active_ = false;
+  session_id_ = 0U;
+  principal_id_ = 0U;
+  emit_owner(now_us, false, transport);
+}
+
 void CalibrationTransportController::expire(uint64_t now_us) noexcept {
   if (!owner_active_) return;
   CalibrationStatusSnapshot snapshot{};
@@ -125,10 +140,78 @@ void CalibrationTransportController::expire(uint64_t now_us) noexcept {
       now_us - snapshot.last_activity_us <= CalibrationSession::kSessionTimeoutUs) {
     return;
   }
+  CalibrationCommandEnvelope expired{};
+  expired.transport = owner_;
+  expired.operation = CalibrationOperation::Cancel;
   (void)workflow_.cancel();
   owner_active_ = false;
   session_id_ = 0U;
   principal_id_ = 0U;
+  emit_result(expired, CalibrationCommandStatus::Expired, now_us);
+}
+
+void CalibrationTransportController::emit_result(
+    const CalibrationCommandEnvelope& command, CalibrationCommandStatus status,
+    uint64_t now_us, const CalibrationProfileRef* profile) noexcept {
+  if (debug_sink_ == nullptr) return;
+  debug::EventInput event{};
+  event.monotonic_us = now_us;
+  event.module = debug::Module::Calibration;
+  event.event_code = 50U;
+  event.level = debug::Level::Info;
+  const bool cancelled = command.operation == CalibrationOperation::Cancel &&
+      (status == CalibrationCommandStatus::Accepted ||
+       status == CalibrationCommandStatus::Committed ||
+       status == CalibrationCommandStatus::Expired);
+  event.arg0 = cancelled ? 2 :
+      (status == CalibrationCommandStatus::Accepted ||
+       status == CalibrationCommandStatus::Committed ||
+       status == CalibrationCommandStatus::Replayed ? 0 : 1);
+  // Failed combines workflow and replay-store failures; neither establishes an
+  // internal-error cause, so leave the reason unknown in the wire event.
+  event.arg1 = status == CalibrationCommandStatus::Expired ? 4 : 0;
+  if (command.request_id != 0U && command.request_id <= UINT32_MAX) {
+    event.request_id = static_cast<uint32_t>(command.request_id);
+    event.presence = debug::kHasRequestId;
+  }
+  (void)debug_sink_->emit(event);
+  if (command.operation == CalibrationOperation::Commit &&
+      status == CalibrationCommandStatus::Committed && profile != nullptr &&
+      profile->present) {
+    event.event_code = 52U;
+    event.arg0 = 0;
+    event.arg1 = 10;
+    event.request_id = 0U;
+    event.presence = 0U;
+    (void)debug_sink_->emit(event);
+  }
+  if (command.operation == CalibrationOperation::Start &&
+      status == CalibrationCommandStatus::Accepted) {
+    emit_owner(now_us, true, command.transport);
+  } else if ((command.operation == CalibrationOperation::Commit &&
+              status == CalibrationCommandStatus::Committed) ||
+             (command.operation == CalibrationOperation::Cancel &&
+              (status == CalibrationCommandStatus::Accepted ||
+               status == CalibrationCommandStatus::Expired))) {
+    emit_owner(now_us, false, command.transport);
+  }
+}
+
+void CalibrationTransportController::emit_owner(
+    uint64_t now_us, bool active, CalibrationTransport owner) noexcept {
+  if (debug_sink_ == nullptr) return;
+  debug::EventInput event{};
+  event.monotonic_us = now_us;
+  event.module = debug::Module::Calibration;
+  event.event_code = 51U;
+  event.level = debug::Level::Info;
+  event.arg0 = !active ? 0 :
+      owner == CalibrationTransport::Usb ? 1 :
+      owner == CalibrationTransport::Ble ? 2 : 3;
+  event.arg1 = active
+      ? static_cast<int32_t>(CalibrationSession::kSessionTimeoutUs / 1000U)
+      : 0;
+  (void)debug_sink_->emit(event);
 }
 
 bool CalibrationTransportController::expected_profile_matches(
@@ -151,6 +234,15 @@ bool CalibrationTransportController::execute(
     CalibrationResultEnvelope& output) noexcept {
   expire(now_us);
   fill(command, output);
+  struct ResultObservation final {
+    CalibrationTransportController& controller;
+    const CalibrationCommandEnvelope& command;
+    CalibrationResultEnvelope& result;
+    uint64_t now_us;
+    ~ResultObservation() noexcept {
+      controller.emit_result(command, result.status, now_us, &result.profile);
+    }
+  } observation{*this, command, output, now_us};
   if (command.protocol_version != CalibrationCommandEnvelope::kProtocolVersion ||
       command.device_id != device_id_ || command.request_id == 0U) {
     output.status = CalibrationCommandStatus::Invalid;
@@ -159,6 +251,12 @@ bool CalibrationTransportController::execute(
   if (command.transport != CalibrationTransport::Usb &&
       (authorizer_ == nullptr || !authorizer_->authorize(command))) {
     output.status = CalibrationCommandStatus::Unauthorized;
+    return false;
+  }
+  // Virtual observations cannot enter calibration workflow or replay state.
+  if (build::kSensorSimulation && !read_only(command.operation)) {
+    output.request_id = command.request_id;
+    output.status = CalibrationCommandStatus::Failed;
     return false;
   }
   for (const auto& entry : replay_) {
