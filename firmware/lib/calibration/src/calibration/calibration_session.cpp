@@ -15,7 +15,47 @@ using acquisition::SampleQuality;
 using acquisition::SensorId;
 
 bool accepted_quality(SampleQuality quality) noexcept {
-  return quality == SampleQuality::Ready || quality == SampleQuality::Calibrating;
+  return quality == SampleQuality::Ready ||
+         quality == SampleQuality::Calibrating ||
+         quality == SampleQuality::Uncalibrated;
+}
+
+bool accepted_diagnostic_evidence(
+    const acquisition::SampleRecord& sample) noexcept {
+  if (!accepted_quality(sample.quality)) return false;
+  const auto& raw = sample.raw;
+  switch (sample.header.sensor) {
+    case SensorId::Hx711Organic:
+    case SensorId::Hx711Inorganic:
+    case SensorId::Hx711B3:
+    case SensorId::UltrasonicOrganic:
+    case SensorId::UltrasonicInorganic:
+    case SensorId::UltrasonicB3:
+      return raw.present && raw.identity_valid;
+    case SensorId::Mq4:
+    case SensorId::Mq135:
+    case SensorId::Mq8:
+      return raw.present && raw.identity_valid;
+    case SensorId::Mq7:
+      return raw.present && raw.identity_valid && raw.heater_ready;
+    case SensorId::Ds18b20B3:
+      return raw.present && raw.identity_valid && raw.conversion_complete &&
+             raw.crc_valid && raw.ds_wire_evidence;
+    case SensorId::Sht31_44:
+    case SensorId::Sht31_45:
+      return raw.present && raw.identity_valid && raw.temperature_crc_valid &&
+             raw.humidity_crc_valid;
+  }
+  return false;
+}
+
+std::size_t ultrasonic_index(SensorId sensor) noexcept {
+  switch (sensor) {
+    case SensorId::UltrasonicOrganic: return 0U;
+    case SensorId::UltrasonicInorganic: return 1U;
+    case SensorId::UltrasonicB3: return 2U;
+    default: return 3U;
+  }
 }
 
 bool valid_target(uint32_t target_id, ProfileTarget first,
@@ -55,6 +95,31 @@ bool target_from_sensor(acquisition::SensorId sensor,
 
 }  // namespace
 
+bool CalibrationEvidenceCache::set_ultrasonic_engineering_conversion(
+    CalibrationTarget target, float echo_mm_per_us) noexcept {
+  SensorId sensor = SensorId::Mq4;
+  switch (target) {
+    case CalibrationTarget::UltrasonicOrganic:
+      sensor = SensorId::UltrasonicOrganic;
+      break;
+    case CalibrationTarget::UltrasonicInorganic:
+      sensor = SensorId::UltrasonicInorganic;
+      break;
+    case CalibrationTarget::UltrasonicB3:
+      sensor = SensorId::UltrasonicB3;
+      break;
+    default:
+      return false;
+  }
+  const std::size_t index = ultrasonic_index(sensor);
+  if (!std::isfinite(echo_mm_per_us) || echo_mm_per_us <= 0.0F ||
+      index >= ultrasonic_engineering_conversion_.size()) {
+    return false;
+  }
+  ultrasonic_engineering_conversion_[index].echo_mm_per_us = echo_mm_per_us;
+  return true;
+}
+
 void CalibrationEvidenceCache::observe(
     const acquisition::SampleRecord& sample) noexcept {
   CalibrationTarget target{};
@@ -65,20 +130,18 @@ void CalibrationEvidenceCache::observe(
   TrialObservation observation{};
   switch (sample.header.kind) {
     case acquisition::SampleKind::Hx711Counts:
-      observation = Hx711Trial{sample.raw.signed_counts, sample.quality,
-                               sample.raw.present && sample.raw.identity_valid};
+      observation = Hx711Trial{sample.raw.signed_counts,
+                               sample.quality,
+                               sample.raw.present,
+                               sample.raw.identity_valid};
       break;
     case acquisition::SampleKind::UltrasonicEcho:
       {
         float distance_mm = 0.0F;
         bool converted = false;
-        if (profiles_ != nullptr) {
-          std::size_t index = profiles_->ultrasonic.size();
-          if (sample.header.sensor == SensorId::UltrasonicOrganic) index = 0U;
-          if (sample.header.sensor == SensorId::UltrasonicInorganic) index = 1U;
-          if (sample.header.sensor == SensorId::UltrasonicB3) index = 2U;
-          if (index < profiles_->ultrasonic.size()) {
-            const auto* profile = profiles_->ultrasonic[index];
+        const std::size_t ultrasonic_slot = ultrasonic_index(sample.header.sensor);
+        if (profiles_ != nullptr && ultrasonic_slot < profiles_->ultrasonic.size()) {
+            const auto* profile = profiles_->ultrasonic[ultrasonic_slot];
             if (profile != nullptr && profile->valid_for_acquisition() &&
                 profile_matches(profile->manifest, sample.header.sensor) &&
                 profile->echo_mm_per_us > 0.0F && sample.raw.present) {
@@ -86,14 +149,22 @@ void CalibrationEvidenceCache::observe(
                             profile->echo_mm_per_us;
               converted = std::isfinite(distance_mm);
             }
-          }
         }
-        observation = UltrasonicTrial{distance_mm, sample.quality, converted};
+        if (!converted && ultrasonic_slot < ultrasonic_engineering_conversion_.size() &&
+            sample.raw.present && sample.raw.identity_valid &&
+            ultrasonic_engineering_conversion_[ultrasonic_slot].valid()) {
+          distance_mm = static_cast<float>(sample.raw.distance_us) *
+                        ultrasonic_engineering_conversion_[ultrasonic_slot].echo_mm_per_us;
+          converted = std::isfinite(distance_mm);
+        }
+        observation = UltrasonicTrial{distance_mm, sample.quality, converted,
+                                      sample.raw.identity_valid};
       }
       break;
     case acquisition::SampleKind::MqAdc:
       observation = MqTrial{sample.raw.adc_counts, sample.quality,
-                            sample.raw.heater_ready, sample.raw.present && sample.raw.identity_valid};
+                            sample.raw.heater_ready, sample.raw.present,
+                            sample.raw.identity_valid};
       break;
     case acquisition::SampleKind::Ds18b20:
       {
@@ -104,6 +175,10 @@ void CalibrationEvidenceCache::observe(
         trial.rom_match = sample.raw.identity_valid;
         trial.conversion_complete = sample.raw.conversion_complete;
         trial.crc_valid = sample.raw.crc_valid;
+        trial.wire_evidence = sample.raw.ds_wire_evidence;
+        trial.rom = sample.raw.ds_rom;
+        trial.scratchpad = sample.raw.ds_scratchpad;
+        trial.resolution_bits = sample.raw.ds_resolution_bits;
         observation = trial;
       }
       break;
@@ -112,12 +187,31 @@ void CalibrationEvidenceCache::observe(
                                sample.raw.humidity_centi_pct, sample.quality,
                                sample.raw.present,
                                sample.raw.temperature_crc_valid,
-                               sample.raw.humidity_crc_valid};
+                               sample.raw.humidity_crc_valid,
+                               sample.raw.identity_valid};
       break;
   }
   observations_[index] = observation;
   sequences_[index] = sample.header.sequence;
   present_[index] = true;
+  DiagnosticEvidence& diagnostic = diagnostics_[index];
+  diagnostic.available = true;
+  diagnostic.sensor = sample.header.sensor;
+  diagnostic.stream = sample.header.stream;
+  diagnostic.quality = sample.quality;
+  diagnostic.reason = sample.reason;
+  diagnostic.raw_present = sample.raw.present;
+  diagnostic.identity_valid = sample.raw.identity_valid;
+  diagnostic.crc_valid = sample.raw.crc_valid;
+  diagnostic.conversion_complete = sample.raw.conversion_complete;
+  diagnostic.temperature_crc_valid = sample.raw.temperature_crc_valid;
+  diagnostic.humidity_crc_valid = sample.raw.humidity_crc_valid;
+  diagnostic.heater_ready = sample.raw.heater_ready;
+  diagnostic.wire_evidence = sample.raw.ds_wire_evidence;
+  diagnostic.observed_at_us = sample.header.monotonic_us;
+  uint32_t& count = accepted_diagnostic_evidence(sample)
+                        ? diagnostic.accepted_count : diagnostic.rejected_count;
+  if (count != UINT32_MAX) ++count;
 }
 
 bool CalibrationEvidenceCache::latest(
@@ -128,6 +222,14 @@ bool CalibrationEvidenceCache::latest(
       sequences_[index] <= after_sequence) return false;
   output = observations_[index];
   observed_sequence = sequences_[index];
+  return true;
+}
+
+bool CalibrationEvidenceCache::diagnostic(
+    CalibrationTarget target, DiagnosticEvidence& output) const noexcept {
+  const auto index = target_index(target);
+  if (index >= diagnostics_.size() || !diagnostics_[index].available) return false;
+  output = diagnostics_[index];
   return true;
 }
 
@@ -366,7 +468,8 @@ bool CalibrationSession::required_samples_reached() const noexcept {
 }
 
 bool CalibrationSession::observe_hx711(const Hx711Trial& trial) noexcept {
-  if (!accepted_quality(trial.quality) || !trial.raw_present) {
+  if (!accepted_quality(trial.quality) || !trial.raw_present ||
+      !trial.identity_valid) {
     ++primary_.quality_failures;
     return false;
   }
@@ -377,6 +480,7 @@ bool CalibrationSession::observe_hx711(const Hx711Trial& trial) noexcept {
 bool CalibrationSession::observe_ultrasonic(
     const UltrasonicTrial& trial) noexcept {
   if (!accepted_quality(trial.quality) || !trial.conversion_valid ||
+      !trial.identity_valid ||
       !std::isfinite(trial.distance_mm) ||
       trial.distance_mm < 0.0F) {
     ++primary_.quality_failures;
@@ -389,7 +493,9 @@ bool CalibrationSession::observe_ultrasonic(
 bool CalibrationSession::observe_mq(const MqTrial& trial) noexcept {
   const auto& criteria = std::get<MqCaptureCriteria>(criteria_);
   if (!accepted_quality(trial.quality) || !trial.raw_present ||
-      (criteria.require_low_detect && !trial.heater_ready)) {
+      !trial.identity_valid ||
+      ((criteria.require_low_detect || target_ == CalibrationTarget::Mq7) &&
+       !trial.heater_ready)) {
     ++primary_.quality_failures;
     return false;
   }
@@ -412,6 +518,7 @@ bool CalibrationSession::observe_ds18b20(
 
 bool CalibrationSession::observe_sht31(const Sht31Trial& trial) noexcept {
   if (!accepted_quality(trial.quality) || !trial.raw_present ||
+      !trial.identity_valid ||
       !trial.temperature_crc_valid || !trial.humidity_crc_valid) {
     ++primary_.quality_failures;
     return false;
@@ -461,6 +568,12 @@ void CalibrationSession::touch(uint64_t now_us) noexcept {
 
 bool CalibrationSession::observe_anchor(const TrialObservation& trial,
                                         CalibrationAnchor anchor) noexcept {
+  // Non-two-point sensors use the operator's "reference" capture as their
+  // primary observation. Only HX711 and ultrasonic sessions need a distinct
+  // secondary anchor.
+  if (anchor == CalibrationAnchor::Reference && !secondary_required_) {
+    return observe(trial);
+  }
   if (anchor == CalibrationAnchor::Primary ||
       anchor == CalibrationAnchor::Tare ||
       anchor == CalibrationAnchor::Empty) {

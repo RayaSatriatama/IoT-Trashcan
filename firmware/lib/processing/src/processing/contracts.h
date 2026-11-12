@@ -243,8 +243,11 @@ class FuzzyResultAdapterSlot final {
                 "FIS adapter exceeds its declared bound");
 
  public:
+  constexpr FuzzyResultAdapterSlot() noexcept = default;
   explicit constexpr FuzzyResultAdapterSlot(const Value& value) noexcept
       : value_(value) {}
+
+  constexpr void assign(const Value& value) noexcept { value_ = value; }
 
   static constexpr std::size_t capacity_bytes() noexcept { return MaxBytes; }
   constexpr const Value& value() const noexcept { return value_; }
@@ -261,8 +264,11 @@ class SafetyResultAdapterSlot final {
                 "Safety adapter exceeds its declared bound");
 
  public:
+  constexpr SafetyResultAdapterSlot() noexcept = default;
   explicit constexpr SafetyResultAdapterSlot(const Value& value) noexcept
       : value_(value) {}
+
+  constexpr void assign(const Value& value) noexcept { value_ = value; }
 
   static constexpr std::size_t capacity_bytes() noexcept { return MaxBytes; }
   constexpr const Value& value() const noexcept { return value_; }

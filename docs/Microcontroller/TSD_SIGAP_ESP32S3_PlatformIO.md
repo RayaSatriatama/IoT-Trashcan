@@ -920,3 +920,32 @@ Repo-local skill yang digunakan:
 - `.agents/skills/memory-audit/SKILL.md`
 
 Skill adalah guidance; angka/command/project assumption upstream harus diverifikasi terhadap PlatformIO/Arduino/ESP32-S3 SIGAP sebelum dipakai.
+
+## 18. Web calibration transport contract
+
+The Task 9 website uses two adapters over one calibration controller. Local Web
+Bluetooth uses authenticated F1/R1 bounded GATT framing and does not require
+Internet. Remote operation uses a persistent Go command queue delivered by
+outbound authenticated HTTPS polling. There is no public inbound firmware
+endpoint. USB maintenance remains the secondary recovery adapter.
+
+Queue states are `QUEUED`, `DELIVERED`, `ACCEPTED`, `CAPTURING`, `VALIDATED`,
+`PREVIEW_READY`, `COMMITTED`, `FAILED`, `EXPIRED`, and `CANCELLED`. Each
+command is durable before acknowledgement, bound to one device and authorized
+operator, carries an expiry and request hash, and is idempotent on replay. A
+device result includes the same request/session identity and typed diagnostic,
+proposal, and error fields. A mutating command cannot be accepted while a
+different transport owns a live session.
+
+Operator APIs require an authenticated operator identity and per-device
+authorization. CSRF/origin, rate limiting, session expiry/revocation, and
+device-token separation are backend concerns. The frontend never stores or
+receives device bearer tokens. Missing operator identity fails closed; it is
+not replaced with a public or anonymous calibration route.
+
+The website displays raw evidence and units, quality/reason, freshness,
+identity/CRC/completion flags, active profile identity, accepted/rejected
+counts, and explicit references. `UNCALIBRATED`, `STALE`, `TIMEOUT`,
+`DISCONNECTED`, and `INVALID` remain visible and never become operational
+values. Preview and commit reuse the firmware typed profile builder. No
+synthetic reading or production coefficient crosses a transport boundary.

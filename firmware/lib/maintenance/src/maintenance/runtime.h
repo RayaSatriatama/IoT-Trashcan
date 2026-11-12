@@ -2,12 +2,16 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <array>
 
 #include "config/config_manager.h"
 #include "acquisition/profile_manager.h"
 #include "maintenance/maintenance.h"
 #include "provisioning/secret_store.h"
+#include "provisioning/ble_provisioning.h"
 #include "calibration/calibration_session.h"
+#include "calibration/calibration_transport.h"
+#include "debug/io_gate.h"
 
 namespace sigap::maintenance {
 
@@ -65,7 +69,8 @@ class NullRebootController final : public IRebootController {
 };
 
 class CommandRouter final : public IMaintenanceCommandSink,
-                            public acquisition::ICalibrationStateProvider {
+                            public acquisition::ICalibrationStateProvider,
+                            public calibration::ICalibrationTransportWorkflow {
  public:
   static constexpr uint64_t kTransferTimeoutUs{300000000ULL};
 
@@ -88,12 +93,50 @@ class CommandRouter final : public IMaintenanceCommandSink,
                         uint64_t now_us,
                         MaintenanceResponse& response) noexcept override;
 
+  // Typed calibration transports call through this boundary so the USB
+  // maintenance guard cannot reject the controller's own workflow calls.
+  CommandStatus execute_calibration_internal(
+      const MaintenanceCommand& command, uint64_t now_us,
+      MaintenanceResponse& response) noexcept;
+
+  void set_calibration_transport_controller(
+      calibration::CalibrationTransportController* controller) noexcept {
+    calibration_controller_ = controller;
+  }
+  void set_debug_commands(IDebugCommandHandler* handler) noexcept {
+    debug_commands_ = handler;
+  }
+  // Bind the application-owned gate; an unbound router keeps legacy behavior.
+  void set_io_gate(debug::RuntimeIoGate* gate) noexcept { io_gate_ = gate; }
+
   void refresh_mode() noexcept;
   DeviceMode mode() const noexcept { return mode_; }
   bool is_calibrating(acquisition::SensorId sensor) const noexcept override;
   bool reboot_requested() const noexcept { return reboot_requested_; }
   void poll(uint64_t now_us) noexcept override;
   void transport_lost() noexcept override;
+
+  // Typed transport workflow used by the shared USB/BLE/HTTPS controller.
+  bool status(calibration::CalibrationStatusSnapshot& output) const noexcept override;
+  bool evidence(calibration::CalibrationTarget target,
+                calibration::DiagnosticEvidence& output) const noexcept override;
+  bool active_profile(calibration::CalibrationTarget target,
+                      calibration::CalibrationProfileRef& output) const noexcept override;
+  bool proposed_profile(
+      calibration::CalibrationProfileRef& output) const noexcept override;
+  bool start(calibration::CalibrationTarget target, uint64_t now_us) noexcept override;
+  bool set_criteria(const calibration::CaptureCriteria& criteria,
+                    uint64_t now_us) noexcept override;
+  bool capture(calibration::CalibrationAnchor anchor,
+               uint64_t now_us) noexcept override;
+  bool validate() noexcept override;
+  bool preview(calibration::ValidationResult& output) noexcept override;
+  bool commit() noexcept override;
+  bool cancel() noexcept override;
+  bool history(calibration::CalibrationResultEnvelope& output) const noexcept override;
+  bool rollback() noexcept override;
+  bool append_calibration_preview_response(
+      MaintenanceResponse& response) const noexcept;
 
  private:
   static bool field_from_text(const FixedText<64U>& text,
@@ -106,9 +149,25 @@ class CommandRouter final : public IMaintenanceCommandSink,
   static bool calibration_target_from_text(
       const FixedText<64U>& text,
       calibration::CalibrationTarget& target) noexcept;
+  struct CalibrationProposal final {
+    bool present{false};
+    acquisition::ProfileKey key{};
+    acquisition::EncodedProfile encoded{};
+    acquisition::ActiveProfileSnapshot active{};
+    uint64_t created_at_us{0U};
+    uint64_t evidence_sequence{0U};
+  };
+  bool build_calibration_proposal(uint64_t now_us,
+                                  CalibrationProposal& proposal) const noexcept;
+  bool calibration_proposal_current() const noexcept;
+  bool append_calibration_preview(MaintenanceResponse& response) const noexcept;
+  void clear_calibration_proposal() noexcept { calibration_proposal_ = CalibrationProposal{}; }
   CommandStatus execute_config(const MaintenanceCommand& command,
                                MaintenanceResponse& response) noexcept;
-  bool build_and_stage_calibration_profile(uint64_t now_us) noexcept;
+  CommandStatus sensor_status(const MaintenanceCommand& command,
+                              uint64_t now_us,
+                              MaintenanceResponse& response) noexcept;
+  bool commit_calibration_proposal() noexcept;
   CommandStatus profile_transfer(const MaintenanceCommand& command,
                                  MaintenanceResponse& response) noexcept;
   void cancel_profile_transfer() noexcept;
@@ -122,7 +181,12 @@ class CommandRouter final : public IMaintenanceCommandSink,
   const acquisition::BootId* boot_id_{nullptr};
   IModelCommandHandler* models_{nullptr};
   IStorageTestProbe* storage_probe_{nullptr};
+  calibration::CalibrationTransportController* calibration_controller_{nullptr};
+  IDebugCommandHandler* debug_commands_{nullptr};
+  debug::RuntimeIoGate* io_gate_{nullptr};
+  bool internal_calibration_dispatch_{false};
   calibration::CalibrationSession calibration_{};
+  CalibrationProposal calibration_proposal_{};
   uint64_t evidence_sequence_{0U};
   bool criteria_set_{false};
   calibration::CalibrationTarget pending_target_{calibration::CalibrationTarget::Hx711Organic};
@@ -133,12 +197,32 @@ class CommandRouter final : public IMaintenanceCommandSink,
   int32_t criteria_humidity_span_{0};
   bool criteria_temperature_span_set_{false};
   bool criteria_humidity_span_set_{false};
+  // First-time sensor setup parameters are explicit maintenance criteria.
+  // They are session-owned and are never persisted independently of the
+  // validated profile produced at commit.
+  uint32_t ultrasonic_echo_mm_per_us_milli_{0U};
+  uint32_t ultrasonic_echo_timeout_us_{0U};
+  uint32_t ultrasonic_inter_sensor_gap_us_{0U};
+  uint32_t ultrasonic_overshoot_tolerance_mm_milli_{0U};
+  bool ultrasonic_echo_conversion_set_{false};
+  bool ultrasonic_tolerance_set_{false};
+  bool ultrasonic_timing_set_{false};
+  uint32_t mq_reference_mv_{0U};
+  uint32_t mq_full_scale_counts_{0U};
+  uint32_t mq_divider_numerator_{0U};
+  uint32_t mq_divider_denominator_{0U};
+  bool mq_engineering_set_{false};
+  uint8_t ds_resolution_bits_{12U};
+  bool ds_resolution_set_{false};
+  std::array<uint8_t, 8U> ds_rom_{};
+  bool ds_rom_set_{false};
   uint64_t reference_mass_mg_{0U};
   int32_t reference_temperature_centi_c_{0};
   int32_t reference_humidity_centi_pct_{0};
   bool reference_temperature_set_{false};
   bool reference_humidity_set_{false};
   bool reboot_requested_{false};
+  bool maintenance_authorized_{false};
   acquisition::ProfileKey transfer_key_{
       acquisition::ProfileKind::Calibration,
       acquisition::ProfileTarget::Unknown};

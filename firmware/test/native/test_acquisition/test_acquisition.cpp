@@ -86,6 +86,32 @@ void test_record_preserves_time_quality_and_config_provenance() {
   TEST_ASSERT_FALSE(record.raw.present);
 }
 
+void test_record_factory_updates_device_identity_at_runtime() {
+  SequenceAllocator allocator;
+  RecordFactory factory(allocator, record_context());
+  DeviceId expected{};
+  expected.present = true;
+  expected.bytes[10U] = 0x98U;
+  expected.bytes[11U] = 0xA3U;
+  expected.bytes[12U] = 0x16U;
+  expected.bytes[13U] = 0xF5U;
+  expected.bytes[14U] = 0xC1U;
+  expected.bytes[15U] = 0x50U;
+  factory.set_device_id(expected);
+
+  SampleRecord record{};
+  TEST_ASSERT_EQUAL_INT(
+      static_cast<int>(DriverPollStatus::Produced),
+      static_cast<int>(factory.make(
+          10U, SensorId::Mq4, StreamId::Organic, SampleKind::MqAdc,
+          SampleQuality::Timeout, SampleReason::Timeout, RawObservation{},
+          ConvertedObservation{}, ProfileRef{}, record)));
+  TEST_ASSERT_TRUE(record.header.device_id.present);
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(expected.bytes.data(),
+                                record.header.device_id.bytes.data(),
+                                expected.bytes.size());
+}
+
 struct JobProbe {
   uint32_t calls{0};
   uint64_t last_now{0};
@@ -247,6 +273,30 @@ void test_ultrasonic_is_nonblocking_and_rejects_invalid_profile() {
                         static_cast<int>(record.quality));
 }
 
+void test_ultrasonic_bootstrap_params_keep_evidence_raw_without_profile_conversion() {
+  SequenceAllocator allocator;
+  RecordFactory factory(allocator, record_context());
+  UltrasonicFake source{};
+  const UltrasonicAcquisitionParams engineering_params{30000U, 60000U, true};
+  UltrasonicAcquirer acquirer(StreamId::Organic, source, factory, nullptr,
+                              engineering_params);
+  SampleRecord record{};
+
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(DriverPollStatus::NoAttempt),
+                        static_cast<int>(acquirer.poll(0U, record)));
+  source.result = {UltrasonicEchoStatus::Ready, 1234U};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(DriverPollStatus::Produced),
+                        static_cast<int>(acquirer.poll(1U, record)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(SampleQuality::Uncalibrated),
+                        static_cast<int>(record.quality));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(SampleReason::InvalidProfile),
+                        static_cast<int>(record.reason));
+  TEST_ASSERT_TRUE(record.raw.present);
+  TEST_ASSERT_EQUAL_UINT32(1234U, record.raw.distance_us);
+  TEST_ASSERT_FALSE(record.converted.primary_available);
+  TEST_ASSERT_FALSE(record.header.profile_ref.present);
+}
+
 struct MqFake final : IMqAdcReader {
   MqAdcReadResult result{true, false, 2048U, SampleReason::DataReady};
   MqAdcReadResult read() noexcept override { return result; }
@@ -304,9 +354,26 @@ void test_mq7_invalid_heater_phase_keeps_diagnostic_adc_only() {
 
 struct DsFake final : IDs18b20Reader {
   bool request_ok{true};
+  Ds18b20DiscoveryStatus discovery_status{Ds18b20DiscoveryStatus::Unavailable};
+  uint32_t discover_calls{0U};
+  uint32_t request_calls{0U};
   Ds18b20ReadResult result{};
-  bool request_conversion() noexcept override { return request_ok; }
+  Ds18b20DiscoveryStatus discover() noexcept override {
+    ++discover_calls;
+    return discovery_status;
+  }
+  bool request_conversion() noexcept override {
+    ++request_calls;
+    return request_ok;
+  }
   Ds18b20ReadResult read_conversion() noexcept override { return result; }
+};
+
+struct CalibrationStateFake final : ICalibrationStateProvider {
+  bool active{false};
+  bool is_calibrating(SensorId sensor) const noexcept override {
+    return active && sensor == SensorId::Ds18b20B3;
+  }
 };
 
 void test_ds18b20_conversion_is_split_and_verified_85c_is_valid() {
@@ -460,6 +527,113 @@ void test_ds18b20_missing_device_produces_disconnected_attempt() {
   TEST_ASSERT_FALSE(record.converted.primary_available);
 }
 
+void test_ds18b20_discovery_is_calibration_only_and_keeps_temperature_uncalibrated() {
+  SequenceAllocator allocator;
+  RecordFactory factory(allocator, record_context());
+  DsFake source{};
+  source.discovery_status = Ds18b20DiscoveryStatus::Ready;
+  source.result = {true, true, true, 2150, true, true};
+  CalibrationStateFake calibration{};
+  calibration.active = true;
+  Ds18b20Acquirer acquirer(source, factory, nullptr, 1U,
+                           DsChannelState::ProfileMissing, &calibration);
+  SampleRecord record{};
+
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(DriverPollStatus::NoAttempt),
+                        static_cast<int>(acquirer.poll(0U, record)));
+  TEST_ASSERT_EQUAL_UINT32(1U, source.discover_calls);
+  TEST_ASSERT_EQUAL_UINT32(1U, source.request_calls);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(DriverPollStatus::Produced),
+                        static_cast<int>(acquirer.poll(1U, record)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(SampleQuality::Calibrating),
+                        static_cast<int>(record.quality));
+  TEST_ASSERT_FALSE(record.converted.primary_available);
+  TEST_ASSERT_FALSE(record.header.profile_ref.present);
+  TEST_ASSERT_TRUE(record.raw.present);
+  TEST_ASSERT_TRUE(record.raw.identity_valid);
+  TEST_ASSERT_TRUE(record.raw.crc_valid);
+  TEST_ASSERT_TRUE(record.raw.conversion_complete);
+  TEST_ASSERT_EQUAL_UINT32(1U, source.discover_calls);
+
+  // Discovery evidence never becomes an operational conversion merely
+  // because the calibration overlay is later removed.
+  calibration.active = false;
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(DriverPollStatus::Produced),
+                        static_cast<int>(acquirer.poll(2U, record)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(SampleReason::ProfileMissing),
+                        static_cast<int>(record.reason));
+  TEST_ASSERT_FALSE(record.converted.primary_available);
+  TEST_ASSERT_EQUAL_UINT32(1U, source.request_calls);
+}
+
+void test_ds18b20_discovery_rejects_invalid_rom_and_disconnect() {
+  const Ds18b20DiscoveryStatus statuses[] = {
+      Ds18b20DiscoveryStatus::InvalidRom,
+      Ds18b20DiscoveryStatus::Disconnected,
+  };
+  const SampleQuality qualities[] = {
+      SampleQuality::Uncalibrated,
+      SampleQuality::Disconnected,
+  };
+  const SampleReason reasons[] = {
+      SampleReason::InvalidProfile,
+      SampleReason::Disconnected,
+  };
+  for (std::size_t index = 0U; index < 2U; ++index) {
+    SequenceAllocator allocator;
+    RecordFactory factory(allocator, record_context());
+    DsFake source{};
+    source.discovery_status = statuses[index];
+    CalibrationStateFake calibration{};
+    calibration.active = true;
+    Ds18b20Acquirer acquirer(source, factory, nullptr, 1U,
+                             DsChannelState::ProfileMissing, &calibration);
+    SampleRecord record{};
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(DriverPollStatus::Produced),
+                          static_cast<int>(acquirer.poll(0U, record)));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(qualities[index]),
+                          static_cast<int>(record.quality));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(reasons[index]),
+                          static_cast<int>(record.reason));
+    TEST_ASSERT_EQUAL_UINT32(0U, source.request_calls);
+    TEST_ASSERT_FALSE(record.raw.present);
+    TEST_ASSERT_FALSE(record.header.profile_ref.present);
+  }
+}
+
+void test_ds18b20_discovery_preserves_crc_and_completion_failures() {
+  const SampleQuality qualities[] = {
+      SampleQuality::CrcError,
+      SampleQuality::Timeout,
+  };
+  const SampleReason reasons[] = {
+      SampleReason::CrcError,
+      SampleReason::ConversionPending,
+  };
+  for (std::size_t index = 0U; index < 2U; ++index) {
+    SequenceAllocator allocator;
+    RecordFactory factory(allocator, record_context());
+    DsFake source{};
+    source.discovery_status = Ds18b20DiscoveryStatus::Ready;
+    source.result = {true, index != 0U, true, 2150, true, true};
+    if (index == 1U) source.result.conversion_complete = false;
+    CalibrationStateFake calibration{};
+    calibration.active = true;
+    Ds18b20Acquirer acquirer(source, factory, nullptr, 1U,
+                             DsChannelState::ProfileMissing, &calibration);
+    SampleRecord record{};
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(DriverPollStatus::NoAttempt),
+                          static_cast<int>(acquirer.poll(0U, record)));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(DriverPollStatus::Produced),
+                          static_cast<int>(acquirer.poll(1U, record)));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(qualities[index]),
+                          static_cast<int>(record.quality));
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(reasons[index]),
+                          static_cast<int>(record.reason));
+    TEST_ASSERT_FALSE(record.converted.primary_available);
+  }
+}
+
 void test_sht31_crc_failure_preserves_failure_reason() {
   SequenceAllocator allocator;
   RecordFactory factory(allocator, record_context());
@@ -549,12 +723,14 @@ void setup() {
   UNITY_BEGIN();
   RUN_TEST(test_sequence_is_global_and_non_wrapping);
   RUN_TEST(test_record_preserves_time_quality_and_config_provenance);
+  RUN_TEST(test_record_factory_updates_device_identity_at_runtime);
   RUN_TEST(test_scheduler_is_monotonic_and_failure_isolated);
   RUN_TEST(test_bounded_handoff_reports_full_without_overwrite);
   RUN_TEST(test_profile_validity_gates_conversion);
   RUN_TEST(test_mq7_heater_uses_profile_defined_phases);
   RUN_TEST(test_hx711_retains_raw_and_requires_calibration);
   RUN_TEST(test_ultrasonic_is_nonblocking_and_rejects_invalid_profile);
+  RUN_TEST(test_ultrasonic_bootstrap_params_keep_evidence_raw_without_profile_conversion);
   RUN_TEST(test_mq_adc_keeps_raw_without_inventing_ppm);
   RUN_TEST(test_mq7_invalid_heater_phase_keeps_diagnostic_adc_only);
   RUN_TEST(test_ds18b20_conversion_is_split_and_verified_85c_is_valid);
@@ -565,6 +741,9 @@ void setup() {
   RUN_TEST(test_ds18b20_crc_failure_is_not_a_temperature);
   RUN_TEST(test_ds18b20_identity_mismatch_is_not_a_temperature);
   RUN_TEST(test_ds18b20_missing_device_produces_disconnected_attempt);
+  RUN_TEST(test_ds18b20_discovery_is_calibration_only_and_keeps_temperature_uncalibrated);
+  RUN_TEST(test_ds18b20_discovery_rejects_invalid_rom_and_disconnect);
+  RUN_TEST(test_ds18b20_discovery_preserves_crc_and_completion_failures);
   RUN_TEST(test_sht31_crc_failure_preserves_failure_reason);
   RUN_TEST(test_acquisition_memory_footprint_is_bounded);
   UNITY_END();

@@ -1,0 +1,1 @@
+{"schema_version":1,"status":"DURABLE","device_id":"TEST-DEVICE","boot_id":"00000000000000000000000000000001","first_sequence":"2","last_sequence":"2","stored_count":1,"deduplicated_count":0,"request_sha256":"a48ea71d62b6f4a52bd63ce5e7c488d7a07f31e9ee15a98982161d4e1b98e5a3"}

@@ -15,6 +15,7 @@ inline constexpr uint32_t kArchiveMagic{0x53474152U};
 inline constexpr uint16_t kArchiveFormatVersion{1U};
 inline constexpr std::size_t kArchiveHeaderBytes{60U};
 inline constexpr std::size_t kArchiveTrailerBytes{4U};
+inline constexpr std::size_t kArchiveSampleExtensionBytes{9U};
 inline constexpr std::size_t kArchiveMaxRecordBytes{16U * 1024U};
 inline constexpr uint32_t kArchiveCommitMarker{0xC0A117EDU};
 inline constexpr std::size_t kArchiveMagicOffset{0U};
@@ -681,7 +682,13 @@ class RecordCodec final {
         !writer.u32(sample.header.profile_ref.profile_version) ||
         !writer.u32(sample.header.profile_ref.target_id) ||
         !writer.bytes(sample.header.profile_ref.hash.data(), sample.header.profile_ref.hash.size()) ||
-        !writer.u8(sample.gas_ppm_available ? 1U : 0U)) return false;
+        !writer.u8(sample.gas_ppm_available ? 1U : 0U) ||
+        !writer.u8(0xa1U) || !writer.u8(1U) ||
+        !writer.u8(sample.raw.heater_phase_available ? 1U : 0U) ||
+        !writer.u8(static_cast<uint8_t>(sample.raw.heater_phase)) ||
+        !writer.u8(sample.raw.sht31_ticks_available ? 1U : 0U) ||
+        !writer.u16(sample.raw.sht31_temperature_ticks) ||
+        !writer.u16(sample.raw.sht31_humidity_ticks)) return false;
     return finish(output, writer);
   }
 
@@ -772,12 +779,26 @@ class RecordCodec final {
         !reader.u32(output.header.profile_ref.target_id) ||
         !reader.bytes(output.header.profile_ref.hash.data(),
                       output.header.profile_ref.hash.size()) ||
-        !reader.u8(flag) || !reader.finished()) {
+        !reader.u8(flag)) {
       return false;
     }
     output.header.profile_ref.kind =
         static_cast<acquisition::ProfileKind>(profile_kind);
     output.gas_ppm_available = flag != 0U;
+    if (!reader.finished()) {
+      uint8_t marker{0U}, extension{0U}, available{0U};
+      if (!reader.u8(marker) || marker != 0xa1U || !reader.u8(extension) ||
+          extension != 1U || !reader.u8(available)) return false;
+      if (available > 1U) return false;
+      output.raw.heater_phase_available = available != 0U;
+      uint8_t phase{0U};
+      if (!reader.u8(phase) || phase > static_cast<uint8_t>(acquisition::Mq7HeaterPhase::Fault) ||
+          !reader.u8(available) || available > 1U ||
+          !reader.u16(output.raw.sht31_temperature_ticks) ||
+          !reader.u16(output.raw.sht31_humidity_ticks) || !reader.finished()) return false;
+      output.raw.heater_phase = static_cast<acquisition::Mq7HeaterPhase>(phase);
+      output.raw.sht31_ticks_available = available != 0U;
+    }
     sample = output;
     return true;
   }

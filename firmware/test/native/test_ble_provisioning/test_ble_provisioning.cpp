@@ -3,7 +3,7 @@
 #include <string>
 
 #include "provisioning/ble_provisioning.h"
-#include "provisioning/provisioning_secret_store.h"
+
 #include "unity.h"
 
 using namespace sigap::provisioning;
@@ -94,6 +94,25 @@ class Backend final : public IBleProvisioningBackend {
   std::string connected_ssid;
   std::string connected_password;
 };
+
+class CalibrationBackend final : public IBleCalibrationBackend {
+ public:
+  bool execute(std::string_view command, char* response, std::size_t capacity,
+               std::size_t& response_size) noexcept override {
+    last_command.assign(command);
+    if (response == nullptr || capacity < 4U) return false;
+    const char* value = command == "CAL STATUS ds18b20_b3"
+                            ? "OK CAL STATUS sensor=ds18b20_b3 state=IDLE"
+                            : "ERR CAL_REJECTED";
+    response_size = std::min<std::size_t>(std::strlen(value), capacity);
+    std::memcpy(response, value, response_size);
+    return value[0] == 'O';
+  }
+  void disconnect() noexcept override { ++disconnects; }
+
+  std::string last_command;
+  int disconnects{0};
+};
 }  // namespace
 
 void test_parser_accepts_bounded_commands() {
@@ -107,6 +126,9 @@ void test_parser_accepts_bounded_commands() {
                         BleCommandParser::parse(std::string(193U, 'x'), command));
   TEST_ASSERT_EQUAL_INT(BleParseStatus::Accepted,
                         BleCommandParser::parse("GET_STATUS", command));
+  TEST_ASSERT_EQUAL_INT(BleParseStatus::Accepted,
+                        BleCommandParser::parse("GET_DEVICE_ID", command));
+  TEST_ASSERT_EQUAL_INT(BleCommandKind::DeviceIdentity, command.kind);
   TEST_ASSERT_EQUAL_INT(BleParseStatus::Accepted,
                         BleCommandParser::parse("LIST_KNOWN_WIFI", command));
   TEST_ASSERT_EQUAL_INT(BleCommandKind::ListKnownWifi, command.kind);
@@ -125,7 +147,6 @@ void test_framed_commands_require_order_and_reassemble() {
   BleProvisioningSession session(backend, clock);
   BleResponse response{};
   session.on_connect(0U);
-  session.on_authenticated(true);
   TEST_ASSERT_EQUAL_INT(BleParseStatus::Accepted,
                         session.receive("F1|42|0|2|GET_", response));
   TEST_ASSERT_TRUE(response.size <= 20U);
@@ -143,7 +164,6 @@ void test_known_wifi_and_retry_commands_are_bounded() {
   BleProvisioningSession session(backend, clock);
   BleResponse response{};
   session.on_connect(0U);
-  session.on_authenticated(true);
   TEST_ASSERT_EQUAL_INT(BleParseStatus::Accepted,
                         session.receive("LIST_KNOWN_WIFI", response));
   TEST_ASSERT_NOT_NULL(std::strstr(gather_response(session, response).c_str(), "saved-network"));
@@ -158,7 +178,6 @@ void test_completed_request_id_cannot_be_replayed() {
   BleProvisioningSession session(backend, clock);
   BleResponse response{};
   session.on_connect(0U);
-  session.on_authenticated(true);
   TEST_ASSERT_EQUAL_INT(BleParseStatus::Accepted,
                         session.receive("F1|7|0|1|RETRY_WIFI", response));
   (void)gather_response(session, response);
@@ -169,19 +188,70 @@ void test_completed_request_id_cannot_be_replayed() {
   TEST_ASSERT_EQUAL_INT(1, backend.retry_calls);
 }
 
-void test_session_requires_encrypted_authenticated_link() {
+void test_connected_session_accepts_commands_without_authentication() {
   Backend backend;
   Clock clock;
   BleProvisioningSession session(backend, clock);
   BleResponse response{};
   session.on_connect(clock.now);
-  TEST_ASSERT_EQUAL_INT(BleParseStatus::Invalid,
-                        session.receive("STATUS", response));
-  TEST_ASSERT_NOT_NULL(std::strstr(gather_response(session, response).c_str(), "AUTH_REQUIRED"));
-  session.on_authenticated(true);
+
   TEST_ASSERT_EQUAL_INT(BleParseStatus::Accepted,
-                        session.receive("STATUS", response));
-  TEST_ASSERT_NOT_NULL(std::strstr(gather_response(session, response).c_str(), "SETUP_REQUIRED"));
+                        session.receive("GET_STATUS", response));
+  TEST_ASSERT_NOT_NULL(std::strstr(gather_response(session, response).c_str(),
+                                   "SETUP_REQUIRED"));
+  TEST_ASSERT_EQUAL_INT(BleParseStatus::Accepted,
+                        session.receive("CONNECT lab password", response));
+  TEST_ASSERT_EQUAL_INT(1, backend.connect_calls);
+}
+
+void test_reconnect_starts_a_fresh_unpaired_session() {
+  Backend backend;
+  Clock clock;
+  BleProvisioningSession session(backend, clock);
+  session.set_device_id(0x1234ULL);
+  BleResponse response{};
+
+  session.on_connect(clock.now);
+  TEST_ASSERT_EQUAL_INT(BleParseStatus::Accepted,
+                        session.receive("GET_DEVICE_ID", response));
+  TEST_ASSERT_EQUAL_STRING("OK DEVICE_ID id=0000000000001234",
+                           gather_response(session, response).c_str());
+
+  session.on_disconnect();
+  session.on_connect(clock.now);
+  TEST_ASSERT_EQUAL_INT(BleParseStatus::Accepted,
+                        session.receive("GET_DEVICE_ID", response));
+  TEST_ASSERT_EQUAL_INT(BleParseStatus::Accepted,
+                        session.receive("GET_DEVICE_ID", response));
+  TEST_ASSERT_EQUAL_STRING("OK DEVICE_ID id=0000000000001234",
+                           gather_response(session, response).c_str());
+}
+
+void test_device_identity_is_available_without_ble_authentication() {
+  Backend backend;
+  Clock clock;
+  BleProvisioningSession session(backend, clock);
+  session.set_device_id(0x1234ULL);
+  BleResponse response{};
+  session.on_connect(clock.now);
+  TEST_ASSERT_EQUAL_INT(BleParseStatus::Accepted,
+                        session.receive("GET_DEVICE_ID", response));
+  TEST_ASSERT_EQUAL_INT(BleParseStatus::Accepted,
+                        session.receive("GET_DEVICE_ID", response));
+  TEST_ASSERT_EQUAL_STRING("OK DEVICE_ID id=0000000000001234",
+                           gather_response(session, response).c_str());
+}
+
+void test_identity_is_unavailable_when_application_has_not_bound_it() {
+  Backend backend;
+  Clock clock;
+  BleProvisioningSession session(backend, clock);
+  BleResponse response{};
+  session.on_connect(clock.now);
+  TEST_ASSERT_EQUAL_INT(BleParseStatus::Accepted,
+                        session.receive("GET_DEVICE_ID", response));
+  TEST_ASSERT_EQUAL_STRING("ERR DEVICE_ID_UNAVAILABLE",
+                           gather_response(session, response).c_str());
 }
 
 void test_scan_is_bounded_and_returns_result() {
@@ -190,7 +260,6 @@ void test_scan_is_bounded_and_returns_result() {
   BleProvisioningSession session(backend, clock);
   BleResponse response{};
   session.on_connect(0U);
-  session.on_authenticated(true);
   TEST_ASSERT_EQUAL_INT(BleParseStatus::Accepted,
                         session.receive("SCAN", response));
   const auto scan = gather_response(session, response);
@@ -206,7 +275,6 @@ void test_scan_response_count_matches_serialized_entries() {
   BleProvisioningSession session(backend, clock);
   BleResponse response{};
   session.on_connect(0U);
-  session.on_authenticated(true);
   TEST_ASSERT_EQUAL_INT(BleParseStatus::Accepted,
                         session.receive("SCAN_WIFI", response));
   const auto scan = gather_response(session, response);
@@ -233,13 +301,11 @@ void test_disconnect_cancels_and_timeout_expires_session() {
   BleProvisioningSession session(backend, clock, policy);
   BleResponse response{};
   session.on_connect(0U);
-  session.on_authenticated(true);
   clock.now = 11000U;
   session.poll(response);
   TEST_ASSERT_FALSE(session.connected());
   TEST_ASSERT_EQUAL_INT(1, backend.cancel_calls);
   session.on_connect(clock.now);
-  session.on_authenticated(true);
   session.receive("CONNECT ssid password", response);
   session.on_disconnect();
   TEST_ASSERT_FALSE(session.connected());
@@ -252,22 +318,93 @@ void test_connect_never_exposes_password_in_status() {
   BleProvisioningSession session(backend, clock);
   BleResponse response{};
   session.on_connect(0U);
-  session.on_authenticated(true);
   session.receive("CONNECT private secret-password", response);
   TEST_ASSERT_NOT_NULL(std::strstr(gather_response(session, response).c_str(), "CONNECTING"));
   session.receive("STATUS", response);
   TEST_ASSERT_NULL(std::strstr(gather_response(session, response).c_str(), "secret-password"));
 }
 
-void test_provisioning_secret_is_separate_and_stable() {
-  MemoryProvisioningSecretStore store;
-  std::array<uint8_t, kProvisioningSecretBytes> first{};
-  std::array<uint8_t, kProvisioningSecretBytes> second{};
-  TEST_ASSERT_TRUE(store.load_or_create(first));
-  TEST_ASSERT_TRUE(store.load_or_create(second));
-  TEST_ASSERT_EQUAL_UINT8_ARRAY(first.data(), second.data(), first.size());
-  store.fail_next();
-  TEST_ASSERT_FALSE(store.load_or_create(second));
+
+void test_calibration_commands_use_shared_bounded_backend() {
+  BleCommand command{};
+  TEST_ASSERT_EQUAL_INT(
+      BleParseStatus::Accepted,
+      BleCommandParser::parse("CAL STATUS ds18b20_b3", command));
+  TEST_ASSERT_EQUAL_INT(BleCommandKind::CalibrationStatus, command.kind);
+  TEST_ASSERT_EQUAL_INT(
+      BleParseStatus::Accepted,
+      BleCommandParser::parse("CAL STATUS", command));
+  TEST_ASSERT_EQUAL_INT(
+      BleParseStatus::Accepted,
+      BleCommandParser::parse("CAL CAPABILITIES", command));
+
+  Backend wifi;
+  CalibrationBackend calibration;
+  Clock clock;
+  BleProvisioningSession session(wifi, clock);
+  session.set_calibration_backend(&calibration);
+  BleResponse response{};
+  session.on_connect(0U);
+  TEST_ASSERT_EQUAL_INT(
+      BleParseStatus::Accepted,
+      session.receive("CAL STATUS ds18b20_b3", response));
+  TEST_ASSERT_NOT_NULL(std::strstr(gather_response(session, response).c_str(),
+                                   "sensor=ds18b20_b3"));
+  TEST_ASSERT_EQUAL_STRING("CAL STATUS ds18b20_b3", calibration.last_command.c_str());
+
+  session.on_disconnect();
+  TEST_ASSERT_EQUAL_INT(1, calibration.disconnects);
+  TEST_ASSERT_EQUAL_INT(
+      BleParseStatus::Invalid,
+      session.receive("CAL STATUS ds18b20_b3", response));
+}
+
+void test_diagnostic_session_reports_wifi_disabled_and_allows_read_only_status() {
+  Backend backend;
+  Clock clock;
+  BleProvisioningSession session(backend, clock);
+  session.set_read_only_diagnostic(true);
+  session.set_device_id(0x98A316F5C150ULL);
+  BleResponse response{};
+  session.on_connect(0U);
+
+  TEST_ASSERT_EQUAL_INT(BleParseStatus::Accepted,
+                        session.receive("GET_STATUS", response));
+  TEST_ASSERT_EQUAL_STRING(
+      "OK STATUS mode=BLE_DIAGNOSTIC wifi=DISABLED",
+      gather_response(session, response).c_str());
+  TEST_ASSERT_EQUAL_INT(BleParseStatus::Accepted,
+                        session.receive("GET_DEVICE_ID", response));
+  TEST_ASSERT_EQUAL_STRING("OK DEVICE_ID id=000098a316f5c150",
+                           gather_response(session, response).c_str());
+  TEST_ASSERT_EQUAL_INT(BleParseStatus::Accepted,
+                        session.receive("PING", response));
+  TEST_ASSERT_EQUAL_STRING("OK PONG", gather_response(session, response).c_str());
+}
+
+void test_diagnostic_session_rejects_every_wifi_and_calibration_command() {
+  Backend backend;
+  CalibrationBackend calibration;
+  Clock clock;
+  BleProvisioningSession session(backend, clock);
+  session.set_read_only_diagnostic(true);
+  session.set_calibration_backend(&calibration);
+  BleResponse response{};
+  session.on_connect(0U);
+
+  for (const char* command : {"SCAN", "CONNECT lab password", "RETRY_WIFI",
+                              "LIST_KNOWN_WIFI", "CAL STATUS", "STATUS",
+                              " GET_STATUS"}) {
+    TEST_ASSERT_EQUAL_INT(BleParseStatus::Invalid,
+                          session.receive(command, response));
+    TEST_ASSERT_EQUAL_STRING("ERR DIAGNOSTIC_READ_ONLY",
+                             gather_response(session, response).c_str());
+  }
+  TEST_ASSERT_EQUAL_INT(0, backend.scan_calls);
+  TEST_ASSERT_EQUAL_INT(0, backend.connect_calls);
+  TEST_ASSERT_EQUAL_INT(0, backend.retry_calls);
+  TEST_ASSERT_EQUAL_INT(0, calibration.disconnects);
+  TEST_ASSERT_TRUE(calibration.last_command.empty());
 }
 
 int main() {
@@ -276,11 +413,17 @@ int main() {
   RUN_TEST(test_framed_commands_require_order_and_reassemble);
   RUN_TEST(test_known_wifi_and_retry_commands_are_bounded);
   RUN_TEST(test_completed_request_id_cannot_be_replayed);
-  RUN_TEST(test_session_requires_encrypted_authenticated_link);
+  RUN_TEST(test_connected_session_accepts_commands_without_authentication);
+  RUN_TEST(test_reconnect_starts_a_fresh_unpaired_session);
+  RUN_TEST(test_device_identity_is_available_without_ble_authentication);
+  RUN_TEST(test_identity_is_unavailable_when_application_has_not_bound_it);
   RUN_TEST(test_scan_is_bounded_and_returns_result);
   RUN_TEST(test_scan_response_count_matches_serialized_entries);
   RUN_TEST(test_disconnect_cancels_and_timeout_expires_session);
   RUN_TEST(test_connect_never_exposes_password_in_status);
-  RUN_TEST(test_provisioning_secret_is_separate_and_stable);
+
+  RUN_TEST(test_calibration_commands_use_shared_bounded_backend);
+  RUN_TEST(test_diagnostic_session_reports_wifi_disabled_and_allows_read_only_status);
+  RUN_TEST(test_diagnostic_session_rejects_every_wifi_and_calibration_command);
   return UNITY_END();
 }

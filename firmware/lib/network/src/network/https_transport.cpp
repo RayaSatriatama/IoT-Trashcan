@@ -321,7 +321,8 @@ TransportResult WiFiArchiveHttpTransport::start_batch(
   task_state_ = TaskState::Running;
   xSemaphoreGive(state_mutex_);
   const auto created = xTaskCreate(
-      &WiFiArchiveHttpTransport::network_task, "sigap_net", 3072U, this,
+      &WiFiArchiveHttpTransport::network_task, "sigap_net",
+      kTlsWorkerStackBytes, this,
       1U, nullptr);
   if (created != pdPASS) {
     if (xSemaphoreTake(state_mutex_, 0U) == pdTRUE) {

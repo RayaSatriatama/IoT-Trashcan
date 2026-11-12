@@ -9,7 +9,12 @@ namespace sigap::maintenance {
 
 constexpr std::size_t kMaxCommandLineBytes{255U};
 constexpr std::size_t kMaxBytesPerPoll{32U};
-constexpr std::size_t kMaxResponseBytes{192U};
+// Calibration preview responses include the typed proposal identity and
+// sensor-specific engineering fields. Keep the wire bound fixed while
+// allowing the complete proposal to be returned without truncation.
+// Preview responses include bounded proposal parameters and evidence
+// provenance for BLE/HTTPS consumers.  Keep one fixed limit for USB and BLE.
+constexpr std::size_t kMaxResponseBytes{384U};
 
 template <std::size_t Capacity>
 struct FixedText final {
@@ -38,6 +43,7 @@ struct FixedText final {
 enum class CommandKind : std::uint8_t {
   Unknown,
   Status,
+  SensorStatus,
   MaintenanceEnter,
   MaintenanceExit,
   ConfigActive,
@@ -81,6 +87,9 @@ enum class CommandKind : std::uint8_t {
   ModelCommit,
   ModelCancel,
   ModelRollback,
+  DebugMeta,
+  DebugPage,
+  DebugLevel,
   StorageSdTest,
   Reboot,
 };
@@ -198,6 +207,14 @@ class IModelCommandHandler {
                                       MaintenanceResponse& response) noexcept = 0;
   virtual void poll_model(std::uint64_t now_us) noexcept = 0;
   virtual void cancel_model() noexcept = 0;
+};
+
+class IDebugCommandHandler {
+ public:
+  virtual ~IDebugCommandHandler() = default;
+  virtual CommandStatus execute_debug(const MaintenanceCommand& command,
+                                      std::uint64_t now_us,
+                                      MaintenanceResponse& response) noexcept = 0;
 };
 
 struct MaintenancePollStats final {

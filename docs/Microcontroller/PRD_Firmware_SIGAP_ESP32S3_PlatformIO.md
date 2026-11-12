@@ -652,3 +652,28 @@ Repo historis dibaca pada `6fed00f02b6ef7dabc159d924f798d344a6072ba`; reconcilia
 - MQ lain: https://www.winsen-sensor.com/product/mq-4.html ; https://www.winsen-sensor.com/manual/mq135.html ; https://www.winsen-sensor.com/product/mq-8.html — fungsi, suplai dan aging sensor.
 - SD SPI Espressif: https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/api-reference/peripherals/sdspi_host.html — SPI dan CS melalui GPIO yang dipilih; API implementasi mengikuti Arduino core pinned, bukan disalin dari IDF latest.
 - BLE Espressif: https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/api-guides/ble/overview.html — S3 mendukung BLE tanpa Classic; gateway dan protokol relay adalah rancangan produk dokumen ini.
+
+## 18. Task 9 web calibration authority
+
+Task 9 adds a secure operator workflow for first-time and repeat calibration
+through the existing SIGAP website. The website is an adapter, not a second
+calibration engine. USB remains a bounded local recovery path; Web Bluetooth
+and authenticated HTTPS/Wi-Fi use the same instance-owned calibration session,
+evidence cache, profile builder, validation, preview, and atomic commit path.
+
+The frozen acceptance identifiers are WEB-CAL-01 through WEB-CAL-18. They
+cover all 13 channels, local Web Bluetooth, remote persistent HTTPS delivery,
+shared firmware behavior, read-only diagnostics, typed references, the full
+capture/validate/preview/commit/cancel/recovery lifecycle, atomic profile
+activation, authenticated device-bound commands, expiry/idempotency, one
+cross-transport session owner, provenance, telemetry-v3 UI integration,
+offline safety, rejection of synthetic production data, USB recovery, and
+deterministic software tests. Physical sensor, BLE, WiFi, and HTTPS HIL are
+reported separately and never inferred from mocks.
+
+Every command/result envelope is bounded and versioned. It includes request,
+device, sensor, session, operation, expiry, typed parameters, expected active
+version/hash, status, error, and proposal/profile identity. Adapters reject
+oversized, expired, replayed, cross-device, or unauthorized mutations. Remote
+commands cannot erase NVS, reset the device, set GPIO, or energize a heater
+outside existing validated profile workflows.

@@ -6,13 +6,17 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/RayaSatriatama/IoT-Trashcan/internal/database"
+	"github.com/RayaSatriatama/IoT-Trashcan/internal/devicecontrol"
+	"github.com/RayaSatriatama/IoT-Trashcan/internal/devicedebug"
 	httpapi "github.com/RayaSatriatama/IoT-Trashcan/internal/http"
 	"github.com/RayaSatriatama/IoT-Trashcan/internal/ingest"
 	"github.com/RayaSatriatama/IoT-Trashcan/internal/simulator"
@@ -20,9 +24,65 @@ import (
 	"github.com/RayaSatriatama/IoT-Trashcan/internal/webapp"
 )
 
+// corsMiddleware adds CORS headers to allow configured frontend origins.
+func corsMiddleware(next http.Handler) http.Handler {
+	configured := os.Getenv("ALLOWED_ORIGIN")
+	if configured == "" {
+		configured = "http://localhost:8081"
+	}
+	wildcard := strings.TrimSpace(configured) == "*"
+	allowed := make(map[string]bool)
+	if !wildcard {
+		for _, candidate := range strings.Split(configured, ",") {
+			if _, ok := parseCORSOrigin(strings.TrimSpace(candidate)); ok {
+				allowed[strings.TrimSpace(candidate)] = true
+			}
+		}
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origins := r.Header.Values("Origin")
+		w.Header().Add("Vary", "Origin")
+		if len(origins) == 1 {
+			origin := origins[0]
+			if _, ok := parseCORSOrigin(origin); ok {
+				if wildcard {
+					w.Header().Set("Access-Control-Allow-Origin", "*")
+				} else if allowed[origin] {
+					w.Header().Set("Access-Control-Allow-Origin", origin)
+					w.Header().Set("Access-Control-Allow-Credentials", "true")
+				}
+				if wildcard || allowed[origin] {
+					w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+					w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-SIGAP-CSRF")
+				}
+			}
+		}
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func parseCORSOrigin(origin string) (*url.URL, bool) {
+	u, err := url.Parse(origin)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.Hostname() == "" || u.User != nil || u.Opaque != "" || u.Path != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.RawFragment != "" || strings.ContainsAny(origin, "?#") || strings.ContainsAny(origin, "\r\n, ") {
+		return nil, false
+	}
+	return u, true
+}
+
 func main() {
-	dbPath := envOrDefault("SIGAP_DB_PATH", "sigap.db")
-	addr := envOrDefault("SIGAP_HTTP_ADDR", ":8080")
+	serverConfig, err := loadServerConfig(os.Getenv)
+	if err != nil {
+		log.Fatalf("server configuration: %v", err)
+	}
+	if err := serverConfig.validateTLSFiles(); err != nil {
+		log.Fatalf("server TLS configuration: %v", err)
+	}
+	dbPath := serverConfig.dbPath
+	addr := serverConfig.addr
 
 	db, err := database.Open(dbPath)
 	if err != nil {
@@ -64,14 +124,32 @@ func main() {
 	if err != nil {
 		log.Fatalf("configure telemetry archive query: %v", err)
 	}
+	deviceControlStore := devicecontrol.NewStore(db)
+	deviceControlAuth := devicecontrol.NewDatabaseAuthorizer(db)
+	debugStore, err := devicedebug.NewStore(db, devicedebug.DefaultPolicy())
+	if err != nil {
+		log.Fatalf("configure device debug store: %v", err)
+	}
 	apiHandler := httpapi.NewRouter(
 		service,
 		httpapi.WithReadDatabase(db, readOptions...),
 		httpapi.WithSimulationEnabled(simulationConfig.Enabled),
 		httpapi.WithSimulationIndicatorEnabled(simulationIndicatorEnabled),
 		httpapi.WithTelemetryArchive(archiveService, archiveQuery),
+		httpapi.WithDeviceControl(deviceControlStore, devicecontrol.HTTPOptions{
+			Operator:      deviceControlAuth,
+			Device:        deviceControlAuth,
+			Diagnostics:   deviceControlStore,
+			AllowedOrigin: os.Getenv("SIGAP_OPERATOR_ORIGIN"),
+		}),
+		httpapi.WithDeviceDebug(debugStore, devicedebug.HTTPOptions{
+			Operator:      deviceControlAuth,
+			Device:        deviceControlAuth,
+			AllowedOrigin: os.Getenv("SIGAP_OPERATOR_ORIGIN"),
+		}),
 	)
 	handler := webapp.Handler(apiHandler)
+	handler = corsMiddleware(handler)
 	server := &http.Server{Addr: addr, Handler: handler}
 	log.Printf("SIGAP listening on %s", addr)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -84,7 +162,13 @@ func main() {
 		}()
 	}
 	serverErr := make(chan error, 1)
-	go func() { serverErr <- server.ListenAndServe() }()
+	go func() {
+		if serverConfig.tlsEnabled() {
+			serverErr <- server.ListenAndServeTLS(serverConfig.tlsCertFile, serverConfig.tlsKeyFile)
+			return
+		}
+		serverErr <- server.ListenAndServe()
+	}()
 	select {
 	case serveErr := <-serverErr:
 		if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {

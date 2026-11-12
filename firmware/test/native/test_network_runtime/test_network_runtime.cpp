@@ -157,6 +157,16 @@ void test_worker_delivers_only_matching_batch() {
   TEST_ASSERT_EQUAL_UINT32(1U, runtime.applied);
 }
 
+void test_runtime_diagnostic_latch_emits_each_event_once() {
+  sigap::RuntimeDiagnosticLatch latch{};
+  TEST_ASSERT_TRUE(latch.first(sigap::RuntimeDiagnosticEvent::LoopAlive));
+  TEST_ASSERT_FALSE(latch.first(sigap::RuntimeDiagnosticEvent::LoopAlive));
+  TEST_ASSERT_TRUE(
+      latch.first(sigap::RuntimeDiagnosticEvent::HttpsPollEntered));
+  TEST_ASSERT_FALSE(
+      latch.first(sigap::RuntimeDiagnosticEvent::HttpsPollEntered));
+}
+
 }  // namespace
 
 void setup() {}
@@ -167,5 +177,6 @@ int main(int, char**) {
   RUN_TEST(test_runtime_source_preserves_pending_until_valid_ack);
   RUN_TEST(test_worker_offline_keeps_archive_pending_and_does_not_touch_runtime);
   RUN_TEST(test_worker_delivers_only_matching_batch);
+  RUN_TEST(test_runtime_diagnostic_latch_emits_each_event_once);
   return UNITY_END();
 }

@@ -1,9 +1,9 @@
 #include "maintenance/runtime.h"
-
+#include "sigap/build/build_config.h"
 #include <algorithm>
 #include <charconv>
 #include <cstdint>
-#include <cstring>
+#include <cmath>
 #include <limits>
 
 #ifdef ARDUINO
@@ -19,6 +19,38 @@ bool text_equals(const FixedText<64U>& value, const char* expected) noexcept {
   while (expected[length] != '\0') ++length;
   return candidate.size() == length && candidate ==
       std::string_view(expected, length);
+}
+
+bool is_calibration_mutation(CommandKind kind) noexcept {
+  switch (kind) {
+    case CommandKind::CalibrationStart:
+    case CommandKind::CalibrationCriteria:
+    case CommandKind::CalibrationCapture:
+    case CommandKind::CalibrationValidate:
+    case CommandKind::CalibrationPreview:
+    case CommandKind::CalibrationCommit:
+    case CommandKind::CalibrationCancel:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool is_sensor_profile_mutation(CommandKind kind) noexcept {
+  switch (kind) {
+    case CommandKind::ProfileImport:
+    case CommandKind::ProfileImportBegin:
+    case CommandKind::ProfileImportChunk:
+    case CommandKind::ProfileImportFinish:
+    case CommandKind::ProfileValidate:
+    case CommandKind::ProfilePreview:
+    case CommandKind::ProfileCommit:
+    case CommandKind::ProfileRollback:
+    case CommandKind::ProfileReset:
+      return true;
+    default:
+      return false;
+  }
 }
 
 const char* mode_name(DeviceMode mode) noexcept {
@@ -127,26 +159,19 @@ bool decode_hash(std::string_view text, config::ConfigHash& output) noexcept {
          written == output.size();
 }
 
-void set_calibration_provenance(acquisition::ProfileProvenance& provenance,
-                                const acquisition::BootId* boot_id,
-                                uint64_t now_us,
-                                int64_t primary,
-                                int64_t secondary,
-                                uint32_t evidence_count,
-                                uint64_t evidence_sequence,
-                                uint8_t units) noexcept {
-  provenance = acquisition::ProfileProvenance{};
-  provenance.present = true;
-  if (boot_id != nullptr) provenance.boot_id = *boot_id;
-  provenance.monotonic_us = now_us;
-  provenance.time_quality = acquisition::TimeQuality::Unsynced;
-  provenance.reference_primary = primary;
-  provenance.reference_secondary = secondary;
-  provenance.evidence_count = evidence_count;
-  provenance.evidence_sequence = evidence_sequence;
-  provenance.units = units;
-  constexpr char note[] = "calibration-evidence";
-  std::memcpy(provenance.reference_note.data(), note, sizeof(note) - 1U);
+bool is_ultrasonic_target(calibration::CalibrationTarget target) noexcept {
+  return target >= calibration::CalibrationTarget::UltrasonicOrganic &&
+         target <= calibration::CalibrationTarget::UltrasonicB3;
+}
+
+bool is_mq_target(calibration::CalibrationTarget target) noexcept {
+  return target >= calibration::CalibrationTarget::Mq4 &&
+         target <= calibration::CalibrationTarget::Mq8;
+}
+
+bool is_sht_target(calibration::CalibrationTarget target) noexcept {
+  return target == calibration::CalibrationTarget::Sht31_44 ||
+         target == calibration::CalibrationTarget::Sht31_45;
 }
 
 bool append_hex(MaintenanceResponse& response, const uint8_t* bytes,
@@ -204,8 +229,14 @@ void CommandRouter::refresh_mode() noexcept {
     mode_ = DeviceMode::Calibrating;
     return;
   }
+  if (maintenance_authorized_) {
+    mode_ = DeviceMode::Maintenance;
+    return;
+  }
   switch (config_.state()) {
-    case config::ConfigState::Active: mode_ = DeviceMode::Run; break;
+    case config::ConfigState::Active:
+      mode_ = DeviceMode::Run;
+      break;
     case config::ConfigState::RebootRequired: mode_ = DeviceMode::RebootRequired; break;
     case config::ConfigState::ConfigRequired: mode_ = DeviceMode::ConfigRequired; break;
     case config::ConfigState::StorageError: mode_ = DeviceMode::StorageError; break;
@@ -349,6 +380,7 @@ void CommandRouter::cancel_profile_transfer() noexcept {
 
 void CommandRouter::poll(uint64_t now_us) noexcept {
   if (calibration_.tick(now_us)) {
+    clear_calibration_proposal();
     criteria_set_ = false;
     evidence_sequence_ = 0U;
     mode_ = DeviceMode::Maintenance;
@@ -362,119 +394,14 @@ void CommandRouter::poll(uint64_t now_us) noexcept {
 }
 
 void CommandRouter::transport_lost() noexcept {
+  maintenance_authorized_ = false;
   calibration_.abort();
+  clear_calibration_proposal();
   criteria_set_ = false;
   evidence_sequence_ = 0U;
   cancel_profile_transfer();
   if (models_ != nullptr) models_->cancel_model();
   refresh_mode();
-}
-
-bool CommandRouter::build_and_stage_calibration_profile(uint64_t now_us) noexcept {
-  if (profiles_ == nullptr) return false;
-  const auto target = static_cast<acquisition::ProfileTarget>(
-      static_cast<uint8_t>(pending_target_) + 1U);
-  const acquisition::ProfileKey key{
-      (pending_target_ >= calibration::CalibrationTarget::Mq4 &&
-       pending_target_ <= calibration::CalibrationTarget::Mq8)
-          ? acquisition::ProfileKind::Adc
-          : acquisition::ProfileKind::Calibration,
-      target};
-  acquisition::ActiveProfileSnapshot active{};
-  if (!profiles_->snapshot(key, active)) return false;
-  if (active.present && active.ref.profile_version == UINT32_MAX) return false;
-  const uint32_t version = active.present ? active.ref.profile_version + 1U : 1U;
-  acquisition::ProfileCodec codec{};
-  acquisition::EncodedProfile encoded{};
-  switch (pending_target_) {
-    case calibration::CalibrationTarget::Hx711Organic:
-    case calibration::CalibrationTarget::Hx711Inorganic:
-    case calibration::CalibrationTarget::Hx711B3: {
-      if (reference_mass_mg_ == 0U || calibration_.secondary_stats().count == 0U) return false;
-      acquisition::Hx711Profile profile{};
-      profile.manifest.kind = acquisition::ProfileKind::Calibration;
-      profile.manifest.profile_version = version;
-      profile.manifest.target_id = static_cast<uint32_t>(target);
-      profile.manifest.validity = acquisition::ProfileValidity::Valid;
-      profile.tare_offset_counts = static_cast<int64_t>(calibration_.stats().mean);
-      const double kg = static_cast<double>(reference_mass_mg_) / 1000000.0;
-      const double delta = calibration_.secondary_stats().mean - calibration_.stats().mean;
-      profile.counts_per_kg = static_cast<float>(delta / kg);
-      set_calibration_provenance(profile.manifest.provenance, boot_id_, now_us,
-                                 static_cast<int64_t>(profile.tare_offset_counts),
-                                 static_cast<int64_t>(reference_mass_mg_),
-                                 calibration_.stats().count +
-                                     calibration_.secondary_stats().count,
-                                 evidence_sequence_, 1U);
-      if (!profile.valid_for_conversion() || !codec.encode(profile, encoded)) return false;
-      break;
-    }
-    case calibration::CalibrationTarget::UltrasonicOrganic:
-    case calibration::CalibrationTarget::UltrasonicInorganic:
-    case calibration::CalibrationTarget::UltrasonicB3: {
-      if (!active.present || calibration_.secondary_stats().count == 0U) return false;
-      acquisition::UltrasonicProfile profile{};
-      if (!codec.decode(active.encoded, profile)) return false;
-      profile.manifest.profile_version = version;
-      profile.d_empty_mm = static_cast<float>(calibration_.stats().mean);
-      profile.d_full_mm = static_cast<float>(calibration_.secondary_stats().mean);
-      profile.manifest.validity = acquisition::ProfileValidity::Valid;
-      set_calibration_provenance(profile.manifest.provenance, boot_id_, now_us,
-                                 static_cast<int64_t>(calibration_.stats().mean),
-                                 static_cast<int64_t>(calibration_.secondary_stats().mean),
-                                 calibration_.stats().count +
-                                     calibration_.secondary_stats().count,
-                                 evidence_sequence_, 2U);
-      if (!profile.valid_for_conversion() || !codec.encode(profile, encoded)) return false;
-      break;
-    }
-    default:
-      if (!active.present) return false;
-      if (pending_target_ == calibration::CalibrationTarget::Ds18b20B3) {
-        if (!reference_temperature_set_) return false;
-        acquisition::Ds18b20Profile profile{};
-        if (!codec.decode(active.encoded, profile)) return false;
-        profile.manifest.profile_version = version;
-        profile.offset_centi_c = reference_temperature_centi_c_ -
-                                 static_cast<int32_t>(calibration_.stats().mean);
-        set_calibration_provenance(profile.manifest.provenance, boot_id_, now_us,
-                                   reference_temperature_centi_c_, 0,
-                                   calibration_.stats().count, evidence_sequence_, 3U);
-        if (!profile.valid_for_conversion() || !codec.encode(profile, encoded)) return false;
-      } else if (pending_target_ == calibration::CalibrationTarget::Sht31_44 ||
-                 pending_target_ == calibration::CalibrationTarget::Sht31_45) {
-        if (!reference_temperature_set_ || !reference_humidity_set_) return false;
-        acquisition::Sht31Profile profile{};
-        if (!codec.decode(active.encoded, profile)) return false;
-        profile.manifest.profile_version = version;
-        profile.temperature_offset_centi_c =
-            reference_temperature_centi_c_ -
-            static_cast<int32_t>(calibration_.stats().mean);
-        profile.humidity_offset_centi_pct =
-            reference_humidity_centi_pct_ -
-            static_cast<int32_t>(calibration_.secondary_stats().mean);
-        set_calibration_provenance(profile.manifest.provenance, boot_id_, now_us,
-                                   reference_temperature_centi_c_,
-                                   reference_humidity_centi_pct_,
-                                   calibration_.stats().count +
-                                       calibration_.secondary_stats().count,
-                                   evidence_sequence_, 4U);
-        if (!profile.valid_for_conversion() || !codec.encode(profile, encoded)) return false;
-      } else {
-        // MQ calibration retains validated ADC evidence without inventing a
-        // gas model, ppm conversion, R0, or alarm threshold.
-        acquisition::MqAdcProfile profile{};
-        if (!codec.decode(active.encoded, profile)) return false;
-        profile.manifest.profile_version = version;
-        set_calibration_provenance(profile.manifest.provenance, boot_id_, now_us,
-                                   static_cast<int64_t>(calibration_.stats().mean),
-                                   0, calibration_.stats().count, evidence_sequence_, 5U);
-        if (!profile.valid_for_conversion() || !codec.encode(profile, encoded)) return false;
-      }
-      break;
-  }
-  return profiles_->stage_import(key, encoded) && profiles_->validate(key) &&
-         profiles_->preview(key) && profiles_->commit(key);
 }
 
 CommandStatus CommandRouter::profile_transfer(
@@ -583,6 +510,33 @@ CommandStatus CommandRouter::profile_transfer(
 CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
                                      uint64_t now_us,
                                      MaintenanceResponse& response) noexcept {
+  // All transports share this boundary; virtual observations cannot become
+  // persisted physical calibration or replace the stored sensor profiles.
+  if (build::kSensorSimulation &&
+      (is_calibration_mutation(command.kind) || is_sensor_profile_mutation(command.kind))) {
+    (void)response.append("ERR SENSOR_SIMULATION\n");
+    return CommandStatus::Rejected;
+  }
+  switch (command.kind) {
+    case CommandKind::DebugMeta:
+    case CommandKind::DebugPage:
+    case CommandKind::DebugLevel:
+      if (debug_commands_ == nullptr) {
+        (void)response.append("ERR DEBUG_UNAVAILABLE\n");
+        return CommandStatus::Rejected;
+      }
+      return debug_commands_->execute_debug(command, now_us, response);
+    default: break;
+  }
+  if (io_gate_ != nullptr && io_gate_->active(debug::IoOwner::DebugHttp) &&
+      command.kind != CommandKind::Status &&
+      command.kind != CommandKind::SensorStatus &&
+      command.kind != CommandKind::ModelStatus &&
+      command.kind != CommandKind::ModelCancel &&
+      command.kind != CommandKind::CalibrationCancel) {
+    (void)response.append("ERR STORAGE_BUSY\n");
+    return CommandStatus::Rejected;
+  }
   const acquisition::ConfigRef current_config =
       config_ref_from_identity(config_.identity());
   if (audit_ != nullptr) audit_->set_context(now_us, current_config);
@@ -590,6 +544,12 @@ CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
     profiles_->set_audit_context(now_us, current_config);
   }
   refresh_mode();
+  if (is_calibration_mutation(command.kind) &&
+      calibration_controller_ != nullptr &&
+      !internal_calibration_dispatch_ && calibration_controller_->active()) {
+    (void)response.append("ERR CALIBRATION_SESSION_BUSY\n");
+    return CommandStatus::Rejected;
+  }
   if (command.kind == CommandKind::ProfileImportBegin) {
     cancel_profile_transfer();
   }
@@ -609,10 +569,14 @@ CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
         return CommandStatus::Failed;
       }
       return CommandStatus::Accepted;
+    case CommandKind::SensorStatus:
+      return sensor_status(command, now_us, response);
     case CommandKind::MaintenanceEnter:
+      maintenance_authorized_ = true;
       mode_ = DeviceMode::Maintenance;
       return CommandStatus::Accepted;
     case CommandKind::MaintenanceExit:
+      maintenance_authorized_ = false;
       refresh_mode();
       if (config_.state() == config::ConfigState::Active) {
         mode_ = DeviceMode::Run;
@@ -640,6 +604,7 @@ CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
       calibration::CalibrationTarget target{};
       if (!calibration_target_from_text(command.target, target)) return CommandStatus::InvalidSyntax;
       if (!calibration_.begin(target, now_us)) return CommandStatus::Rejected;
+      clear_calibration_proposal();
       pending_target_ = target;
       criteria_set_ = false;
       criteria_samples_ = 0U;
@@ -654,10 +619,29 @@ CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
       reference_humidity_centi_pct_ = 0;
       reference_temperature_set_ = false;
       reference_humidity_set_ = false;
+      ultrasonic_echo_mm_per_us_milli_ = 0U;
+      ultrasonic_echo_timeout_us_ = 0U;
+      ultrasonic_inter_sensor_gap_us_ = 0U;
+      ultrasonic_overshoot_tolerance_mm_milli_ = 0U;
+      ultrasonic_echo_conversion_set_ = false;
+      ultrasonic_tolerance_set_ = false;
+      ultrasonic_timing_set_ = false;
+      mq_reference_mv_ = 0U;
+      mq_full_scale_counts_ = 0U;
+      mq_divider_numerator_ = 0U;
+      mq_divider_denominator_ = 0U;
+      mq_engineering_set_ = false;
+      ds_resolution_bits_ = 12U;
+      ds_resolution_set_ = false;
+      ds_rom_ = {};
+      ds_rom_set_ = false;
       mode_ = DeviceMode::Calibrating;
       return CommandStatus::Accepted;
     }
     case CommandKind::CalibrationCriteria: {
+      // Any accepted or attempted session-input update invalidates a prior
+      // proposal. A new validation and preview is required before persistence.
+      clear_calibration_proposal();
       const auto field = command.field.view();
       if (field == "reference_temperature_centi_c") {
         if (command.numeric_value < std::numeric_limits<int32_t>::min() ||
@@ -666,39 +650,102 @@ CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
         }
         reference_temperature_centi_c_ = static_cast<int32_t>(command.numeric_value);
         reference_temperature_set_ = true;
-        return CommandStatus::Accepted;
-      }
-      if (field == "reference_humidity_centi_pct") {
+      } else if (field == "reference_humidity_centi_pct") {
         if (command.numeric_value < 0 ||
             command.numeric_value > std::numeric_limits<int32_t>::max()) {
           return CommandStatus::InvalidNumeric;
         }
         reference_humidity_centi_pct_ = static_cast<int32_t>(command.numeric_value);
         reference_humidity_set_ = true;
-        return CommandStatus::Accepted;
-      }
-      if (command.numeric_value <= 0) return CommandStatus::InvalidNumeric;
-      if (field == "samples") {
+      } else if (field == "resolution_bits") {
+        if (command.numeric_value < 9 || command.numeric_value > 12) {
+          return CommandStatus::InvalidNumeric;
+        }
+        ds_resolution_bits_ = static_cast<uint8_t>(command.numeric_value);
+        ds_resolution_set_ = true;
+      } else if (field == "echo_mm_per_us_milli") {
+        if (command.numeric_value <= 0 || command.numeric_value > 1000) {
+          return CommandStatus::InvalidNumeric;
+        }
+        ultrasonic_echo_mm_per_us_milli_ =
+            static_cast<uint32_t>(command.numeric_value);
+        ultrasonic_echo_conversion_set_ = true;
+        if (evidence_ != nullptr &&
+            !evidence_->set_ultrasonic_engineering_conversion(
+                pending_target_, static_cast<float>(command.numeric_value) /
+                                1000.0F)) {
+          return CommandStatus::Rejected;
+        }
+      } else if (field == "echo_timeout_us" || field == "inter_sensor_gap_us") {
+        if (command.numeric_value <= 0 || command.numeric_value > UINT32_MAX) {
+          return CommandStatus::InvalidNumeric;
+        }
+        const auto value = static_cast<uint32_t>(command.numeric_value);
+        if (field == "echo_timeout_us") {
+          ultrasonic_echo_timeout_us_ = value;
+        } else {
+          ultrasonic_inter_sensor_gap_us_ = value;
+        }
+        ultrasonic_timing_set_ = ultrasonic_echo_timeout_us_ != 0U &&
+                                 ultrasonic_inter_sensor_gap_us_ != 0U &&
+                                 ultrasonic_tolerance_set_;
+      } else if (field == "overshoot_tolerance_mm_milli") {
+        if (command.numeric_value < 0 || command.numeric_value > UINT32_MAX) {
+          return CommandStatus::InvalidNumeric;
+        }
+        ultrasonic_overshoot_tolerance_mm_milli_ =
+            static_cast<uint32_t>(command.numeric_value);
+        ultrasonic_tolerance_set_ = true;
+        ultrasonic_timing_set_ = ultrasonic_echo_timeout_us_ != 0U &&
+                                 ultrasonic_inter_sensor_gap_us_ != 0U &&
+                                 ultrasonic_tolerance_set_;
+      } else if (field == "reference_mv" || field == "full_scale_counts" ||
+          field == "divider_numerator" || field == "divider_denominator") {
+        if (command.numeric_value <= 0 || command.numeric_value > UINT32_MAX) {
+          return CommandStatus::InvalidNumeric;
+        }
+        const auto value = static_cast<uint32_t>(command.numeric_value);
+        if (field == "reference_mv") mq_reference_mv_ = value;
+        else if (field == "full_scale_counts") mq_full_scale_counts_ = value;
+        else if (field == "divider_numerator") mq_divider_numerator_ = value;
+        else mq_divider_denominator_ = value;
+        mq_engineering_set_ = mq_reference_mv_ != 0U &&
+                              mq_full_scale_counts_ != 0U &&
+                              mq_divider_numerator_ != 0U &&
+                              mq_divider_denominator_ != 0U;
+      } else if (field == "address") {
+        const int64_t expected =
+            pending_target_ == calibration::CalibrationTarget::Sht31_45 ? 0x45 : 0x44;
+        if ((pending_target_ != calibration::CalibrationTarget::Sht31_44 &&
+             pending_target_ != calibration::CalibrationTarget::Sht31_45) ||
+            command.numeric_value != expected) {
+          return CommandStatus::InvalidNumeric;
+        }
+      } else if (field == "samples") {
+        if (command.numeric_value <= 0) return CommandStatus::InvalidNumeric;
         if (command.numeric_value > UINT16_MAX) return CommandStatus::InvalidNumeric;
         criteria_samples_ = static_cast<uint16_t>(command.numeric_value);
       } else if (field == "max_temperature_span_centi_c") {
+        if (command.numeric_value <= 0) return CommandStatus::InvalidNumeric;
         if (command.numeric_value > std::numeric_limits<int32_t>::max()) {
           return CommandStatus::InvalidNumeric;
         }
         criteria_temperature_span_ = static_cast<int32_t>(command.numeric_value);
         criteria_temperature_span_set_ = true;
       } else if (field == "max_humidity_span_centi_pct") {
+        if (command.numeric_value <= 0) return CommandStatus::InvalidNumeric;
         if (command.numeric_value > std::numeric_limits<int32_t>::max()) {
           return CommandStatus::InvalidNumeric;
         }
         criteria_humidity_span_ = static_cast<int32_t>(command.numeric_value);
         criteria_humidity_span_set_ = true;
       } else if (field == "max_span" || field == "max_span_counts") {
+        if (command.numeric_value <= 0) return CommandStatus::InvalidNumeric;
         criteria_span_ = command.numeric_value;
         criteria_span_set_ = true;
       } else if (field == "reference_mass_mg") {
+        if (command.numeric_value <= 0) return CommandStatus::InvalidNumeric;
         reference_mass_mg_ = static_cast<uint64_t>(command.numeric_value);
-        return CommandStatus::Accepted;
       } else {
         return CommandStatus::InvalidSyntax;
       }
@@ -710,6 +757,39 @@ CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
                       !criteria_humidity_span_set_))) {
         return CommandStatus::Accepted;
       }
+      bool active_profile_present{false};
+      if (profiles_ != nullptr) {
+        const auto target = static_cast<acquisition::ProfileTarget>(
+            static_cast<uint8_t>(pending_target_) + 1U);
+        acquisition::ActiveProfileSnapshot active{};
+        active_profile_present = profiles_->snapshot(
+            acquisition::default_profile_key(target), active) && active.present;
+      }
+      if (pending_target_ >= calibration::CalibrationTarget::Hx711Organic &&
+          pending_target_ <= calibration::CalibrationTarget::Hx711B3 &&
+          reference_mass_mg_ == 0U) {
+        return CommandStatus::Accepted;
+      }
+      if (is_ultrasonic_target(pending_target_) && !active_profile_present &&
+          (!ultrasonic_echo_conversion_set_ || !ultrasonic_timing_set_)) {
+        return CommandStatus::Accepted;
+      }
+      if (is_mq_target(pending_target_) && !active_profile_present &&
+          !mq_engineering_set_) {
+        return CommandStatus::Accepted;
+      }
+      if (pending_target_ == calibration::CalibrationTarget::Ds18b20B3 &&
+          !active_profile_present && !ds_resolution_set_) {
+        return CommandStatus::Accepted;
+      }
+      if (is_sht_target(pending_target_) && !active_profile_present &&
+          (!reference_temperature_set_ || !reference_humidity_set_)) {
+        return CommandStatus::Accepted;
+      }
+      // Criteria may be completed incrementally after the capture state has
+      // been entered. Reference values and engineering fields remain session
+      // owned; do not attempt to configure the CalibrationSession twice.
+      if (criteria_set_) return CommandStatus::Accepted;
       if (pending_target_ >= calibration::CalibrationTarget::Mq4 &&
           pending_target_ <= calibration::CalibrationTarget::Mq8 &&
           criteria_span_ > std::numeric_limits<uint16_t>::max()) {
@@ -755,6 +835,15 @@ CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
       if (!evidence_->latest(pending_target_, evidence_sequence_, trial, sequence)) {
         return CommandStatus::Rejected;
       }
+      if (pending_target_ == calibration::CalibrationTarget::Ds18b20B3) {
+        const auto* ds_trial = std::get_if<calibration::Ds18b20Trial>(&trial);
+        if (ds_trial == nullptr || ds_trial->resolution_bits < 9U ||
+            ds_trial->resolution_bits > 12U ||
+            (ds_resolution_set_ &&
+             ds_trial->resolution_bits != ds_resolution_bits_)) {
+          return CommandStatus::Rejected;
+        }
+      }
       calibration::CalibrationAnchor anchor = calibration::CalibrationAnchor::Primary;
       if (command.target.view() == "tare") anchor = calibration::CalibrationAnchor::Tare;
       else if (command.target.view() == "reference") anchor = calibration::CalibrationAnchor::Reference;
@@ -762,25 +851,69 @@ CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
       else if (command.target.view() == "full") anchor = calibration::CalibrationAnchor::Full;
       else return CommandStatus::InvalidSyntax;
       if (!calibration_.observe_anchor(trial, anchor)) return CommandStatus::Rejected;
+      if (pending_target_ == calibration::CalibrationTarget::Ds18b20B3) {
+        const auto* ds_trial = std::get_if<calibration::Ds18b20Trial>(&trial);
+        if (ds_trial != nullptr && ds_trial->wire_evidence &&
+            ds_trial->rom_match && ds_trial->crc_valid &&
+            ds_trial->conversion_complete) {
+          ds_rom_ = ds_trial->rom;
+          ds_rom_set_ = true;
+          if (ds_trial->resolution_bits >= 9U &&
+              ds_trial->resolution_bits <= 12U) {
+            ds_resolution_bits_ = ds_trial->resolution_bits;
+            ds_resolution_set_ = true;
+          }
+        }
+      }
       calibration_.touch(now_us);
       evidence_sequence_ = sequence;
       return CommandStatus::Accepted;
     }
     case CommandKind::CalibrationValidate:
       return calibration_.validate() ? CommandStatus::Accepted : CommandStatus::Rejected;
-    case CommandKind::CalibrationPreview:
-      return calibration_.preview() ? CommandStatus::Accepted : CommandStatus::Rejected;
-    case CommandKind::CalibrationCommit:
-      if (!calibration_.request_commit()) return CommandStatus::Rejected;
-      if (!build_and_stage_calibration_profile(now_us)) {
-        (void)calibration_.complete_commit(false);
+    case CommandKind::CalibrationPreview: {
+      CalibrationProposal proposal{};
+      if (!build_calibration_proposal(now_us, proposal) || !calibration_.preview()) {
         return CommandStatus::Rejected;
       }
+      calibration_proposal_ = proposal;
+      return append_calibration_preview(response) ? CommandStatus::Accepted
+                                                   : CommandStatus::Failed;
+    }
+    case CommandKind::CalibrationCommit:
+      if (!calibration_.request_commit()) return CommandStatus::Rejected;
+      if (!commit_calibration_proposal()) {
+        (void)calibration_.complete_commit(false);
+        clear_calibration_proposal();
+        return CommandStatus::Rejected;
+      }
+      if (profiles_ == nullptr || !calibration_proposal_.present) {
+        (void)calibration_.complete_commit(false);
+        clear_calibration_proposal();
+        return CommandStatus::Failed;
+      }
+      {
+        acquisition::ActiveProfileSnapshot committed{};
+        if (!profiles_->snapshot(calibration_proposal_.key, committed) ||
+            !committed.present ||
+            !append_u64(response, "profile_version=",
+                        committed.ref.profile_version) ||
+            !response.append("profile_hash=") ||
+            !append_hex(response, committed.ref.hash.data(),
+                        committed.ref.hash.size()) ||
+            !response.append("\n")) {
+          (void)calibration_.complete_commit(false);
+          clear_calibration_proposal();
+          return CommandStatus::Failed;
+        }
+      }
       (void)calibration_.complete_commit(true);
+      clear_calibration_proposal();
       mode_ = DeviceMode::Maintenance;
       return CommandStatus::Accepted;
     case CommandKind::CalibrationCancel:
       if (!calibration_.cancel()) return CommandStatus::Rejected;
+      clear_calibration_proposal();
       criteria_set_ = false;
       refresh_mode();
       return CommandStatus::Accepted;
@@ -871,6 +1004,7 @@ CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
                  : storage_probe_->run_sd_probe(response);
     case CommandKind::Reboot:
       calibration_.abort();
+      clear_calibration_proposal();
       criteria_set_ = false;
       cancel_profile_transfer();
       if (models_ != nullptr) models_->cancel_model();
@@ -893,6 +1027,16 @@ CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
       // validation or activation metadata.
       return CommandStatus::Rejected;
   }
+}
+
+CommandStatus CommandRouter::execute_calibration_internal(
+    const MaintenanceCommand& command, uint64_t now_us,
+    MaintenanceResponse& response) noexcept {
+  const bool previous = internal_calibration_dispatch_;
+  internal_calibration_dispatch_ = true;
+  const CommandStatus status = execute(command, now_us, response);
+  internal_calibration_dispatch_ = previous;
+  return status;
 }
 
 }  // namespace sigap::maintenance

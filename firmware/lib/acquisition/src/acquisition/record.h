@@ -27,6 +27,10 @@ class RecordFactory final {
     context_.config_ref = config_ref;
   }
 
+  void set_device_id(const DeviceId& device_id) noexcept {
+    context_.device_id = device_id;
+  }
+
   DriverPollStatus make(uint64_t monotonic_us, SensorId sensor, StreamId stream,
                         SampleKind kind, SampleQuality quality, SampleReason reason,
                         const RawObservation& raw, const ConvertedObservation& converted,

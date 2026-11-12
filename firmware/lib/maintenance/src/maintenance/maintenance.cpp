@@ -68,6 +68,7 @@ bool parse_tokens(const char* line, std::size_t length,
 const char* command_name(CommandKind command) noexcept {
   switch (command) {
     case CommandKind::Status: return "status";
+    case CommandKind::SensorStatus: return "sensor.status";
     case CommandKind::MaintenanceEnter: return "maintenance.enter";
     case CommandKind::MaintenanceExit: return "maintenance.exit";
     case CommandKind::ConfigActive: return "config.active";
@@ -111,6 +112,9 @@ const char* command_name(CommandKind command) noexcept {
     case CommandKind::ModelCommit: return "model.commit";
     case CommandKind::ModelCancel: return "model.cancel";
     case CommandKind::ModelRollback: return "model.rollback";
+    case CommandKind::DebugMeta: return "debug.meta";
+    case CommandKind::DebugPage: return "debug.page";
+    case CommandKind::DebugLevel: return "debug.level";
     case CommandKind::StorageSdTest: return "storage.sd.test";
     case CommandKind::Reboot: return "reboot";
     case CommandKind::Unknown: break;
@@ -192,8 +196,35 @@ bool MaintenanceParser::emit_line(ParseEvent& event) noexcept {
   bool numeric = false;
   Token numeric_token{};
 
-  if (equals(line_.data(), tokens[0], "status") && count == 1U) {
+  if (equals(line_.data(), tokens[0], "debug")) {
+    if (count == 2U && equals(line_.data(), tokens[1], "meta")) {
+      command.kind = CommandKind::DebugMeta;
+    } else if (count == 4U && equals(line_.data(), tokens[1], "page")) {
+      command.kind = CommandKind::DebugPage;
+      valid = tokens[2].length == 32U && copy_token(line_.data(), tokens[2], command.target) &&
+              copy_token(line_.data(), tokens[3], command.value);
+      for (std::size_t i=0; valid && i<32U; ++i) {
+        const char c = command.target.bytes[i];
+        valid = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+      }
+      const auto after = command.value.view();
+      valid = valid && !after.empty() && !(after.size() > 1U && after.front() == '0');
+      uint64_t parsed = 0U;
+      const auto result = std::from_chars(after.data(), after.data()+after.size(), parsed);
+      valid = valid && result.ec == std::errc{} && result.ptr == after.data()+after.size();
+      if (!valid) event.status = CommandStatus::InvalidSyntax;
+    } else if (count == 3U && equals(line_.data(), tokens[1], "level")) {
+      command.kind = CommandKind::DebugLevel;
+      valid = copy_token(line_.data(), tokens[2], command.target) &&
+          (command.target.view() == "ERROR" || command.target.view() == "WARN" ||
+           command.target.view() == "INFO" || command.target.view() == "DEBUG");
+    } else valid = false;
+  } else if (equals(line_.data(), tokens[0], "status") && count == 1U) {
     command.kind = CommandKind::Status;
+  } else if (equals(line_.data(), tokens[0], "sensor") && count == 3U &&
+             equals(line_.data(), tokens[1], "status")) {
+    command.kind = CommandKind::SensorStatus;
+    valid = copy_token(line_.data(), tokens[2], command.target);
   } else if (equals(line_.data(), tokens[0], "reboot") && count == 1U) {
     command.kind = CommandKind::Reboot;
   } else if (equals(line_.data(), tokens[0], "maintenance") && count == 2U) {

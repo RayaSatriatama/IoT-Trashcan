@@ -127,6 +127,12 @@ void ModelMaintenanceRouter::poll_model(uint64_t now_us) noexcept {
 CommandStatus ModelMaintenanceRouter::execute_model(
     const MaintenanceCommand& command, uint64_t now_us,
     MaintenanceResponse& response) noexcept {
+  if (io_gate_ != nullptr && io_gate_->active(debug::IoOwner::DebugHttp) &&
+      command.kind != CommandKind::ModelStatus &&
+      command.kind != CommandKind::ModelCancel) {
+    (void)response.append("ERR STORAGE_BUSY\n");
+    return CommandStatus::Rejected;
+  }
   models::ModelProfileKey key{};
   if (command.kind == CommandKind::ModelImportChunk) {
     if (!import_active_) return CommandStatus::Rejected;

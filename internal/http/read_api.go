@@ -243,14 +243,17 @@ type locationDTO struct {
 }
 
 type deviceDTO struct {
-	ID             string    `json:"id"`
-	LocationID     string    `json:"location_id"`
-	DeviceCode     string    `json:"device_code"`
-	PlacementLabel *string   `json:"placement_label"`
-	OnlineState    *string   `json:"online_state"`
-	LastSeen       *string   `json:"last_seen"`
-	Status         *string   `json:"status"`
-	Slots          []slotDTO `json:"slots"`
+	ID                 string                  `json:"id"`
+	LocationID         string                  `json:"location_id"`
+	DeviceCode         string                  `json:"device_code"`
+	BleDeviceID        *string                 `json:"ble_device_id,omitempty"`
+	PlacementLabel     *string                 `json:"placement_label"`
+	OnlineState        *string                 `json:"online_state"`
+	LastSeen           *string                 `json:"last_seen"`
+	Status             *string                 `json:"status"`
+	Slots              []slotDTO               `json:"slots"`
+	FirmwareMonitoring []firmwareMonitoringDTO `json:"firmware_monitoring"`
+	FirmwareResults    []firmwareResultDTO     `json:"firmware_results"`
 }
 
 type deviceSummaryDTO struct {
@@ -431,10 +434,10 @@ func (api *ReadAPI) device(ctx context.Context, id string) (deviceDTO, error) {
 	if api == nil || api.db == nil {
 		return result, errors.New("read database is unavailable")
 	}
-	var placement, lastSeen sql.NullString
+	var placement, lastSeen, bleDeviceID sql.NullString
 	err := api.db.QueryRowContext(ctx, `
-		SELECT id, location_id, device_code, placement_label, last_seen
-		FROM devices WHERE id = ?`, id).Scan(&result.ID, &result.LocationID, &result.DeviceCode, &placement, &lastSeen)
+		SELECT id, location_id, device_code, placement_label, last_seen, ble_device_id
+		FROM devices WHERE id = ?`, id).Scan(&result.ID, &result.LocationID, &result.DeviceCode, &placement, &lastSeen, &bleDeviceID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return result, errReadNotFound
 	}
@@ -443,6 +446,7 @@ func (api *ReadAPI) device(ctx context.Context, id string) (deviceDTO, error) {
 	}
 	result.PlacementLabel = nullableString(placement)
 	result.LastSeen = nullableString(lastSeen)
+	result.BleDeviceID = nullableString(bleDeviceID)
 	result.OnlineState = api.onlineState(lastSeen)
 
 	slots, err := api.slots(ctx, result.ID)
@@ -450,6 +454,14 @@ func (api *ReadAPI) device(ctx context.Context, id string) (deviceDTO, error) {
 		return result, err
 	}
 	result.Slots = slots
+	result.FirmwareMonitoring, err = api.firmwareMonitoring(ctx, result.DeviceCode)
+	if err != nil {
+		return result, err
+	}
+	result.FirmwareResults, err = api.firmwareResults(ctx, result.DeviceCode)
+	if err != nil {
+		return result, err
+	}
 	statuses := make([]device.Status, 0, len(slots)+1)
 	if result.OnlineState != nil && *result.OnlineState == "Offline" {
 		statuses = append(statuses, device.StatusOffline)

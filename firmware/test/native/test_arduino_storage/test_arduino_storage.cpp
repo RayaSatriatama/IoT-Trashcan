@@ -92,6 +92,7 @@ Ack ack_for(const ImmutableBatch& value) {
 void test_arduino_archive_failed_copy_restarts_from_marked_source() {
   fs::FS disk{};
   LittleFsArchiveStore store("/sigap/archive.bin");
+  store.set_capacity_probe([](uint64_t& n, void*) noexcept { n=UINT64_MAX; return true; }, nullptr);
   TEST_ASSERT_TRUE(store.begin(disk, 64U * 1024U));
   const auto first = record(1U);
   TEST_ASSERT_EQUAL_INT(static_cast<int>(AppendStatus::Durable),
@@ -106,6 +107,7 @@ void test_arduino_archive_failed_copy_restarts_from_marked_source() {
 
   disk.clear_faults();
   LittleFsArchiveStore restarted("/sigap/archive.bin");
+  restarted.set_capacity_probe([](uint64_t& n, void*) noexcept { n=UINT64_MAX; return true; }, nullptr);
   TEST_ASSERT_TRUE(restarted.begin(disk, 64U * 1024U));
   TEST_ASSERT_TRUE(restarted.contains(first.identity, first.hash));
   const auto restored = disk.bytes("/sigap/archive.bin");
@@ -117,6 +119,7 @@ void test_arduino_archive_failed_copy_restarts_from_marked_source() {
 void test_arduino_archive_recovery_rejects_failed_rename_and_short_read() {
   fs::FS disk{};
   LittleFsArchiveStore store("/sigap/archive.bin");
+  store.set_capacity_probe([](uint64_t& n, void*) noexcept { n=UINT64_MAX; return true; }, nullptr);
   TEST_ASSERT_TRUE(store.begin(disk, 64U * 1024U));
   const auto first = record(2U);
   TEST_ASSERT_EQUAL_INT(static_cast<int>(AppendStatus::Durable),
@@ -137,6 +140,7 @@ void test_arduino_archive_recovery_rejects_failed_rename_and_short_read() {
 void test_arduino_archive_reclaim_does_not_resurrect_tail_after_restart() {
   fs::FS disk{};
   LittleFsArchiveStore store("/sigap/archive.bin");
+  store.set_capacity_probe([](uint64_t& n, void*) noexcept { n=UINT64_MAX; return true; }, nullptr);
   TEST_ASSERT_TRUE(store.begin(disk, 64U * 1024U));
   const auto first = record(3U);
   const auto second = record(4U);
@@ -151,6 +155,8 @@ void test_arduino_archive_reclaim_does_not_resurrect_tail_after_restart() {
   TEST_ASSERT_TRUE(store.reclaim_pending(first.identity, first.hash));
 
   LittleFsArchiveStore restarted("/sigap/archive.bin");
+
+  restarted.set_capacity_probe([](uint64_t& n, void*) noexcept { n=UINT64_MAX; return true; }, nullptr);
   TEST_ASSERT_TRUE(restarted.begin(disk, 64U * 1024U));
   TEST_ASSERT_FALSE(restarted.contains(first.identity, first.hash));
   TEST_ASSERT_TRUE(restarted.contains(second.identity, second.hash));
@@ -184,6 +190,28 @@ void test_arduino_ack_recovery_preserves_valid_prefix_after_failed_copy() {
   TEST_ASSERT_EQUAL_UINT32(0U, final_instance.reclaim());
 }
 
+void test_reclaim_requires_valid_workspace_probe_before_mutation() {
+  fs::FS disk{};
+  LittleFsArchiveStore store("/sigap/archive.bin");
+  store.set_capacity_probe([](uint64_t&, void*) noexcept { return false; }, nullptr);
+  TEST_ASSERT_TRUE(store.begin(disk, 64U * 1024U));
+  const auto first = record(51U);
+  const auto second = record(52U);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AppendStatus::Durable),
+                        static_cast<int>(store.append(first)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(AppendStatus::Durable),
+                        static_cast<int>(store.append(second)));
+  const auto original = disk.bytes("/sigap/archive.bin");
+  TEST_ASSERT_FALSE(store.reclaim_pending(first.identity, first.hash));
+  const auto after = disk.bytes("/sigap/archive.bin");
+  TEST_ASSERT_EQUAL_UINT32(original.size(), after.size());
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(original.data(), after.data(), original.size());
+  TEST_ASSERT_FALSE(disk.exists("/sigap/archive.bin.migrate"));
+  TEST_ASSERT_FALSE(disk.exists("/sigap/archive.bin.migrate.bak"));
+  TEST_ASSERT_TRUE(store.contains(first.identity, first.hash));
+  TEST_ASSERT_TRUE(store.contains(second.identity, second.hash));
+}
+
 void test_arduino_ack_open_failure_and_marker_are_observable() {
   fs::FS disk{};
   FsAckJournalStore journal;
@@ -208,6 +236,7 @@ int main() {
   RUN_TEST(test_arduino_archive_failed_copy_restarts_from_marked_source);
   RUN_TEST(test_arduino_archive_recovery_rejects_failed_rename_and_short_read);
   RUN_TEST(test_arduino_archive_reclaim_does_not_resurrect_tail_after_restart);
+  RUN_TEST(test_reclaim_requires_valid_workspace_probe_before_mutation);
   RUN_TEST(test_arduino_ack_recovery_preserves_valid_prefix_after_failed_copy);
   RUN_TEST(test_arduino_ack_open_failure_and_marker_are_observable);
   return UNITY_END();

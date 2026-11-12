@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 #include "acquisition/record.h"
 #include "acquisition/profiles.h"
 
@@ -10,6 +12,8 @@ struct Sht31ReadResult {
   bool crc_valid{false};
   int32_t temperature_centi_c{0};
   int32_t humidity_centi_pct{0};
+  uint16_t temperature_ticks{0U};
+  uint16_t humidity_ticks{0U};
   // A shared bus adapter may issue a measurement and complete it on a later
   // poll. Pending is not a failed sensor attempt and must not create a
   // timeout record.
@@ -51,6 +55,9 @@ class Sht31Acquirer final {
     raw.humidity_crc_valid = result.humidity_crc_valid;
     raw.temperature_centi_c = result.temperature_centi_c;
     raw.humidity_centi_pct = result.humidity_centi_pct;
+    raw.sht31_ticks_available = result.ok;
+    raw.sht31_temperature_ticks = result.temperature_ticks;
+    raw.sht31_humidity_ticks = result.humidity_ticks;
     ConvertedObservation converted{};
     SampleQuality quality{SampleQuality::Timeout};
     SampleReason reason{SampleReason::Timeout};

@@ -166,7 +166,7 @@ export function roleForSensor(sensor: Pick<SensorReadingDTO, 'sensor_type' | 'se
 }
 
 export function buildResearchSensorRows(slot: ResearchSlotDTO): ResearchSensorPresentation[] {
-  return slot.sensors.map((sensor) => {
+  return (slot.sensors ?? []).map((sensor) => {
     const role = roleForSensor(sensor);
     const membershipKey = role === 'Fuzzy Fill' ? 'fill' : role === 'Fuzzy Weight' ? 'weight_utilization' : role.startsWith('OGI') ? 'ogi' : 'safety';
     const membership = role === 'Safety' || role === 'Temperature safety'

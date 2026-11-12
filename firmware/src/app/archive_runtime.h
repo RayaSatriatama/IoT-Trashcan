@@ -4,6 +4,8 @@
 #include <cstdint>
 
 #include "acquisition/handoff.h"
+#include "acquisition/clock.h"
+#include "debug/types.h"
 #include "acquisition/profile_manager.h"
 #include "acquisition/record.h"
 #include "processing_runtime.h"
@@ -24,9 +26,18 @@ class ArchiveRuntime final {
   explicit ArchiveRuntime(storage::IArchiveStore* store = nullptr) noexcept
       : store_(store), worker_(store) {}
 
+  void bind_debug(debug::IEventSink* sink,
+                  acquisition::InjectedMonotonicClock clock) noexcept {
+    debug_sink_ = sink;
+    debug_clock_ = clock;
+    emit_storage_state();
+    emit_storage_queue();
+  }
+
   void set_store(storage::IArchiveStore* store) noexcept {
     store_ = store;
     worker_.set_store(store);
+    emit_storage_state();
   }
   void set_media_migration(storage::ArchiveMediaMigration* migration) noexcept {
     migration_ = migration;
@@ -253,6 +264,9 @@ class ArchiveRuntime final {
     (void)worker_.process_one();
     if (worker_.stats().durable != durable_before) {
       ++durable_records_;
+      emit_storage_outcome(0);
+      emit_storage_queue();
+      emit_storage_state();
       if (audit_queued_ && audit_ring_ != nullptr &&
           same_identity(pending_identity, audit_identity_)) {
         (void)audit_ring_->discard_front();
@@ -264,6 +278,9 @@ class ArchiveRuntime final {
     }
     if (worker_.stats().terminal != terminal_before) {
       record_gap(sequence, storage::GapReason::InvalidRecord);
+      emit_storage_outcome(3);
+      emit_storage_queue();
+      emit_storage_state();
       if (audit_queued_ && audit_ring_ != nullptr &&
           same_identity(pending_identity, audit_identity_)) {
         (void)audit_ring_->discard_front();
@@ -273,6 +290,7 @@ class ArchiveRuntime final {
       }
       return storage::AppendStatus::Invalid;
     }
+    emit_storage_state();
     return storage::AppendStatus::Retryable;
   }
 
@@ -302,6 +320,58 @@ class ArchiveRuntime final {
   }
 
  private:
+  void emit_storage_state() noexcept {
+    if (debug_sink_ == nullptr) return;
+    const auto current = health();
+    const int32_t state = store_ == nullptr ? 0 :
+        current == storage::ArchiveHealth::Healthy ? 1 :
+        current == storage::ArchiveHealth::Degraded ? 2 : 0;
+    const int32_t reason = store_ == nullptr ? 2 : 0;
+    if (storage_state_seen_ && state == last_storage_state_ &&
+        reason == last_storage_reason_) return;
+    debug::EventInput event{};
+    event.monotonic_us = debug_clock_.now_us();
+    event.module = debug::Module::Storage;
+    event.event_code = 30U;
+    event.arg0 = state;
+    event.arg1 = reason;
+    if (debug_sink_->emit(event)) {
+      storage_state_seen_ = true;
+      last_storage_state_ = state;
+      last_storage_reason_ = reason;
+    }
+  }
+
+  void emit_storage_queue() noexcept {
+    if (debug_sink_ == nullptr) return;
+    const auto depth = static_cast<int32_t>(worker_.queue().size());
+    const auto capacity = static_cast<int32_t>(worker_.queue().capacity());
+    if (queue_seen_ && depth == last_queue_depth_ &&
+        capacity == last_queue_capacity_) return;
+    debug::EventInput event{};
+    event.monotonic_us = debug_clock_.now_us();
+    event.module = debug::Module::Storage;
+    event.event_code = 31U;
+    event.arg0 = depth;
+    event.arg1 = capacity;
+    if (debug_sink_->emit(event)) {
+      queue_seen_ = true;
+      last_queue_depth_ = depth;
+      last_queue_capacity_ = capacity;
+    }
+  }
+
+  void emit_storage_outcome(int32_t result, uint32_t count = 1U) noexcept {
+    if (debug_sink_ == nullptr) return;
+    debug::EventInput event{};
+    event.monotonic_us = debug_clock_.now_us();
+    event.module = debug::Module::Storage;
+    event.event_code = 32U;
+    event.arg0 = result;
+    event.arg1 = static_cast<int32_t>(count);
+    (void)debug_sink_->emit(event);
+  }
+
   static bool same_identity(const storage::ArchiveIdentity& left,
                             const storage::ArchiveIdentity& right) noexcept {
     return left.kind == right.kind && left.sequence == right.sequence &&
@@ -319,6 +389,8 @@ class ArchiveRuntime final {
       return storage::AppendStatus::Retryable;
     }
     if (!worker_.try_enqueue_copy(record)) return storage::AppendStatus::Retryable;
+    emit_storage_queue();
+    emit_storage_state();
     return storage::AppendStatus::Queued;
   }
 
@@ -512,10 +584,7 @@ class ArchiveRuntime final {
       storage::PayloadWriter& writer) noexcept {
     for (std::size_t index = 0U; index < refs.size(); ++index) {
       const auto* ref = refs.at(index);
-      if (ref == nullptr || !writer.u8(static_cast<uint8_t>(ref->kind)) ||
-          !writer.u32(ref->schema_version) ||
-          !writer.u32(ref->profile_version) || !writer.u32(ref->target_id) ||
-          !writer.bytes(ref->hash.data(), ref->hash.size())) {
+      if (ref == nullptr || !write_profile_ref(*ref, writer)) {
         return false;
       }
     }
@@ -531,6 +600,14 @@ class ArchiveRuntime final {
   }
 
   storage::IArchiveStore* store_{nullptr};
+  debug::IEventSink* debug_sink_{nullptr};
+  acquisition::InjectedMonotonicClock debug_clock_{nullptr, nullptr};
+  bool storage_state_seen_{false};
+  int32_t last_storage_state_{-1};
+  int32_t last_storage_reason_{-1};
+  bool queue_seen_{false};
+  int32_t last_queue_depth_{-1};
+  int32_t last_queue_capacity_{-1};
   // ArchiveRuntime transfers one immutable frame at a time. Upstream typed
   // handoffs retain additional records until this slot drains, so the target
   // composition does not reserve multiple 16 KiB frame references in DRAM.
