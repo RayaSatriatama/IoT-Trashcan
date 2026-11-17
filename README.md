@@ -10,6 +10,13 @@ IoT-Trashcan memuat dokumentasi dan aset SIGAP Smart Bin, sistem pengelolaan sam
 - [Indeks dokumentasi](docs/README.md)
 - [Paket aset visual](docs/SIGAP_Asset_Pack_Complete_v0.6/README.md)
 
+## Model dan kalibrasi
+
+- [Konfigurasi FIS](docs/fis-configuration.md): lima input, 243 rule, centroid, kapasitas 2 kg, dan batas buktinya.
+- [Kurva NH3 MQ-135](docs/mq135-winsen-nh3-curve.md): digitasi Winsen v1.6 Figure 3 beserta domain dan disclaimer.
+- [Kalibrasi default](docs/calibration-defaults.md): profil pabrik dan presedensinya.
+- [Analisis web dan sensor live](docs/web-derived-research.md): provenance `WEB_DERIVED_TEST_ONLY` dan validitas nilai.
+
 ## Status project
 
 Status integrasi sensor terbaru, urutan prioritas, dan batas penerimaan fisik: [current sensor integration checkpoint](docs/task9-current-status.md). Publikasi source bukan bukti bahwa seluruh sensor sudah streaming ke web atau menghasilkan FIS produksi.
@@ -127,7 +134,7 @@ cp .env.simulation.example .env.simulation
 
 Runner simulasi terlebih dahulu menjalankan release build agar Expo SPA benar-benar masuk ke binary Go, lalu menjalankan binary tersebut dengan environment simulasi. Ini diperlukan karena clean checkout hanya menyimpan placeholder untuk `go:embed`, bukan bundle frontend generated.
 
-Buka `http://localhost:8080`. Simulator membuat 8 lokasi, 8 device, dan 24 slot. ID database simulator memakai prefix `sim-`, sedangkan device code yang terlihat di UI memakai prefix `SIGAP-`. Simulator lalu mengirim telemetry melalui authenticated ingest. Siklus demo mencakup Normal, Waspada, Angkat, Safety Alert, Data Invalid, Offline, dan Recovery. Simulation payload menyediakan Fill Sensor, HX711, MQ-135, MQ-4, MQ-7, MQ-8, dan DS18B20 sesuai stream, beserta empat input collection FIS: fill, weight utilization, OGI, dan accumulation time. MQ ditampilkan sebagai raw atau normalized index, bukan ppm, karena simulator tidak menyediakan calibration model. Data sintetis, profile FIS, dan safety threshold pada mode ini hanya fixture demo, bukan kalibrasi production atau research.
+Buka `http://localhost:8080`. Simulator membuat 8 lokasi, 8 device, dan 24 slot. ID database simulator memakai prefix `sim-`, sedangkan device code yang terlihat di UI memakai prefix `SIGAP-`. Simulator lalu mengirim telemetry melalui authenticated ingest. Siklus demo mencakup Normal, Waspada, Angkat, Safety Alert, Data Invalid, Offline, dan Recovery. Simulation payload menyediakan Fill Sensor, HX711, MQ-135, MQ-4, MQ-7, MQ-8, dan DS18B20 sesuai stream. Dekoder collection FIS web memakai lima input: keterisian, utilisasi berat, NH3 (ppm), waktu akumulasi, dan suhu. MQ ditampilkan sebagai raw atau normalized index, bukan ppm, karena simulator tidak menyediakan calibration model. Data sintetis, profile FIS, dan safety threshold pada mode ini hanya fixture demo, bukan kalibrasi production atau research.
 
 `SIGAP_SIMULATION_INTERVAL_SECONDS` harus bilangan bulat positif. `SIGAP_SIMULATION_SEED` membuat variasi kecil dapat direproduksi dan merotasi credential simulator lokal saat database yang sama digunakan kembali. Untuk memulai ulang data demo, hapus database secara manual:
 

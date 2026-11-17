@@ -2,6 +2,8 @@
 
 This checkpoint publishes software progress, not full physical acceptance. Earlier dated verification documents remain historical and must not be read as a claim that all current sensor-to-web/FIS gates are complete.
 
+Dokumen `task4` sampai `task8`, serta `TASK7_Customization.md` dan `TASK8_Customization.md`, adalah catatan historis bertanggal. Isinya boleh memuat konfigurasi yang kini sudah berubah (misalnya empat input FIS atau kapasitas berat lama). Selalu rujuk [konfigurasi FIS](fis-configuration.md) dan dokumen ini untuk keadaan sekarang.
+
 ## Owner-selected execution order
 
 1. Verify all four active sensors in the full application.
@@ -20,12 +22,17 @@ A prerequisite found to block an earlier item must be named; this ordering does 
 - The UI can render those real records and unavailable states. Host controls preserve zero/null, units, boot origin, time uncertainty and unconfigured model distinctions. Fixture data is not inserted into the operational database.
 - A joined host control executed actual production reader/graph/factory/codec/batch-builder code. The actual Go contract validator accepted all 44 emitted requests across eight scenarios, including unconfigured/missing SHT31 profiles and failed reads. This is host evidence, not current physical streaming.
 - A production-header echo probe demonstrated that an entire short echo can be missed between coarse polls. Actual target loop cadence remains unmeasured, so that counterexample is not accepted as the proven cause of the device's historical ultrasound timeout.
+- The web derives an NH3 **estimate** from the calibrated `adc_pin_mv` through the digitized Winsen curve, plus a five-input Mamdani FIS (fill, weight utilization, NH3, accumulation, temperature). Both run in the browser under `WEB_DERIVED_TEST_ONLY`; see [konfigurasi FIS](fis-configuration.md). Neither is an MCU result.
+- Sensor history can be exported as CSV from the loaded page, including a per-row NH3 estimate column. Rows the server never accepted are not reconstructed.
+- Source is published to `main` via pull request #28 (squash). Publication is a code checkpoint; it is not physical acceptance.
 
 ## Still incomplete
 
 - Fresh full-application data from all four active sensors has not yet been demonstrated in the web. Recent projection observations showed an earlier boot's archived sensor records, not the standalone proof measurements.
 - Ingest advanced through older-boot backlog before plateauing. The observed stop cause is unproven; a browser cache, credential failure or panic must not be asserted without matching evidence.
 - The operational archive had not received MCU result records at the latest checkpoint. Production calibration/model readiness and actual FIS/safety output remain unverified. Do not install example coefficients or fabricate scores.
+- The web FIS and NH3 estimate are design constructs, not validated models: the rule base was derived by the implementation (the owner table covers only membership parameters), the temperature sets are an assumption, and `q0` is not yet persisted in NVS.
+- The MQ-135 divider in firmware is 1:1; the physical 10 kOhm / 14.7 kOhm divider remains an unmeasured declaration.
 - Controlled before/stimulus/after responses, accuracy against references, and long-running ACK/journal/checkpoint/reclaim/restart acceptance remain open.
 
 ## Release and safety boundary
