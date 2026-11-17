@@ -62,7 +62,18 @@ SIGAP_DB_PATH=./sigap.db SIGAP_HTTP_ADDR=:8080 go run ./cmd/sigap
 ```
 
 Default bila variabel tidak diisi: `SIGAP_DB_PATH=sigap.db`,
-`SIGAP_HTTP_ADDR=:8080`. Endpoint pemeriksaan: `GET /api/runtime`.
+`SIGAP_HTTP_ADDR=:8080`. Endpoint pemeriksaan: `GET /api/runtime`, yang
+membalas `{"simulation":false,"simulationIndicator":true}`.
+
+Membuka `http://localhost:8080` di browser akan menghasilkan `404 page not found`.
+Itu normal: checkout bersih hanya menyimpan `internal/webapp/dist/placeholder.txt`,
+jadi belum ada SPA yang ter-embed. Jalur 1 atau 3 untuk memakai UI, atau jalur 4
+untuk membangun binary dengan frontend ter-embed.
+
+Saat start, server mencatat dua peringatan yang memang diharapkan pada konfigurasi
+default: `OFFLINE_AFTER_SECONDS is unset; offline derivation is disabled` dan
+`production FIS and safety configuration is unset`. Keduanya berarti ingest tetap
+menyimpan pembacaan mentah tanpa mengarang keputusan — bukan kegagalan.
 
 ### 3. Frontend + API (disarankan)
 
