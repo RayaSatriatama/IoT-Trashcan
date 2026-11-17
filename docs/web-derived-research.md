@@ -42,11 +42,12 @@ Seluruh keluaran berprovenance `WEB_DERIVED_TEST_ONLY`, bukan keluaran MCU, kali
 
 | Parameter | Nilai/asumsi | Sumber |
 | --- | --- | --- |
-| Kapasitas | 10 kg, hanya asumsi web | docs/prototype-operation.md, PrototypeConfig |
+| Kapasitas organik | 2 kg default, dapat diubah operator (0,1–100 kg) | lib/ui/useOrganicCapacity.ts |
 | Jarak kosong/penuh | 230.153 mm / 20 mm, hanya jika jarak tersedia | firmware/lib/acquisition/src/acquisition/default_profiles.h |
 | Referensi ADC | 3300 mV | default_profiles.h dan processing_engine.h |
 | Ambang kosong berat | 0.05 kg | processing_engine.h |
-| Fuzzy | 4 input, 16 aturan, min/max, centroid 101 titik | firmware/lib/models/src/models/prototype_defaults.cpp |
+| Fuzzy | 5 input, 3 himpunan/input, 243 rule, min/max, centroid 101 titik | lib/ui/transportFuzzy.ts |
+| NH3 | estimasi dari `mq135.adc_pin_mv`, ekstrapolasi di luar 10–1000 ppm | lib/ui/mq135Nh3Estimate.ts |
 | Diagnostik suhu | perhatian >=60 C, pita 55 sampai60 C, 2 observasi clear | prototype_defaults.cpp |
 
 Parameter tersebut bukan pembacaan profil NVS atau hasil kalibrasi fisik perangkat. Panel memperlihatkan asumsi tersebut; perubahan web tidak menulis parameter ke MCU.
@@ -55,7 +56,9 @@ Parameter tersebut bukan pembacaan profil NVS atau hasil kalibrasi fisik perangk
 
 Jika firmware menerbitkan `converted_value.fill_percent`, nilai tersebut dipakai apa adanya setelah validasi 0..100. Nol dipertahankan. Jarak tidak direkonstruksi dari persentase. Nilai persentase yang hadir tetapi invalid tidak ditutupi fallback.
 
-Jika persentase tidak diterbitkan namun jarak engineering tersedia, perhitungan prototipe adalah `clamp(100*(230.153-distance_mm)/(230.153-20),0,100)`. Utilisasi memakai `100*kg/10`. Berat negatif invalid; utilisasi di luar domain fuzzy tidak dipaksa menjadi hasil normal.
+Jika persentase tidak diterbitkan namun jarak engineering tersedia, perhitungan prototipe adalah `clamp(100*(230.153-distance_mm)/(230.153-20),0,100)`. Utilisasi memakai `100*|kg|/kapasitas` dengan kapasitas default 2 kg. Berat negatif disajikan sebagai nilai absolut; utilisasi di luar domain fuzzy tidak dipaksa menjadi hasil normal.
+
+Konfigurasi fuzzy lengkap (input, himpunan, rule, centroid, dan batasnya) ada di [konfigurasi FIS](fis-configuration.md).
 
 ### OGI
 

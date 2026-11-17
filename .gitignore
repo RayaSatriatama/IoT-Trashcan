@@ -1,13 +1,21 @@
+# ---------------------------------------------------------------------------
 # Secrets and local configuration
+# ---------------------------------------------------------------------------
 .env
 .env.*
 !.env.example
 !.env.simulation.example
 *.pem
 *.key
+*.p12
+*.pfx
+*.jks
 secrets.*
+*.secret
 
+# ---------------------------------------------------------------------------
 # Python
+# ---------------------------------------------------------------------------
 .venv/
 venv/
 __pycache__/
@@ -16,13 +24,16 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .coverage
+.coverage.*
 coverage.xml
 htmlcov/
 dist/
 build/
 *.egg-info/
 
+# ---------------------------------------------------------------------------
 # Node.js, React Native, and web tooling
+# ---------------------------------------------------------------------------
 node_modules/
 .expo/
 .tamagui/
@@ -37,8 +48,12 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+.eslintcache
+*.tsbuildinfo
 
+# ---------------------------------------------------------------------------
 # PlatformIO and embedded tooling
+# ---------------------------------------------------------------------------
 .pio/
 .pioenvs/
 .piolibdeps/
@@ -47,22 +62,53 @@ firmware/test/host/debug_http_transport/probe
 *.elf
 *.hex
 *.bin
+*.map
+*.o
+*.a
+*.d
+.sconsign*
+*.dblite
 
+# ---------------------------------------------------------------------------
+# Databases and runtime state
+#
+# Operational SQLite files are local evidence, never publication inputs.
+# ---------------------------------------------------------------------------
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+sigap-simulation.db
+
+# ---------------------------------------------------------------------------
+# Test and coverage output
+# ---------------------------------------------------------------------------
+playwright-report/
+test-results/
+.nyc_output/
+
+# ---------------------------------------------------------------------------
 # IDE and operating system files
+# ---------------------------------------------------------------------------
 .idea/
 .vscode/
 *.swp
 *.swo
 .DS_Store
 Thumbs.db
+desktop.ini
 
-# Runtime output
+# ---------------------------------------------------------------------------
+# Runtime output and temporary files
+# ---------------------------------------------------------------------------
 *.log
-playwright-report/
-test-results/
 tmp/
 temp/
 .worktrees/
+*.orig
+*.rej
 
 # Redundant archives; extracted canonical files are tracked in docs/
 docs/SIGAP_Asset_Pack_Complete_v0.6.zip
@@ -82,3 +128,7 @@ expo-env.d.ts
 /local-device-e2e/commissioning/sigap-server
 /tests/.reclaim_workspace_probe
 /tooltip/*.exit
+
+# Keep the committed example templates visible after the broad `.env*` rule
+!.env.example
+!.env.simulation.example

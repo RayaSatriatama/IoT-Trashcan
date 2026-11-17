@@ -77,6 +77,14 @@ C     = exp(ln(C))
 * No CO2 or third-party MQ-135 constants and no arbitrary `R0` are used.
 * MQ-135 is cross-sensitive: a numerically correct estimate is **not** a
   selective NH3 measurement.
-* The firmware does not yet publish ppm: `q0` persistence, single-controller
-  clean-air capture, the MQG2 producer/consumer contract and the qualified UI
-  remain the next dependent slice.
+* The firmware does not publish ppm. The web derives an NH3 **estimate** from
+  the calibrated pin voltage using the same digitized curve; `q0` persistence in
+  NVS, a single-controller clean-air capture, and the MQG2 producer/consumer
+  contract remain the next dependent slice.
+* The web baseline `MQ135_BASELINE_PIN_MV = 2700` is an operator assumption, not
+  a measured clean-air value. `MQ135_DIVIDER = 1` follows the installed firmware
+  ADC profile; the physical 10 kOhm / 14.7 kOhm divider is a declaration that has
+  not been measured or moved into firmware constants.
+* Outside the digitized 10-1000 ppm domain the web continues on a least-squares
+  log-log power-law fit and labels the result `EXTRAPOLATED`. That is a
+  mathematical extension of 13 points, not evidence of physical response.
