@@ -90,8 +90,11 @@ import { CalibrationWizard } from '../../components/device/CalibrationWizard';
 import DeviceDetailRoute from '../../app/devices/[id]';
 import { DeviceBleSession } from '../../lib/ble/device-session';
 import { WifiSettingsController } from '../../lib/ble/wifi-settings';
-import { DeviceDebugPanel } from '../../components/device/DeviceDebugPanel';
 import { DeviceDetailSessionView } from '../../app/devices/[id]';
+import { DeviceDebugPanel } from '../../components/device/DeviceDebugPanel';
+import { FirmwareMonitoringPanel } from '../../components/device/FirmwareMonitoringPanel';
+import { FirmwareResultsPanel } from '../../components/device/FirmwareResultsPanel';
+import { ResearchPanel } from '../../components/ResearchPanel';
 import { DebugViewController } from '../../lib/debug/poller';
 
 type Effect = { setup: () => (() => void) | void; cleanup?: () => void; changed: boolean };
@@ -144,6 +147,13 @@ function routeOwners(frame: ReturnType<typeof lifecycle>['frame']) {
     owner: frame.memos.find((memo) => memo.value instanceof DeviceBleSession).value as DeviceBleSession,
     controller: frame.memos.find((memo) => memo.value instanceof WifiSettingsController).value as WifiSettingsController,
   };
+}
+function findElements(node: any, type: unknown, found: any[] = []): any[] {
+  if (Array.isArray(node)) { node.forEach(child => findElements(child, type, found)); return found; }
+  if (!node || typeof node !== 'object') return found;
+  if (node.type === type) found.push(node);
+  findElements(node.props?.children, type, found);
+  return found;
 }
 
 afterEach(() => {
@@ -333,6 +343,21 @@ describe('actual Wizard activity effects', () => {
 });
 
 describe('actual route owner effects', () => {
+  it('mounts monitoring and results only through the single Detail Riset composition', () => {
+    runtime.device = {
+      id: 'route-a', device_code: 'opaque-device-code', placement_label: 'Real Device', ble_device_id: null,
+      slots: [], status: null, online_state: 'Online', last_seen: null, firmware_results: [],
+      firmware_monitoring: [{ sensor_id: 'mq135', stream: 'organic', boot_id: 'opaque-boot', last_sequence: '77', quality: 'UNCALIBRATED', reason: 'INVALID_PROFILE', sample_origin: 'PHYSICAL', origin_firmware_version: null, raw: { adc_counts: 12 }, converted_value: null, fresh: true, age_ms: 0, ordering_unknown: false, future_clock_skew: false }],
+    };
+    const route = lifecycle(DeviceDetailRoute, {});
+    const panels = findElements(route.frame.output, ResearchPanel);
+    expect(panels).toHaveLength(1);
+    expect(panels[0].props).toMatchObject({ deviceId: 'route-a', monitoring: runtime.device.firmware_monitoring });
+    expect(findElements(route.frame.output, FirmwareMonitoringPanel)).toHaveLength(0);
+    expect(findElements(route.frame.output, FirmwareResultsPanel)).toHaveLength(0);
+    route.unmount();
+  });
+
   it('keeps idle Wi-Fi open from pausing visible debug and offers disconnect for a stalled read', async () => {
     runtime.device = device('canonical-a');
     const route = lifecycle(DeviceDetailRoute, {});

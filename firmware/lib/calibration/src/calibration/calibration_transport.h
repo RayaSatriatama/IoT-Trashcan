@@ -83,6 +83,9 @@ struct CalibrationCommandEnvelope final {
   CaptureCriteria criteria{Hx711CaptureCriteria{}};
   bool criteria_present{false};
   CalibrationAnchor anchor{CalibrationAnchor::Primary};
+  // Normalized (MQG2) mode discriminator. It is explicit so a durable COMMIT
+  // identity can never be replayed as a legacy ohms calibration.
+  bool normalized_mode{false};
   bool expected_profile_present{false};
   CalibrationProfileRef expected_profile{};
   // Digest of the complete canonical command payload. The replay ring keeps
@@ -106,6 +109,7 @@ inline bool calibration_command_identity_equal(
       left.operation != right.operation ||
       left.target != right.target ||
       left.criteria_present != right.criteria_present ||
+      left.normalized_mode != right.normalized_mode ||
       left.anchor != right.anchor ||
       left.expected_profile_present != right.expected_profile_present ||
       left.payload_size != right.payload_size ||
@@ -125,6 +129,10 @@ inline bool calibration_command_identity_equal(
           using R = std::decay_t<decltype(rhs)>;
           if constexpr (!std::is_same_v<L, R>) {
             return false;
+          } else if constexpr (std::is_same_v<L, Mq135GasCaptureCriteria>) {
+            return gas_criteria_configuration_equal(lhs, rhs);
+          } else if constexpr (std::is_same_v<L, Mq135NormalizedCaptureCriteria>) {
+            return normalized_criteria_configuration_equal(lhs, rhs);
           } else if constexpr (std::is_same_v<L, Hx711CaptureCriteria>) {
             return lhs.required_samples == rhs.required_samples &&
                    lhs.max_span_counts == rhs.max_span_counts;
@@ -163,6 +171,11 @@ struct CalibrationResultEnvelope final {
   CalibrationProfileRef profile{};
   ValidationResult validation{};
   bool preview_available{false};
+  acquisition::Mq135Diagnostic gas{};
+  // MQG2 evidence. Present only for a normalized session/proposal or an active
+  // payload-v2 profile; consumers must branch on `present`, never reinterpret
+  // the legacy ohms snapshot as q0.
+  acquisition::Mq135NormalizedDiagnostic normalized_gas{};
 };
 
 class ICalibrationTransportAuthorizer {
@@ -229,6 +242,17 @@ class ICalibrationTransportWorkflow {
   virtual bool cancel() noexcept = 0;
   virtual bool history(CalibrationResultEnvelope& output) const noexcept = 0;
   virtual bool rollback() noexcept = 0;
+  virtual bool history(CalibrationTarget, CalibrationResultEnvelope& output) const noexcept { return history(output); }
+  virtual bool rollback(CalibrationTarget) noexcept { return rollback(); }
+  virtual bool gas_diagnostic(CalibrationTarget, uint64_t,
+                             acquisition::Mq135Diagnostic&) const noexcept { return false; }
+  // MQG2 normalized evidence. Implementations without normalized mode return
+  // false, leaving the legacy MQG1 result legitimate.
+  virtual bool normalized_gas_diagnostic(
+      CalibrationTarget, uint64_t,
+      acquisition::Mq135NormalizedDiagnostic&) const noexcept {
+    return false;
+  }
 };
 
 // A single controller is shared by USB, BLE and HTTPS adapters. It owns only
@@ -289,6 +313,7 @@ class CalibrationTransportController final {
   ICalibrationTransportReplayStore* replay_store_{nullptr};
   debug::IEventSink* debug_sink_{nullptr};
   CalibrationTransport owner_{CalibrationTransport::Usb};
+  CalibrationTarget owner_target_{CalibrationTarget::Hx711Organic};
   bool owner_active_{false};
   uint64_t session_id_{0U};
   uint64_t principal_id_{0U};

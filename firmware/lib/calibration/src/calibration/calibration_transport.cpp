@@ -119,7 +119,7 @@ void CalibrationTransportController::fill(
 bool CalibrationTransportController::owns(
     const CalibrationCommandEnvelope& command) const noexcept {
   return owner_active_ && command.session_id == session_id_ &&
-         command.transport == owner_ && command.principal_id == principal_id_;
+         command.transport == owner_ && command.principal_id == principal_id_ && command.target == owner_target_;
 }
 
 void CalibrationTransportController::disconnect(
@@ -285,6 +285,8 @@ bool CalibrationTransportController::execute(
                                   : CalibrationCommandStatus::Invalid;
     return false;
   }
+  if (command.target == CalibrationTarget::Mq135Gas && command.operation == CalibrationOperation::Rollback &&
+      !command.expected_profile_present) { output.status = CalibrationCommandStatus::Invalid; return false; }
   if (!read_only(command.operation) && !expected_profile_matches(command)) {
     output.status = CalibrationCommandStatus::Conflict;
     return false;
@@ -307,7 +309,7 @@ bool CalibrationTransportController::execute(
     case CalibrationOperation::Start:
       ok = workflow_.start(command.target, now_us);
       if (ok) {
-        owner_ = command.transport;
+        owner_ = command.transport; owner_target_ = command.target;
         owner_active_ = true;
         session_id_ = command.session_id != 0U ? command.session_id
                                                 : next_session_id_++;
@@ -351,13 +353,25 @@ bool CalibrationTransportController::execute(
       }
       break;
     case CalibrationOperation::History:
-      ok = workflow_.history(output);
+      ok = workflow_.history(command.target, output);
       break;
     case CalibrationOperation::Rollback:
-      ok = workflow_.rollback();
+      ok = workflow_.rollback(command.target);
+      if (ok) {
+        ok = workflow_.active_profile(command.target, output.profile) && output.profile.present;
+        owner_active_ = false; session_id_ = 0; principal_id_ = 0;
+      }
       break;
   }
-  if (ok && command.operation == CalibrationOperation::Commit) {
+  if (ok && command.target == CalibrationTarget::Mq135Gas && read_only(command.operation)) {
+    ok = workflow_.gas_diagnostic(command.target, now_us, output.gas);
+    if (ok) {
+      // MQG2 replaces MQG1 only when a normalized mode/profile exists.
+      (void)workflow_.normalized_gas_diagnostic(command.target, now_us,
+                                                output.normalized_gas);
+    }
+  }
+  if (ok && (command.operation == CalibrationOperation::Commit || command.operation == CalibrationOperation::Rollback)) {
     output.status = CalibrationCommandStatus::Committed;
   } else {
     output.status = ok ? CalibrationCommandStatus::Accepted

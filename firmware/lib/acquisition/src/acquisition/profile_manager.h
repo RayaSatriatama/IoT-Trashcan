@@ -128,6 +128,10 @@ enum class ProfileManagerState : uint8_t {
   Error,
 };
 
+enum class FactoryProfileInitResult : uint8_t {
+  Preserved, Initialized, Busy, Invalid, Error, CommitFailed
+};
+
 class ProfileManager final {
  public:
   explicit ProfileManager(ProfilePersistence& persistence,
@@ -136,11 +140,14 @@ class ProfileManager final {
       : persistence_(persistence), codec_(codec), audit_(audit) {}
 
   bool load(ProfileKey key) noexcept;
+  FactoryProfileInitResult initialize_pristine(ProfileKey key,
+                                                const EncodedProfile& encoded) noexcept;
   bool stage_import(ProfileKey key, const EncodedProfile& encoded) noexcept;
   bool validate(ProfileKey key) const noexcept;
   bool preview(ProfileKey key) noexcept;
   bool commit(ProfileKey key) noexcept;
   bool rollback(ProfileKey key) noexcept;
+  bool previous(ProfileKey key, ActiveProfileSnapshot& output) const noexcept;
   bool reset(ProfileKey key) noexcept;
   bool cancel(ProfileKey key) noexcept;
   bool export_active(ProfileKey key, EncodedProfile& encoded) const noexcept;
@@ -174,7 +181,7 @@ class ProfileManager final {
   uint32_t generation() const noexcept { return generation_; }
 
  private:
-  static constexpr std::size_t kTargetCount{17U};
+  static constexpr std::size_t kTargetCount{18U};
   static std::size_t index(ProfileTarget target) noexcept;
   static bool valid_key(ProfileKey key) noexcept;
   static std::size_t key_index(ProfileKey key) noexcept;

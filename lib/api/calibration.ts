@@ -14,7 +14,7 @@ export const CALIBRATION_SENSOR_IDS = [
   'ultrasonic_organic', 'ultrasonic_inorganic', 'ultrasonic_b3',
   'mq4', 'mq135', 'mq7', 'mq8', 'ds18b20_b3', 'sht31_44', 'sht31_45',
 ] as const;
-export type CalibrationSensorId = typeof CALIBRATION_SENSOR_IDS[number];
+export type CalibrationSensorId = typeof CALIBRATION_SENSOR_IDS[number] | 'mq135_gas';
 export type CalibrationTransport = 'ble' | 'https';
 export type CalibrationState = 'IDLE' | 'QUEUED' | 'DELIVERED' | 'ACCEPTED' | 'CAPTURING' | 'VALIDATING' | 'VALIDATED' | 'PREVIEW_READY' | 'COMMITTING' | 'COMMITTED' | 'CANCELLED' | 'EXPIRED' | 'FAILED';
 export type CalibrationQuality = 'READY' | 'WARMING_UP' | 'HEATER_PHASE' | 'CALIBRATING' | 'UNCALIBRATED' | 'STALE' | 'TIMEOUT' | 'DISCONNECTED' | 'CRC_ERROR' | 'OUT_OF_RANGE' | 'INVALID';
@@ -89,7 +89,7 @@ export type CalibrationCommandRequest = {
   command_id?: string;
   device_id: string;
   sensor_id: CalibrationSensorId;
-  operation: 'START' | 'SET_CRITERIA' | 'CAPTURE' | 'VALIDATE' | 'PREVIEW' | 'COMMIT' | 'CANCEL' | 'ROLLBACK';
+  operation: 'START' | 'SET_CRITERIA' | 'CAPTURE' | 'VALIDATE' | 'PREVIEW' | 'COMMIT' | 'CANCEL' | 'ROLLBACK' | 'EVIDENCE' | 'ACTIVE_PROFILE' | 'HISTORY';
   session_id?: string;
   payload?: Record<string, unknown>;
   parameters?: Record<string, number | string | boolean>;

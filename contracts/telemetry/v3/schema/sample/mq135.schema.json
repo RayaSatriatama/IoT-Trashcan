@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sigap.local/contracts/telemetry/v3/schema/sample/mq135.schema.json",
+  "$defs": {
+    "raw": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["adc_counts"],
+      "properties": {
+        "adc_counts": {"type": "integer", "minimum": 0}
+      }
+    },
+    "converted": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["adc_mv"],
+      "properties": {
+        "adc_mv": {"type": ["number", "null"]},
+        "adc_pin_mv": {"type": "number"},
+        "sensor_ao_mv": {"type": "number"},
+        "adc_efuse_calibrated": {"const": 1}
+      },
+      "allOf": [
+        {
+          "if": {
+            "type": "object",
+            "anyOf": [
+              {"required": ["adc_pin_mv"]},
+              {"required": ["sensor_ao_mv"]},
+              {"required": ["adc_efuse_calibrated"]}
+            ]
+          },
+          "then": {
+            "required": ["adc_pin_mv", "sensor_ao_mv", "adc_efuse_calibrated"],
+            "properties": {"adc_mv": {"type": "number"}}
+          }
+        }
+      ]
+    }
+  }
+}

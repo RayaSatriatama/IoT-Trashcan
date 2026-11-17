@@ -7,14 +7,7 @@ class RuntimeIoGate final {
   bool try_acquire(IoOwner owner) noexcept {
     const uint8_t bit = mask(owner);
     if (bit == 0U || (owners_ & bit) != 0U) return false;
-    constexpr uint8_t http = 0x07U;
-    if (owner == IoOwner::Filesystem) {
-      if ((owners_ & http) != 0U) return false;
-    } else if (owner == IoOwner::DebugHttp) {
-      if (owners_ != 0U) return false;
-    } else if ((owners_ & (mask(IoOwner::DebugHttp) | mask(IoOwner::Filesystem))) != 0U) {
-      return false;
-    }
+    if (owners_ != 0U) return false;
     owners_ = static_cast<uint8_t>(owners_ | bit);
     return true;
   }

@@ -135,6 +135,9 @@ NetworkPolicy policy() {
   return value;
 }
 
+constexpr std::string_view kSessionlessMq135EvidenceWire =
+    R"({"command_id":"qa-mq135-evidence-host","device_id":"DEV-1","operator_id":"operator-1","session_id":"","sensor_id":"mq135_gas","operation":"evidence","payload":{},"request_hash":"sha256:95fd9c44a2eb32c4c6461b2c47e7602f3edee70888abc5f63a64d3a066fc1f61","expires_at":"2026-11-16T00:00:00Z","expires_in_ms":60000,"attempt":1})";
+
 DeviceControlCommand make_command(uint64_t expiry = 10000U) {
   DeviceControlCommand value{};
   (void)value.command_id.assign("cmd-1");
@@ -375,6 +378,88 @@ void test_wire_result_rejects_oversized_or_invalid_payload() {
   TEST_ASSERT_FALSE(encode_device_control_result(result, body));
 }
 
+void test_sessionless_mq135_evidence_result_is_serializable() {
+  DeviceControlCommand command{};
+  TEST_ASSERT_TRUE(decode_device_control_command(
+      kSessionlessMq135EvidenceWire, 1U, command));
+  TEST_ASSERT_EQUAL_UINT32(0U, command.session_id.size);
+
+  DeviceControlResult result{};
+  result.status = DeviceControlStatus::Failed;
+  TEST_ASSERT_TRUE(result.command_id.assign(command.command_id.view()));
+  TEST_ASSERT_TRUE(result.error_code.assign("EXECUTION_FAILED"));
+  constexpr std::string_view no_result{"null"};
+  result.payload_size = no_result.size();
+  std::copy(no_result.begin(), no_result.end(), result.payload.begin());
+  DeviceControlWireBody body{};
+  TEST_ASSERT_TRUE(encode_device_control_result(result, body));
+  TEST_ASSERT_TRUE(body.view().find("\"session_id\":\"\"") !=
+                   std::string_view::npos);
+  TEST_ASSERT_TRUE(body.view().find("\"result\":null") !=
+                   std::string_view::npos);
+}
+
+void test_sessionless_mq135_evidence_command_reaches_result_post() {
+  DeviceControlCommand command{};
+  TEST_ASSERT_TRUE(decode_device_control_command(
+      kSessionlessMq135EvidenceWire, 1U, command));
+
+  Clock clock{};
+  Transport transport{};
+  transport.command = command;
+  Executor executor{};
+  DeviceControlPoller poller(policy(), clock, transport, executor);
+  TEST_ASSERT_TRUE(poller.begin("DEV-1", "token"));
+  TEST_ASSERT_EQUAL_INT(DeviceControlPollOutcome::Executed, poller.poll());
+  TEST_ASSERT_EQUAL_UINT32(1U, executor.calls);
+  TEST_ASSERT_EQUAL_INT(DeviceControlPollOutcome::ResultSent, poller.poll());
+  TEST_ASSERT_EQUAL_UINT32(1U, transport.result_starts);
+}
+
+void test_sessionless_mq135_evidence_result_recovers_for_post() {
+  DeviceControlCommand command{};
+  TEST_ASSERT_TRUE(decode_device_control_command(
+      kSessionlessMq135EvidenceWire, 1U, command));
+  DeviceControlResult result{};
+  result.status = DeviceControlStatus::Failed;
+  TEST_ASSERT_TRUE(result.command_id.assign(command.command_id.view()));
+  TEST_ASSERT_TRUE(result.error_code.assign("EXECUTION_FAILED"));
+  constexpr std::string_view no_result{"null"};
+  result.payload_size = no_result.size();
+  std::copy(no_result.begin(), no_result.end(), result.payload.begin());
+
+  Clock clock{};
+  Transport transport{};
+  transport.command_available = false;
+  transport.command_status = 204;
+  Executor executor{};
+  Journal journal{};
+  journal.command = command;
+  journal.result = result;
+  journal.present = true;
+  DeviceControlPoller poller(policy(), clock, transport, executor, &journal);
+  TEST_ASSERT_TRUE(poller.begin("DEV-1", "token"));
+  TEST_ASSERT_EQUAL_INT(DeviceControlPollOutcome::ResultSent, poller.poll());
+  TEST_ASSERT_EQUAL_UINT32(0U, transport.command_starts);
+  TEST_ASSERT_EQUAL_UINT32(1U, transport.result_starts);
+  TEST_ASSERT_FALSE(journal.present);
+
+  DeviceControlCommand session_bound_command = command;
+  TEST_ASSERT_TRUE(session_bound_command.operation.assign("commit"));
+  DeviceControlResult session_bound_result = result;
+  Journal invalid_journal{};
+  invalid_journal.command = session_bound_command;
+  invalid_journal.result = session_bound_result;
+  invalid_journal.present = true;
+  Transport invalid_transport{};
+  Executor invalid_executor{};
+  DeviceControlPoller invalid_poller(policy(), clock, invalid_transport,
+                                     invalid_executor, &invalid_journal);
+  TEST_ASSERT_TRUE(invalid_poller.begin("DEV-1", "token"));
+  TEST_ASSERT_FALSE(invalid_journal.present);
+  TEST_ASSERT_EQUAL_UINT32(0U, invalid_transport.result_starts);
+}
+
 void test_canonical_uint64_profile_versions_are_exact() {
   uint64_t value{0U};
   TEST_ASSERT_TRUE(parse_canonical_uint64("18446744073709551615", value));
@@ -418,6 +503,9 @@ void setup() {
   RUN_TEST(test_oversized_command_never_reaches_executor);
   RUN_TEST(test_wire_command_requires_bounded_relative_expiry);
   RUN_TEST(test_wire_result_rejects_oversized_or_invalid_payload);
+  RUN_TEST(test_sessionless_mq135_evidence_result_is_serializable);
+  RUN_TEST(test_sessionless_mq135_evidence_command_reaches_result_post);
+  RUN_TEST(test_sessionless_mq135_evidence_result_recovers_for_post);
   RUN_TEST(test_canonical_uint64_profile_versions_are_exact);
   RUN_TEST(test_executor_profile_version_field_requires_one_json_string);
   UNITY_END();

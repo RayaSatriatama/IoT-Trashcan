@@ -84,3 +84,10 @@ Gunakan hanya konfigurasi kandidat yang masih menautkan perbaikan allocator mini
 Build sukses bukan izin flash. Pemasangan aplikasi, readback, boot, TLS tervalidasi, authenticated ingest dari boot baru, ACK/checkpoint/reclaim fisik, dan render dashboard adalah gerbang terpisah. Tidak ada erase/format, perubahan partisi/bootloader, token, atau calibration COMMIT yang diizinkan oleh flag ini.
 
 Marker startup `HISTORICAL_ARCHIVE_PRESERVED` hanya melaporkan jalur recovery berhasil dan ukuran file yang dipertahankan, bukan hash atau bukti fisik byte-identik. Bukti byte preservation host dan readback fisik tidak boleh dicampur.
+
+Pada mode prioritas web, ketujuh file aktif memakai namespace `web-b<32-hex-boot-id>` dan tetap terpisah dari `/sigap/web-sync-v3.*` generasi sebelumnya. File lama, termasuk semua sidecar dan suffix turunannya, tetap `UNDELIVERED`: hanya dihitung sebagai retained bytes, tidak dibuka untuk penulisan, dipulihkan, diganti nama, di-ACK, atau dihapus. Timestamp lama tidak ditulis ulang. Readback fisik dan gerbang pengiriman/ACK tetap perlu diverifikasi saat pemasangan; uji host bukan bukti fisik.
+
+
+LittleFS boot-scoped active filenames use the full 128-bit boot identity encoded as unpadded Base64URL; this is a lossless 22-character token, not a hash or truncation. The persisted filesystem superblock has `name_max=32`; a larger SDK setting does not change that on-disk limit. The seven one-letter active extensions and recovery suffixes remain within 32-character basename limit. Older hex-named boots and fixed web-sync files remain retained and counted as `UNDELIVERED`; no format, erase, or historical-file mutation is performed.
+
+Normal ACK reclaim still uses its original transaction and recovery sequence. Only new compact boot-archive paths map the overlong `.migrate.bak` sidecar to `.mb`; legacy paths retain `.migrate.bak`, and existing backups or older recovery algorithms are not renamed or rewritten.

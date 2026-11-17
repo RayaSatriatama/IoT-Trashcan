@@ -21,10 +21,19 @@
 #include "processing_runtime.h"
 #ifdef ARDUINO
 #include "runtime_debug_observer.h"
+#include "utc_source.h"
 #endif
 #include "models/model_lifecycle.h"
 #include "maintenance/model_runtime.h"
 #include "maintenance/ble_calibration_backend.h"
+#if SIGAP_PROTOTYPE_OPERATION
+#include "prototype_commissioning.h"
+#include "prototype_live_runtime.h"
+#if SIGAP_LIVE_NO_BACKLOG
+#include "latest_sample_runtime.h"
+#endif
+#include "models/prototype_defaults.h"
+#endif
 #ifdef ARDUINO
 #include "debug/http_transport.h"
 #include "debug/commands.h"
@@ -38,18 +47,30 @@
 #include "storage/archive_media.h"
 #include "storage/legacy_pending_store.h"
 #include "storage/live_archive_store.h"
+#include "storage/live_delivery_paths.h"
 #include "telemetry_archive/live_batch_runtime.h"
 #include <type_traits>
 #include "archive_runtime.h"
 #include "telemetry_archive/ack_journal_store.h"
 #include "telemetry_archive/runtime.h"
 #include "network/network.h"
+#ifdef ARDUINO
+#include "network/async_ack_source.h"
+#endif
 #if defined(ARDUINO) && defined(SIGAP_NETWORK_ENDPOINT) && \
     defined(SIGAP_NETWORK_CA_CERT)
 #include "network/https_transport.h"
 #endif
 
 namespace sigap {
+
+#if SIGAP_PROTOTYPE_OPERATION
+#if SIGAP_LIVE_NO_BACKLOG
+using PrototypeDeliveryRuntime = LatestSampleRuntime;
+#else
+using PrototypeDeliveryRuntime = PrototypeLiveBatchRuntime;
+#endif
+#endif
 
 // Adapts the durable batch runtime to the network worker without exposing
 // mutable archive state. The runtime remains the sole owner of ACK/reclaim
@@ -350,6 +371,7 @@ class SigapApp final {
   provisioning::NvsSecretStore secret_store_{};
   acquisition::BootRuntimeIdentity boot_identity_{};
 #ifdef ARDUINO
+  storage::live_delivery::BootPaths live_paths_{boot_identity_.boot_id};
   debug::RuntimeIoGate io_gate_{};
   ApplicationDebugLock debug_lock_{};
   debug::DebugService debug_service_{boot_identity_.boot_id,
@@ -359,6 +381,9 @@ class SigapApp final {
   debug::UsbDebugSink debug_usb_sink_{debug_service_, debug_usb_writer_};
   std::optional<debug::DebugHttpsTransport> debug_transport_{};
   std::optional<debug::DebugHttpWorker> debug_worker_{};
+#endif
+#ifdef ARDUINO
+  ApplicationUtcSource utc_source_{};
 #endif
   acquisition::RecordContext record_context_{};
   acquisition::RecordFactory record_factory_;
@@ -380,7 +405,13 @@ class SigapApp final {
   telemetry_archive::BatchJsonBuilder legacy_eligibility_builder_{};
   telemetry_archive::ImmutableBatch legacy_eligibility_scratch_{};
   std::conditional_t<build::kLiveArchiveSplit, storage::LiveArchiveStore,
-                     storage::LegacyPendingArchiveStore> littlefs_store_{};
+                     storage::LegacyPendingArchiveStore> littlefs_store_{
+      storage::live_delivery::kPriorityFresh ? live_paths_.archive.data() :
+          (build::kLiveArchiveSplit ? storage::live_delivery::kArchive : "/sigap/archive.bin"),
+      storage::live_delivery::kPriorityFresh ? live_paths_.checkpoint.data() :
+          (build::kLiveArchiveSplit ? storage::live_delivery::kCheckpoint : "/sigap/archive.ckp"),
+      storage::live_delivery::kPriorityFresh ? live_paths_.gaps.data() :
+          (build::kLiveArchiveSplit ? storage::live_delivery::kGaps : "/sigap/gaps.bin")};
   bool legacy_retention_reported_{false};
 #else
   storage::LittleFsArchiveStore littlefs_store_{};
@@ -405,7 +436,13 @@ class SigapApp final {
   AckJournal ack_journal_{};
 #endif
   BatchRuntime batch_runtime_{};
-  ArchiveBatchNetworkSource<BatchRuntime> network_source_;
+  ArchiveBatchNetworkSource<BatchRuntime> network_source_{batch_runtime_};
+#if SIGAP_PROTOTYPE_OPERATION
+  ArchiveBatchNetworkSource<PrototypeDeliveryRuntime> prototype_network_source_{prototype_batch_runtime_};
+#endif
+#ifdef ARDUINO
+  network::AsyncAckBatchSource async_network_source_{network_source_};
+#endif
   ApplicationNetworkClock network_clock_{};
 #ifdef ARDUINO
   ApplicationProvisioningClock provisioning_clock_{};
@@ -438,6 +475,21 @@ class SigapApp final {
   models::SafetyModelProfile safety_model_{};
   bool fis_model_present_{false};
   bool safety_model_present_{false};
+#if SIGAP_PROTOTYPE_OPERATION
+  // The latest-only mode has no RAM archive or replay queue.
+#if !SIGAP_LIVE_NO_BACKLOG
+  storage::MemoryArchiveStore<16U> prototype_archive_store_{6ULL * 1024ULL * 1024ULL};
+#endif
+  // Prototype volatile batch runtime
+  PrototypeDeliveryRuntime prototype_batch_runtime_{};
+  // Prototype commissioning state
+  bool prototype_commissioning_done_{false};
+  sigap::CommissioningResult prototype_commissioning_result_{};
+  // Prototype model instances (TEST_ONLY, only used when stored models absent)
+  models::FisModelProfile prototype_fis_model_{};
+  models::SafetyModelProfile prototype_safety_model_{};
+  bool prototype_models_built_{false};
+#endif
 #ifdef ARDUINO
   std::array<uint32_t, 4U> observed_model_versions_{};
   std::array<uint8_t, 4U> observed_model_states_{};
@@ -476,6 +528,15 @@ class SigapApp final {
   uint64_t previous_loop_entry_us_{0U};
   uint8_t last_loop_gap_class_{255U};
   bool loop_gap_baseline_valid_{false};
+  uint64_t last_ack_worker_diagnostic_us_{0U};
+  uint64_t last_flow_diagnostic_us_{0U};
+  uint64_t last_flow_pending_bytes_{0U};
+#if SIGAP_PROTOTYPE_OPERATION
+  network::NetworkOutcome last_network_outcome_{network::NetworkOutcome::Idle};
+  uint64_t network_poll_count_{0U};
+  uint64_t network_delivered_count_{0U};
+#endif
+  bool samples_first_drain_{true};
 #endif
 
   void refresh_model_profiles() noexcept;

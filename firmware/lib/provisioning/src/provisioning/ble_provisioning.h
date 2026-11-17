@@ -59,7 +59,7 @@ struct BleCommand final {
   std::array<char, 65> password{};
   std::size_t ssid_size{0U};
   std::size_t password_size{0U};
-  std::array<char, 128> calibration_arguments{};
+  std::array<char, 1024> calibration_arguments{};
   std::size_t calibration_arguments_size{0U};
   debug::Cursor debug_cursor{};
   debug::Level debug_level{debug::Level::Info};
@@ -206,10 +206,10 @@ class BleProvisioningSession final {
   BleParseStatus receive(std::string_view frame, BleResponse& response) noexcept;
 
  private:
-  static constexpr std::size_t kMaxCommandBytes{192U};
-  static constexpr std::size_t kMaxResponseBytes{512U};
+  static constexpr std::size_t kMaxCommandBytes{1024U};
+  static constexpr std::size_t kMaxResponseBytes{2048U};
   static constexpr std::size_t kMaxWirePacketBytes{20U};
-  static constexpr std::size_t kMaxChunks{128U};
+  static constexpr std::size_t kMaxChunks{512U};
 
   void status_response(BleResponse& response) noexcept;
   void device_identity_response(BleResponse& response) noexcept;

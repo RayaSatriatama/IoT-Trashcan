@@ -24,6 +24,8 @@ type routerConfig struct {
 	telemetryArchive    http.Handler
 	telemetryCurrent    http.Handler
 	telemetryRecords    http.Handler
+	sensorHistory       http.Handler
+	archiveQuery        *telemetryarchive.ArchiveQuery
 	deviceControl       http.Handler
 	deviceDebug         http.Handler
 	simulation          bool
@@ -81,6 +83,7 @@ func WithTelemetryArchive(service *telemetryarchive.Service, query *telemetryarc
 		config.telemetryArchive = NewTelemetryArchiveQueryHandler(query, service)
 		config.telemetryCurrent = newTelemetryCurrentHandler(query, service)
 		config.telemetryRecords = newTelemetryRecordArchiveHandler(query, service)
+		config.archiveQuery = query
 	}
 }
 
@@ -91,6 +94,9 @@ func NewRouter(service IngestService, options ...RouterOption) http.Handler {
 		if option != nil {
 			option(&config)
 		}
+	}
+	if config.readAPI != nil && config.archiveQuery != nil {
+		config.sensorHistory = newSensorHistoryHandler(config.readAPI, config.archiveQuery)
 	}
 	mux := http.NewServeMux()
 	mux.Handle("POST /api/ingest", NewIngestHandler(service))
@@ -111,6 +117,9 @@ func NewRouter(service IngestService, options ...RouterOption) http.Handler {
 		mux.Handle("GET /api/devices", http.HandlerFunc(config.readAPI.Devices))
 		mux.Handle("GET /api/devices/{id}", http.HandlerFunc(config.readAPI.Device))
 		mux.Handle("GET /api/devices/{id}/research", http.HandlerFunc(config.readAPI.Research))
+		if config.sensorHistory != nil {
+			mux.Handle("GET /api/devices/{id}/sensor-history", config.sensorHistory)
+		}
 		mux.Handle("GET /api/history", http.HandlerFunc(config.readAPI.History))
 		mux.Handle("GET /api/export.csv", http.HandlerFunc(config.readAPI.ExportCSV))
 	}

@@ -11,6 +11,9 @@ import { textStyles } from '../../lib/ui/typography';
 import type { BleCalibrationResponse } from '../../lib/ble/protocol';
 import type { DeviceBleSession } from '../../lib/ble/device-session';
 import { Settings } from '../../lib/ui/icons';
+import { decodeMq135GasResult, mq135EvidenceReady, mq135ProfileReferences, type Mq135GasResult } from '../../lib/calibration/mq135';
+import { mq135ReferenceParameters } from '../../lib/calibration/mq135Reference';
+import { Mq135GasDiagnostics, Mq135GasDiagnosticsUnavailable, Mq135ReferenceFields } from './Mq135Calibration';
 
 export type CalibrationWizardProps = {
   deviceId: string;
@@ -40,6 +43,7 @@ export type BleCalibrationAdapter = {
   calibrationPreview: (sensor: string) => Promise<BleCalibrationResponse>;
   calibrationCommit: (sensor: string, expected?: Record<string, string | number | boolean>) => Promise<BleCalibrationResponse>;
   calibrationCancel: () => Promise<BleCalibrationResponse>;
+  calibrationRollback?: (sensor: string, version: string, expectedHash?: string) => Promise<BleCalibrationResponse>;
 };
 
 function fieldValue(value: string): number | undefined {
@@ -189,7 +193,7 @@ export function canCommitApprovedPreview(
 
 function storageKey(deviceId: string, sensorId: string): string { return `sigap.calibration.${deviceId}.${sensorId}`; }
 
-export function CalibrationWizard({ deviceId, sensorId, diagnostic, api, apiFactory = createCalibrationApi, bleClient = null, bleConnected = false, peerBusy = false, onConnectBle, transport = 'https', onDiagnosticRefresh, diagnosticAuthoritative = false, onControlActivity, compactTrigger = false }: CalibrationWizardProps) {
+export function CalibrationWizard({ deviceId, sensorId: physicalSensorId, diagnostic, api, apiFactory = createCalibrationApi, bleClient = null, bleConnected = false, peerBusy = false, onConnectBle, transport = 'https', onDiagnosticRefresh, diagnosticAuthoritative = false, onControlActivity, compactTrigger = false }: CalibrationWizardProps) {
   const [open, setOpen] = useState(false);
   const [step, setStep] = useState<CalibrationWizardStep>('diagnostics');
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -213,6 +217,15 @@ export function CalibrationWizard({ deviceId, sensorId, diagnostic, api, apiFact
   const [bleDiagnostic, setBleDiagnostic] = useState<SensorDiagnostic | null>(null);
   const [reading, setReading] = useState(false);
   const readAttempt = useRef(0);
+  const [gasMode,setGasMode] = useState(false);
+  const [gasEvidence,setGasEvidence] = useState<{value:Mq135GasResult;startedAtMs:number}|null>(null);
+  const [gasCaptures,setGasCaptures] = useState(0);
+  const acknowledgedCaptures = useRef(new Set<string>());
+  const [rollbackApproval,setRollbackApproval] = useState<string|null>(null);
+  const sensorId:CalibrationSensorId = physicalSensorId === 'mq135' && gasMode ? 'mq135_gas' : physicalSensorId;
+  const isGas = sensorId === 'mq135_gas';
+  const gasReferences = gasEvidence ? mq135ProfileReferences(gasEvidence.value) : null;
+  const rollbackKey = gasReferences ? JSON.stringify([deviceId,sensorId,gasReferences.activeHash,gasReferences.previousHash]) : null;
   const activityActive = open || reading || busy || (sessionId !== null && !TERMINAL_STATES.includes(sessionState));
   useEffect(() => {
     if (!activityActive || !onControlActivity) return;
@@ -236,7 +249,9 @@ export function CalibrationWizard({ deviceId, sensorId, diagnostic, api, apiFact
     context !== null && operationContext.current === context && !context.signal.aborted &&
     renderContext.every((value, index) => Object.is(value, latestRenderContext.current[index]));
   const activeDiagnostic = transport === 'https' ? securedDiagnostic : (bleDiagnostic ?? (diagnosticAuthoritative ? diagnostic : null));
-  const ready = canBeginCalibration(activeDiagnostic) && capabilities !== null;
+  const ready = capabilities !== null && (isGas
+    ? gasEvidence !== null && mq135EvidenceReady(gasEvidence.value)
+    : canBeginCalibration(activeDiagnostic));
 
   useEffect(() => {
     // A sensor/device/transport switch cannot reuse a proposal or session
@@ -252,7 +267,8 @@ export function CalibrationWizard({ deviceId, sensorId, diagnostic, api, apiFact
     setCapabilities(null);
     setSecuredDiagnostic(null);
     setBleDiagnostic(null);
-    setFields({});
+    setFields({}); setGasEvidence(null); setGasCaptures(0); setRollbackApproval(null);
+    acknowledgedCaptures.current.clear();
     // The activity effect keeps pending work leased until busy actually clears.
   }, [deviceId, sensorId, transport]);
 
@@ -281,7 +297,7 @@ export function CalibrationWizard({ deviceId, sensorId, diagnostic, api, apiFact
     if (transport !== 'ble' || bleConnected) return;
     // A disconnected BLE session cannot be resumed safely from browser state.
     // Clear proposal/session overlays so reconnect starts from device evidence.
-    setBleDiagnostic(null);
+    setBleDiagnostic(null); setGasEvidence(null); setRollbackApproval(null);
     setCapabilities(null);
     setPreview(null);
     setApprovedPreview(null);
@@ -308,6 +324,20 @@ export function CalibrationWizard({ deviceId, sensorId, diagnostic, api, apiFact
     setBusy(true); setError(null); commandInFlight.current = true;
     const release = onControlActivity?.('https-calibration');
     try {
+      if (isGas) {
+        setGasEvidence(null); setRollbackApproval(null);
+        await loadCapabilities(client,context);
+        if (!isCurrentContext(context)) return;
+        const startedAtMs = performance.now();
+        const queued = await client.submit({device_id:deviceId,sensor_id:sensorId,operation:'EVIDENCE',payload:{}},context.signal);
+        if (!isCurrentContext(context)) return;
+        const command = queued.command.status === 'QUEUED' || queued.command.status === 'DELIVERED'
+          ? await pollCommand(client,queued.command.command_id,context) : queued.command;
+        if (!isCurrentContext(context)) return;
+        const value = command?.status === 'ACCEPTED' ? decodeMq135GasResult(command.result) : null;
+        if (!value) throw new Error('Bukti MQ135 belum tersedia atau tidak valid.');
+        setGasEvidence({value,startedAtMs}); return;
+      }
       const response = await client.getDiagnostics(deviceId, sensorId, context.signal);
       if (!isCurrentContext(context)) return;
       if (!response.diagnostic) throw new Error('Diagnostik terautentikasi tidak tersedia');
@@ -320,7 +350,15 @@ export function CalibrationWizard({ deviceId, sensorId, diagnostic, api, apiFact
   const loadBleDiagnostic = async (context: AbortController) => {
     if (!isCurrentContext(context) || !bleClient?.calibrationEvidence) return;
     try {
-      const value = parseBleDiagnostic(await bleClient.calibrationEvidence(sensorId), sensorId);
+      const startedAtMs = performance.now();
+      if (isGas) setGasEvidence(null);
+      const response = await bleClient.calibrationEvidence(sensorId);
+      if (isGas) {
+        const value = response.sensor === sensorId && response.status === 'ACCEPTED' ? decodeMq135GasResult(response.gas) : null;
+        if (!value) throw new Error('Bukti MQ135 dari BLE tidak valid.');
+        if (isCurrentContext(context)) setGasEvidence({value,startedAtMs}); return;
+      }
+      const value = parseBleDiagnostic(response, sensorId);
       if (isCurrentContext(context) && value) setBleDiagnostic(value);
     } catch (cause) { if (isCurrentContext(context)) setError(redactCalibrationError(cause)); }
   };
@@ -346,7 +384,15 @@ export function CalibrationWizard({ deviceId, sensorId, diagnostic, api, apiFact
         if (!capabilities) throw new Error('Kapabilitas perangkat tidak valid');
         setCapabilities(capabilities);
         if (bleClient.calibrationEvidence) {
-          const diagnostic = parseBleDiagnostic(await bleClient.calibrationEvidence(sensorId), sensorId);
+          const startedAtMs = performance.now();
+          const response = await bleClient.calibrationEvidence(sensorId);
+          if (!current) return;
+          if (isGas) {
+            const value = response.sensor === sensorId && response.status === 'ACCEPTED' ? decodeMq135GasResult(response.gas) : null;
+            if (!value) throw new Error('Bukti MQ135 dari BLE tidak valid.');
+            setGasEvidence({value,startedAtMs}); return;
+          }
+          const diagnostic = parseBleDiagnostic(response, sensorId);
           if (current && diagnostic) setBleDiagnostic(diagnostic);
         }
       } catch (cause) { if (current) setError(redactCalibrationError(cause)); }
@@ -370,7 +416,12 @@ export function CalibrationWizard({ deviceId, sensorId, diagnostic, api, apiFact
       setApprovedPreview(null);
     }
     const next = nextStepAfterOperation(command.operation, command.status === 'COMMITTED' ? 'COMMITTED' : state, step);
-    setStep(next);
+    if (isGas && command.operation.toUpperCase() === 'CAPTURE' && command.status === 'CAPTURING') {
+      if (!acknowledgedCaptures.current.has(command.command_id)) {
+        acknowledgedCaptures.current.add(command.command_id); setGasCaptures(count=>count+1);
+      }
+      setStep('capture');
+    } else setStep(next);
     if (TERMINAL_STATES.includes(command.status)) {
       if (command.status === 'COMMITTED' || command.status === 'CANCELLED') onDiagnosticRefresh?.();
       if (command.status === 'CANCELLED') { setPreview(null); setApprovedPreview(null); }
@@ -405,6 +456,10 @@ export function CalibrationWizard({ deviceId, sensorId, diagnostic, api, apiFact
   const submit = async (operation: CalibrationCommandRequest['operation'], extra: Partial<CalibrationCommandRequest> = {}) => {
     const context = operationContext.current;
     if (!isCurrentContext(context) || commandInFlight.current) return;
+    if (operation === 'ROLLBACK' && (!isGas || !rollbackKey || rollbackApproval !== rollbackKey || !sessionId ||
+        !gasReferences?.previousHash || extra.expected_profile_hash !== gasReferences.activeHash)) {
+      setError('Persetujuan pemulihan untuk profil aktif diperlukan.'); return;
+    }
     if (operation === 'COMMIT') {
       if (!canCommitApprovedPreview(preview, deviceId, sensorId, approvedPreview)) {
         setError('Persetujuan proposal terbaru diperlukan sebelum menyimpan.');
@@ -424,15 +479,17 @@ export function CalibrationWizard({ deviceId, sensorId, diagnostic, api, apiFact
             ...(extra.references ?? {}),
             ...(extra.parameters ?? {}),
           })
-          : operation === 'SET_CRITERIA' ? await bleClient.calibrationCriteria(sensorId, extra.criteria ?? {})
-          : operation === 'CAPTURE' ? await bleClient.calibrationCapture(sensorId, anchor as 'tare' | 'reference' | 'empty' | 'full')
+          : operation === 'SET_CRITERIA' ? await bleClient.calibrationCriteria(sensorId, extra.parameters ?? extra.criteria ?? {})
+          : operation === 'CAPTURE' ? await bleClient.calibrationCapture(sensorId, isGas ? 'reference' : anchor as 'tare' | 'reference' | 'empty' | 'full')
           : operation === 'VALIDATE' ? await bleClient.calibrationValidate(sensorId)
           : operation === 'PREVIEW' ? await bleClient.calibrationPreview(sensorId)
           : operation === 'COMMIT' ? await bleClient.calibrationCommit(sensorId, {
               expected_profile_hash: extra.expected_profile_hash ?? preview?.proposal_hash ?? '',
               expected_profile_version: extra.expected_profile_version ?? preview?.profile_version ?? '',
             })
-          : await bleClient.calibrationCancel();
+          : operation === 'ROLLBACK' && bleClient.calibrationRollback ? await bleClient.calibrationRollback(sensorId,extra.expected_profile_version??'',extra.expected_profile_hash)
+          : operation === 'CANCEL' ? await bleClient.calibrationCancel()
+          : (()=>{throw new Error('Operasi tidak didukung adapter BLE.');})();
         if (!isCurrentContext(context)) return;
         const parsed = parseBleResult(output);
         if (parsed.error) throw new Error(parsed.error);
@@ -441,10 +498,11 @@ export function CalibrationWizard({ deviceId, sensorId, diagnostic, api, apiFact
           setPreview(parsed.preview);
           setApprovedPreview(null);
         }
-        const stateByOperation: Record<CalibrationCommandRequest['operation'], CalibrationState> = { START: 'CAPTURING', SET_CRITERIA: 'CAPTURING', CAPTURE: 'VALIDATING', VALIDATE: 'PREVIEW_READY', PREVIEW: 'PREVIEW_READY', COMMIT: 'COMMITTED', CANCEL: 'CANCELLED', ROLLBACK: 'FAILED' };
+        const stateByOperation: Record<CalibrationCommandRequest['operation'], CalibrationState> = { START: 'CAPTURING', SET_CRITERIA: 'CAPTURING', CAPTURE: 'VALIDATING', VALIDATE: 'PREVIEW_READY', PREVIEW: 'PREVIEW_READY', COMMIT: 'COMMITTED', CANCEL: 'CANCELLED', ROLLBACK: 'COMMITTED', EVIDENCE:'ACCEPTED', ACTIVE_PROFILE:'ACCEPTED', HISTORY:'ACCEPTED' };
         const state = parsed.state ?? stateByOperation[operation];
         setSessionState(state);
-        setStep(nextStepAfterOperation(operation, state, step));
+        if (isGas && operation === 'CAPTURE') {setGasCaptures(count=>count+1);setStep('capture');}
+        else setStep(nextStepAfterOperation(operation, state, step));
         if (state === 'CANCELLED') { setPreview(null); setApprovedPreview(null); }
         if (state === 'COMMITTED' || state === 'CANCELLED') setPersistedCommand(null, null);
         await loadBleDiagnostic(context);
@@ -453,7 +511,7 @@ export function CalibrationWizard({ deviceId, sensorId, diagnostic, api, apiFact
       }
       if (!client) throw new Error('Operator session is unavailable');
       const effectiveSessionId = operation === 'START' ? (sessionId ?? newSessionId()) : sessionId;
-      const response = await client.submit({ device_id: deviceId, sensor_id: sensorId, operation, session_id: effectiveSessionId ?? undefined, ...extra }, context.signal);
+      const response = await client.submit({ device_id: deviceId, sensor_id: sensorId, operation, session_id: effectiveSessionId ?? undefined, ...extra, ...(isGas && operation === 'CAPTURE' ? {payload:{anchor:'reference'}} : {}) }, context.signal);
       if (!isCurrentContext(context)) return;
       const returnedId = response.command?.command_id ?? null;
       if (returnedId || response.session_id || effectiveSessionId) {
@@ -485,6 +543,7 @@ export function CalibrationWizard({ deviceId, sensorId, diagnostic, api, apiFact
 
   const start = () => {
     if (!capabilities) { setError('Kapabilitas sensor belum dikonfirmasi oleh perangkat.'); return; }
+    if (isGas) {setGasCaptures(0);void submit('START');return;}
     const refs = capabilities.references;
     const references: Record<string, number> = {};
     for (const field of refs.filter((value) => value.required)) {
@@ -503,6 +562,11 @@ export function CalibrationWizard({ deviceId, sensorId, diagnostic, api, apiFact
   };
   const configure = () => {
     if (!capabilities) { setError('Kapabilitas sensor belum dikonfirmasi oleh perangkat.'); return; }
+    if (isGas) {
+      try {void submit('SET_CRITERIA',{parameters:mq135ReferenceParameters({...fields,response_mode:'normalized'})});}
+      catch(cause) {setError(redactCalibrationError(cause));}
+      return;
+    }
     const criteriaValues: Record<string, number> = {};
     for (const field of capabilities.criteria.filter((value) => value.required)) {
       const parsed = fieldValue(fields[field.name] ?? (field.name === 'stability_window' ? criteria : ''));
@@ -530,28 +594,33 @@ export function CalibrationWizard({ deviceId, sensorId, diagnostic, api, apiFact
     <YStack alignSelf={compactTrigger ? 'flex-end' : 'flex-start'} $deviceToolsMobile={compactTrigger ? { alignSelf: 'stretch' } : undefined}><AppButton variant={compactTrigger ? 'primary' : 'secondary'} size="sm" fullWidth={compactTrigger} onPress={() => { setOpen(true); setError(null); }} ariaLabel={`Kalibrasi ${sensorId}`}>{compactTrigger ? <><Settings size={16} color="#FFFFFF" aria-hidden /> Mulai</> : 'Kalibrasi sensor'}</AppButton></YStack>
     {open ? <Card role="dialog" aria-label="Wizard kalibrasi sensor" borderWidth={1} borderColor="$borderColor" backgroundColor="$surface" borderRadius="$4" padding="$4" gap="$3">
       <XStack justifyContent="space-between" alignItems="center" gap="$2" flexWrap="wrap"><YStack flex={1} minWidth={180} gap="$1"><Text color="$color" {...textStyles.sectionTitle}>Kalibrasi sensor</Text><Text color="$colorMuted" {...textStyles.bodySecondary}>{calibrationSensorLabel(sensorId)} · {transport === 'ble' ? 'BLE lokal' : 'HTTPS Wi-Fi'}</Text></YStack><DescriptionHint description={`Perangkat ${deviceId}. Kalibrasi memakai bukti perangkat, bukan data sintetis. Referensi fisik dan proposal tervalidasi tetap diperlukan; otorisasi HTTPS terpisah dari BLE.`} ariaLabel="Info bukti kalibrasi" /><AppButton variant="ghost" size="sm" onPress={() => setOpen(false)} ariaLabel="Tutup wizard kalibrasi">Tutup</AppButton></XStack>
+      {physicalSensorId === 'mq135' ? <XStack gap="$2" flexWrap="wrap"><AppButton variant="secondary" size="sm" ariaLabel="Kalibrasi ADC MQ135" aria-pressed={!gasMode} disabled={busy || reading || sessionId !== null} onPress={()=>setGasMode(false)}>ADC</AppButton><AppButton variant="secondary" size="sm" ariaLabel="Respons Gas Relatif" aria-pressed={gasMode} disabled={busy || reading || sessionId !== null} onPress={()=>setGasMode(true)}>Respons Gas Relatif</AppButton></XStack> : null}
       <DeviceWorkflowSteps steps={CALIBRATION_STEPS} current={CALIBRATION_STEPS.findIndex(item => item.id === step)} />
       <Text color="$colorMuted" {...textStyles.caption} role="status">{calibrationStateLabel(sessionState)}</Text>
       {transport === 'ble' && peerBusy ? <Text role="status" color="$colorMuted">Menunggu operasi BLE selesai...</Text> : null}
       {transport === 'ble' && !bleConnected ? <YStack gap="$2"><Text color="$statusWaspada">BLE belum terhubung.</Text><AppButton onPress={() => void connectBle()} disabled={busy || peerBusy || !onConnectBle} ariaLabel="Hubungkan BLE kalibrasi">Hubungkan BLE</AppButton></YStack> : null}
       {transport === 'https' && !api ? <YStack gap="$2"><Text color="$color" fontWeight="700">Sesi operator</Text><Input minHeight={44} fontSize={16} value={operatorToken} onChangeText={(value) => { setOperatorToken(value); setSecuredDiagnostic(null); }} placeholder="Token sesi operator (tidak disimpan)" type="password" secureTextEntry aria-label="Token sesi operator" maxLength={512} autoCapitalize="none" /><Input minHeight={44} fontSize={16} value={csrfToken} onChangeText={setCsrfToken} placeholder="Token CSRF sesi (tidak disimpan)" type="password" secureTextEntry aria-label="Token CSRF sesi operator" maxLength={512} autoCapitalize="none" /><AppButton variant="secondary" size="sm" onPress={() => void loadSecuredDiagnostic()} disabled={busy || !operatorToken.trim()} ariaLabel="Muat diagnostik terautentikasi">Muat diagnostik terautentikasi</AppButton></YStack> : null}
       {transport === 'https' && commandId ? <YStack gap="$2"><Text color="$colorMuted" fontSize="$2">Perintah {commandId} · status {lastCommand?.status ?? sessionState}</Text><AppButton variant="ghost" size="sm" onPress={() => void recoverCommand()} disabled={busy || (!api && !operatorToken.trim())} ariaLabel="Pulihkan status perintah">Pulihkan status perintah</AppButton></YStack> : null}
-      {!activeDiagnostic ? <Text color="$colorMuted">Diagnostik belum tersedia.</Text> : <>
-        <Text color={ready ? '$statusNormal' : '$statusWaspada'}>{ready ? 'Bukti raw segar tersedia untuk validasi.' : 'Bukti atau kapabilitas perangkat belum layak untuk capture. Periksa quality, CRC, identitas, freshness, dan kapabilitas.'}</Text>
-        {capabilities ? <><YStack gap="$2"><Text color="$color" fontWeight="700">Referensi fisik</Text>{capabilities.references.map((field) => <Input key={field.name} minHeight={44} fontSize={16} value={fields[field.name] ?? (field.name === 'primary' ? reference : '')} onChangeText={(value) => { setFields((previous) => ({ ...previous, [field.name]: value })); if (field.name === 'primary') setReference(value); }} placeholder={`${field.name} (${field.unit})${field.required ? ' wajib' : ''}`} keyboardType="numeric" aria-label={`Referensi ${field.name}`} maxLength={32} />)}</YStack>
+      {isGas ? gasEvidence ? <Mq135GasDiagnostics value={gasEvidence.value} startedAtMs={gasEvidence.startedAtMs}/> : <Mq135GasDiagnosticsUnavailable/> : null}
+      {transport === 'https' && api ? <AppButton variant="secondary" size="sm" onPress={()=>void loadSecuredDiagnostic()} disabled={busy || reading} ariaLabel="Muat bukti perangkat">Muat Bukti</AppButton> : null}
+      {(!isGas && !activeDiagnostic) || (isGas && !gasEvidence) ? <Text color="$colorMuted">Diagnostik belum tersedia.</Text> : <>
+        <Text color={ready ? '$statusNormal' : '$statusWaspada'}>{isGas ? (ready ? 'Profil ADC dan raw tersedia. Freshness serta stabilitas setiap sampel tetap diperiksa perangkat setelah kriteria dikonfirmasi.' : 'Profil ADC terukur dan bukti perangkat yang valid diperlukan.') : ready ? 'Bukti raw segar tersedia untuk validasi.' : 'Bukti atau kapabilitas perangkat belum layak untuk capture. Periksa quality, CRC, identitas, freshness, dan kapabilitas.'}</Text>
+        {isGas ? <Mq135ReferenceFields values={fields} onChange={(name,value)=>setFields(previous=>({...previous,[name]:value}))} disabled={busy || step!=='criteria'}/> : capabilities ? <><YStack gap="$2"><Text color="$color" fontWeight="700">Referensi fisik</Text>{capabilities.references.map((field) => <Input key={field.name} minHeight={44} fontSize={16} value={fields[field.name] ?? (field.name === 'primary' ? reference : '')} onChangeText={(value) => { setFields((previous) => ({ ...previous, [field.name]: value })); if (field.name === 'primary') setReference(value); }} placeholder={`${field.name} (${field.unit})${field.required ? ' wajib' : ''}`} keyboardType="numeric" aria-label={`Referensi ${field.name}`} maxLength={32} />)}</YStack>
         {(step === 'criteria' || step === 'capture' || step === 'validate' || step === 'preview' || step === 'commit') ? <YStack gap="$2"><Text color="$color" fontWeight="700">Kriteria eksplisit</Text>{capabilities.criteria.map((field) => <Input key={field.name} minHeight={44} fontSize={16} value={fields[field.name] ?? (field.name === 'stability_window' ? criteria : '')} onChangeText={(value) => { setFields((previous) => ({ ...previous, [field.name]: value })); if (field.name === 'stability_window') setCriteria(value); }} placeholder={`${field.name} (${field.unit})${field.required ? ' wajib' : ''}`} keyboardType="numeric" aria-label={`Kriteria ${field.name}`} maxLength={32} />)}</YStack> : null}
         {capabilities.engineering_parameters.length ? <YStack gap="$2"><Text color="$color" fontWeight="700">Parameter engineering</Text>{capabilities.engineering_parameters.map((field) => <Input key={field.name} minHeight={44} fontSize={16} value={fields[field.name] ?? ''} onChangeText={(value) => setFields((previous) => ({ ...previous, [field.name]: value }))} placeholder={`${field.name} (${field.unit})${field.required ? ' wajib' : ''}`} maxLength={64} aria-label={`Parameter ${field.name}`} />)}</YStack> : null}</> : <Text color="$colorMuted">Menunggu kapabilitas sensor dari perangkat.</Text>}
         <XStack gap="$2" flexWrap="wrap">
           {step === 'diagnostics' ? <AppButton onPress={start} disabled={busy || !ready} ariaLabel="Mulai kalibrasi">Mulai</AppButton> : null}
           {step === 'criteria' ? <AppButton onPress={configure} disabled={busy} ariaLabel="Simpan kriteria">Simpan kriteria</AppButton> : null}
-          {step === 'capture' ? <YStack gap="$2" minWidth={180}><Text color="$color" fontWeight="700">Anchor</Text><Input minHeight={44} fontSize={16} value={anchor} onChangeText={setAnchor} placeholder="tare/reference/empty/full" aria-label="Anchor kalibrasi" maxLength={16} /></YStack> : null}
-          {step === 'capture' || step === 'validate' ? <AppButton onPress={() => void submit(step === 'capture' ? 'CAPTURE' : 'VALIDATE')} disabled={busy || (step === 'capture' && !['tare', 'reference', 'empty', 'full'].includes(anchor))} ariaLabel={step === 'capture' ? 'Ambil sampel' : 'Validasi sampel'}>{step === 'capture' ? 'Ambil sampel' : 'Validasi'}</AppButton> : null}
+          {step === 'capture' && !isGas ? <YStack gap="$2" minWidth={180}><Text color="$color" fontWeight="700">Anchor</Text><Input minHeight={44} fontSize={16} value={anchor} onChangeText={setAnchor} placeholder="tare/reference/empty/full" aria-label="Anchor kalibrasi" maxLength={16} /></YStack> : null}
+          {isGas && step === 'capture' ? <YStack gap="$2"><Text color="$colorMuted" role="status">Permintaan sampel diterima: {gasCaptures}. Statistik final berasal dari validasi perangkat.</Text><AppButton variant="secondary" onPress={()=>setStep('validate')} disabled={busy || !Number.isInteger(Number(fields.samples)) || Number(fields.samples)<3 || gasCaptures<Number(fields.samples)} ariaLabel="Lanjut ke validasi referensi">Lanjut Validasi</AppButton></YStack> : null}
+          {step === 'capture' || step === 'validate' ? <AppButton onPress={() => void submit(step === 'capture' ? 'CAPTURE' : 'VALIDATE')} disabled={busy || (step === 'capture' && !isGas && !['tare', 'reference', 'empty', 'full'].includes(anchor))} ariaLabel={step === 'capture' ? 'Ambil sampel' : 'Validasi sampel'}>{step === 'capture' ? (isGas ? 'Ambil Referensi' : 'Ambil sampel') : 'Validasi'}</AppButton> : null}
           {step === 'preview' ? <AppButton onPress={() => void submit('PREVIEW')} disabled={busy} ariaLabel="Buat preview">Buat preview</AppButton> : null}
           {step === 'commit' ? <AppButton onPress={() => void submit('COMMIT', { expected_profile_hash: preview?.proposal_hash, expected_profile_version: preview?.profile_version })} disabled={busy || !canCommitApprovedPreview(preview, deviceId, sensorId, approvedPreview)} ariaLabel="Commit profil">Commit profil</AppButton> : null}
           {step !== 'done' ? <AppButton variant="danger" onPress={() => void submit('CANCEL')} disabled={busy || !sessionId} ariaLabel="Batalkan kalibrasi">Batalkan</AppButton> : null}
-          <AppButton variant="ghost" onPress={onDiagnosticRefresh} disabled={busy} ariaLabel="Perbarui bukti sensor">Perbarui bukti</AppButton>
+          <AppButton variant="ghost" onPress={isGas ? ()=>void (transport==='https'?loadSecuredDiagnostic():loadBleDiagnostic(operationContext.current!)) : onDiagnosticRefresh} disabled={busy || reading || (transport==='ble'&&!bleConnected)} ariaLabel="Perbarui bukti sensor">Perbarui bukti</AppButton>
         </XStack>
-        {preview ? <Card borderWidth={1} borderColor="$primarySoft" backgroundColor="$primarySoft" padding="$3" borderRadius="$3" gap="$1"><Text color="$color" fontWeight="700">Proposal perangkat</Text><Text color="$colorMuted" fontSize="$2">Sensor {preview.sensor_id} · perangkat {deviceId}</Text><Text color="$colorMuted" fontSize="$2">Versi profil {preview.profile_version} · bukti {preview.evidence_count} · hash bukti {preview.evidence_hash}</Text><Text color="$colorMuted" fontSize="$2">Hash proposal {preview.proposal_hash} · berlaku sampai {preview.expires_at}</Text><Text color="$color" fontWeight="700" fontSize="$2">Parameter usulan</Text>{Object.entries(preview.parameters).map(([name, value]) => <Text key={name} color="$color" fontSize="$2">{name}: {String(value)}</Text>)}{step === 'commit' ? <XStack alignItems="center" gap="$2" marginTop="$2"><AppButton variant="secondary" size="sm" ariaLabel="Setujui proposal kalibrasi" aria-pressed={approvedPreview === previewAgreementKey(deviceId, sensorId, preview)} onPress={() => setApprovedPreview((value) => value === previewAgreementKey(deviceId, sensorId, preview) ? null : previewAgreementKey(deviceId, sensorId, preview))}>{approvedPreview === previewAgreementKey(deviceId, sensorId, preview) ? '✓ Disetujui' : 'Setujui proposal'}</AppButton><Text color="$color" fontSize="$2">Persetujuan hanya berlaku untuk proposal ini.</Text></XStack> : null}</Card> : null}
+        {isGas && gasReferences?.previousHash && gasReferences.activeHash && sessionId ? <YStack gap="$2"><Text color="$colorMuted">Versi sebelumnya: {gasReferences.previousVersion}. Pemulihan tidak mengubah profil ADC.</Text><AppButton variant="secondary" size="sm" disabled={busy} ariaLabel="Setujui pemulihan profil gas" aria-pressed={rollbackApproval===rollbackKey} onPress={()=>setRollbackApproval(value=>value===rollbackKey?null:rollbackKey)}>Setujui Pemulihan</AppButton><AppButton variant="secondary" size="sm" disabled={busy || rollbackApproval!==rollbackKey || !rollbackKey} ariaLabel="Pulihkan profil gas sebelumnya" onPress={()=>void submit('ROLLBACK',{expected_profile_version:gasReferences.activeVersion??'',expected_profile_hash:gasReferences.activeHash??''})}>Pulihkan</AppButton></YStack> : null}
+        {preview ? <Card borderWidth={1} borderColor="$primarySoft" backgroundColor="$primarySoft" padding="$3" borderRadius="$3" gap="$1"><Text color="$color" fontWeight="700">Proposal perangkat</Text><Text color="$colorMuted" fontSize="$2">Sensor {preview.sensor_id} · perangkat {deviceId}</Text><Text color="$colorMuted" fontSize="$2">Versi profil {preview.profile_version} · bukti {preview.evidence_count} · berlaku sampai {preview.expires_at}</Text><Text color="$color" fontWeight="700" fontSize="$2">Parameter usulan</Text>{Object.entries(preview.parameters).map(([name, value]) => <Text key={name} color="$color" fontSize="$2">{name}: {String(value)}</Text>)}{step === 'commit' ? <XStack alignItems="center" gap="$2" marginTop="$2"><AppButton variant="secondary" size="sm" ariaLabel="Setujui proposal kalibrasi" aria-pressed={approvedPreview === previewAgreementKey(deviceId, sensorId, preview)} onPress={() => setApprovedPreview((value) => value === previewAgreementKey(deviceId, sensorId, preview) ? null : previewAgreementKey(deviceId, sensorId, preview))}>{approvedPreview === previewAgreementKey(deviceId, sensorId, preview) ? '✓ Disetujui' : 'Setujui proposal'}</AppButton><Text color="$color" fontSize="$2">Persetujuan hanya berlaku untuk proposal ini.</Text></XStack> : null}</Card> : null}
       </>}
       {error ? <Text role="alert" color="$statusSafetyAlert">{error}</Text> : null}
       {busy || reading ? <Text color="$colorMuted" role="status">Memproses permintaan...</Text> : null}

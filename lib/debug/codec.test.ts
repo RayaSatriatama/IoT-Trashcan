@@ -124,7 +124,7 @@ it('uses the supported maximum body, header, ID, and chunk-count combinations', 
       continue;
     }
     const frames = encodeBleFrames(id, body, version);
-    expect(frames.length).toBeLessThanOrEqual(128);
+    expect(frames.length).toBeLessThanOrEqual(512);
     expect(frames.every((frame) => frame.byteLength <= BLE_ATT_FRAME_BYTES)).toBe(true);
     const decoded = frames.map(decodeBleFrame);
     expect(assembleBleFrames(decoded, version)).toEqual(body);
@@ -147,7 +147,7 @@ it('uses the supported maximum body, header, ID, and chunk-count combinations', 
     'F2|9|0|1|x', 'F1|9|0|0|x', 'F1|9|1|1|x', 'R1|10000000000|0|1|x',
     'F1|4294967296|0|1|x', 'R1|9999999999|0|1|x',
   ]) expect(() => decodeBleFrame(new TextEncoder().encode(header))).toThrow();
-  expect(() => decodeBleFrame(new TextEncoder().encode('R1|9|0|129|x'))).toThrow('BLE chunk bounds invalid');
+  expect(() => decodeBleFrame(new TextEncoder().encode('R1|9|0|513|x'))).toThrow('BLE chunk bounds invalid');
 });
 
 it('preserves exact uint64 strings and accepts previously stored DEBUG events at INFO', () => {

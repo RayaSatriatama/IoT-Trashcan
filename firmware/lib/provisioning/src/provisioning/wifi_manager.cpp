@@ -39,7 +39,7 @@ bool WifiConnectionManager::begin() noexcept {
           std::string_view(saved_.ssid.data(), saved_ssid_size_),
           std::string_view(saved_.password.data()))) {
     set_state(WifiState::Backoff, 2);
-    next_retry_us_ = clock_.now_us() + 1000000U;
+    next_retry_us_ = clock_.now_us();
     return true;
   }
   candidate_ = saved_;
@@ -71,7 +71,7 @@ void WifiConnectionManager::poll() noexcept {
           station_.disconnect();
           clear_candidate();
           set_state(has_saved_ ? WifiState::Backoff : WifiState::SetupRequired, 2);
-          next_retry_us_ = now + 1000000U;
+          next_retry_us_ = now;
         }
         return;
       }
@@ -80,10 +80,11 @@ void WifiConnectionManager::poll() noexcept {
         station_.disconnect();
         clear_candidate();
         set_state(has_saved_ ? WifiState::Backoff : WifiState::SetupRequired, 2);
-        next_retry_us_ = now + 1000000U;
+        next_retry_us_ = now;
       }
       return;
     case WifiState::Backoff:
+      // Legacy state name; no added delay, retry at the next poll.
       if (now < next_retry_us_) return;
       if (!has_saved_) {
         set_state(WifiState::SetupRequired, 0);
@@ -100,7 +101,7 @@ void WifiConnectionManager::poll() noexcept {
         set_state(WifiState::Connecting, 1);
       } else {
         clear_candidate();
-        next_retry_us_ = now + 1000000U;
+        next_retry_us_ = now;
       }
       return;
     case WifiState::Connected:
@@ -139,7 +140,7 @@ bool WifiConnectionManager::request_candidate(std::string_view ssid,
   if (!station_.begin_candidate(ssid, password)) {
     clear_candidate();
     set_state(has_saved_ ? WifiState::Backoff : WifiState::SetupRequired, 2);
-    next_retry_us_ = clock_.now_us() + 1000000U;
+    next_retry_us_ = clock_.now_us();
     return false;
   }
   candidate_started_us_ = clock_.now_us();
@@ -160,7 +161,7 @@ bool WifiConnectionManager::retry_saved() noexcept {
           std::string_view(candidate_.password.data()))) {
     clear_candidate();
     set_state(WifiState::Backoff, 2);
-    next_retry_us_ = clock_.now_us() + 1000000U;
+    next_retry_us_ = clock_.now_us();
     return false;
   }
   set_state(WifiState::Connecting, 1);
@@ -197,7 +198,7 @@ WifiScanStatus WifiConnectionManager::request_scan() noexcept {
     emit_wifi(21U, 0, elapsed_metric(now, scan_started_us_));
     return WifiScanStatus::Pending;
   }
-  if (scan_ever_requested_ &&
+  if (policy_.scan_cooldown_ms != 0U && scan_ever_requested_ &&
       !elapsed_ms(now, last_scan_us_, policy_.scan_cooldown_ms)) {
     const uint64_t elapsed = now >= last_scan_us_ ? now - last_scan_us_ : 0U;
     const uint64_t cooldown = static_cast<uint64_t>(policy_.scan_cooldown_ms) * 1000U;

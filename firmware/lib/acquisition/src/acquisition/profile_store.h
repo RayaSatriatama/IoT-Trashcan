@@ -8,6 +8,7 @@
 #include "acquisition/profiles.h"
 
 namespace sigap::acquisition {
+struct Mq135GasProfile;
 
 // Profile persistence deliberately uses a bounded, typed envelope rather than
 // persisting C++ object memory.  The hash covers the canonical header and
@@ -15,7 +16,7 @@ namespace sigap::acquisition {
 inline constexpr uint32_t kProfileMagic{0x53475031U};  // "SGP1"
 inline constexpr uint16_t kProfileFormatVersion{1U};
 inline constexpr uint32_t kProfileSchemaVersion{1U};
-inline constexpr std::size_t kProfilePayloadBytes{128U};
+inline constexpr std::size_t kProfilePayloadBytes{384U};
 inline constexpr std::size_t kProfileHeaderBytes{22U};
 inline constexpr std::size_t kProfileHashBytes{32U};
 inline constexpr std::size_t kEncodedProfileBytes{
@@ -115,20 +116,32 @@ class IProfileSlotStore {
   // compatible while Task 4 keeps independent ADC and HEATER records.
   virtual ProfileReadStatus read_activation(
       ProfileKey key, ProfileActivationMetadata& metadata) const noexcept {
+    if (key.kind == ProfileKind::Calibration && key.target == ProfileTarget::Mq135)
+      return ProfileReadStatus::Error;
     return read_activation(key.target, metadata);
   }
   virtual ProfileReadStatus read_slot(ProfileKey key, ProfileSlot slot,
                                       EncodedProfile& encoded) const noexcept {
+    if (key.kind == ProfileKind::Calibration && key.target == ProfileTarget::Mq135)
+      return ProfileReadStatus::Error;
     return read_slot(key.target, slot, encoded);
   }
   virtual bool write_slot(ProfileKey key, ProfileSlot slot,
                           const EncodedProfile& encoded) noexcept {
+    if (key.kind == ProfileKind::Calibration && key.target == ProfileTarget::Mq135) return false;
     return write_slot(key.target, slot, encoded);
   }
   virtual bool write_activation(
       ProfileKey key, const ProfileActivationMetadata& metadata) noexcept {
+    if (key.kind == ProfileKind::Calibration && key.target == ProfileTarget::Mq135) return false;
     return write_activation(key.target, metadata);
   }
+  virtual ProfileReadStatus read_default(ProfileKey,
+                                          EncodedProfile&) const noexcept {
+    return ProfileReadStatus::Error;
+  }
+  virtual bool write_default(ProfileKey,
+                              const EncodedProfile&) noexcept { return false; }
 };
 
 class NoProfileStore final : public IProfileSlotStore {
@@ -151,6 +164,8 @@ class NoProfileStore final : public IProfileSlotStore {
 
 class ProfileCodec final {
  public:
+  bool encode(const Mq135GasProfile& profile, EncodedProfile& output) const noexcept;
+  bool decode(const EncodedProfile& encoded, Mq135GasProfile& output) const noexcept;
   bool encode(const Hx711Profile& profile, EncodedProfile& output) const noexcept;
   bool encode(const UltrasonicProfile& profile, EncodedProfile& output) const noexcept;
   bool encode(const MqAdcProfile& profile, EncodedProfile& output) const noexcept;
@@ -173,6 +188,8 @@ class ProfileCodec final {
                 ProfileTarget expected = ProfileTarget::Unknown) const noexcept;
   bool validate(const EncodedProfile& encoded,
                 ProfileKey expected) const noexcept;
+  bool validate_template(const EncodedProfile& encoded,
+                         ProfileKey expected) const noexcept;
 };
 
 enum class ProfileCommitResult : uint8_t {
@@ -190,11 +207,15 @@ class ProfilePersistence final {
                               const ProfileCodec& codec = default_codec()) noexcept
       : store_(store), codec_(codec) {}
 
+  enum class StorageInspection : uint8_t { Pristine, Occupied, Invalid, Error };
+  StorageInspection inspect_storage(ProfileKey key) const noexcept;
+
   ProfileReadStatus load(ProfileKey key,
                          EncodedProfile& encoded) const noexcept;
   ProfileCommitResult commit(ProfileKey key,
                              const EncodedProfile& encoded) noexcept;
   ProfileReadStatus rollback(ProfileKey key) noexcept;
+  ProfileReadStatus previous(ProfileKey key, EncodedProfile& encoded) const noexcept;
   bool reset(ProfileKey key) noexcept;
 
   ProfileReadStatus load(ProfileTarget target,
@@ -233,6 +254,9 @@ class MemoryProfileStore final : public IProfileSlotStore {
     ReadSlot,
     WriteActivation,
     ReadActivation,
+    ReadDefault,
+    WriteDefault,
+    ReadDefaultback,
   };
 
   ProfileReadStatus read_activation(ProfileTarget target,
@@ -249,7 +273,7 @@ class MemoryProfileStore final : public IProfileSlotStore {
   bool slot_present(ProfileTarget target, ProfileSlot slot) const noexcept;
 
  private:
-  static constexpr std::size_t kTargetCount{17U};
+  static constexpr std::size_t kTargetCount{18U};
   static std::size_t target_index(ProfileTarget target) noexcept;
   static std::size_t key_index(ProfileKey key) noexcept;
   static std::size_t slot_index(ProfileSlot slot) noexcept {
@@ -261,6 +285,8 @@ class MemoryProfileStore final : public IProfileSlotStore {
   std::array<std::array<ProfileActivationMetadata, kActivationMetadataCopyCount>, kTargetCount>
       metadata_{};
   std::array<std::array<bool, kActivationMetadataCopyCount>, kTargetCount> metadata_present_{};
+  std::array<EncodedProfile, kTargetCount> defaults_{};
+  std::array<bool, kTargetCount> defaults_present_{};
   mutable Fault pending_fault_{Fault::WriteSlot};
   mutable bool has_pending_fault_{false};
 
@@ -273,6 +299,10 @@ class MemoryProfileStore final : public IProfileSlotStore {
                   const EncodedProfile& encoded) noexcept override;
   bool write_activation(ProfileKey key,
                         const ProfileActivationMetadata& metadata) noexcept override;
+  ProfileReadStatus read_default(ProfileKey key,
+                                 EncodedProfile& encoded) const noexcept override;
+  bool write_default(ProfileKey key,
+                     const EncodedProfile& encoded) noexcept override;
   void corrupt_activation(ProfileKey key) noexcept;
   void corrupt_activation_copy(ProfileKey key, std::size_t copy) noexcept;
 };
@@ -298,6 +328,10 @@ class NvsProfileStore final : public IProfileSlotStore {
                   const EncodedProfile& encoded) noexcept override;
   bool write_activation(ProfileKey key,
                         const ProfileActivationMetadata& metadata) noexcept override;
+  ProfileReadStatus read_default(ProfileKey key,
+                                 EncodedProfile& encoded) const noexcept override;
+  bool write_default(ProfileKey key,
+                     const EncodedProfile& encoded) noexcept override;
 };
 
 // Compatibility seam retained for Task 2 consumers.  It now exposes only the

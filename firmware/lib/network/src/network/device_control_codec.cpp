@@ -187,8 +187,10 @@ bool append(DeviceControlWireBody& output, std::string_view value) noexcept {
 }
 
 bool append_plain_json_string(DeviceControlWireBody& output,
-                              std::string_view value) noexcept {
-  if (value.empty() || value.find_first_of("\\\"\r\n\t") != std::string_view::npos) {
+                              std::string_view value,
+                              bool allow_empty = false) noexcept {
+  if ((!allow_empty && value.empty()) ||
+      value.find_first_of("\\\"\r\n\t") != std::string_view::npos) {
     return false;
   }
   return append(output, "\"") && append(output, value) && append(output, "\"");
@@ -355,8 +357,8 @@ bool decode_device_control_command(std::string_view wire, uint64_t now_us,
 bool encode_device_control_result(const DeviceControlResult& result,
                                   DeviceControlWireBody& output) noexcept {
   output = DeviceControlWireBody{};
-  if (result.command_id.size == 0U || result.session_id.size == 0U ||
-      result.payload_size == 0U || result.payload_size > result.payload.size()) {
+  if (result.command_id.size == 0U || result.payload_size == 0U ||
+      result.payload_size > result.payload.size()) {
     return false;
   }
   JsonCursor payload{std::string_view(
@@ -370,7 +372,7 @@ bool encode_device_control_result(const DeviceControlResult& result,
   if (!append(output, "{\"status\":") ||
       !append_plain_json_string(output, result_status(result.status)) ||
       !append(output, ",\"session_id\":") ||
-      !append_plain_json_string(output, result.session_id.view()) ||
+      !append_plain_json_string(output, result.session_id.view(), true) ||
       !append(output, ",\"result\":") ||
       !append(output, std::string_view(
           reinterpret_cast<const char*>(result.payload.data()), checked_size))) {

@@ -18,15 +18,19 @@
 #include "acquisition/sensors/ds18b20.h"
 #include "acquisition/sensors/hx711.h"
 #include "acquisition/sensors/mq_adc.h"
+#include "acquisition/mq_adc_calibration_esp32.h"
+#include "acquisition/sensors/ultrasonic.h"
 #include "acquisition/sensors/sht31.h"
 #include "acquisition/target_protocol.h"
-#include "acquisition/sensors/ultrasonic.h"
 #include "acquisition/simulated_readers.h"
 #include "acquisition/inactive_readers.h"
+#include "acquisition/usb_sensor_debug.h"
 #include "debug/types.h"
 
 #ifdef ARDUINO
+#include "acquisition/ultrasonic_capture.h"
 #include <Arduino.h>
+#include "freertos/portmacro.h"
 #include <Wire.h>
 #include <esp_timer.h>
 #endif
@@ -116,14 +120,21 @@ struct AcquisitionJob final {
   SensorHealthState* health{nullptr};
   ISampleObserver* observer{nullptr};
   AcquisitionDebugCounters* counters{nullptr};
+  uint64_t capture_period_us{0U};
+  uint64_t next_capture_us{0U};
 
   static void run(void* context, uint64_t now_us) noexcept {
     auto* job = static_cast<AcquisitionJob*>(context);
     if (job == nullptr || job->acquirer == nullptr || job->handoff == nullptr) {
       return;
     }
+    if (now_us < job->next_capture_us) return;
     SampleRecord record{};
     if (job->acquirer->poll(now_us, record) == DriverPollStatus::Produced) {
+      if (job->capture_period_us != 0U) {
+        const auto wait = job->capture_period_us - now_us % job->capture_period_us;
+        job->next_capture_us = UINT64_MAX - now_us < wait ? UINT64_MAX : now_us + wait;
+      }
       if (job->health != nullptr) {
         job->health->observe(now_us, record.quality);
       }
@@ -171,11 +182,11 @@ class TargetAcquisitionGraph final {
     if (enabled_ || !all_readers_present()) {
       return false;
     }
-    const uint64_t hx_period = milliseconds_to_us(sampling.hx711_period_ms);
-    const uint64_t mq_period = milliseconds_to_us(sampling.mq_period_ms);
-    const uint64_t ultrasonic_period = milliseconds_to_us(sampling.ultrasonic_period_ms);
+    const uint64_t hx_period = build::kLiveNoBacklog ? build::kLiveSnapshotPeriodUs : milliseconds_to_us(sampling.hx711_period_ms);
+    const uint64_t mq_period = build::kLiveNoBacklog ? build::kLiveSnapshotPeriodUs : milliseconds_to_us(sampling.mq_period_ms);
+    const uint64_t ultrasonic_period = build::kLiveNoBacklog ? build::kLiveSnapshotPeriodUs : milliseconds_to_us(sampling.ultrasonic_period_ms);
     const uint64_t ds_period = milliseconds_to_us(sampling.ds18b20_period_ms);
-    const uint64_t sht_period = milliseconds_to_us(sampling.sht31_period_ms);
+    const uint64_t sht_period = build::kLiveNoBacklog ? 10000U : milliseconds_to_us(sampling.sht31_period_ms);
     if (hx_period == 0U || mq_period == 0U || ultrasonic_period == 0U ||
         ds_period == 0U || sht_period == 0U) {
       return false;
@@ -242,6 +253,10 @@ class TargetAcquisitionGraph final {
     ds_job_ = {&*ds18b20_, &handoff_, &health_[10], observer_, &debug_counters_};
     sht_jobs_[0] = {&*sht31_44_, &handoff_, &health_[11], observer_, &debug_counters_};
     sht_jobs_[1] = {&*sht31_45_, &handoff_, &health_[12], observer_, &debug_counters_};
+    if constexpr (build::kLiveNoBacklog) {
+      // Complete a 15 ms conversion promptly; begin the next capture on the shared second.
+      for (auto& job : sht_jobs_) job.capture_period_us = build::kLiveSnapshotPeriodUs;
+    }
 
     bool ok = true;
     if constexpr (build::kPhysicalReferenceOnly) {
@@ -416,14 +431,27 @@ class TargetAcquisitionGraph final {
 class TargetMqAdcReader final : public IMqAdcReader {
  public:
   explicit TargetMqAdcReader(uint8_t pin) noexcept : pin_(pin) { pinMode(pin_, INPUT); }
+  // Opt-in same-sample calibrated voltage evidence. Enabled only for the
+  // MQ-135 channel by TargetAcquisition below; every other MQ channel keeps
+  // exactly the previous behaviour.
+  void enable_calibrated_voltage() noexcept { calibrated_ = true; }
   MqAdcReadResult read() noexcept override {
+    // Per-pin attenuation BEFORE the sample it annotates. Only the enabled
+    // channel is configured; every other MQ channel keeps the SDK default and
+    // its existing single-read behaviour.
+    if (calibrated_) mq_adc_configure_attenuation_for_pin(pin_);
     const int value = analogRead(pin_);
     if (value < 0) return MqAdcReadResult{false, true, 0U, SampleReason::Disconnected};
-    return MqAdcReadResult{true, false, static_cast<uint16_t>(value), SampleReason::DataReady};
+    MqAdcReadResult result{true, false, static_cast<uint16_t>(value), SampleReason::DataReady};
+    // One analogRead() only: the calibrated voltage is derived from this exact
+    // raw sample, never from a second conversion.
+    if (calibrated_) result.calibrated = mq_adc_calibrated_voltage_for_pin(pin_, result.counts);
+    return result;
   }
 
  private:
   uint8_t pin_;
+  bool calibrated_{false};
 };
 
 class TargetHx711Reader final : public IHx711Reader {
@@ -437,16 +465,23 @@ class TargetHx711Reader final : public IHx711Reader {
   Hx711ReadResult read() noexcept override {
     if (!ready()) return Hx711ReadResult{false, false, 0, 0, 0, SampleReason::NotReady};
     uint32_t value = 0;
+    // Critical section: disable interrupts to prevent HIGH pulse extension
+    // beyond HX711 PD_SCK max 50us / power-down >60us (AVIA datasheet p5)
+    portENTER_CRITICAL_ISR(&hx711_spinlock_);
     for (uint8_t bit = 0; bit < 24U; ++bit) {
       digitalWrite(sck_, HIGH);
-      delayMicroseconds(1U);
+      // NOP loop for ~1us instead of delayMicroseconds(1) which can be interrupted
+      for (volatile uint32_t i = 0; i < 160; ++i) { asm volatile("nop"); }
       value = (value << 1U) | (digitalRead(dout_) == HIGH ? 1U : 0U);
       digitalWrite(sck_, LOW);
-      delayMicroseconds(1U);
+      for (volatile uint32_t i = 0; i < 160; ++i) { asm volatile("nop"); }
     }
+    // 25th pulse for gain 128 (channel A)
     digitalWrite(sck_, HIGH);
-    delayMicroseconds(1U);
+    for (volatile uint32_t i = 0; i < 160; ++i) { asm volatile("nop"); }
     digitalWrite(sck_, LOW);
+    // Ensure SCK stays LOW on return (power-down protection)
+    portEXIT_CRITICAL_ISR(&hx711_spinlock_);
     const int64_t signed_value = (value & 0x800000U) != 0U
                                       ? static_cast<int64_t>(value) - 0x1000000LL
                                       : static_cast<int64_t>(value);
@@ -456,7 +491,10 @@ class TargetHx711Reader final : public IHx711Reader {
  private:
   uint8_t dout_;
   uint8_t sck_;
+  static inline portMUX_TYPE hx711_spinlock_ = portMUX_INITIALIZER_UNLOCKED;
 };
+
+struct UsbSensorDebugStats { uint32_t triggers{}, polls{}, cancels{}, ready{}, high{}, last_width{}; uint64_t max_gap_us{}, last_poll_us{}; };
 
 class TargetUltrasonicReader final : public IUltrasonicReader {
  public:
@@ -468,44 +506,47 @@ class TargetUltrasonicReader final : public IUltrasonicReader {
   }
   bool trigger(uint64_t now_us) noexcept override {
     (void)now_us;
+    ++debug_.triggers;
     if (active_) return false;
-    digitalWrite(trigger_, HIGH);
-    delayMicroseconds(10U);
-    digitalWrite(trigger_, LOW);
-    active_ = true;
-    return true;
+    active_ = capture_.trigger(trigger_, echo_, timeout_us_);
+    return active_;
   }
   UltrasonicEchoResult poll(uint64_t now_us) noexcept override {
+    ++debug_.polls;
+    const uint64_t actual_us = static_cast<uint64_t>(esp_timer_get_time());
+    if (debug_.last_poll_us && actual_us > debug_.last_poll_us && actual_us-debug_.last_poll_us > debug_.max_gap_us) debug_.max_gap_us=actual_us-debug_.last_poll_us;
+    debug_.last_poll_us=actual_us;
     if (!active_) return UltrasonicEchoResult{UltrasonicEchoStatus::Pending, 0U};
-    if (digitalRead(echo_) == HIGH) {
-      if (!echo_high_) {
-        echo_high_ = true;
-        echo_started_us_ = now_us;
-      }
-      return UltrasonicEchoResult{UltrasonicEchoStatus::Pending, 0U};
+    (void)now_us;
+    if (digitalRead(echo_) == HIGH) ++debug_.high;
+    const auto result = capture_.poll();
+    if (result.status == UltrasonicEchoStatus::Ready) {
+      ++debug_.ready;
+      debug_.last_width = result.echo_us;
     }
-    if (echo_high_) {
-      const uint64_t width = now_us - echo_started_us_;
-      active_ = false;
-      echo_high_ = false;
-      return UltrasonicEchoResult{
-          UltrasonicEchoStatus::Ready,
-          width > UINT32_MAX ? UINT32_MAX : static_cast<uint32_t>(width)};
-    }
-    return UltrasonicEchoResult{UltrasonicEchoStatus::Pending, 0U};
+    if (result.status != UltrasonicEchoStatus::Pending) active_ = false;
+    return result;
   }
 
+  const UsbSensorDebugStats& debug_stats() const noexcept { return debug_; }
   void cancel() noexcept override {
+    ++debug_.cancels;
     active_ = false;
-    echo_high_ = false;
+    capture_.cancel();
+    capture_.emit_debug();
   }
+  void set_echo_timeout(uint32_t timeout_us) noexcept override { timeout_us_ = timeout_us; }
+  bool hardware_latched() const noexcept override { return true; }
+  uint64_t trigger_time_us(uint64_t) const noexcept override { return capture_.trigger_time_us(); }
+  uint32_t readout_grace_us() const noexcept override { return capture_.readout_grace_us(); }
 
  private:
   uint8_t trigger_;
   uint8_t echo_;
   bool active_{false};
-  bool echo_high_{false};
-  uint64_t echo_started_us_{0};
+  uint32_t timeout_us_{30000U};
+  UltrasonicCapture capture_{};
+  UsbSensorDebugStats debug_{};
 };
 
 class TargetDs18b20Reader final : public IDs18b20Reader {
@@ -756,6 +797,7 @@ class TargetSht31Reader final : public ISht31Reader {
  public:
   TargetSht31Reader(uint8_t sda, uint8_t scl) noexcept : sda_(sda), scl_(scl) {
     initialized_ = Wire.begin(sda_, scl_);
+    debug_.initialized = initialized_;
     Wire.setTimeOut(20U);
   }
 
@@ -764,12 +806,14 @@ class TargetSht31Reader final : public ISht31Reader {
     const int index = address == 0x44U ? 0 : (address == 0x45U ? 1 : -1);
     if (!initialized_ || index < 0) return result;
 
+    ++debug_.calls[index].calls;
     const uint64_t now_us = monotonic_now_us();
     if (!pending_[static_cast<std::size_t>(index)]) {
       Wire.beginTransmission(address);
       Wire.write(0x24U);  // single-shot, high repeatability, no clock stretch
       Wire.write(0x00U);
-      if (Wire.endTransmission(true) != 0U) return result;
+      debug_.end_code[index] = Wire.endTransmission(true);
+      if (debug_.end_code[index] != 0U) return result;
       pending_[static_cast<std::size_t>(index)] = true;
       ready_at_us_[static_cast<std::size_t>(index)] = now_us + 15000U;
       result.pending = true;
@@ -781,9 +825,8 @@ class TargetSht31Reader final : public ISht31Reader {
     }
 
     pending_[static_cast<std::size_t>(index)] = false;
-    if (Wire.requestFrom(static_cast<uint8_t>(address), static_cast<std::size_t>(6U), true) != 6U) {
-      return result;
-    }
+    debug_.bytes[index] = Wire.requestFrom(static_cast<uint8_t>(address), static_cast<std::size_t>(6U), true);
+    if (debug_.bytes[index] != 6U) return result;
     std::array<uint8_t, 6> frame{};
     for (uint8_t& byte : frame) {
       if (Wire.available() <= 0) return Sht31ReadResult{};
@@ -793,6 +836,8 @@ class TargetSht31Reader final : public ISht31Reader {
     // A complete frame is present even when one CRC fails. Preserve the
     // decoded bytes as diagnostic evidence, while the acquirer suppresses
     // operational conversion and reports CrcError.
+    ++debug_.completed[index];
+    debug_.temp_crc[index]=decoded.temperature_crc_valid; debug_.hum_crc[index]=decoded.humidity_crc_valid;
     result.ok = true;
     result.crc_valid = decoded.temperature_crc_valid && decoded.humidity_crc_valid;
     result.temperature_crc_valid = decoded.temperature_crc_valid;
@@ -806,6 +851,9 @@ class TargetSht31Reader final : public ISht31Reader {
     return result;
   }
 
+ public:
+  struct Stats { bool initialized{}; struct One { uint32_t calls{}; }; One calls[2]{}; uint32_t completed[2]{}; uint8_t end_code[2]{}, bytes[2]{}; bool temp_crc[2]{}, hum_crc[2]{}; };
+  const Stats& debug_stats() const noexcept { return debug_; }
  private:
   static uint64_t monotonic_now_us() noexcept {
     const int64_t value = esp_timer_get_time();
@@ -817,6 +865,7 @@ class TargetSht31Reader final : public ISht31Reader {
   bool initialized_{false};
   std::array<bool, 2> pending_{};
   std::array<uint64_t, 2> ready_at_us_{};
+  Stats debug_{};
 };
 
 class TargetHeaterRail final : public IMq7HeaterRail {
@@ -835,6 +884,7 @@ class TargetHeaterRail final : public IMq7HeaterRail {
 class TargetMqAdcReader final : public IMqAdcReader {
  public:
   explicit TargetMqAdcReader(uint8_t) noexcept {}
+  void enable_calibrated_voltage() noexcept {}
   MqAdcReadResult read() noexcept override { return MqAdcReadResult{}; }
 };
 class TargetHx711Reader final : public IHx711Reader {
@@ -847,7 +897,8 @@ class TargetUltrasonicReader final : public IUltrasonicReader {
  public:
   TargetUltrasonicReader(uint8_t, uint8_t) noexcept {}
   bool trigger(uint64_t) noexcept override { return false; }
-  UltrasonicEchoResult poll(uint64_t) noexcept override { return UltrasonicEchoResult{}; }
+  UltrasonicEchoResult poll(uint64_t) noexcept override { return {}; }
+  void cancel() noexcept override {}
 };
 class TargetDs18b20Reader final : public IDs18b20Reader {
  public:
@@ -884,6 +935,18 @@ using SecondaryHx711Reader = std::conditional_t<build::kPhysicalReferenceOnly, I
 using SecondaryUltrasonicReader = std::conditional_t<build::kPhysicalReferenceOnly, InactiveUltrasonicReader, SelectedUltrasonicReader>;
 using SecondaryMqAdcReader = std::conditional_t<build::kPhysicalReferenceOnly, InactiveMqAdcReader, SelectedMqAdcReader>;
 
+// Same-sample calibrated ADC voltage evidence is enabled for exactly one
+// channel: the existing MQ-135 ADC channel (board::BoardPins::mq135_adc). No pin
+// is reassigned and simulated / inactive readers stay evidence-free.
+template <typename Reader>
+inline void enable_mq135_calibrated_voltage(Reader& reader) noexcept {
+  if constexpr (std::is_same_v<Reader, TargetMqAdcReader>) {
+    reader.enable_calibrated_voltage();
+  } else {
+    (void)reader;
+  }
+}
+
 class TargetAcquisition final {
  public:
   static constexpr std::size_t kHandoffCapacity{TargetAcquisitionGraph::kHandoffCapacity};
@@ -906,7 +969,10 @@ class TargetAcquisition final {
                  {&us_org_, &us_inorganic_, &us_b3_},
                  {&mq4_, &mq135_, &mq7_, &mq8_}, &ds18b20_,
                  {&sht31_, &sht31_}, &heater_rail_},
-        graph_(factory, readers_, profiles, handoff) {}
+        graph_(factory, readers_, profiles, handoff) {
+    // Only the actual MQ-135 channel gets calibrated-voltage evidence.
+    enable_mq135_calibrated_voltage(mq135_);
+  }
 
   bool begin(const config::SamplingConfig& sampling, uint64_t first_due_us) noexcept {
 #if SIGAP_SENSOR_SIMULATION
@@ -924,6 +990,23 @@ class TargetAcquisition final {
     ds18b20_.set_now(now_us); sht31_.set_now(now_us);
 #endif
     graph_.poll(now_us);
+  }
+  void emit_usb_debug(uint64_t actual_us) const noexcept {
+#if defined(ARDUINO) && !SIGAP_SENSOR_SIMULATION
+    static uint64_t last_emit_us{0U};
+    if (actual_us < last_emit_us) last_emit_us = actual_us;
+    if (actual_us - last_emit_us < 1000000U) return;
+    last_emit_us = actual_us;
+    const auto& sht = sht31_.debug_stats();
+    const auto& ultrasonic = us_org_.debug_stats();
+    emit_usb_sensor_debug(sht.initialized, sht.calls[0].calls, sht.completed[0],
+                          sht.end_code[0], sht.bytes[0], sht.temp_crc[0],
+                          sht.hum_crc[0], ultrasonic.triggers, ultrasonic.polls,
+                          ultrasonic.high, ultrasonic.ready, ultrasonic.last_width,
+                          ultrasonic.max_gap_us);
+#else
+    (void)actual_us;
+#endif
   }
   bool refresh_profiles(uint64_t now_us) noexcept {
     return graph_.refresh_profiles(now_us);

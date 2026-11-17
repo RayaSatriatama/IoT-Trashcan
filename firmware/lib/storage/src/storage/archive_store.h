@@ -152,6 +152,19 @@ class IArchiveStore {
   // Optional media-migration seam. A store that owns pending records may
   // expose one record at a time and reclaim it only after a verified receipt.
   virtual bool peek_pending(ImmutableRecordBytes&) noexcept { return false; }
+  // Optional read-only FIFO inspection seams. `index` is zero-based from the
+  // current head. They must not reclaim, reorder or consume anything; stores
+  // that cannot expose later entries keep the default (false). They exist so
+  // bounded batch composition can look ahead without transferring ownership.
+  // `peek_pending_identity_at` is the cheap form used on every main-loop poll;
+  // `peek_pending_at` copies the record bytes and is only used when a body is
+  // actually composed.
+  virtual bool peek_pending_identity_at(std::size_t, ArchiveIdentity&) noexcept {
+    return false;
+  }
+  virtual bool peek_pending_at(std::size_t, ImmutableRecordBytes&) noexcept {
+    return false;
+  }
   virtual bool reclaim_pending(const ArchiveIdentity&,
                                const config::ConfigHash&) noexcept {
     return false;
@@ -243,6 +256,21 @@ class MemoryArchiveStore final : public IArchiveStore {
   bool peek_pending(ImmutableRecordBytes& output) noexcept override {
     if (count_ == 0U) return false;
     output = records_[0U];
+    return true;
+  }
+  // Read-only lookahead for bounded batch composition. Copies into the
+  // caller's scratch record; never reclaims or reorders the FIFO.
+  bool peek_pending_at(std::size_t index,
+                       ImmutableRecordBytes& output) noexcept override {
+    if (index >= count_) return false;
+    output = records_[index];
+    return true;
+  }
+  // Cheap identity-only lookahead used on every main-loop poll.
+  bool peek_pending_identity_at(std::size_t index,
+                                ArchiveIdentity& output) noexcept override {
+    if (index >= count_) return false;
+    output = records_[index].identity;
     return true;
   }
   bool reclaim_pending(const ArchiveIdentity& identity,

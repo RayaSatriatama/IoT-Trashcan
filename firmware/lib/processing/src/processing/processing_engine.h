@@ -297,6 +297,8 @@ class SlotProcessor final {
       return ProcessStatus::ProfileCapacityExceeded;
     }
     normalize_weight(snapshot, output.processed);
+    compute_ogi(snapshot, output.processed);
+    compute_accumulation_hours(snapshot, output.processed);
     if (output.source_sample_ids.empty()) return ProcessStatus::NoSources;
     return ProcessStatus::Produced;
   }
@@ -654,6 +656,63 @@ class SlotProcessor final {
         true, static_cast<float>(utilization),
         {InputQuality::Ready, ProcessingReason::Ready}};
   }
+
+  // Compute OGI (Organic Gas Index) from MQ135 ADC readings
+  // Relative index 0..100 based on ADC millivolts (prototype assumption)
+  static void compute_ogi(const ProcessingSnapshot& snapshot,
+                          ProcessedValues& values) noexcept {
+    // OGI requires at least one MQ ADC reading
+    bool has_mq7 = values.mq7_mv.available;
+    bool has_mq8 = values.mq8_mv.available;
+    if (!has_mq7 && !has_mq8) {
+      values.ogi.disposition = {InputQuality::Missing, ProcessingReason::InputMissing};
+      return;
+    }
+    // Simple prototype OGI: average of available MQ ADC readings normalized to 0..100
+    // Assumption: ADC reference 3300mV, full scale 4095 counts
+    constexpr float kAdcRefMv = 3300.0F;
+    constexpr float kAdcMax = 4095.0F;
+    float sum = 0.0F;
+    uint8_t count = 0U;
+    if (has_mq7) {
+      sum += (values.mq7_mv.value / kAdcRefMv) * 100.0F;
+      ++count;
+    }
+    if (has_mq8) {
+      sum += (values.mq8_mv.value / kAdcRefMv) * 100.0F;
+      ++count;
+    }
+    float ogi = (count > 0U) ? (sum / static_cast<float>(count)) : 0.0F;
+    ogi = std::max(0.0F, std::min(100.0F, ogi));
+    values.ogi = {true, ogi, {InputQuality::Ready, ProcessingReason::Ready}};
+  }
+
+  // Compute accumulation hours since bin was last empty (fill > 5% or weight > 0.05kg)
+  // Reset to 0 when empty condition detected
+  static void compute_accumulation_hours(const ProcessingSnapshot& snapshot,
+                                         ProcessedValues& values) noexcept {
+    // Requires fill_pct or weight_kg to be available
+    bool has_fill = values.fill_pct.available;
+    bool has_weight = values.weight_kg.available;
+    if (!has_fill && !has_weight) {
+      values.accumulation_hours.disposition = {InputQuality::Missing, ProcessingReason::InputMissing};
+      return;
+    }
+    // Check if currently empty
+    bool is_empty = true;
+    if (has_fill && values.fill_pct.value > 5.0F) is_empty = false;
+    if (has_weight && values.weight_kg.value > 0.05F) is_empty = false;
+    // For prototype: if empty, accumulation is 0
+    // In production, this would track monotonic time since last empty
+    // For now, return 0 when empty, unavailable when not empty (no persistent timer yet)
+    if (is_empty) {
+      values.accumulation_hours = {true, 0.0F, {InputQuality::Ready, ProcessingReason::Ready}};
+    } else {
+      // No persistent accumulation timer in prototype; mark as unavailable
+      values.accumulation_hours.disposition = {InputQuality::Uncalibrated, ProcessingReason::InputUncalibrated};
+    }
+  }
+
   static bool collect_profile_refs(const ProcessingSnapshot& snapshot,
                                    ProfileRefSet& refs) noexcept {
     const auto& profiles = snapshot.profiles();
@@ -703,6 +762,8 @@ inline const ProcessedMetric* metric_for_input(
     case models::ModelInput::TemperatureC: return &values.temperature_c;
     case models::ModelInput::Mq7AdcMillivolts: return &values.mq7_mv;
     case models::ModelInput::Mq8AdcMillivolts: return &values.mq8_mv;
+    case models::ModelInput::Ogi: return &values.ogi;
+    case models::ModelInput::AccumulationHours: return &values.accumulation_hours;
   }
   return nullptr;
 }
@@ -974,7 +1035,7 @@ class ResultRecordFactory final {
     output.header.time_quality = acquisition::TimeQuality::Unsynced;
     if (context_.utc_source != nullptr) {
       int64_t epoch_ms{0};
-      if (context_.utc_source->now_ms(epoch_ms)) {
+      if (context_.utc_source->at_monotonic_us(monotonic_us, epoch_ms)) {
         output.header.recorded_at.available = true;
         output.header.recorded_at.epoch_ms = epoch_ms;
         output.header.time_quality =

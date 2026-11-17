@@ -1,0 +1,19 @@
+# Winsen MQ135 v1.6 Figure3, digitized typical NH3 curve, research approximation only.
+# Source-bound column: rs_r0. Reviewed per-point uncertainty is approximate digitization uncertainty, NOT physical concentration accuracy.
+# Normalized CSV quoting only; numeric values unchanged from curve-review/nh3-curve-reviewed.csv.
+# Source original SHA256: a87cc5299a6133d1485dc6c1202c50374a17971840094bf41e699cc458eeb04b
+# EN source archived 2026-07-21, CN source archived 2026-02-16.
+concentration_ppm,fig3_col_px,row_px,rs_r0,sigma_pct,contaminated,note
+10,51.19,32.64,0.6559,2.00,yes,"endpoint; clipped end-bar, allowance 2%"
+15,79.81,39.32,0.5814,0.70,no,
+20,100.12,45.71,0.5180,0.70,no,
+30,128.74,54.82,0.4395,0.74,no,
+50,164.80,66.24,0.3576,0.70,no,
+70,188.56,73.89,0.3114,0.70,no,
+100,213.73,82.45,0.2668,1.18,yes,gridline-crossing
+150,242.36,93.11,0.2202,0.71,no,
+200,262.66,102.10,0.1872,1.05,yes,gridline-crossing
+300,291.29,112.84,0.1542,0.70,no,
+500,327.35,126.26,0.1210,0.70,yes,gridline-crossing
+700,351.10,134.18,0.1049,0.70,no,
+1000,376.28,143.05,0.0893,1.38,yes,endpoint

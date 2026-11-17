@@ -7,14 +7,14 @@
 
 namespace sigap::maintenance {
 
-constexpr std::size_t kMaxCommandLineBytes{255U};
+constexpr std::size_t kMaxCommandLineBytes{1024U};
 constexpr std::size_t kMaxBytesPerPoll{32U};
 // Calibration preview responses include the typed proposal identity and
 // sensor-specific engineering fields. Keep the wire bound fixed while
 // allowing the complete proposal to be returned without truncation.
 // Preview responses include bounded proposal parameters and evidence
 // provenance for BLE/HTTPS consumers.  Keep one fixed limit for USB and BLE.
-constexpr std::size_t kMaxResponseBytes{384U};
+constexpr std::size_t kMaxResponseBytes{2048U};
 
 template <std::size_t Capacity>
 struct FixedText final {

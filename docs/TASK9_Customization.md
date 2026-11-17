@@ -5,10 +5,14 @@ system or move calibration/model values into runtime globals.
 
 | Value | Type/unit | Owner | Bounds/default | Apply policy |
 | --- | --- | --- | --- | --- |
-| WiFi retry/backoff | typed duration | existing WiFi policy/AppConfig where already defined | validated positive duration; existing defaults | snapshot at boot or explicit committed config, per existing owner |
+| WiFi retry | next-poll state transition | provisioning manager | no added retry delay or attempt-count cap; positive per-attempt connection/IP timeout remains | saved credentials preserved; failed candidate never overwrites NVS |
+| WiFi scan cooldown | `uint32_t` milliseconds | compile-time `ProvisioningPolicy` | default 0 disables throttle, including clock-regression edge; positive values remain explicit legacy opt-in | no default SCAN_RATE_LIMITED; pending scan exclusion and bounded result buffers remain |
 | BLE session timeout | typed duration | BLE provisioning policy | positive bounded duration | compile-time policy unless an existing versioned config field owns it |
 | BLE frame/payload limit | `size_t` bytes | BLE protocol policy | fixed bounded protocol limit | compile-time; reject oversized input |
 | HTTPS response deadline | typed duration | network transport policy | positive bounded deadline | validated policy, no blocking acquisition path |
+| latest-only live policy | `SIGAP_LIVE_NO_BACKLOG`, compile-time boolean | prototype delivery composition | defaults to `SIGAP_PROTOTYPE_OPERATION`; rejects values outside 0/1 and simulation/non-prototype use | no RAM sensor archive or replay; one current value per sensor and one immutable active HTTPS body; no AppConfig/NVS mutation |
+| latest send age | immutable `uint64_t` microseconds, `LatestSampleRuntime::kMaxStartAgeUs` | live delivery instance policy | 3,000,000 us maximum at ready-send boundary | older current values expire once; replacements and unconfirmed attempts are not counted as delivered |
+| common live cadence | immutable `uint64_t` microseconds, `build::kLiveSnapshotPeriodUs` | latest-only prototype composition | 1,000,000 us for all four active sensor captures and common snapshot send; SHT completion serviced every 10 ms | compile-time override only, no persisted AppConfig/profile changes; HTTPS delay/backoff coalesces periods without backlog |
 | archive batch/body limits | count/bytes | frozen telemetry-v3 contract | 128 records, 32 KiB body | immutable contract |
 | storage worker queue | bounded count | storage runtime policy | measured target capacity | instance-owned; no mutable global |
 | storage slice budget | bytes/time | storage runtime policy | measured and documented | per invocation; must account for nested I/O |

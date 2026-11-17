@@ -1,6 +1,10 @@
+import { useState } from 'react';
 import { Card, Separator, Text, XStack, YStack, useMedia } from 'tamagui';
 
-import type { ResearchResponse, ResearchSlotDTO } from '../lib/api/types';
+import type { FirmwareMonitoringSample, FirmwareResult, ResearchResponse, ResearchSlotDTO } from '../lib/api/types';
+import { FirmwareResearch } from './device/FirmwareResearch';
+import { SensorHistoryCharts, type SensorHistorySnapshot } from './device/SensorHistoryCharts';
+import { useLiveMonitoring } from '../lib/ui/useLiveMonitoring';
 import { formatNullableMetric } from '../lib/format';
 import { buildDerivedResearchRows, buildResearchSensorRows, formatResearchNumber, formatResearchTimestamp, getSensorParameterLabel, getStreamLabel } from '../lib/ui/slotPresentation';
 import { textStyles } from '../lib/ui/typography';
@@ -17,6 +21,10 @@ export const RESEARCH_PANEL_TITLE = 'Detail Riset';
 export const RESEARCH_UNAVAILABLE_COPY = 'Belum tersedia';
 
 export interface ResearchPanelProps {
+  firmwareResults?: readonly FirmwareResult[];
+  deviceId?: string;
+  monitoring?: FirmwareMonitoringSample[];
+  monitoringError?: boolean;
   data?: ResearchResponse | null;
   loading?: boolean;
   error?: Error | null;
@@ -51,14 +59,14 @@ function DataCell({ children, width, muted = false }: { children: React.ReactNod
 }
 
 function SensorRow({ row, mobile }: { row: ReturnType<typeof buildResearchSensorRows>[number]; mobile: boolean }) {
-  if (mobile) return <Card borderWidth={1} borderColor="$borderColor" backgroundColor="$surface" borderRadius="$3" padding="$3" gap="$2"><XStack justifyContent="space-between" alignItems="flex-start" gap="$2"><YStack flex={1} minWidth={0}><Text {...textStyles.bodySecondary} color="$color" fontWeight="700" numberOfLines={1}>{row.label}</Text><Text {...textStyles.caption} color="$colorMuted" numberOfLines={1}>{row.parameter}</Text></YStack><SensorStateBadge state={row.state} /></XStack><XStack gap="$2" flexWrap="wrap"><DataCell width="50%" muted>Aktual {row.actual}</DataCell><DataCell width="45%" muted>Raw {row.raw}</DataCell><DataCell width="50%" muted>{row.normalizedLabel} {row.normalized}</DataCell><DataCell width="45%" muted>Fuzzy {row.membership}</DataCell></XStack><Text {...textStyles.caption} color="$colorMuted">Role: {row.role}</Text></Card>;
-  return <YStack gap="$1" paddingVertical="$2" borderBottomWidth={1} borderBottomColor="$borderColor"><XStack alignItems="center" gap="$2"><YStack flex={1} minWidth={0}><Text {...textStyles.bodySecondary} color="$color" fontWeight="700" numberOfLines={1}>{row.label}</Text><Text {...textStyles.caption} color="$colorMuted" numberOfLines={1}>{row.parameter}</Text></YStack><SensorStateBadge state={row.state} /></XStack><XStack gap="$2" flexWrap="wrap"><DataCell width="48%" muted>Aktual {row.actual}</DataCell><DataCell width="48%" muted>Raw {row.raw}</DataCell><DataCell width="48%" muted>{row.normalizedLabel} {row.normalized}</DataCell><DataCell width="48%" muted>Fuzzy {row.membership}</DataCell><DataCell width="100%" muted>Role: {row.role}</DataCell></XStack></YStack>;
+  if (mobile) return <Card borderWidth={1} borderColor="$borderColor" backgroundColor="$surface" borderRadius="$3" padding="$3" gap="$2"><XStack justifyContent="space-between" alignItems="flex-start" gap="$2"><YStack flex={1} minWidth={0}><Text {...textStyles.bodySecondary} color="$color" fontWeight="700" numberOfLines={1}>{row.label}</Text><Text {...textStyles.caption} color="$colorMuted" numberOfLines={1}>{row.parameter}</Text></YStack><SensorStateBadge state={row.state} /></XStack><XStack gap="$2" flexWrap="wrap"><DataCell width="50%" muted>Aktual {row.actual}</DataCell><DataCell width="50%" muted>{row.normalizedLabel} {row.normalized}</DataCell><DataCell width="100%" muted>Fuzzy {row.membership} · {row.role}</DataCell></XStack></Card>;
+  return <YStack gap="$1" paddingVertical="$2" borderBottomWidth={1} borderBottomColor="$borderColor"><XStack alignItems="center" gap="$2"><YStack flex={1} minWidth={0}><Text {...textStyles.bodySecondary} color="$color" fontWeight="700" numberOfLines={1}>{row.label}</Text><Text {...textStyles.caption} color="$colorMuted" numberOfLines={1}>{row.parameter}</Text></YStack><SensorStateBadge state={row.state} /></XStack><XStack gap="$2" flexWrap="wrap"><DataCell width="48%" muted>Aktual {row.actual}</DataCell><DataCell width="48%" muted>{row.normalizedLabel} {row.normalized}</DataCell><DataCell width="100%" muted>Fuzzy {row.membership} · {row.role}</DataCell></XStack></YStack>;
 }
 
 function SafetyEvidence({ slot }: { slot: ResearchSlotDTO }) {
   if (slot.stream !== 'b3' || !slot.safety) return null;
   const alert = slot.safety.state === 'Safety Alert';
-  return <YStack gap="$2" padding="$3" borderRadius="$3" backgroundColor={alert ? '$statusSafetyAlertSoft' : '$statusNormalSoft'} borderWidth={1} borderColor={alert ? '$statusSafetyAlert' : '$statusNormalSoft'}><Text {...textStyles.bodySecondary} color={alert ? '$statusSafetyAlert' : '$statusNormal'} fontWeight="700">Safety monitoring: {slot.safety.state === 'Clear' ? 'Aman' : slot.safety.state || 'Belum tersedia'}</Text>{slot.safety.reason ? <Text {...textStyles.caption} color="$colorMuted">{slot.safety.reason}</Text> : null}<XStack gap="$3" flexWrap="wrap">{slot.safety.channels.map((channel) => { const hasEngineeringValue = channel.value !== null && channel.value !== undefined; return <YStack key={channel.sensor_id} minWidth={100} gap="$1"><Text {...textStyles.caption} color="$colorMuted">{getSensorParameterLabel(channel.parameter || channel.sensor_type)}</Text><Text {...textStyles.bodySecondary} color="$color" fontWeight="700">{hasEngineeringValue ? formatResearchNumber(channel.value, channel.unit ? ` ${channel.unit}` : '') : formatResearchNumber(channel.normalized, ' index')}</Text><SensorStateBadge state={channel.sensor_state} /></YStack>; })}</XStack></YStack>;
+  return <YStack gap="$2" padding="$3" borderRadius="$3" backgroundColor={alert ? '$statusSafetyAlertSoft' : '$statusNormalSoft'} borderWidth={1} borderColor={alert ? '$statusSafetyAlert' : '$statusNormalSoft'}><Text {...textStyles.bodySecondary} color={alert ? '$statusSafetyAlert' : '$statusNormal'} fontWeight="700">Safety monitoring: {slot.safety.state === 'Clear' ? 'Aman' : slot.safety.state || 'Belum tersedia'}</Text>{slot.safety.reason ? <Text {...textStyles.caption} color="$colorMuted">{slot.safety.reason}</Text> : null}<XStack gap="$3" flexWrap="wrap">{slot.safety.channels.map((channel) => { const hasEngineeringValue = channel.value !== null && channel.value !== undefined; return <YStack key={channel.sensor_id} minWidth={100} gap="$1"><Text {...textStyles.caption} color="$colorMuted">{getSensorParameterLabel(channel.parameter || channel.sensor_type)}</Text><Text {...textStyles.bodySecondary} color="$color" fontWeight="700">{hasEngineeringValue ? formatResearchNumber(channel.value, channel.unit ? ` ${channel.unit}` : '') : RESEARCH_UNAVAILABLE_COPY}</Text><SensorStateBadge state={channel.sensor_state} /></YStack>; })}</XStack></YStack>;
 }
 
 function ResearchSlot({ slot }: { slot: ResearchSlotDTO }) {
@@ -69,8 +77,22 @@ function ResearchSlot({ slot }: { slot: ResearchSlotDTO }) {
   return <Card borderWidth={1} borderColor="$borderColor" backgroundColor="$surface" borderRadius="$3" padding="$3" gap="$3" flex={1} minWidth={mobile ? '100%' : 300}><XStack alignItems="center" justifyContent="space-between" gap="$2"><Text {...textStyles.cardTitle} color="$color">{getStreamLabel(slot.stream)}</Text><Text {...textStyles.caption} color="$colorMuted">{formatResearchTimestamp(slot.recorded_at)}</Text></XStack><YStack gap="$2"><Text {...textStyles.caption} color="$colorMuted">Sensor fisik</Text><YStack gap="$1">{sensorRows.map((row) => <SensorRow key={row.id} row={row} mobile={mobile} />)}</YStack></YStack><Separator borderColor="$borderColor" /><YStack gap="$2"><Text {...textStyles.caption} color="$colorMuted">Derived parameter</Text>{derivedRows.map((row) => <XStack key={row.id} alignItems="center" gap="$2" flexWrap="wrap"><DataCell width="48%">{row.label}</DataCell><DataCell width="48%" muted>{row.actual}</DataCell><DataCell width="48%" muted>{row.normalizedLabel} {row.normalized}</DataCell><DataCell width="48%" muted>{row.membership}</DataCell></XStack>)}</YStack><SafetyEvidence slot={slot} /><FuzzyTrace trace={slot.fis_trace} /></Card>;
 }
 
-export function ResearchPanel({ data = null, loading = false, error = null, onRetry, onOpen }: ResearchPanelProps) {
+export function ResearchPanel({ data = null, firmwareResults, deviceId, monitoring = [], monitoringError = false, loading = false, error = null, onRetry, onOpen }: ResearchPanelProps) {
   const reduceMotion = useReducedMotion();
+  const agedMonitoring = useLiveMonitoring(deviceId ?? '', monitoring);
+  const [history, setHistory] = useState<SensorHistorySnapshot>({ deviceId: '', bySensor: {} });
   const state = getResearchPanelState({ data, loading, error });
-  return <Card borderWidth={1} borderColor="$borderColor" backgroundColor="$surface" borderRadius="$3" padding="$4" gap="$3"><XStack alignItems="center" justifyContent="space-between" gap="$3"><YStack gap="$1" flex={1} minWidth={0}><Text color="$color" {...textStyles.sectionTitle}>Detail Riset</Text><Text color="$colorMuted" {...textStyles.bodySecondary}>Nilai aktual per sensor, normalisasi, dan status fuzzy per slot.</Text><Text color="$colorMuted" {...textStyles.caption}>Derajat keanggotaan fuzzy memakai skala 0 sampai 1, bukan probabilitas atau akurasi.</Text></YStack>{onOpen ? <AppButton variant="ghost" size="sm" onPress={onOpen} ariaLabel="Muat detail riset">Perbarui</AppButton> : null}</XStack><AnimatePresence>{state === 'loading' ? <LoadingState label="Memuat detail riset" rows={2} /> : null}{state === 'error' ? <ErrorState title="Detail riset tidak dapat dimuat" message="Periksa koneksi API lalu coba lagi." onRetry={onRetry} /> : null}{state === 'empty' ? <EmptyState title="Data riset belum tersedia" description="Pembacaan audit per slot akan muncul setelah tersedia dari API." /> : null}{state === 'data' && data ? <XStack gap="$3" flexWrap="wrap" transition={reduceMotion ? undefined : 'standard'} enterStyle={reduceMotion ? undefined : { opacity: 0, y: -4 }}><>{data.slots.map((slot) => <ResearchSlot key={slot.stream} slot={slot} />)}</></XStack> : null}</AnimatePresence></Card>;
+  const hasFirmware = Boolean(firmwareResults?.length);
+  return <Card borderWidth={1} borderColor="$borderColor" backgroundColor="$surface" borderRadius="$3" padding="$4" gap="$3">
+    <XStack alignItems="center" justifyContent="space-between" gap="$3"><YStack gap="$1" flex={1} minWidth={0}>
+      <Text color="$color" {...textStyles.sectionTitle}>Detail Riset</Text>
+    </YStack>{onOpen ? <AppButton variant="ghost" size="sm" onPress={onOpen} ariaLabel="Muat detail riset">Perbarui</AppButton> : null}</XStack>
+    {hasFirmware ? <YStack gap="$2"><Text {...textStyles.bodySecondary} color="$color" fontWeight="700">Hasil MCU terakhir</Text><Text {...textStyles.caption} color="$colorMuted">Snapshot MCU ini terpisah dari pembacaan sensor live dan analisis web. Timestamp lama bukan capture baru.</Text><FirmwareResearch results={firmwareResults!} /></YStack> : <AnimatePresence>
+      {state === 'loading' ? <LoadingState label="Memuat detail riset" rows={2} /> : null}
+      {state === 'error' ? <ErrorState title="Detail riset tidak dapat dimuat" message="Periksa koneksi API lalu coba lagi." onRetry={onRetry} /> : null}
+      {state === 'empty' ? monitoring.length ? null : <EmptyState title="Data riset belum tersedia" description="Pembacaan audit per slot akan muncul setelah tersedia dari API." /> : null}
+      {state === 'data' && data ? <XStack gap="$3" flexWrap="wrap" transition={reduceMotion ? undefined : 'standard'} enterStyle={reduceMotion ? undefined : { opacity: 0, y: -4 }}><>{data.slots.map((slot) => <ResearchSlot key={slot.stream} slot={slot} />)}</></XStack> : null}
+    </AnimatePresence>}
+    {deviceId ? <SensorHistoryCharts deviceId={deviceId} monitoring={agedMonitoring} onHistoryChange={setHistory} /> : null}
+  </Card>;
 }

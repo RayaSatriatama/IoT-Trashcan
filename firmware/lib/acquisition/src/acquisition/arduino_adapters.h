@@ -5,6 +5,10 @@
 #include "acquisition/sensors/mq_adc.h"
 
 #ifdef ARDUINO
+#include "acquisition/mq_adc_calibration_esp32.h"
+#endif
+
+#ifdef ARDUINO
 #include <Arduino.h>
 #include <esp_timer.h>
 #endif
@@ -37,14 +41,27 @@ class ArduinoHeaterRail final : public IMq7HeaterRail {
 class ArduinoMqAdcReader final : public IMqAdcReader {
  public:
   explicit ArduinoMqAdcReader(uint8_t pin) noexcept : pin_(pin) {}
+  // Opt-in, exactly like TargetMqAdcReader: only the channel whose wiring the
+  // evidence contract was reviewed against (MQ-135) may enable it.
+  void enable_calibrated_voltage() noexcept { calibrated_ = true; }
   MqAdcReadResult read() noexcept override {
+    // Per-pin attenuation BEFORE the sample it annotates. Only the enabled
+    // channel pays for this; every other MQ channel keeps its existing
+    // single-read behaviour and the SDK default.
+    if (calibrated_) mq_adc_configure_attenuation_for_pin(pin_);
     const int value = analogRead(pin_);
     if (value < 0) return MqAdcReadResult{false, true, 0, SampleReason::Disconnected};
-    return MqAdcReadResult{true, false, static_cast<uint16_t>(value), SampleReason::DataReady};
+    MqAdcReadResult result{true, false, static_cast<uint16_t>(value), SampleReason::DataReady};
+    // Calibrated voltage from this same analogRead() sample. Empty (no
+    // evidence) unless enabled, and unless the installed SDK reports eFuse
+    // two-point-fit calibration for this channel.
+    if (calibrated_) result.calibrated = mq_adc_calibrated_voltage_for_pin(pin_, result.counts);
+    return result;
   }
 
  private:
   uint8_t pin_;
+  bool calibrated_{false};
 };
 #endif
 

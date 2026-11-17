@@ -223,6 +223,10 @@ func sensorCapability(sensorID string) (sensorCapabilityResponse, bool) {
 			{"echo_mm_per_us_milli", "mm_per_us", true}, {"echo_timeout_us", "us", true},
 			{"inter_sensor_gap_us", "us", true}, {"overshoot_tolerance_mm_milli", "mm", true},
 		}
+	case "mq135_gas":
+		value.References = []capabilityField{{"hardware_identity", "label", true}, {"reference_environment", "label", true}}
+		value.Criteria = []capabilityField{{"samples", "count", true}, {"min_duration_ms", "ms", true}, {"max_age_ms", "ms", true}, {"max_variation_milli_percent", "milli_percent", true}}
+		value.EngineeringParameters = []capabilityField{{"circuit_mv", "mV", true}, {"module_load_ohm", "ohm", true}, {"divider_top_ohm", "ohm", true}, {"divider_bottom_ohm", "ohm", true}, {"topology", "code", true}, {"hardware_confirmed", "bool", true}, {"preparation_confirmed", "bool", true}, {"reference_confirmed", "bool", true}, {"reference_temperature_centi_c", "centi_celsius", true}, {"reference_humidity_centi_pct", "centi_percent", true}, {"heating_duration_us", "us", true}}
 	case "mq4", "mq135", "mq7", "mq8":
 		value.Criteria = []capabilityField{{"samples", "count", true}, {"max_span_counts", "counts", true}}
 		value.EngineeringParameters = []capabilityField{

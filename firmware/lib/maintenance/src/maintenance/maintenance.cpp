@@ -342,7 +342,15 @@ bool MaintenanceParser::emit_line(ParseEvent& event) noexcept {
     } else if (count == 4U && equals(line_.data(), tokens[1], "criteria")) {
       command.kind = CommandKind::CalibrationCriteria;
       valid = copy_token(line_.data(), tokens[2], command.field);
-      numeric = true;
+      const auto field_view = command.field.view();
+      // Text-valued criteria keys. Legacy labels plus the S2 normalized
+      // discriminator/enum keys; every other key stays strictly numeric.
+      numeric = field_view != "hardware_identity" &&
+                field_view != "reference_environment" &&
+                field_view != "response_mode" &&
+                field_view != "reference_kind" &&
+                field_view != "preparation_method";
+      if (!numeric) valid = valid && copy_token(line_.data(), tokens[3], command.value);
       numeric_token = tokens[3];
     } else if (count == 3U && equals(line_.data(), tokens[1], "capture")) {
       command.kind = CommandKind::CalibrationCapture;

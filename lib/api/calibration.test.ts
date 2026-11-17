@@ -43,6 +43,27 @@ describe('operator calibration API client', () => {
     expect(new Headers(requestInit?.headers).get('x-sigap-csrf')).toBe('csrf-in-memory');
   });
 
+  it('passes normalized MQ135 criteria through the existing HTTPS command envelope', async () => {
+    let requestUrl = '';
+    let payload = '';
+    const criteria = {
+      response_mode: 'normalized', samples: 3, min_duration_ms: 1000, max_age_ms: 250, max_variation_milli_percent: 5000,
+      circuit_mv: 5000, divider_top_ohm: 10000, divider_bottom_ohm: 15000, topology: 1,
+      hardware_confirmed: 1, reference_confirmed: 1, hardware_identity: 'SYNTHETIC-HW', reference_environment: 'LAB-01',
+      reference_kind: 'operational', preparation_confirmed: 0, preparation_method: 'unknown', heating_duration_us: 0,
+    } as const;
+    const client = createCalibrationApi({ bearerToken: 'operator-session', csrfToken: 'csrf-in-memory' }, async (input, init) => {
+      requestUrl = String(input);
+      payload = String(init?.body ?? '');
+      return jsonResponse({ command: { command_id: 'c-mq135', status: 'CAPTURING', state: 'CAPTURING' } });
+    });
+    await expect(client.submit({ device_id: 'SIGAP-01', sensor_id: 'mq135_gas', operation: 'SET_CRITERIA', parameters: criteria }))
+      .resolves.toMatchObject({ command: { command_id: 'c-mq135' } });
+    expect(requestUrl).toBe('/api/device-control/commands/SIGAP-01');
+    expect(JSON.parse(payload)).toMatchObject({ sensor_id: 'mq135_gas', operation: 'set_criteria', payload: { parameters: criteria } });
+    expect(payload).not.toContain('module_load_ohm');
+  });
+
   it('requires a non-empty operator token', () => {
     expect(() => createCalibrationApi({ bearerToken: ' ' })).toThrow('Operator authorization is required');
   });

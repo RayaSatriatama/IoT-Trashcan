@@ -30,7 +30,7 @@ namespace sigap::provisioning {
 namespace {
 
 constexpr std::size_t kMaxFrameBytes{192U};
-constexpr std::size_t kMaxChunks{128U};
+constexpr std::size_t kMaxChunks{512U};
 constexpr std::size_t kMaxWirePacketBytes{20U};
 
 bool equal_literal(std::string_view value, const char* literal) noexcept {
@@ -217,14 +217,20 @@ BleParseStatus BleCommandParser::parse(std::string_view frame,
                                        BleCommand& output) noexcept {
   output = {};
   BleWireFrame wire{};
-  const auto frame_status = decode_frame(frame, wire);
-  if (frame_status != BleParseStatus::Accepted) return frame_status;
-  frame = std::string_view(wire.payload.data(), wire.payload_size);
+  // Reassembled CAL commands have their own bounded workspace. Physical
+  // packets and all legacy non-CAL commands retain the original 192-byte cap.
+  const bool complete_cal = frame.substr(0U, 4U) == "CAL " && frame.size() < 1024U;
+  if (!complete_cal) {
+    const auto frame_status = decode_frame(frame, wire);
+    if (frame_status != BleParseStatus::Accepted) return frame_status;
+    frame = std::string_view(wire.payload.data(), wire.payload_size);
+  }
+  while (!frame.empty() && (frame.back() == '\n' || frame.back() == '\r')) frame.remove_suffix(1U);
   while (!frame.empty() && (frame.front() == ' ' || frame.front() == '\t')) {
     frame.remove_prefix(1U);
   }
   if (frame.empty()) return BleParseStatus::Empty;
-  if (frame.size() > kMaxFrameBytes) return BleParseStatus::Oversized;
+  if (frame.size() > kMaxFrameBytes && !complete_cal) return BleParseStatus::Oversized;
   if (has_control(frame)) return BleParseStatus::Invalid;
   if (equal_literal(frame, "STATUS") || equal_literal(frame, "GET_STATUS")) {
     output.kind = BleCommandKind::Status;

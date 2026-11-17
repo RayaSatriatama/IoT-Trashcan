@@ -40,7 +40,8 @@ bool NvsCalibrationReplayStore::encode(
   output.transport = static_cast<uint8_t>(command.transport);
   output.operation = static_cast<uint8_t>(command.operation);
   output.target = static_cast<uint8_t>(command.target);
-  output.anchor = static_cast<uint8_t>(command.anchor);
+  output.anchor = static_cast<uint8_t>(
+      static_cast<uint8_t>(command.anchor) | (command.normalized_mode ? 0x08U : 0x00U));
   output.flags = static_cast<uint8_t>((command.criteria_present ? 1U : 0U) |
                                       (command.expected_profile_present ? 2U : 0U) |
                                       (prepared ? 4U : 0U));
@@ -58,7 +59,14 @@ bool NvsCalibrationReplayStore::encode(
     std::visit(
         [&](const auto& criteria) noexcept {
           using T = std::decay_t<decltype(criteria)>;
-          if constexpr (std::is_same_v<T, Hx711CaptureCriteria>) {
+          if constexpr (std::is_same_v<T, Mq135GasCaptureCriteria> ||
+                        std::is_same_v<T, Mq135NormalizedCaptureCriteria>) {
+            // Durable records are COMMIT identities, never reference windows.
+            // Gas COMMIT has criteria_present=false and binds the preview hash.
+            // A normalized (MQG2) COMMIT binds the same preview hash plus the
+            // explicit mode bit, so it can never replay as a legacy ohms one.
+            criteria_ok = false;
+          } else if constexpr (std::is_same_v<T, Hx711CaptureCriteria>) {
             output.criteria_kind = 1U;
             output.criteria_samples = criteria.required_samples;
             output.criteria_first = criteria.max_span_counts;
@@ -76,11 +84,16 @@ bool NvsCalibrationReplayStore::encode(
             output.criteria_samples = criteria.required_samples;
             output.criteria_first = criteria.max_span_centi_c;
             output.criteria_flag = criteria.require_rom_match ? 1U : 0U;
-          } else {
+          } else if constexpr (std::is_same_v<T, Sht31CaptureCriteria>) {
             output.criteria_kind = 5U;
             output.criteria_samples = criteria.required_samples;
             output.criteria_first = criteria.max_temperature_span_centi_c;
             output.criteria_second = criteria.max_humidity_span_centi_pct;
+          } else {
+            // Fail closed. A catch-all here previously wrote SHT31 fields for
+            // any variant added to CaptureCriteria later, which silently
+            // mis-encoded an unhandled criteria type.
+            criteria_ok = false;
           }
         },
         command.criteria);
@@ -115,7 +128,8 @@ bool NvsCalibrationReplayStore::decode(
   command.transport = static_cast<CalibrationTransport>(record.transport);
   command.operation = static_cast<CalibrationOperation>(record.operation);
   command.target = static_cast<CalibrationTarget>(record.target);
-  command.anchor = static_cast<CalibrationAnchor>(record.anchor);
+  command.normalized_mode = (record.anchor & 0x08U) != 0U;
+  command.anchor = static_cast<CalibrationAnchor>(record.anchor & 0x07U);
   command.payload_size = record.payload_size;
   command.payload_digest = record.payload_digest;
   command.criteria_present = (record.flags & 1U) != 0U;

@@ -22,10 +22,33 @@
 #error "Physical reference mode cannot enable sensor simulation"
 #endif
 
+#ifndef SIGAP_PROTOTYPE_OPERATION
+#define SIGAP_PROTOTYPE_OPERATION 0
+#endif
+#if SIGAP_PROTOTYPE_OPERATION != 0 && SIGAP_PROTOTYPE_OPERATION != 1
+#error "SIGAP_PROTOTYPE_OPERATION must be 0 or 1"
+#endif
+#if SIGAP_PROTOTYPE_OPERATION && SIGAP_SENSOR_SIMULATION
+#error "Prototype operation requires physical sensors"
+#endif
+
+#ifndef SIGAP_LIVE_NO_BACKLOG
+#define SIGAP_LIVE_NO_BACKLOG SIGAP_PROTOTYPE_OPERATION
+#endif
+#if SIGAP_LIVE_NO_BACKLOG != 0 && SIGAP_LIVE_NO_BACKLOG != 1
+#error "SIGAP_LIVE_NO_BACKLOG must be 0 or 1"
+#endif
+#if SIGAP_LIVE_NO_BACKLOG && (!SIGAP_PROTOTYPE_OPERATION || SIGAP_SENSOR_SIMULATION)
+#error "Latest-only live delivery requires physical prototype operation"
+#endif
+
 namespace sigap::build {
 
+inline constexpr bool kPrototypeOperation{SIGAP_PROTOTYPE_OPERATION == 1};
 inline constexpr bool kPhysicalReferenceOnly{SIGAP_PHYSICAL_REFERENCE_ONLY == 1};
 inline constexpr bool kSensorSimulation{SIGAP_SENSOR_SIMULATION == 1};
+inline constexpr bool kLiveNoBacklog{SIGAP_LIVE_NO_BACKLOG == 1};
+inline constexpr uint64_t kLiveSnapshotPeriodUs{1000000U};
 
 #ifndef SIGAP_LIVE_ARCHIVE_SPLIT
 #define SIGAP_LIVE_ARCHIVE_SPLIT 0
@@ -135,6 +158,10 @@ inline constexpr char kBoardProfile[] = "n16r8";
 // scientific model version and is never used as a calibration provenance.
 #if SIGAP_SENSOR_SIMULATION
 inline constexpr char kFirmwareBuildId[] = "sigap-task6-sensor-sim-v1";
+#elif SIGAP_LIVE_NO_BACKLOG
+inline constexpr char kFirmwareBuildId[] = "sigap-live-https-v35";
+#elif SIGAP_PROTOTYPE_OPERATION
+inline constexpr char kFirmwareBuildId[] = "sigap-prototype-physical4-v27";
 #elif SIGAP_PHYSICAL_REFERENCE_ONLY && SIGAP_LIVE_ARCHIVE_SPLIT
 inline constexpr char kFirmwareBuildId[] = "sigap-task6-physical4-v2";
 #elif SIGAP_PHYSICAL_REFERENCE_ONLY

@@ -20,7 +20,7 @@ const char* calibration_target_name(
       "hx711_organic", "hx711_inorganic", "hx711_b3",
       "ultrasonic_organic", "ultrasonic_inorganic", "ultrasonic_b3",
       "mq4", "mq135", "mq7", "mq8", "ds18b20_b3", "sht31_44",
-      "sht31_45"};
+      "sht31_45", "mq135_gas"};
   const auto index = static_cast<std::size_t>(target);
   return index < (sizeof(names) / sizeof(names[0])) ? names[index] : "";
 }
@@ -195,6 +195,11 @@ bool CommandRouter::status(
 bool CommandRouter::evidence(
     calibration::CalibrationTarget target,
     calibration::DiagnosticEvidence& output) const noexcept {
+  if (target == calibration::CalibrationTarget::Mq135Gas) {
+    output = calibration::DiagnosticEvidence{};
+    if (evidence_ != nullptr) (void)evidence_->diagnostic(target, output);
+    return true;
+  }
   return evidence_ != nullptr && evidence_->diagnostic(target, output);
 }
 
@@ -203,10 +208,8 @@ bool CommandRouter::active_profile(
     calibration::CalibrationProfileRef& output) const noexcept {
   output = calibration::CalibrationProfileRef{};
   if (profiles_ == nullptr) return false;
-  const auto profile_target = static_cast<acquisition::ProfileTarget>(
-      static_cast<uint8_t>(target) + 1U);
   acquisition::ActiveProfileSnapshot active{};
-  if (!profiles_->snapshot(acquisition::default_profile_key(profile_target),
+  if (!profiles_->snapshot(calibration::calibration_profile_key(target),
                            active) || !active.present) {
     return true;
   }
@@ -262,7 +265,11 @@ bool CommandRouter::set_criteria(const calibration::CaptureCriteria& criteria,
   return std::visit(
       [&](const auto& value) noexcept {
         using T = std::decay_t<decltype(value)>;
-        if constexpr (std::is_same_v<T, calibration::Hx711CaptureCriteria>) {
+        if constexpr (std::is_same_v<T, calibration::Mq135GasCaptureCriteria>) {
+          return configure_gas_reference(value, now_us);
+        } else if constexpr (std::is_same_v<T, calibration::Mq135NormalizedCaptureCriteria>) {
+          return configure_normalized_reference(value, now_us);
+        } else if constexpr (std::is_same_v<T, calibration::Hx711CaptureCriteria>) {
           return set_numeric("samples", value.required_samples) &&
                  set_numeric("max_span_counts", value.max_span_counts);
         } else if constexpr (std::is_same_v<T, calibration::DistanceCaptureCriteria>) {
@@ -283,6 +290,49 @@ bool CommandRouter::set_criteria(const calibration::CaptureCriteria& criteria,
         }
       },
       criteria);
+}
+
+bool CommandRouter::configure_gas_reference(const calibration::Mq135GasCaptureCriteria& input,
+                                            uint64_t now_us) noexcept {
+  if (profiles_ == nullptr || pending_target_ != calibration::CalibrationTarget::Mq135Gas ||
+      calibration_.state() != calibration::CalibrationState::Configuring) return false;
+  acquisition::ActiveProfileSnapshot active{};
+  if (!profiles_->snapshot(acquisition::ProfileTarget::Mq135, active) || !active.present) return false;
+  auto criteria = input;
+  acquisition::ProfileCodec codec{};
+  if (!codec.decode(active.encoded, criteria.adc_profile) || !criteria.valid()) return false;
+  clear_calibration_proposal();
+  if (!calibration_.configure(criteria, now_us)) return false;
+  criteria_set_ = true;
+  return true;
+}
+
+bool CommandRouter::configure_normalized_reference(
+    const calibration::Mq135NormalizedCaptureCriteria& input,
+    uint64_t now_us) noexcept {
+  if (profiles_ == nullptr ||
+      pending_target_ != calibration::CalibrationTarget::Mq135Gas ||
+      calibration_.state() != calibration::CalibrationState::Configuring) {
+    return false;
+  }
+  acquisition::ActiveProfileSnapshot active{};
+  if (!profiles_->snapshot(acquisition::ProfileTarget::Mq135, active) ||
+      !active.present) {
+    return false;
+  }
+  auto criteria = input;
+  acquisition::ProfileCodec codec{};
+  // The ADC profile identity is injected by the device, never by the wire.
+  const bool adc_ok = codec.decode(active.encoded, criteria.adc_profile);
+  const bool criteria_ok = criteria.valid();
+  std::printf("DBG cfg adc=%d valid=%d\n", (int)adc_ok, (int)criteria_ok);
+  if (!adc_ok || !criteria_ok) {
+    return false;
+  }
+  clear_calibration_proposal();
+  if (!calibration_.configure(criteria, now_us)) return false;
+  criteria_set_ = true;
+  return true;
 }
 
 bool CommandRouter::capture(calibration::CalibrationAnchor anchor,
@@ -329,11 +379,20 @@ bool CommandRouter::cancel() noexcept {
   return typed_dispatch(*this, command, calibration_.last_activity_us());
 }
 
-bool CommandRouter::history(calibration::CalibrationResultEnvelope&) const noexcept {
-  return false;
+bool CommandRouter::history(calibration::CalibrationResultEnvelope& output) const noexcept {
+  return history(pending_target_, output);
 }
-
-bool CommandRouter::rollback() noexcept { return false; }
+bool CommandRouter::history(calibration::CalibrationTarget target, calibration::CalibrationResultEnvelope& output) const noexcept {
+  if (profiles_ == nullptr) return false;
+  acquisition::ActiveProfileSnapshot previous{};
+  return active_profile(target, output.profile) && profiles_->previous(calibration::calibration_profile_key(target), previous);
+}
+bool CommandRouter::rollback() noexcept { return rollback(pending_target_); }
+bool CommandRouter::rollback(calibration::CalibrationTarget target) noexcept {
+  if (profiles_ == nullptr || !profiles_->rollback(calibration::calibration_profile_key(target))) return false;
+  calibration_.abort(); clear_calibration_proposal(); criteria_set_ = false;
+  return true;
+}
 
 bool CommandRouter::append_calibration_preview_response(
     MaintenanceResponse& response) const noexcept {
@@ -343,14 +402,8 @@ bool CommandRouter::append_calibration_preview_response(
 bool CommandRouter::build_calibration_proposal(
     uint64_t now_us, CalibrationProposal& proposal) const noexcept {
   if (profiles_ == nullptr) return false;
-  const auto target = static_cast<acquisition::ProfileTarget>(
-      static_cast<uint8_t>(pending_target_) + 1U);
-  const acquisition::ProfileKey key{
-      (pending_target_ >= calibration::CalibrationTarget::Mq4 &&
-       pending_target_ <= calibration::CalibrationTarget::Mq8)
-          ? acquisition::ProfileKind::Adc
-          : acquisition::ProfileKind::Calibration,
-      target};
+  const auto key = calibration::calibration_profile_key(pending_target_);
+  const auto target = key.target;
   acquisition::ActiveProfileSnapshot active{};
   if (!profiles_->snapshot(key, active)) return false;
   if (active.present && active.ref.profile_version == UINT32_MAX) return false;
@@ -358,6 +411,97 @@ bool CommandRouter::build_calibration_proposal(
   acquisition::ProfileCodec codec{};
   acquisition::EncodedProfile encoded{};
   switch (pending_target_) {
+    case calibration::CalibrationTarget::Mq135Gas: {
+      if (const auto* normalized = calibration_.normalized_criteria()) {
+        // Payload-v2 dimensionless baseline. The persisted q0 is the median of
+        // the admitted dimensionless q values; no RL and no ohms are involved.
+        const auto summary = calibration_.normalized_summary();
+        std::printf("DBG prop ready=%d rej=%u cnt=%u q0=%f var=%f first=%llu last=%llu\n",
+                    (int)summary.ready, (unsigned)summary.rejected, (unsigned)summary.count,
+                    (double)summary.q0, (double)summary.variation_percent,
+                    (unsigned long long)summary.first_us, (unsigned long long)summary.last_us);
+        if (!summary.ready || summary.rejected != 0U) return false;
+        acquisition::Mq135NormalizedProfile profile{};
+        profile.electrical = normalized->electrical;
+        profile.adc_hash = normalized->adc_profile.manifest.hash;
+        profile.adc_version = normalized->adc_profile.manifest.profile_version;
+        profile.q0 = summary.q0;
+        profile.minimum_q = summary.minimum_q;
+        profile.maximum_q = summary.maximum_q;
+        profile.reference_pin_mv = static_cast<uint32_t>(
+            std::lround(static_cast<double>(
+                calibration_.normalized_last_observation().calibrated.pin_mv)));
+        profile.reference_ao_mv = static_cast<uint32_t>(std::lround(
+            static_cast<double>(profile.reference_pin_mv) /
+            normalized->electrical.attenuation()));
+        profile.variation_percent = summary.variation_percent;
+        profile.sample_count = summary.count;
+        profile.rejected_count = summary.rejected;
+        profile.first_us = summary.first_us;
+        profile.last_us = summary.last_us;
+        profile.evidence_hash = summary.evidence_hash;
+        profile.criteria = normalized->criteria;
+        profile.hardware_identity = normalized->hardware_identity;
+        profile.reference_environment = normalized->reference_environment;
+        profile.temperature_present = normalized->temperature_present;
+        profile.temperature_centi_c = normalized->temperature_centi_c;
+        profile.humidity_present = normalized->humidity_present;
+        profile.humidity_centi_pct = normalized->humidity_centi_pct;
+        profile.heating_duration_us = normalized->heating_duration_us;
+        profile.preparation_confirmed = normalized->preparation_confirmed;
+        profile.preparation_method = normalized->preparation_method;
+        profile.reference_kind = normalized->reference_kind;
+        profile.adc_method = static_cast<uint8_t>(
+            acquisition::MqAdcCalibrationMethod::EspAdcCalEfuseTpFit);
+        profile.resolution_bits = 12U;
+        profile.attenuation_db = 11U;
+        profile.adc_unit = 1U;
+        profile.adc_channel = 4U;
+        profile.curve_id = acquisition::kMq135Nh3CurveId;
+        profile.curve_version = acquisition::kMq135Nh3CurveVersion;
+        profile.curve_source_sha256 = acquisition::kMq135Nh3CurveSourceSha256;
+        profile.estimation_method = acquisition::Mq135EstimationMethod::PiecewiseLogLog;
+        acquisition::ActiveProfileSnapshot adc{};
+        if (!profiles_->snapshot(acquisition::ProfileTarget::Mq135, adc) ||
+            !adc.present || adc.ref.hash != profile.adc_hash ||
+            adc.ref.profile_version != profile.adc_version) {
+          return false;
+        }
+        profile.manifest = acquisition::ProfileManifest{};
+        profile.manifest.target_id = 8U;
+        profile.manifest.profile_version = version;
+        profile.manifest.validity = normalized->adc_profile.manifest.validity;
+        const auto& source = calibration_.normalized_last_observation();
+        set_calibration_provenance(profile.manifest.provenance, &source.source_boot_id,
+                                   profile.last_us, profile.temperature_centi_c,
+                                   static_cast<int64_t>(profile.humidity_centi_pct),
+                                   profile.sample_count, source.source_sequence, 6);
+        profile.manifest.provenance.recorded_at = source.source_recorded_at;
+        profile.manifest.provenance.time_quality = source.source_time_quality;
+        if (!acquisition::encode_mq135_normalized_profile(profile, encoded)) return false;
+        break;
+      }
+      const auto* criteria = calibration_.gas_criteria();
+      if (criteria == nullptr) return false;
+      auto profile = criteria->profile;
+      profile.reference = calibration_.gas_summary(); profile.r0_ohm = profile.reference.median_ohm;
+      profile.adc_hash = criteria->adc_profile.manifest.hash;
+      profile.adc_version = criteria->adc_profile.manifest.profile_version;
+      acquisition::ActiveProfileSnapshot adc{};
+      if (!profiles_->snapshot(acquisition::ProfileTarget::Mq135, adc) || !adc.present ||
+          adc.ref.hash != profile.adc_hash || adc.ref.profile_version != profile.adc_version) return false;
+      profile.manifest = acquisition::ProfileManifest{};
+      profile.manifest.target_id = 8; profile.manifest.profile_version = version;
+      profile.manifest.validity = criteria->adc_profile.manifest.validity;
+      const auto& source = calibration_.gas_last_observation();
+      set_calibration_provenance(profile.manifest.provenance, &source.source_boot_id,
+        profile.reference.last_us, profile.temperature_centi_c, profile.humidity_centi_percent,
+        profile.reference.count, source.source_sequence, 5);
+      profile.manifest.provenance.recorded_at = source.source_recorded_at;
+      profile.manifest.provenance.time_quality = source.source_time_quality;
+      if (!codec.encode(profile, encoded)) return false;
+      break;
+    }
     case calibration::CalibrationTarget::Hx711Organic:
     case calibration::CalibrationTarget::Hx711Inorganic:
     case calibration::CalibrationTarget::Hx711B3: {
@@ -523,9 +667,30 @@ bool CommandRouter::calibration_proposal_current() const noexcept {
       calibration_proposal_.evidence_sequence != evidence_sequence_) {
     return false;
   }
-  const auto target = static_cast<acquisition::ProfileTarget>(
-      static_cast<uint8_t>(pending_target_) + 1U);
-  const acquisition::ProfileKey expected = acquisition::default_profile_key(target);
+  const auto expected = calibration::calibration_profile_key(pending_target_);
+  if (pending_target_ == calibration::CalibrationTarget::Mq135Gas) {
+    if (acquisition::mq135_normalized_payload(calibration_proposal_.encoded)) {
+      acquisition::Mq135NormalizedProfile normalized{};
+      acquisition::ActiveProfileSnapshot adc{};
+      if (!acquisition::decode_mq135_normalized_profile(
+              calibration_proposal_.encoded, normalized) ||
+          !profiles_->snapshot(acquisition::ProfileTarget::Mq135, adc) ||
+          !adc.present || adc.ref.hash != normalized.adc_hash ||
+          adc.ref.profile_version != normalized.adc_version) {
+        return false;
+      }
+      acquisition::ActiveProfileSnapshot active{};
+      return calibration_proposal_.key.kind == expected.kind &&
+             calibration_proposal_.key.target == expected.target &&
+             profiles_->snapshot(calibration_proposal_.key, active) &&
+             same_active_profile(calibration_proposal_.active, active);
+    }
+    acquisition::Mq135GasProfile gas{}; acquisition::ProfileCodec codec{};
+    acquisition::ActiveProfileSnapshot adc{};
+    if (!codec.decode(calibration_proposal_.encoded, gas) ||
+        !profiles_->snapshot(acquisition::ProfileTarget::Mq135, adc) || !adc.present ||
+        adc.ref.hash != gas.adc_hash || adc.ref.profile_version != gas.adc_version) return false;
+  }
   if (calibration_proposal_.key.kind != expected.kind ||
       calibration_proposal_.key.target != expected.target) return false;
   acquisition::ActiveProfileSnapshot active{};
@@ -555,6 +720,57 @@ bool CommandRouter::append_calibration_preview(MaintenanceResponse& response) co
       return false;
   }
   switch (pending_target_) {
+    case calibration::CalibrationTarget::Mq135Gas: {
+      if (acquisition::mq135_normalized_payload(calibration_proposal_.encoded)) {
+        acquisition::Mq135NormalizedProfile p{};
+        return acquisition::decode_mq135_normalized_profile(
+                   calibration_proposal_.encoded, p) &&
+               append_u32(response, "gas_schema_version=", 2) &&
+               append_float(response, "q0=", p.q0) &&
+               append_float(response, "minimum_q=", p.minimum_q) &&
+               append_float(response, "maximum_q=", p.maximum_q) &&
+               append_float(response, "variation_percent=", p.variation_percent) &&
+               append_float(response, "circuit_mv=",
+                            static_cast<float>(p.electrical.circuit_mv)) &&
+               append_float(response, "divider_top_ohm=",
+                            static_cast<float>(p.electrical.divider_top_ohm)) &&
+               append_float(response, "divider_bottom_ohm=",
+                            static_cast<float>(p.electrical.divider_bottom_ohm)) &&
+               append_u64(response, "first_us=", p.first_us) &&
+               append_u64(response, "last_us=", p.last_us) &&
+               append_u32(response, "evidence_count=", p.sample_count) &&
+               append_u64(response, "evidence_sequence=",
+                          p.manifest.provenance.evidence_sequence) &&
+               response.append("evidence_hash=sha256:") &&
+               append_hex(response, p.evidence_hash.data(), 32) &&
+               response.append("\nproposal_hash=sha256:") &&
+               append_hex(response, calibration_proposal_.encoded.hash().data(), 32) &&
+               response.append("\n") &&
+               append_u32(response, "profile_version=", p.manifest.profile_version) &&
+               append_u32(response, "expires_in_ms=",
+                          static_cast<uint32_t>(
+                              calibration::CalibrationSession::kSessionTimeoutUs / 1000));
+      }
+      acquisition::Mq135GasProfile p{};
+      return codec.decode(calibration_proposal_.encoded, p) &&
+        append_u32(response, "gas_schema_version=", 1) &&
+        append_float(response, "r0_ohm=", p.r0_ohm) &&
+        append_float(response, "minimum_ohm=", p.reference.minimum_ohm) &&
+        append_float(response, "maximum_ohm=", p.reference.maximum_ohm) &&
+        append_float(response, "variation_percent=", p.reference.variation_percent) &&
+        append_float(response, "circuit_mv=", p.electrical.circuit_mv) &&
+        append_float(response, "module_load_ohm=", p.electrical.module_load_ohm) &&
+        append_float(response, "divider_top_ohm=", p.electrical.divider_top_ohm) &&
+        append_float(response, "divider_bottom_ohm=", p.electrical.divider_bottom_ohm) &&
+        append_u64(response, "first_us=", p.reference.first_us) &&
+        append_u64(response, "last_us=", p.reference.last_us) &&
+        append_u32(response, "evidence_count=", p.reference.count) &&
+        append_u64(response, "evidence_sequence=", p.manifest.provenance.evidence_sequence) &&
+        response.append("evidence_hash=sha256:") && append_hex(response, p.reference.evidence_hash.data(), 32) &&
+        response.append("\nproposal_hash=sha256:") && append_hex(response, calibration_proposal_.encoded.hash().data(), 32) &&
+        response.append("\n") && append_u32(response, "profile_version=", p.manifest.profile_version) &&
+        append_u32(response, "expires_in_ms=", static_cast<uint32_t>(calibration::CalibrationSession::kSessionTimeoutUs / 1000));
+    }
     case calibration::CalibrationTarget::Hx711Organic:
     case calibration::CalibrationTarget::Hx711Inorganic:
     case calibration::CalibrationTarget::Hx711B3: {

@@ -1,6 +1,7 @@
 import type { DeviceDTO } from '../lib/api/types';
 import { formatTimestamp, optionalText } from '../lib/format';
 import { getStreamTone } from '../lib/ui/slotPresentation';
+import { latestFirmwareTime } from '../lib/ui/firmwarePresentation';
 import b3Artwork from '../assets/bin_b3_single_faithful.png';
 import inorganicArtwork from '../assets/bin_inorganic_single_faithful.png';
 import organicArtwork from '../assets/bin_organic_single_faithful.png';
@@ -8,8 +9,6 @@ import { Image as RNImage } from 'react-native';
 import { Card, Text, XStack, YStack } from 'tamagui';
 
 import { MetricBar } from './MetricBar';
-import { FirmwareMonitoringPanel } from './device/FirmwareMonitoringPanel';
-import { FirmwareResultsPanel } from './device/FirmwareResultsPanel';
 import { StatusBadge } from './StatusBadge';
 import { textStyles } from '../lib/ui/typography';
 import { useReducedMotion } from '../lib/ui/motionContext';
@@ -32,9 +31,9 @@ export function getStreamLabel(stream: string): string {
 
 export function DeviceCard({ device, onPress, locationName }: DeviceCardProps) {
   const reduceMotion = useReducedMotion();
-  const onlineLabel = device.online_state ?? 'Belum tersedia';
-  const lastSeen = formatTimestamp(device.last_seen);
-  const deviceContext = [optionalText(locationName), optionalText(device.placement_label)].filter(Boolean).join(' · ');
+  const onlineLabel = device.online_state ?? (device.firmware_results?.length ? 'Data MCU diterima' : 'Belum tersedia');
+  const lastSeen = formatTimestamp(device.last_seen ?? latestFirmwareTime(device.firmware_results));
+  const deviceLabel = optionalText(device.placement_label) ?? optionalText(locationName) ?? 'Perangkat';
 
   return (
     <Card
@@ -48,7 +47,7 @@ export function DeviceCard({ device, onPress, locationName }: DeviceCardProps) {
       pressStyle={onPress ? { opacity: 0.82 } : undefined}
       onPress={onPress}
       role={onPress ? 'button' : 'group'}
-      aria-label={`Device ${device.device_code}`}
+      aria-label={`Device ${deviceLabel}`}
       cursor={onPress ? 'pointer' : undefined}
       transition={reduceMotion ? undefined : 'standard'}
       enterStyle={reduceMotion ? undefined : { opacity: 0, y: 4 }}
@@ -62,24 +61,23 @@ export function DeviceCard({ device, onPress, locationName }: DeviceCardProps) {
         </XStack>
         <YStack flex={1} minWidth={0} gap="$1" alignItems="stretch">
           <Text color="$color" {...textStyles.cardTitle} $compact={textStyles.cardTitleCompact} alignSelf="stretch" textAlign="left" minHeight={28} numberOfLines={1} ellipsizeMode="tail">
-            {device.device_code}
+            {deviceLabel}
           </Text>
-          {deviceContext ? <Text color="$colorMuted" {...textStyles.bodySecondary} alignSelf="stretch" textAlign="left" numberOfLines={2}>{deviceContext}</Text> : null}
         </YStack>
       </XStack>
       <XStack flexWrap="wrap" gap="$2" alignItems="center" justifyContent="space-between" paddingVertical="$1">
         <XStack flex={1} minWidth={0} flexWrap="wrap" gap="$2" alignItems="center">
-          <Text color={device.online_state === 'Offline' ? '$statusOffline' : '$statusNormal'} {...textStyles.bodySecondary} fontWeight="700">
+          <Text color={device.online_state === 'Offline' ? '$statusOffline' : device.online_state === 'Online' ? '$statusNormal' : '$colorMuted'} {...textStyles.bodySecondary} fontWeight="700">
             {onlineLabel}
           </Text>
           <Text color="$colorMuted" {...textStyles.metadata} numberOfLines={1}>
-            Update: {lastSeen}
+            {device.last_seen ? 'Update' : 'Hasil MCU'}: {lastSeen}
           </Text>
         </XStack>
         <StatusBadge status={device.status} compact />
       </XStack>
       <YStack gap="$3" borderTopWidth={1} borderTopColor="$borderColor" paddingTop="$3">
-        {device.slots.length > 0 ? (
+        {device.firmware_results?.length ? device.firmware_results.map(result => <MetricBar key={result.stream} label={getStreamLabel(result.stream)} value={result.processed.fill_pct} tone={getStreamTone(result.stream)} />) : device.slots.length > 0 ? (
           device.slots.map((slot) => (
             <MetricBar key={slot.stream} label={getStreamLabel(slot.stream)} value={slot.fill} tone={getStreamTone(slot.stream)} />
           ))
@@ -89,8 +87,6 @@ export function DeviceCard({ device, onPress, locationName }: DeviceCardProps) {
           </Text>
         )}
       </YStack>
-      {device.firmware_monitoring?.length ? <FirmwareMonitoringPanel samples={device.firmware_monitoring} compact /> : null}
-      {device.firmware_results?.length ? <FirmwareResultsPanel results={device.firmware_results} compact /> : null}
     </Card>
   );
 }
