@@ -25,43 +25,136 @@ SIGAP MVP memiliki satu runtime Go dengan SQLite embedded, authenticated ingest,
 
 Mode prototype latest-only memakai HTTPS dengan target snapshot bersama 1 detik untuk empat sensor aktif, tanpa backlog/replay sensor di RAM dan tanpa backup SD. Akuisisi tetap berjalan saat request aktif; riwayat hanya berisi sampel yang diterima server, bukan seluruh pembacaan. Lihat [kebijakan prototype](docs/prototype-operation.md) dan [analisis web TEST_ONLY](docs/web-derived-research.md). Build bukan bukti pemasangan atau penerimaan fisik.
 
-## Menjalankan development
+## Prasyarat
 
-Frontend:
+| Alat | Versi | Catatan |
+| --- | --- | --- |
+| Node.js | 24 atau lebih baru | dipakai `package-lock.json`; tidak ada `engines` yang dipatok |
+| Go | 1.27.1 | sesuai `go.mod`; `go` harus ada di `PATH` |
+| PlatformIO | terbaru | hanya untuk firmware, dijalankan lewat `uv tool run --from platformio` |
+| Python 3 + `uv` | terbaru | untuk helper BLE manual dan PlatformIO |
+
+Toolchain firmware menargetkan ESP32-S3 (profil N16R8/OPI). Build host tidak
+memberi izin flash; lihat [batas operasi](#batas-operasi).
+
+## Menjalankan web dan API
+
+Empat cara, pilih sesuai kebutuhan.
+
+### 1. Frontend saja (paling cepat, tanpa backend)
 
 ```bash
 npm ci
-npm test -- --run
 npm run typecheck
+npm test
 npm run web
 ```
 
-Task 9 desktop/mobile browser checks and isolated-runtime instructions: [Playwright E2E](docs/task9-playwright.md).
+Expo Dev Server mencetak URL-nya saat start (default web `http://localhost:8081`).
+Tanpa `EXPO_PUBLIC_API_BASE_URL`, frontend memanggil `/api` pada origin yang sama,
+jadi tanpa backend halaman hanya menampilkan keadaan kosong/galat. Berguna untuk
+memeriksa tampilan.
 
-Go API:
+### 2. API Go saja
 
 ```bash
 SIGAP_DB_PATH=./sigap.db SIGAP_HTTP_ADDR=:8080 go run ./cmd/sigap
 ```
 
-`ALLOWED_ORIGIN` menerima origin HTTP/HTTPS eksplisit yang dipisahkan koma dan dicocokkan persis, termasuk scheme serta port. Default tetap `http://localhost:8081`. Nilai `*` hanya membuka CORS publik tanpa `Access-Control-Allow-Credentials`; origin mirip, malformed, atau header Origin ganda tidak mendapat grant.
+Default bila variabel tidak diisi: `SIGAP_DB_PATH=sigap.db`,
+`SIGAP_HTTP_ADDR=:8080`. Endpoint pemeriksaan: `GET /api/runtime`.
 
+### 3. Frontend + API (disarankan)
+
+Jalankan API pada `:8080`, lalu arahkan frontend ke sana:
+
+```bash
+# terminal 1
+SIGAP_DB_PATH=./sigap.db SIGAP_HTTP_ADDR=:8080 go run ./cmd/sigap
+
+# terminal 2
+EXPO_PUBLIC_API_BASE_URL=http://localhost:8080 npm run web
+```
+
+`ALLOWED_ORIGIN` pada API harus memuat origin frontend. Default-nya
+`http://localhost:8081`; kalau port Expo berbeda, set `ALLOWED_ORIGIN` agar cocok
+(origin dicocokkan persis, termasuk scheme dan port).
+
+### 4. Satu binary dengan frontend ter-embed
+
+```bash
+./scripts/build-release.sh          # npm ci, test, typecheck, export web, lalu build Go
+SIGAP_DB_PATH=./sigap.db SIGAP_HTTP_ADDR=:8080 /tmp/sigap-release
+```
+
+Skrip ini menyalin hasil `expo export` ke `internal/webapp/dist` sebelum
+kompilasi Go, sehingga SPA ikut ter-embed. Set `SIGAP_RELEASE_OUTPUT` untuk
+mengubah lokasi biner keluaran.
+
+## Konfigurasi environment
+
+| Variabel | Default | Fungsi |
+| --- | --- | --- |
+| `SIGAP_DB_PATH` | `sigap.db` | lokasi SQLite operasional |
+| `SIGAP_HTTP_ADDR` | `:8080` | alamat bind API |
+| `ALLOWED_ORIGIN` | `http://localhost:8081` | origin CORS, dipisah koma, dicocokkan persis |
+| `SIGAP_TLS_REQUIRED` | mati | wajibkan TLS |
+| `SIGAP_TLS_CERT_FILE` | — | path sertifikat TLS |
+| `SIGAP_TLS_KEY_FILE` | — | path kunci TLS (privat, jangan pernah di-commit) |
+| `SIGAP_SIMULATION_ENABLED` | mati | aktifkan mode simulasi |
+| `SIGAP_SIMULATION_INDICATOR_ENABLED` | — | tampilkan penanda mode simulasi |
+| `OFFLINE_AFTER_SECONDS` | tidak diset | turunkan perangkat ke Offline setelah jeda ini |
+| `SIGAP_OPERATOR_ORIGIN` | — | origin operator untuk kontrol perangkat |
+| `EXPO_PUBLIC_API_BASE_URL` | kosong | base URL API untuk frontend |
+
+`ALLOWED_ORIGIN` menerima origin HTTP/HTTPS eksplisit yang dipisahkan koma dan
+dicocokkan persis, termasuk scheme serta port. Nilai `*` hanya membuka CORS
+publik tanpa `Access-Control-Allow-Credentials`; origin mirip, malformed, atau
+header Origin ganda tidak mendapat grant.
 
 API kontrol/debug memakai limiter default 60 request per key per menit dengan
 state maksimal 4096 key per proses. Perilaku saat kapasitas penuh dijelaskan pada
 [kontrol akses operator](docs/task9-web-calibration.md#operator-security).
 
-Firmware foundation:
+## Pemeriksaan sebelum PR
+
+```bash
+npm run typecheck
+npm test
+go build ./...
+go test ./...
+```
+
+E2E Playwright memerlukan konfigurasi eksplisit (`SIGAP_E2E_ORIGIN`,
+`SIGAP_E2E_OUTPUT`, `SIGAP_E2E_BROWSER`) dan menolak menulis ke dalam checkout;
+lihat [Playwright E2E](docs/task9-playwright.md).
+
+## Firmware
+
+Semua perintah dijalankan dari direktori `firmware/`.
 
 ```bash
 cd firmware
-uv tool run --from platformio pio test -e native
-uv tool run --from platformio pio run -e sigap_n16r8
+uv tool run --from platformio pio test -e native          # unit test host
+uv tool run --from platformio pio run -e sigap_n16r8      # build target
 ```
 
-Build image diagnostik BLE-only dari direktori `firmware/` dengan
-`pio run -e sigap_ble_diag` setelah meninjau [laporan verifikasi BLE tanpa
-passkey](docs/task9-ble-no-passkey-verification.md).
+| Environment | Kegunaan |
+| --- | --- |
+| `native` | unit test host, tanpa perangkat |
+| `sigap_n16r8` | build target utama |
+| `sigap_n16r8_sensor_sim` | target dengan simulasi sensor |
+| `sigap_n16r8_sd` | varian dengan SD card |
+| `sigap_n16r8_debug` | build dengan debug |
+| `sigap_ble_diag` | image diagnostik BLE-only |
+| `sigap_ble_wifi_test` | kandidat BLE + Wi-Fi terisolasi |
+| `sigap_bench` | profil bench |
+
+Daftar env lengkap ada di `firmware/platformio.ini`. Build, termasuk build yang
+lulus, **bukan** izin untuk upload, flash, atau pengujian fisik.
+
+Image diagnostik BLE-only dibangun dengan `sigap_ble_diag` setelah meninjau
+[laporan verifikasi BLE tanpa passkey](docs/task9-ble-no-passkey-verification.md).
 Build ini menggunakan NimBLE-Arduino 2.5.1 dengan patch lokal yang memeriksa
 hash sumber. Hasil build bukan izin untuk upload atau pengujian fisik; Task 9
 tetap HOLD sampai gerbang NVS dan persetujuan perangkat terpenuhi.
@@ -167,4 +260,33 @@ Workflow GitHub project tersedia di [skill project](.agents/skills/github-projec
 4. Buka pull request kecil menggunakan template project.
 5. Gunakan squash merge lalu hapus branch.
 
-Jangan commit credential, file `.env`, virtual environment, dependency terunduh, atau artefak build.
+`main` dilindungi: merge commit ditolak dan semua perubahan harus lewat pull
+request, jadi `git push origin main` akan gagal. Buka PR lalu squash merge.
+
+Jangan commit credential, file `.env`, virtual environment, dependency
+terunduh, database operasional, atau artefak build — `.gitignore` sudah mencakup
+polanya.
+
+## Batas operasi
+
+Bagian ini menjelaskan apa yang **belum** terbukti, agar hasil build atau
+tampilan tidak disalahartikan sebagai penerimaan.
+
+| Hal | Status |
+| --- | --- |
+| Kalibrasi gas MQ-135 | belum tervalidasi; `q0` belum tersimpan di NVS |
+| Baseline `q0` web (2700 mV) | asumsi operator, bukan pengukuran udara bersih |
+| Pembagi tegangan fisik 10 kΩ / 14,7 kΩ | deklarasi; firmware masih 1:1 |
+| Estimasi NH3 di luar 10–1000 ppm | ekstrapolasi power-law, berlabel `EXTRAPOLATED` |
+| Himpunan suhu pada FIS | asumsi desain, tabel pemilik hanya empat input |
+| Rule base FIS | diturunkan implementasi, bukan dari pemilik |
+| Akurasi NH3 terhadap referensi | belum diuji |
+| Streaming fisik empat sensor ke web | belum didemonstrasikan penuh |
+| Uji stimulus terkendali dan durabilitas | belum dilakukan |
+| Flash / upload firmware | di luar cakupan README ini; butuh izin terpisah |
+
+Semua keluaran model web berprovenance `WEB_DERIVED_TEST_ONLY`, bukan keluaran
+MCU dan bukan keputusan operasional. Fixture bertanda TEST_ONLY tidak membuktikan
+akurasi fisik. Rincian per topik ada di [konfigurasi FIS](docs/fis-configuration.md),
+[kurva NH3](docs/mq135-winsen-nh3-curve.md), dan
+[checkpoint status](docs/task9-current-status.md).
