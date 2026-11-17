@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:sigap:calibration:mq135-nh3:MQG2",
+  "title": "MQ135 normalized response and NH3 research estimate, MQG2",
+  "description": "Closed fixed-shape firmware diagnostic. Schema checks field types and bounded codes; consumers must also run the cross-field semantic validator. A research estimate is not calibrated concentration or a safety classification.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "sensor", "quality", "reason", "adc", "electrical", "response", "nh3", "profiles", "source", "reference"],
+  "properties": {
+    "schema": { "const": "MQG2" },
+    "sensor": { "const": "mq135" },
+    "quality": {
+      "enum": ["READY", "CALIBRATING", "UNCALIBRATED", "STALE", "INVALID", "OUT_OF_RANGE", "DISCONNECTED", "TIMEOUT", "UNAVAILABLE", "WARMING_UP", "HEATER_PHASE", "CRC_ERROR"]
+    },
+    "reason": {
+      "enum": ["NO_NORMALIZED_PROFILE", "NORMALIZED_PROFILE_INVALID", "ADC_CALIBRATION_UNAVAILABLE", "NO_SOURCE", "SOURCE_IDENTITY_INVALID", "SOURCE_NOT_READY", "SOURCE_CLOCK_UNKNOWN", "SOURCE_STALE", "ADC_PROFILE_CHANGED", "AO_OUT_OF_RANGE", "BASELINE_MISSING", "IN_RANGE", "BELOW_RANGE", "ABOVE_RANGE", "INVALID_RATIO", "CURVE_INVALID", "CURVE_UNAVAILABLE", "REFERENCE_NOT_CLEAN_AIR", "PREHEAT_UNCONFIRMED"]
+    },
+    "adc": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["raw_counts", "available", "pin_mv", "ao_mv", "method", "same_sample", "failure", "resolution_bits", "attenuation_db", "adc_unit", "adc_channel"],
+      "properties": {
+        "raw_counts": { "type": ["integer", "null"], "minimum": 0, "maximum": 4095 },
+        "available": { "type": "boolean" },
+        "pin_mv": { "type": ["number", "null"], "minimum": 0 },
+        "ao_mv": { "type": ["number", "null"], "minimum": 0 },
+        "method": { "enum": ["EFUSE_TP_FIT", "UNAVAILABLE"] },
+        "same_sample": { "type": "boolean" },
+        "failure": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,31}$", "maxLength": 32, "description": "Bounded SDK/calibration failure code; NONE means successful evidence." },
+        "resolution_bits": { "type": ["integer", "null"], "minimum": 1, "maximum": 32 },
+        "attenuation_db": { "type": ["integer", "null"], "minimum": 0, "maximum": 255 },
+        "adc_unit": { "type": ["integer", "null"], "minimum": 0, "maximum": 255 },
+        "adc_channel": { "type": ["integer", "null"], "minimum": 0, "maximum": 255 }
+      }
+    },
+    "electrical": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["circuit_mv", "divider_top_ohm", "divider_bottom_ohm", "topology", "hardware_confirmed", "hardware_identity"],
+      "properties": {
+        "circuit_mv": { "type": ["integer", "null"], "minimum": 1, "maximum": 4294967295 },
+        "divider_top_ohm": { "type": ["integer", "null"], "minimum": 1, "maximum": 4294967295 },
+        "divider_bottom_ohm": { "type": ["integer", "null"], "minimum": 1, "maximum": 4294967295 },
+        "topology": { "enum": [null, 1, 2] },
+        "hardware_confirmed": { "type": "boolean" },
+        "hardware_identity": { "type": ["string", "null"], "pattern": "^[A-Za-z0-9_.:-]{1,31}$", "maxLength": 31 }
+      }
+    },
+    "response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["q", "q0", "ratio", "reference_kind", "baseline_valid"],
+      "properties": {
+        "q": { "$ref": "#/$defs/positiveFiniteOrNull" },
+        "q0": { "$ref": "#/$defs/positiveFiniteOrNull" },
+        "ratio": { "$ref": "#/$defs/positiveFiniteOrNull" },
+        "reference_kind": { "enum": ["NONE", "OPERATIONAL", "CLEAN_AIR_CONFIRMED"] },
+        "baseline_valid": { "type": "boolean" }
+      }
+    },
+    "nh3": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ppm", "status", "curve_id", "curve_version", "source_sha256", "method", "production_eligible"],
+      "properties": {
+        "ppm": { "type": ["number", "null"], "minimum": 10, "maximum": 1000 },
+        "status": { "enum": ["UNCALIBRATED", "REFERENCE_NOT_CLEAN_AIR", "PREHEAT_UNCONFIRMED", "ADC_CALIBRATION_UNAVAILABLE", "SOURCE_NOT_READY", "SOURCE_STALE", "PROFILE_INVALID", "IN_RANGE", "BELOW_RANGE", "ABOVE_RANGE", "CURVE_UNAVAILABLE", "CURVE_INVALID", "INVALID_RATIO"] },
+        "curve_id": { "enum": [null, 20040] },
+        "curve_version": { "enum": [null, 2] },
+        "source_sha256": { "enum": [null, "sha256:4aa984238efa7d253b77ac828babd40e3a8f10ef14a3a86f8b9f1da0e6dd414b"] },
+        "method": { "const": "PIECEWISE_LOG_LOG" },
+        "production_eligible": { "const": false }
+      }
+    },
+    "profiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "version", "hash", "previous_version", "previous_hash", "adc_version", "adc_hash"],
+      "properties": {
+        "state": { "enum": ["MISSING", "INVALID", "TEST_ONLY", "VALID"] },
+        "version": { "$ref": "#/$defs/profileVersionOrNull" },
+        "hash": { "$ref": "#/$defs/hashOrNull" },
+        "previous_version": { "$ref": "#/$defs/profileVersionOrNull" },
+        "previous_hash": { "$ref": "#/$defs/hashOrNull" },
+        "adc_version": { "$ref": "#/$defs/profileVersionOrNull" },
+        "adc_hash": { "$ref": "#/$defs/hashOrNull" }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["boot_id", "sequence", "monotonic_us", "response_monotonic_us", "age_us", "max_age_us", "fresh", "quality"],
+      "properties": {
+        "boot_id": { "type": ["string", "null"], "pattern": "^[0-9a-f]{32}$", "maxLength": 32 },
+        "sequence": { "$ref": "#/$defs/uint64OrNull" },
+        "monotonic_us": { "$ref": "#/$defs/uint64OrNull" },
+        "response_monotonic_us": { "$ref": "#/$defs/uint64" },
+        "age_us": { "$ref": "#/$defs/uint64OrNull" },
+        "max_age_us": { "$ref": "#/$defs/uint64OrNull" },
+        "fresh": { "type": ["boolean", "null"] },
+        "quality": { "enum": [null, "READY", "CALIBRATING", "WARMING_UP", "HEATER_PHASE", "UNCALIBRATED", "STALE", "TIMEOUT", "DISCONNECTED", "CRC_ERROR", "OUT_OF_RANGE", "INVALID", "UNAVAILABLE"] }
+      }
+    },
+    "reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["environment", "temperature_centi_c", "humidity_centi_pct", "conditions_source", "heating_duration_us", "preparation_confirmed", "preparation_method", "sample_count", "variation_percent", "calibration_epoch_ms", "calibration_time_quality"],
+      "properties": {
+        "environment": { "type": ["string", "null"], "pattern": "^[A-Za-z0-9_.:-]{1,31}$", "maxLength": 31 },
+        "temperature_centi_c": { "type": ["integer", "null"], "minimum": -2147483648, "maximum": 2147483647 },
+        "humidity_centi_pct": { "type": ["integer", "null"], "minimum": 0, "maximum": 10000 },
+        "conditions_source": { "enum": ["UNKNOWN", "DECLARED"] },
+        "heating_duration_us": { "$ref": "#/$defs/uint64OrNull" },
+        "preparation_confirmed": { "type": "boolean" },
+        "preparation_method": { "enum": ["UNKNOWN", "OPERATOR_DECLARED"] },
+        "sample_count": { "type": ["integer", "null"], "minimum": 0, "maximum": 64 },
+        "variation_percent": { "type": ["number", "null"], "minimum": 0 },
+        "calibration_epoch_ms": { "$ref": "#/$defs/int64OrNull" },
+        "calibration_time_quality": { "enum": ["SYNCHRONIZED", "ESTIMATED", "UNSYNCED"] }
+      }
+    }
+  },
+  "$defs": {
+    "positiveFiniteOrNull": { "type": ["number", "null"], "exclusiveMinimum": 0 },
+    "profileVersionOrNull": { "type": ["string", "null"], "pattern": "^[1-9][0-9]{0,9}$", "maxLength": 10 },
+    "hashOrNull": { "type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$", "maxLength": 71 },
+    "uint64": { "type": "string", "pattern": "^(0|[1-9][0-9]{0,19})$", "maxLength": 20 },
+    "uint64OrNull": { "type": ["string", "null"], "pattern": "^(0|[1-9][0-9]{0,19})$", "maxLength": 20 },
+    "int64OrNull": { "type": ["string", "null"], "pattern": "^(0|-?[1-9][0-9]{0,18})$", "maxLength": 20 }
+  }
+}

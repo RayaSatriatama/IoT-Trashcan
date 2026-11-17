@@ -70,6 +70,7 @@ ProfileValidationResult profile_result(ProfileValidationCode code) noexcept {
 }
 
 std::size_t target_index(CalibrationTarget target) noexcept {
+  if (target == CalibrationTarget::Mq135Gas) return static_cast<std::size_t>(CalibrationTarget::Mq135);
   return static_cast<std::size_t>(target);
 }
 
@@ -165,6 +166,14 @@ void CalibrationEvidenceCache::observe(
       observation = MqTrial{sample.raw.adc_counts, sample.quality,
                             sample.raw.heater_ready, sample.raw.present,
                             sample.raw.identity_valid};
+      {
+        auto& mq = std::get<MqTrial>(observation);
+        mq.observed_at_us = sample.header.monotonic_us; mq.source_sequence = sample.header.sequence;
+        mq.source_profile = sample.header.profile_ref; mq.source_boot_id = sample.header.boot_id;
+        mq.source_recorded_at = sample.header.recorded_at; mq.source_time_quality = sample.header.time_quality;
+        // Carried verbatim: a missing calibrated field stays unavailable.
+        mq.calibrated = sample.raw.adc_calibration;
+      }
       break;
     case acquisition::SampleKind::Ds18b20:
       {
@@ -346,6 +355,9 @@ bool CalibrationSession::criteria_matches_target(
   const bool ds = std::holds_alternative<Ds18b20CaptureCriteria>(criteria);
   const bool sht = std::holds_alternative<Sht31CaptureCriteria>(criteria);
   switch (target_) {
+    case CalibrationTarget::Mq135Gas:
+      return std::holds_alternative<Mq135GasCaptureCriteria>(criteria) ||
+             std::holds_alternative<Mq135NormalizedCaptureCriteria>(criteria);
     case CalibrationTarget::Hx711Organic:
     case CalibrationTarget::Hx711Inorganic:
     case CalibrationTarget::Hx711B3:
@@ -374,7 +386,10 @@ bool CalibrationSession::criteria_valid(
   return std::visit(
       [](const auto& value) noexcept {
         using T = std::decay_t<decltype(value)>;
-        if constexpr (std::is_same_v<T, Hx711CaptureCriteria>) {
+        if constexpr (std::is_same_v<T, Mq135GasCaptureCriteria> ||
+                      std::is_same_v<T, Mq135NormalizedCaptureCriteria>) {
+          return value.valid();
+        } else if constexpr (std::is_same_v<T, Hx711CaptureCriteria>) {
           return value.required_samples > 0U && value.max_span_counts >= 0;
         } else if constexpr (std::is_same_v<T, DistanceCaptureCriteria>) {
           return value.required_samples > 0U && std::isfinite(value.max_span_mm) &&
@@ -403,6 +418,14 @@ bool CalibrationSession::start(CalibrationTarget target,
     return false;
   }
   criteria_ = criteria;
+  if (const auto* gas = std::get_if<Mq135GasCaptureCriteria>(&criteria_)) {
+    if (!gas_window_.configure(gas->profile.criteria)) return false;
+    gas_last_ = MqTrial{};
+  }
+  if (const auto* normalized = std::get_if<Mq135NormalizedCaptureCriteria>(&criteria_)) {
+    if (!normalized_window_.configure(normalized->criteria)) return false;
+    normalized_last_ = MqTrial{};
+  }
   started_at_us_ = now_us;
   last_activity_us_ = now_us;
   secondary_required_ = target == CalibrationTarget::Hx711Organic ||
@@ -422,6 +445,9 @@ bool CalibrationSession::start(CalibrationTarget target,
 bool CalibrationSession::begin(CalibrationTarget target,
                                uint64_t now_us) noexcept {
   if (state_ != CalibrationState::Idle) return false;
+  gas_window_ = acquisition::Mq135ReferenceWindow{}; gas_last_ = MqTrial{};
+  normalized_window_ = acquisition::Mq135NormalizedWindow{};
+  normalized_last_ = MqTrial{};
   target_ = target;
   started_at_us_ = now_us;
   last_activity_us_ = now_us;
@@ -444,6 +470,14 @@ bool CalibrationSession::configure(const CaptureCriteria& criteria,
   if (state_ != CalibrationState::Configuring ||
       !criteria_valid(criteria)) return false;
   criteria_ = criteria;
+  if (const auto* gas = std::get_if<Mq135GasCaptureCriteria>(&criteria_)) {
+    if (!gas_window_.configure(gas->profile.criteria)) return false;
+    gas_last_ = MqTrial{};
+  }
+  if (const auto* normalized = std::get_if<Mq135NormalizedCaptureCriteria>(&criteria_)) {
+    if (!normalized_window_.configure(normalized->criteria)) return false;
+    normalized_last_ = MqTrial{};
+  }
   if (now_us >= last_activity_us_) last_activity_us_ = now_us;
   state_ = CalibrationState::Capture;
   return true;
@@ -503,6 +537,74 @@ bool CalibrationSession::observe_mq(const MqTrial& trial) noexcept {
   return true;
 }
 
+bool CalibrationSession::observe_gas(const MqTrial& trial) noexcept {
+  const auto& c = std::get<Mq135GasCaptureCriteria>(criteria_);
+  const auto& ref = trial.source_profile;
+  const bool source_ok = (trial.quality == SampleQuality::Ready || trial.quality == SampleQuality::Calibrating) &&
+    trial.observed_at_us >= started_at_us_ &&
+    trial.raw_present && trial.identity_valid && trial.source_boot_id.present && ref.present &&
+    ref.kind == acquisition::ProfileKind::Adc && ref.target_id == 8 && ref.schema_version == 1 &&
+    ref.profile_version == c.adc_profile.manifest.profile_version && ref.hash == c.adc_profile.manifest.hash &&
+    (!primary_.count || trial.source_boot_id.bytes == gas_last_.source_boot_id.bytes);
+  const auto value = acquisition::mq135_resistance(trial.adc_counts, c.adc_profile, c.profile.electrical);
+  if (!source_ok || !value.ready() || !gas_window_.observe(value.rs_ohm, trial.source_sequence,
+                                                         trial.observed_at_us, last_activity_us_)) {
+    ++primary_.quality_failures;
+    if (!source_ok || !value.ready()) (void)gas_window_.observe(NAN, trial.source_sequence, trial.observed_at_us, last_activity_us_);
+    return false;
+  }
+  primary_.observe(value.rs_ohm); gas_last_ = trial; return true;
+}
+
+// Normalized admission. Every guard is checked on the carried same-sample
+// calibrated evidence; a failed guard rejects the sample (no last-good reuse)
+// and the window records the rejection so the summary cannot become ready.
+bool CalibrationSession::observe_normalized(const MqTrial& trial) noexcept {
+  const auto& c = std::get<Mq135NormalizedCaptureCriteria>(criteria_);
+  const auto& ref = trial.source_profile;
+  const auto& cal = trial.calibrated;
+  const bool source_ok =
+      trial.quality == SampleQuality::Ready && trial.observed_at_us >= started_at_us_ &&
+      trial.raw_present && trial.identity_valid && trial.source_boot_id.present &&
+      ref.present && ref.kind == acquisition::ProfileKind::Adc &&
+      ref.target_id == 8 && ref.schema_version == 1 &&
+      ref.profile_version == c.adc_profile.manifest.profile_version &&
+      ref.hash == c.adc_profile.manifest.hash &&
+      (!primary_.count || trial.source_boot_id.bytes == normalized_last_.source_boot_id.bytes);
+  const bool calibrated_ok =
+      cal.available && cal.same_sample &&
+      cal.method == acquisition::MqAdcCalibrationMethod::EspAdcCalEfuseTpFit &&
+      cal.failure == acquisition::MqAdcCalibrationFailure::None &&
+      cal.unit == acquisition::MqAdcVoltageUnit::Millivolt &&
+      cal.resolution_bits == 12U && cal.attenuation_db == 11U &&
+      cal.adc_unit == 1U && cal.adc_channel == 4U &&
+      cal.counts == trial.adc_counts &&
+      cal.counts > 0U && cal.counts < acquisition::kMqAdcMaxCounts12Bit &&
+      std::isfinite(cal.pin_mv) && cal.pin_mv > 0.0F &&
+      cal.pin_mv <= static_cast<float>(acquisition::kMqAdcMaxPlausiblePinMv);
+  double q{0.0};
+  const double ao = calibrated_ok
+                        ? static_cast<double>(cal.pin_mv) / c.electrical.attenuation()
+                        : 0.0;
+  const bool response_ok =
+      calibrated_ok && c.electrical.valid() &&
+      acquisition::mq135_normalized_response_double(
+          static_cast<double>(c.electrical.circuit_mv), ao, q);
+  if (!source_ok || !response_ok ||
+      !normalized_window_.observe(q, trial.source_sequence, trial.observed_at_us,
+                                  last_activity_us_)) {
+    ++primary_.quality_failures;
+    if (!source_ok || !response_ok) {
+      (void)normalized_window_.observe(NAN, trial.source_sequence,
+                                       trial.observed_at_us, last_activity_us_);
+    }
+    return false;
+  }
+  primary_.observe(q);
+  normalized_last_ = trial;
+  return true;
+}
+
 bool CalibrationSession::observe_ds18b20(
     const Ds18b20Trial& trial) noexcept {
   const auto& criteria = std::get<Ds18b20CaptureCriteria>(criteria_);
@@ -528,6 +630,25 @@ bool CalibrationSession::observe_sht31(const Sht31Trial& trial) noexcept {
   return true;
 }
 
+bool CalibrationSession::update_normalized_environment(
+    bool temperature_present, int32_t temperature_centi_c,
+    bool humidity_present, uint32_t humidity_centi_pct) noexcept {
+  auto* criteria = std::get_if<Mq135NormalizedCaptureCriteria>(&criteria_);
+  if (criteria == nullptr) return false;
+  // Declared conditions may only be added before evidence is admitted, so the
+  // admitted window and its preview identity cannot change underneath.
+  if (state_ != CalibrationState::Capture || primary_.count != 0U) return false;
+  if (humidity_present && humidity_centi_pct > 10000U) return false;
+  auto updated = *criteria;
+  updated.temperature_present = updated.temperature_present || temperature_present;
+  if (temperature_present) updated.temperature_centi_c = temperature_centi_c;
+  updated.humidity_present = updated.humidity_present || humidity_present;
+  if (humidity_present) updated.humidity_centi_pct = humidity_centi_pct;
+  if (!updated.valid()) return false;
+  criteria_ = updated;
+  return true;
+}
+
 bool CalibrationSession::observe(const TrialObservation& trial) noexcept {
   if (state_ != CalibrationState::Capture) return false;
   bool accepted = std::visit(
@@ -542,6 +663,8 @@ bool CalibrationSession::observe(const TrialObservation& trial) noexcept {
                      ? observe_ultrasonic(value)
                      : false;
         } else if constexpr (std::is_same_v<T, MqTrial>) {
+          if (std::holds_alternative<Mq135GasCaptureCriteria>(criteria_)) return observe_gas(value);
+          if (std::holds_alternative<Mq135NormalizedCaptureCriteria>(criteria_)) return observe_normalized(value);
           return std::holds_alternative<MqCaptureCriteria>(criteria_)
                      ? observe_mq(value)
                      : false;
@@ -623,7 +746,11 @@ bool CalibrationSession::validate() noexcept {
   std::visit(
       [this, &stable](const auto& value) noexcept {
         using T = std::decay_t<decltype(value)>;
-        if constexpr (std::is_same_v<T, Hx711CaptureCriteria>) {
+        if constexpr (std::is_same_v<T, Mq135GasCaptureCriteria>) {
+          stable = primary_.quality_failures == 0 && gas_window_.summary().ready;
+        } else if constexpr (std::is_same_v<T, Mq135NormalizedCaptureCriteria>) {
+          stable = primary_.quality_failures == 0 && normalized_window_.summary().ready;
+        } else if constexpr (std::is_same_v<T, Hx711CaptureCriteria>) {
           stable = valid_span(primary_.span(), static_cast<double>(value.max_span_counts)) &&
                    (!secondary_required_ || valid_span(secondary_.span(), static_cast<double>(value.max_span_counts)));
         } else if constexpr (std::is_same_v<T, DistanceCaptureCriteria>) {
@@ -681,6 +808,9 @@ void CalibrationSession::fail(CalibrationFailure failure) noexcept {
 }
 
 void CalibrationSession::reset() noexcept {
+  gas_window_ = acquisition::Mq135ReferenceWindow{}; gas_last_ = MqTrial{};
+  normalized_window_ = acquisition::Mq135NormalizedWindow{};
+  normalized_last_ = MqTrial{};
   state_ = CalibrationState::Idle;
   primary_ = CaptureStats{};
   secondary_ = CaptureStats{};

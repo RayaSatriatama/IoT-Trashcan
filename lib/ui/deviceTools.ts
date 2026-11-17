@@ -7,6 +7,7 @@ const sensorLabels: Record<CalibrationSensorId, string> = {
   ultrasonic_organic: 'Ketinggian · Organik',
   ultrasonic_inorganic: 'Ketinggian · Anorganik',
   ultrasonic_b3: 'Ketinggian · B3',
+  mq135_gas: 'Respons Gas Relatif · MQ-135',
   mq4: 'Gas · MQ-4', mq135: 'Gas · MQ-135', mq7: 'Gas · MQ-7', mq8: 'Gas · MQ-8',
   ds18b20_b3: 'Suhu · B3 (DS18B20)',
   sht31_44: 'Suhu & kelembapan · SHT31 0x44',

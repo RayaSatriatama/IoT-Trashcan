@@ -195,6 +195,86 @@ func TestMonitoringNumericAllowlistKeepsZeroAndDropsPrivateFields(t *testing.T) 
 	}
 }
 
+func TestMQ135AdditiveFieldsAreIngestedAndProjected(t *testing.T) {
+	f := newMonitoringFixture(t)
+	invalid := originSample(t, "SIGAP-01", "boot-mq135", "3", false)
+	invalid["sensor_id"], invalid["quality"], invalid["reason"] = "mq135", "READY", "DATA_READY"
+	invalid["converted"] = map[string]any{"adc_mv": 2500, "adc_pin_mv": 1100, "sensor_ao_mv": 2500, "adc_efuse_calibrated": 0}
+	bad := f.request(http.MethodPost, "/api/telemetry/batches", "origin-test-device", originBody(t, "SIGAP-01", "bad-mq135-marker", invalid))
+	if bad.Code != http.StatusBadRequest {
+		t.Fatalf("false calibration marker accepted: %d %s", bad.Code, bad.Body)
+	}
+	var stored int
+	if err := f.db.QueryRow(`SELECT count(*) FROM telemetry_records`).Scan(&stored); err != nil || stored != 0 {
+		t.Fatalf("invalid calibrated sample mutated archive: count=%d err=%v", stored, err)
+	}
+
+	legacy := originSample(t, "SIGAP-01", "boot-mq135", "1", false)
+	legacy["sensor_id"], legacy["quality"], legacy["reason"] = "mq135", "READY", "DATA_READY"
+	legacy["converted"] = map[string]any{"adc_mv": 1650}
+	calibrated := originSample(t, "SIGAP-01", "boot-mq135", "2", false)
+	calibrated["sensor_id"], calibrated["quality"], calibrated["reason"] = "mq135", "READY", "DATA_READY"
+	calibrated["converted"] = map[string]any{"adc_mv": 2500, "adc_pin_mv": 1100, "sensor_ao_mv": 2500, "adc_efuse_calibrated": 1}
+	f.ingest(t, "SIGAP-01", "mq135-legacy", legacy)
+	legacyMonitoring := monitoringRead(t, f, "/api/devices/origin-id", "origin-id")
+	if len(legacyMonitoring) != 1 {
+		t.Fatalf("legacy monitoring samples=%d", len(legacyMonitoring))
+	}
+	var legacyConverted map[string]json.RawMessage
+	if err := json.Unmarshal(legacyMonitoring[0]["converted_value"], &legacyConverted); err != nil {
+		t.Fatal(err)
+	}
+	if len(legacyConverted) != 1 || string(legacyConverted["adc_mv"]) != "1650" {
+		t.Fatalf("legacy monitoring value changed: %s", legacyMonitoring[0]["converted_value"])
+	}
+	f.ingest(t, "SIGAP-01", "mq135-calibrated", calibrated)
+
+	monitoring := monitoringRead(t, f, "/api/devices/origin-id", "origin-id")
+	if len(monitoring) != 1 {
+		t.Fatalf("monitoring samples=%d", len(monitoring))
+	}
+	var live struct {
+		Converted map[string]json.RawMessage `json:"converted_value"`
+	}
+	if err := json.Unmarshal(monitoring[0]["converted_value"], &live.Converted); err != nil {
+		t.Fatal(err)
+	}
+	if len(live.Converted) != 4 || string(live.Converted["adc_mv"]) != "2500" || string(live.Converted["sensor_ao_mv"]) != "2500" || string(live.Converted["adc_pin_mv"]) != "1100" || string(live.Converted["adc_efuse_calibrated"]) != "1" {
+		t.Fatalf("MQ135 monitoring fields: %s", monitoring[0]["converted_value"])
+	}
+
+	history := f.request(http.MethodGet, "/api/devices/origin-id/sensor-history?sensor_id=mq135&boot_id=boot-mq135", "", nil)
+	if history.Code != http.StatusOK {
+		t.Fatalf("history status=%d body=%s", history.Code, history.Body)
+	}
+	var page struct {
+		Points []struct {
+			Sequence  string                     `json:"sequence"`
+			Converted map[string]json.RawMessage `json:"converted"`
+		} `json:"points"`
+	}
+	if err := json.Unmarshal(history.Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Points) != 2 {
+		t.Fatalf("history points=%d body=%s", len(page.Points), history.Body)
+	}
+	for _, point := range page.Points {
+		switch point.Sequence {
+		case "1":
+			if len(point.Converted) != 1 || string(point.Converted["adc_mv"]) != "1650" {
+				t.Fatalf("legacy history was rewritten: %#v", point.Converted)
+			}
+		case "2":
+			if len(point.Converted) != 4 || string(point.Converted["adc_pin_mv"]) != "1100" || string(point.Converted["sensor_ao_mv"]) != "2500" || string(point.Converted["adc_efuse_calibrated"]) != "1" {
+				t.Fatalf("calibrated history fields: %#v", point.Converted)
+			}
+		default:
+			t.Fatalf("unexpected history sequence %q", point.Sequence)
+		}
+	}
+}
+
 func TestDeviceReadExposesUncalibratedMQ135ZeroFromArchive(t *testing.T) {
 	f := newOriginFixture(t)
 	query, err := telemetryarchive.NewArchiveQuery(f.db)

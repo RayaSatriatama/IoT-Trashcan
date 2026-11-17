@@ -147,6 +147,17 @@ bool append_protocol_flags(MaintenanceResponse& response,
 CommandStatus CommandRouter::sensor_status(const MaintenanceCommand& command,
                                            uint64_t now_us,
                                            MaintenanceResponse& response) noexcept {
+  if (command.target.view() == "mq135_gas") {
+    acquisition::Mq135NormalizedDiagnostic normalized{};
+    if (normalized_gas_diagnostic(calibration::CalibrationTarget::Mq135Gas, now_us,
+                                  normalized)) {
+      return append_mq135_normalized_result(response, normalized)
+                 ? CommandStatus::Accepted
+                 : CommandStatus::Failed;
+    }
+    return append_mq135_gas_result(response, now_us) ? CommandStatus::Accepted
+                                                     : CommandStatus::Failed;
+  }
   calibration::CalibrationTarget target{};
   if (!calibration_target_from_text(command.target, target)) {
     return CommandStatus::InvalidSyntax;

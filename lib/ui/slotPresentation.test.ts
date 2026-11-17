@@ -103,12 +103,13 @@ describe('slot presentation helpers', () => {
     expect(formatMembership(null)).toBe('—');
   });
 
-  it('builds four clearly named factors for the collection decision', () => {
-    expect(buildDecisionInputRows({ ...baseSlot, fill: 53, weight_utilization: 53 }, baseResearchSlot)).toEqual([
+  it('builds five clearly named factors for the collection decision', () => {
+    expect(buildDecisionInputRows({ ...baseSlot, fill: 53, weight_utilization: 53 }, baseResearchSlot, null, null, null, 31)).toEqual([
       { key: 'fill', label: 'Keterisian', value: '53%', category: 'Sedang' },
       { key: 'weight_utilization', label: 'Utilisasi berat', value: '53%', category: 'Sedang' },
       { key: 'ogi', label: 'Indeks gas', value: '59.45', category: 'Sedang' },
       { key: 'accumulation_hours', label: 'Waktu akumulasi', value: '9 jam', category: 'Rendah' },
+      { key: 'temperature', label: 'Suhu', value: '31 °C', category: 'Sedang' },
     ]);
   });
 
@@ -124,7 +125,7 @@ describe('slot presentation helpers', () => {
   });
 
   it('keeps related physical-sensor metadata centralized per stream', () => {
-    expect(getRelatedSensorLabels('organic')).toEqual(['Fill Sensor', 'HX711', 'MQ-135', 'MQ-4']);
+    expect(getRelatedSensorLabels('organic')).toEqual(['Fill Sensor', 'HX711', 'MQ-135', 'SHT31']);
     expect(getRelatedSensorLabels('b3')).toEqual(['Fill Sensor', 'HX711', 'MQ-135', 'MQ-7', 'MQ-8', 'DS18B20']);
   });
 

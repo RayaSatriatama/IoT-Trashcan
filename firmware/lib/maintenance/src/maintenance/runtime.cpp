@@ -108,6 +108,7 @@ bool profile_target_from_text(const FixedText<64U>& text,
 bool profile_key_from_text(const FixedText<64U>& text,
                            acquisition::ProfileKey& key) noexcept {
   const std::string_view value = text.view();
+  if (value == "mq135_gas") { key = acquisition::kMq135GasKey; return true; }
   const auto separator = value.find(':');
   FixedText<64U> base{};
   if (!base.assign(value.substr(0U, separator == std::string_view::npos
@@ -214,6 +215,7 @@ void ArduinoRebootController::request_reboot() noexcept {
 bool CommandRouter::calibration_target_from_text(
     const FixedText<64U>& text,
     calibration::CalibrationTarget& target) noexcept {
+  if (text.view() == "mq135_gas") { target = calibration::CalibrationTarget::Mq135Gas; return true; }
   acquisition::ProfileTarget profile_target{};
   if (!profile_target_from_text(text, profile_target) ||
       profile_target == acquisition::ProfileTarget::Unknown) return false;
@@ -346,6 +348,7 @@ bool CommandRouter::is_calibrating(acquisition::SensorId sensor) const noexcept 
       state == calibration::CalibrationState::Failed) return false;
   acquisition::SensorId expected = acquisition::SensorId::Hx711Organic;
   switch (calibration_.target()) {
+    case calibration::CalibrationTarget::Mq135Gas: return false; // Reference sampling does not recalibrate ADC or another sensor.
     case calibration::CalibrationTarget::Hx711Organic: expected = acquisition::SensorId::Hx711Organic; break;
     case calibration::CalibrationTarget::Hx711Inorganic: expected = acquisition::SensorId::Hx711Inorganic; break;
     case calibration::CalibrationTarget::Hx711B3: expected = acquisition::SensorId::Hx711B3; break;
@@ -606,6 +609,10 @@ CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
       if (!calibration_.begin(target, now_us)) return CommandStatus::Rejected;
       clear_calibration_proposal();
       pending_target_ = target;
+      gas_parameters_ = calibration::Mq135ReferenceParameters{};
+      normalized_parameters_ = calibration::Mq135NormalizedParameters{};
+      normalized_mode_ = false;
+      evidence_sequence_ = 0;
       criteria_set_ = false;
       criteria_samples_ = 0U;
       criteria_span_ = 0;
@@ -643,6 +650,76 @@ CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
       // proposal. A new validation and preview is required before persistence.
       clear_calibration_proposal();
       const auto field = command.field.view();
+      if (pending_target_ == calibration::CalibrationTarget::Mq135Gas) {
+        // Declared environment may follow the completed required set as long as
+        // no evidence has been admitted yet; it never mutates admitted data.
+        if (criteria_set_ && normalized_mode_ &&
+            (field == "reference_temperature_centi_c" ||
+             field == "reference_humidity_centi_pct")) {
+          if (!command.has_numeric) return CommandStatus::InvalidNumeric;
+          const bool temperature = field == "reference_temperature_centi_c";
+          if (temperature && (command.numeric_value < std::numeric_limits<int32_t>::min() ||
+                              command.numeric_value > std::numeric_limits<int32_t>::max())) {
+            return CommandStatus::InvalidNumeric;
+          }
+          if (!temperature && (command.numeric_value < 0 ||
+                               command.numeric_value > 10000)) {
+            return CommandStatus::InvalidNumeric;
+          }
+          return calibration_.update_normalized_environment(
+                     temperature, temperature ? static_cast<int32_t>(command.numeric_value) : 0,
+                     !temperature, !temperature ? static_cast<uint32_t>(command.numeric_value) : 0U)
+                     ? CommandStatus::Accepted
+                     : CommandStatus::Rejected;
+        }
+        if (criteria_set_ || calibration_.state() != calibration::CalibrationState::Configuring) return CommandStatus::Rejected;
+        char text[32]{};
+        std::string_view value = command.value.view();
+        if (command.has_numeric) {
+          const auto parsed = std::to_chars(text, text + sizeof(text), command.numeric_value);
+          if (parsed.ec != std::errc{}) return CommandStatus::InvalidNumeric;
+          value = std::string_view(text, parsed.ptr - text);
+        }
+        // `response_mode=normalized` switches this same target/session to the
+        // typed normalized criteria; its absence keeps exact legacy behaviour.
+        if (field == "response_mode" && !normalized_mode_) {
+          gas_parameters_ = calibration::Mq135ReferenceParameters{};
+          normalized_mode_ = true;
+        }
+        if (normalized_mode_) {
+          // Optional environment keys are accepted after the required set.
+          if (normalized_parameters_.complete() &&
+              (field == "reference_temperature_centi_c" ||
+               field == "reference_humidity_centi_pct")) {
+            auto criteria = normalized_parameters_.criteria();
+            if (!command.has_numeric ||
+                !calibration::mq135_normalized_optional_environment(
+                    criteria, field, command.numeric_value)) {
+              return CommandStatus::InvalidNumeric;
+            }
+            return configure_normalized_reference(criteria, now_us)
+                       ? CommandStatus::Accepted
+                       : CommandStatus::Rejected;
+          }
+          const auto status = normalized_parameters_.set(field, value);
+          if (status == calibration::Mq135NormalizedParameters::Status::Complete) {
+            return configure_normalized_reference(normalized_parameters_.criteria(),
+                                                  now_us)
+                       ? CommandStatus::Accepted
+                       : CommandStatus::Rejected;
+          }
+          if (status == calibration::Mq135NormalizedParameters::Status::Incomplete) {
+            return CommandStatus::Accepted;
+          }
+          // A rejected normalized key must not leave a half-configured session.
+          normalized_mode_ = false;
+          normalized_parameters_ = calibration::Mq135NormalizedParameters{};
+          return CommandStatus::InvalidSyntax;
+        }
+        if (!gas_parameters_.set(field, value)) return CommandStatus::InvalidSyntax;
+        if (!gas_parameters_.complete()) return CommandStatus::Accepted;
+        return configure_gas_reference(gas_parameters_.criteria(), now_us) ? CommandStatus::Accepted : CommandStatus::Rejected;
+      }
       if (field == "reference_temperature_centi_c") {
         if (command.numeric_value < std::numeric_limits<int32_t>::min() ||
             command.numeric_value > std::numeric_limits<int32_t>::max()) {
@@ -850,6 +927,7 @@ CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
       else if (command.target.view() == "empty") anchor = calibration::CalibrationAnchor::Empty;
       else if (command.target.view() == "full") anchor = calibration::CalibrationAnchor::Full;
       else return CommandStatus::InvalidSyntax;
+      if (pending_target_ == calibration::CalibrationTarget::Mq135Gas) calibration_.touch(now_us);
       if (!calibration_.observe_anchor(trial, anchor)) return CommandStatus::Rejected;
       if (pending_target_ == calibration::CalibrationTarget::Ds18b20B3) {
         const auto* ds_trial = std::get_if<calibration::Ds18b20Trial>(&trial);
@@ -873,12 +951,14 @@ CommandStatus CommandRouter::execute(const MaintenanceCommand& command,
       return calibration_.validate() ? CommandStatus::Accepted : CommandStatus::Rejected;
     case CommandKind::CalibrationPreview: {
       CalibrationProposal proposal{};
-      if (!build_calibration_proposal(now_us, proposal) || !calibration_.preview()) {
+      const bool built = build_calibration_proposal(now_us, proposal);
+      const bool previewed = built ? calibration_.preview() : false;
+      if (!built || !previewed) {
         return CommandStatus::Rejected;
       }
       calibration_proposal_ = proposal;
-      return append_calibration_preview(response) ? CommandStatus::Accepted
-                                                   : CommandStatus::Failed;
+      const bool appended = append_calibration_preview(response);
+      return appended ? CommandStatus::Accepted : CommandStatus::Failed;
     }
     case CommandKind::CalibrationCommit:
       if (!calibration_.request_commit()) return CommandStatus::Rejected;

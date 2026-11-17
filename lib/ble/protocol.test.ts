@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import mqg2Fixture from '../../contracts/calibration/mq135-nh3/v2/fixtures/in-range.json';
 import {
   assembleBleFrames,
   BLE_ATT_FRAME_BYTES,
@@ -46,12 +47,12 @@ describe('BLE provisioning protocol', () => {
 
   it('enforces firmware F1/R1 chunk counts, index relations, and decimal tokens', () => {
     for (const version of ['F1', 'R1'] as const) {
-      for (const count of [127, 128]) {
+      for (const count of [127, 128, 511, 512]) {
         expect(decodeBleFrame(new TextEncoder().encode(`${version}|9|${count - 1}|${count}|x`)))
           .toMatchObject({ version, chunkIndex: count - 1, chunkCount: count });
       }
       for (const envelope of [
-        `${version}|9|0|0|x`, `${version}|9|0|129|x`,
+        `${version}|9|0|0|x`, `${version}|9|0|513|x`,
         `${version}|9|1|1|x`, `${version}|9|128|128|x`,
         `${version}|9||1|x`, `${version}|9|+0|1|x`, `${version}|9|0|+1|x`,
         `${version}|9|0.0|1|x`, `${version}|9|0|1e0|x`, `${version}|9|0|0x1|x`,
@@ -108,15 +109,15 @@ describe('BLE provisioning protocol', () => {
   });
 
   it('rejects direct assembly above the declared or actual frame bounds before allocation', () => {
-    const oversizedCount = Array.from({ length: 129 }, (_, chunkIndex) => ({
-      version: 'R1' as const, requestId: '9', chunkIndex, chunkCount: 129, payload: new Uint8Array([1]),
+    const oversizedCount = Array.from({ length: 513 }, (_, chunkIndex) => ({
+      version: 'R1' as const, requestId: '9', chunkIndex, chunkCount: 513, payload: new Uint8Array([1]),
     }));
     expect(() => assembleBleFrames([{
-      version: 'R1', requestId: '9', chunkIndex: 0, chunkCount: 129, payload: new Uint8Array([1]),
+      version: 'R1', requestId: '9', chunkIndex: 0, chunkCount: 513, payload: new Uint8Array([1]),
     }])).toThrow();
     expect(() => assembleBleFrames(oversizedCount)).toThrow();
     expect(() => assembleBleFrames([{
-      version: 'R1', requestId: '9', chunkIndex: 0, chunkCount: 1, payload: new Uint8Array(513),
+      version: 'R1', requestId: '9', chunkIndex: 0, chunkCount: 1, payload: new Uint8Array(BLE_FRAME_MAX_BYTES + 1),
     }])).toThrow();
   });
 
@@ -210,6 +211,38 @@ describe('BLE provisioning protocol', () => {
     expected_profile_hash: 'sha256:' + 'a'.repeat(64),
   }))).toContain('expected_profile_version=18446744073709551615');
 });
+
+  it('encodes the exact normalized MQ135 BLE criteria contract and rejects caller constants', () => {
+    const criteria = {
+      response_mode: 'normalized', samples: 3, min_duration_ms: 1000, max_age_ms: 250, max_variation_milli_percent: 5000,
+      circuit_mv: 5000, divider_top_ohm: 10000, divider_bottom_ohm: 15000, topology: 1,
+      hardware_confirmed: 1, reference_confirmed: 1, hardware_identity: 'SYNTHETIC-HW', reference_environment: 'LAB-01',
+      reference_kind: 'operational', preparation_confirmed: 0, preparation_method: 'unknown', heating_duration_us: 0,
+    };
+    expect(new TextDecoder().decode(encodeCalibrationCommand('CRITERIA', 'mq135_gas', criteria))).toBe(
+      'CAL CRITERIA mq135_gas circuit_mv=5000 divider_bottom_ohm=15000 divider_top_ohm=10000 hardware_confirmed=1 hardware_identity=SYNTHETIC-HW heating_duration_us=0 max_age_ms=250 max_variation_milli_percent=5000 min_duration_ms=1000 preparation_confirmed=0 preparation_method=unknown reference_confirmed=1 reference_environment=LAB-01 reference_kind=operational response_mode=normalized samples=3 topology=1\n',
+    );
+    const optional = new TextDecoder().decode(encodeCalibrationCommand('CRITERIA', 'mq135_gas', {
+      ...criteria, reference_temperature_centi_c: -500, reference_humidity_centi_pct: 0,
+    }));
+    expect(optional).toContain('reference_temperature_centi_c=-500');
+    expect(optional).toContain('reference_humidity_centi_pct=0');
+    expect(() => encodeCalibrationCommand('CRITERIA', 'mq135_gas', {...criteria, q0: 1})).toThrow();
+    expect(() => encodeCalibrationCommand('CRITERIA', 'mq135_gas', {...criteria, module_load_ohm: 10000})).toThrow();
+    expect(() => encodeCalibrationCommand('CRITERIA', 'mq135_gas', {...criteria, response_mode: 'legacy'})).toThrow();
+    expect(() => encodeCalibrationCommand('CRITERIA', 'mq135_gas', {samples: 3})).toThrow();
+  });
+
+  it('decodes a firmware MQG2 result from the existing CAL1 BLE response envelope', () => {
+    const result = decodeBleResponse(new TextEncoder().encode(
+      `CAL1|op=EVIDENCE|status=ACCEPTED|session=2|sensor=mq135_gas|data=${JSON.stringify(mqg2Fixture)}`,
+    ));
+    expect(result.calibration?.gas?.schema).toBe('MQG2');
+    if (result.calibration?.gas?.schema === 'MQG2') {
+      expect(result.calibration.gas.nh3).toMatchObject({status: 'IN_RANGE', production_eligible: false});
+      expect(result.calibration.gas.response.reference_kind).toBe('CLEAN_AIR_CONFIRMED');
+    }
+  });
 
   it('decodes calibration response text while preserving bounded errors', () => {
     expect(decodeBleResponse(new TextEncoder().encode(

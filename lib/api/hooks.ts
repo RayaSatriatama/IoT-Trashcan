@@ -20,7 +20,7 @@ export class PollingController<T> {
   private readonly onSuccess: (value: T) => void;
   private readonly onError: (error: Error) => void;
   private readonly intervalMs: number;
-  private active: { controller: AbortController } | null = null;
+  private active: { controller: AbortController; deadline: ReturnType<typeof setTimeout> } | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
   private running = false;
 
@@ -28,7 +28,7 @@ export class PollingController<T> {
     loader: PollingLoader<T>,
     onSuccess: (value: T) => void,
     onError: (error: Error) => void,
-    intervalMs = 20_000,
+    intervalMs = 2_500,
   ) {
     this.loader = loader;
     this.onSuccess = onSuccess;
@@ -45,19 +45,25 @@ export class PollingController<T> {
 
   async refresh(): Promise<void> {
     if (!this.running) return;
-    this.active?.controller.abort();
+    // Poll ticks and retries must not discard useful in-flight work.
+    if (this.active) return;
     const controller = new AbortController();
-    this.active = { controller };
+    const active = { controller, deadline: setTimeout(() => {
+      if (this.active !== active) return;
+      this.active = null;
+      controller.abort();
+      if (this.running) this.onError(new Error('Request timed out'));
+    }, 10_000) };
+    this.active = active;
     try {
       const value = await this.loader(controller.signal);
-      if (this.running && !controller.signal.aborted && this.active?.controller === controller) {
-        this.onSuccess(value);
-      }
+      if (this.running && !controller.signal.aborted && this.active === active) this.onSuccess(value);
     } catch (reason: unknown) {
-      if (!this.running || controller.signal.aborted || isAbortError(reason) || this.active?.controller !== controller) return;
+      if (!this.running || controller.signal.aborted || isAbortError(reason) || this.active !== active) return;
       this.onError(reason instanceof Error ? reason : new Error('Request failed'));
     } finally {
-      if (this.active?.controller === controller) this.active = null;
+      clearTimeout(active.deadline);
+      if (this.active === active) this.active = null;
     }
   }
 
@@ -66,13 +72,14 @@ export class PollingController<T> {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
     this.active?.controller.abort();
+    if (this.active) clearTimeout(this.active.deadline);
     this.active = null;
   }
 }
 
 export function usePollingResource<T>(
   loader: PollingLoader<T>,
-  intervalMs = 20_000,
+  intervalMs = 2_500,
 ): PollingResource<T> {
   const dataRef = useRef<T | null>(null);
   const controllerRef = useRef<PollingController<T> | null>(null);

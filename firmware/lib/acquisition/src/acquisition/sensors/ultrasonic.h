@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstdint>
 
 #include "acquisition/record.h"
 #include "acquisition/profiles.h"
@@ -13,6 +14,8 @@ enum class UltrasonicEchoStatus : uint8_t { Pending, Ready, Timeout, OutOfRange,
 struct UltrasonicEchoResult {
   UltrasonicEchoStatus status{UltrasonicEchoStatus::Pending};
   uint32_t echo_us{0};
+  bool capture_time_valid{false};
+  uint64_t captured_us{0U};
 };
 
 class IUltrasonicReader {
@@ -21,6 +24,10 @@ class IUltrasonicReader {
   virtual bool trigger(uint64_t now_us) noexcept = 0;
   virtual UltrasonicEchoResult poll(uint64_t now_us) noexcept = 0;
   virtual void cancel() noexcept {}
+  virtual void set_echo_timeout(uint32_t) noexcept {}
+  virtual bool hardware_latched() const noexcept { return false; }
+  virtual uint64_t trigger_time_us(uint64_t fallback) const noexcept { return fallback; }
+  virtual uint32_t readout_grace_us() const noexcept { return 0U; }
 };
 
 class UltrasonicTriggerGate final {
@@ -125,17 +132,18 @@ class UltrasonicAcquirer final {
     } else {
       attempt_profile_ref_ = ProfileRef{};
     }
+    source_.set_echo_timeout(params_.echo_timeout_us);
     if (!source_.trigger(now_us)) {
       trigger_us_ = now_us;
       phase_ = Phase::TriggerFailed;
       return DriverPollStatus::NoAttempt;
     }
-    trigger_us_ = now_us;
-    last_trigger_us_ = now_us;
+    trigger_us_ = source_.trigger_time_us(now_us);
+    last_trigger_us_ = trigger_us_;
     has_trigger_ = true;
     waiting_for_gate_ = false;
     phase_ = Phase::WaitingEcho;
-    if (gate_ != nullptr) gate_->note_trigger(now_us);
+    if (gate_ != nullptr) gate_->note_trigger(trigger_us_);
     return DriverPollStatus::NoAttempt;
   }
 
@@ -155,7 +163,14 @@ class UltrasonicAcquirer final {
     }
 
     const uint64_t elapsed_us = now_us >= trigger_us_ ? now_us - trigger_us_ : 0U;
-    if (elapsed_us >= params_.echo_timeout_us) {
+    const bool latched = source_.hardware_latched();
+    UltrasonicEchoResult result{};
+    if (latched) result = source_.poll(now_us);
+    const uint64_t readout_limit_us = static_cast<uint64_t>(params_.echo_timeout_us) +
+                                     source_.readout_grace_us();
+    if ((!latched && elapsed_us >= params_.echo_timeout_us) ||
+        (latched && result.status == UltrasonicEchoStatus::Pending &&
+         elapsed_us >= readout_limit_us)) {
       source_.cancel();
       phase_ = Phase::Idle;
       RawObservation raw{};
@@ -168,9 +183,15 @@ class UltrasonicAcquirer final {
                            out);
     }
 
-    UltrasonicEchoResult result = source_.poll(now_us);
+    if (!latched) result = source_.poll(now_us);
     if (result.status == UltrasonicEchoStatus::Pending) {
       return DriverPollStatus::NoAttempt;
+    }
+    if (latched && result.status == UltrasonicEchoStatus::Ready &&
+        (!result.capture_time_valid || result.captured_us < trigger_us_ ||
+         result.captured_us - trigger_us_ > params_.echo_timeout_us)) {
+      source_.cancel();
+      result = UltrasonicEchoResult{UltrasonicEchoStatus::Timeout, 0U};
     }
     RawObservation raw{};
     ConvertedObservation converted{};
@@ -218,7 +239,8 @@ class UltrasonicAcquirer final {
       reason = SampleReason::Disconnected;
     }
     phase_ = Phase::Idle;
-    return factory_.make(now_us, sensor, stream_,
+    const uint64_t captured_us = result.capture_time_valid ? result.captured_us : now_us;
+    return factory_.make(captured_us, sensor, stream_,
                          SampleKind::UltrasonicEcho, quality, reason, raw, converted,
                          attempt_profile_ref_.present ? attempt_profile_ref_ : profile_ref(), out);
   }

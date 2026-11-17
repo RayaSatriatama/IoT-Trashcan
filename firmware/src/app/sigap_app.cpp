@@ -9,11 +9,14 @@
 #include <ctime>
 #include <string_view>
 
+#include "acquisition/default_profiles.h"
+#include "acquisition/profiles.h"
 #include "sigap/board/board_memory.h"
 #include "sigap/board/sd_transport.h"
 #include "sigap/build/build_config.h"
 #include "acquisition/provenance.h"
 #include "acquisition/arduino_adapters.h"
+#include "acquisition/usb_sensor_debug.h"
 #include "storage/sd_probe_path.h"
 
 #ifdef ARDUINO
@@ -36,6 +39,25 @@
 #endif
 
 namespace sigap {
+
+namespace {
+acquisition::EncodedProfile sht31_factory_profile() noexcept {
+  acquisition::Sht31Profile profile{};
+  profile.manifest.kind = acquisition::ProfileKind::Calibration;
+  profile.manifest.schema_version = acquisition::kProfileSchemaVersion;
+  profile.manifest.profile_version = 1U;
+  profile.manifest.target_id = static_cast<uint32_t>(acquisition::ProfileTarget::Sht31_44);
+  profile.manifest.validity = acquisition::ProfileValidity::Valid;
+  profile.manifest.provenance.present = true;
+  profile.manifest.provenance.reference_note = {'F','A','C','C','T','O','R','Y','_','D','E','F','A','U','L','T'};
+  profile.address = 0x44U;
+  profile.temperature_offset_centi_c = 0;
+  profile.humidity_offset_centi_pct = 0;
+  acquisition::EncodedProfile encoded{};
+  (void)acquisition::ProfilePersistence::default_codec().encode(profile, encoded);
+  return encoded;
+}
+}
 
 #ifdef ARDUINO
 std::size_t ApplicationDebugUsbWriter::writable() noexcept {
@@ -277,6 +299,10 @@ SigapApp::SigapApp() noexcept
       ble_session_(wifi_backend_, provisioning_clock_),
 #endif
       maintenance_service_(maintenance_transport_, maintenance_router_) {
+#ifdef ARDUINO
+  record_context_.utc_source = &utc_source_;
+  record_factory_.set_utc_source(&utc_source_);
+#endif
 #if defined(ARDUINO) && defined(SIGAP_NETWORK_ENDPOINT) && \
     defined(SIGAP_NETWORK_CA_CERT)
   network_link_.bind(&network_transport_);
@@ -299,10 +325,20 @@ SigapApp::SigapApp() noexcept
       sd_store_, config_manager_.active().storage.sd_pending_quota_bytes);
   profile_manager_.bind_runtime_profiles(profiles_);
   evidence_cache_.set_profiles(&profiles_);
-  archive_runtime_.set_store(&archive_store_);
-  archive_runtime_.set_media_migration(&media_migration_);
+  archive_runtime_.set_store(storage::live_delivery::kPriorityFresh
+                                 ? static_cast<storage::IArchiveStore*>(
+                                       &littlefs_store_)
+                                 : static_cast<storage::IArchiveStore*>(
+                                       &archive_store_));
+  archive_runtime_.set_media_migration(
+      storage::live_delivery::kPriorityFresh ? nullptr : &media_migration_);
   archive_runtime_.set_sequence_allocator(&boot_identity_.sequence);
-  batch_runtime_.bind(&archive_store_, &batch_store_, &ack_journal_);
+  batch_runtime_.bind(storage::live_delivery::kPriorityFresh
+                          ? static_cast<storage::IArchiveStore*>(
+                                &littlefs_store_)
+                          : static_cast<storage::IArchiveStore*>(
+                                &archive_store_),
+                      &batch_store_, &ack_journal_);
   archive_runtime_.set_event_context(record_context_.device_id,
                                      record_context_.boot_id,
                                      record_context_.config_ref);
@@ -433,7 +469,18 @@ void SigapApp::setup() noexcept {
   };
   emit_runtime_startup(1U, 0, 1);
 #ifdef ARDUINO
+  Serial.setTxBufferSize(1024);
   Serial.begin(115200);
+#ifdef SIGAP_USE_SD
+  Serial.println("[SIGAP][RUNTIME] SD_BACKUP=ENABLED");
+#else
+  Serial.println("[SIGAP][RUNTIME] SD_BACKUP=DISABLED");
+#endif
+#if SIGAP_PROTOTYPE_OPERATION
+  Serial.println("[SIGAP][RUNTIME] SIGAP_PROTOTYPE_OPERATION=1");
+#else
+  Serial.println("[SIGAP][RUNTIME] SIGAP_PROTOTYPE_OPERATION=0");
+#endif
   board::log_runtime_board_memory();
   const int64_t started_us = esp_timer_get_time();
   runtime_diagnostics_started_us_ =
@@ -464,8 +511,22 @@ void SigapApp::setup() noexcept {
   (void)std::snprintf(ble_name, sizeof(ble_name), "SIGAP-%04llX",
                       static_cast<unsigned long long>(device_mac & 0xffffU));
 #if defined(SIGAP_NETWORK_ENDPOINT) && defined(SIGAP_NETWORK_CA_CERT)
-  (void)std::snprintf(device_control_id_.data(), device_control_id_.size(),
-                      "%llX", static_cast<unsigned long long>(device_mac));
+  // The device-control route keys on the same 32-character lowercase identity
+  // that telemetry records carry, not the compact uppercase MAC text.
+  std::size_t control_id_size{0U};
+  for (std::size_t index = 0U; index < device_identity.bytes.size(); ++index) {
+    if (control_id_size + 2U >= device_control_id_.size()) {
+      control_id_size = 0U;
+      break;
+    }
+    (void)std::snprintf(device_control_id_.data() + control_id_size,
+                        device_control_id_.size() - control_id_size, "%02x",
+                        static_cast<unsigned>(device_identity.bytes[index]));
+    control_id_size += 2U;
+  }
+  if (control_id_size != 2U * device_identity.bytes.size()) {
+    device_control_id_[0] = '\0';
+  }
   calibration_controller_.set_device_id(device_mac);
   calibration_authorizer_.set_device_id(device_mac);
   device_control_transport_.bind_clock(network_clock_);
@@ -485,6 +546,7 @@ void SigapApp::setup() noexcept {
   }
   (void)profile_manager_.load(acquisition::ProfileKey{
       acquisition::ProfileKind::Heater, acquisition::ProfileTarget::Mq7});
+  (void)profile_manager_.load(acquisition::kMq135GasKey);
   for (uint32_t target = 1U; target <= 3U; ++target) {
     (void)profile_manager_.load(acquisition::ProfileKey{
         acquisition::ProfileKind::Capacity,
@@ -524,17 +586,49 @@ void SigapApp::setup() noexcept {
     return;
   }
   record_context_.config_ref = ref;
+#ifdef ARDUINO
+  profile_manager_.set_audit_context(acquisition::ArduinoMonotonicClock{}.now_us(), ref);
+#else
+  profile_manager_.set_audit_context(0U, ref);
+#endif
+  acquisition::DefaultProfiles default_profiles(profile_manager_, profile_store_);
+  const auto default_result =
+      default_profiles.bootstrap_enabled(sigap::build::kPhysicalReferenceOnly);
+#ifdef ARDUINO
+  Serial.printf(
+      "[calibration-defaults] initialized=%u preserved=%u stored=%u blocked=%u errors=%u\n",
+      static_cast<unsigned>(default_result.initialized),
+      static_cast<unsigned>(default_result.preserved),
+      static_cast<unsigned>(default_result.stored),
+      static_cast<unsigned>(default_result.blocked),
+      static_cast<unsigned>(default_result.errors));
+#else
+  (void)default_result;
+#endif
   archive_runtime_.set_event_context(record_context_.device_id,
                                      record_context_.boot_id, ref);
+#if SIGAP_PROTOTYPE_OPERATION
   network_worker_.emplace(
-      network::NetworkPolicy{
-          config_manager_.active().telemetry.retry_min_ms,
-          config_manager_.active().telemetry.retry_max_ms,
-          10000U,
-          config_manager_.active().telemetry.retry_max_ms,
-          250U},
+      network::NetworkPolicy{config_manager_.active().telemetry.retry_min_ms,
+          config_manager_.active().telemetry.retry_max_ms, 10000U,
+          config_manager_.active().telemetry.retry_max_ms, 250U},
       network_clock_, network_jitter_, network_link_, network_transport_,
+      prototype_network_source_);
+#else
+  network_worker_.emplace(
+      network::NetworkPolicy{config_manager_.active().telemetry.retry_min_ms,
+          config_manager_.active().telemetry.retry_max_ms, 10000U,
+          config_manager_.active().telemetry.retry_max_ms, 250U},
+      network_clock_, network_jitter_, network_link_, network_transport_,
+#ifdef ARDUINO
+      async_network_source_);
+  const bool ack_worker_started = async_network_source_.begin(
+      static_cast<uint32_t>(xPortGetCoreID()));
+  if (!ack_worker_started) Serial.println("[SIGAP][RUNTIME] ACK_WORKER_START=FAIL");
+#else
       network_source_);
+#endif
+#endif
 #ifdef ARDUINO
   // Persistent device-control result recovery must complete before the first
   // command fetch.  LittleFS is mounted without formatting; a failed mount
@@ -543,9 +637,14 @@ void SigapApp::setup() noexcept {
   log_runtime_diagnostic(RuntimeDiagnosticEvent::LittlefsMounted,
                          littlefs_mounted,
                          static_cast<uint64_t>(esp_timer_get_time()));
-  bool filesystem_recovery_ready{false};
-  if (littlefs_mounted) {
-    (void)migration_journal_.begin(LittleFS);
+  bool filesystem_recovery_ready{SIGAP_PROTOTYPE_OPERATION != 0};
+  if (!SIGAP_PROTOTYPE_OPERATION && storage::live_delivery::kPriorityFresh &&
+      !live_paths_.valid) {
+    Serial.println("[SIGAP][RUNTIME] LIVE_DELIVERY_PATHS=FAIL");
+    acquisition_.disable();
+    return;
+  }
+  if (littlefs_mounted && !SIGAP_PROTOTYPE_OPERATION) {
     const auto log_storage_stage = [](const char* stage, uint64_t started_us,
                                       bool ready) noexcept {
       const uint64_t now_us = static_cast<uint64_t>(esp_timer_get_time());
@@ -589,14 +688,27 @@ void SigapApp::setup() noexcept {
     Serial.println("[SIGAP][RUNTIME] BATCH_RECOVERY=START");
     const bool batch_ready = batch_store_.begin(
         LittleFS, config_manager_.active().storage.flash_pending_quota_bytes,
-        build::kLiveArchiveSplit ? "/sigap/live-v3.batches" : "/sigap/batches.bin",
-        build::kLiveArchiveSplit ? "/sigap/live-v3.batches.ckp" : "/sigap/batches.ckp");
+        storage::live_delivery::kPriorityFresh
+            ? live_paths_.batches.data()
+            : (build::kLiveArchiveSplit ? "/sigap/live-v3.batches"
+                                        : "/sigap/batches.bin"),
+        storage::live_delivery::kPriorityFresh
+            ? live_paths_.batch_checkpoint.data()
+            : (build::kLiveArchiveSplit ? "/sigap/live-v3.batches.ckp"
+                                        : "/sigap/batches.ckp"));
     log_storage_stage("BATCH_RECOVERY", batch_started_us, batch_ready);
     const uint64_t ack_started_us = static_cast<uint64_t>(esp_timer_get_time());
     Serial.println("[SIGAP][RUNTIME] ACK_RECOVERY=START");
     const bool ack_ready = ack_journal_.begin(
-        LittleFS, build::kLiveArchiveSplit ? "/sigap/live-v3.acks" : "/sigap/acks.bin",
-        build::kLiveArchiveSplit ? "/sigap/live-v3.acks.ckp" : "/sigap/acks.ckp");
+        LittleFS,
+        storage::live_delivery::kPriorityFresh
+            ? live_paths_.acks.data()
+            : (build::kLiveArchiveSplit ? "/sigap/live-v3.acks"
+                                        : "/sigap/acks.bin"),
+        storage::live_delivery::kPriorityFresh
+            ? live_paths_.ack_checkpoint.data()
+            : (build::kLiveArchiveSplit ? "/sigap/live-v3.acks.ckp"
+                                        : "/sigap/acks.ckp"));
     log_storage_stage("ACK_RECOVERY", ack_started_us, ack_ready);
 #if SIGAP_LIVE_ARCHIVE_SPLIT
     const bool live_ready = archive_ready && batch_ready && ack_ready &&
@@ -616,6 +728,13 @@ void SigapApp::setup() noexcept {
 #endif
     filesystem_recovery_ready = archive_ready && batch_ready && ack_ready;
   }
+  if (SIGAP_PROTOTYPE_OPERATION && littlefs_mounted) {
+#if defined(SIGAP_NETWORK_ENDPOINT) && defined(SIGAP_NETWORK_CA_CERT)
+    device_control_journal_ready_ =
+        device_control_result_journal_.begin(LittleFS) &&
+        device_control_result_journal_.recover();
+#endif
+  }
   log_runtime_diagnostic(RuntimeDiagnosticEvent::FilesystemRecovery,
                          filesystem_recovery_ready,
                          static_cast<uint64_t>(esp_timer_get_time()));
@@ -629,6 +748,15 @@ void SigapApp::setup() noexcept {
       config_manager_.active().storage.flash_pending_quota_bytes);
   (void)sd_store_.begin(
       config_manager_.active().storage.sd_pending_quota_bytes);
+#endif
+#if SIGAP_PROTOTYPE_OPERATION
+#if SIGAP_LIVE_NO_BACKLOG
+  archive_runtime_.set_store(nullptr);
+#else
+  prototype_batch_runtime_.bind(&prototype_archive_store_);
+  archive_runtime_.set_store(&prototype_archive_store_);
+#endif
+  archive_runtime_.set_media_migration(nullptr);
 #endif
   // Network credentials are loaded only into the worker boundary. They are
   // never serialized, logged, or exposed through maintenance responses.
@@ -653,8 +781,27 @@ void SigapApp::setup() noexcept {
                       network_transport_.begin(network_secrets,
                                                SIGAP_NETWORK_CA_CERT);
 #if defined(SIGAP_NETWORK_ENDPOINT) && defined(SIGAP_NETWORK_CA_CERT)
+    // The shared endpoint carries the ingest path; the control client needs the
+    // device-control route on the same origin.
+    constexpr std::string_view kIngestPath{"/api/telemetry/batches"};
+    constexpr std::string_view kControlPath{"/api/device-control/device"};
+    const std::string_view shared_endpoint{SIGAP_NETWORK_ENDPOINT};
+    char control_endpoint[192]{};
+    bool control_endpoint_ready{false};
+    if (shared_endpoint.size() > kIngestPath.size() &&
+        shared_endpoint.substr(shared_endpoint.size() - kIngestPath.size()) ==
+            kIngestPath) {
+      const std::string_view origin =
+          shared_endpoint.substr(0, shared_endpoint.size() - kIngestPath.size());
+      const int written = std::snprintf(
+          control_endpoint, sizeof(control_endpoint), "%.*s%s",
+          static_cast<int>(origin.size()), origin.data(), kControlPath.data());
+      control_endpoint_ready =
+          written > 0 && static_cast<std::size_t>(written) < sizeof(control_endpoint);
+    }
     const bool control_transport_ready =
-        device_control_transport_.set_endpoint(SIGAP_NETWORK_ENDPOINT) &&
+        control_endpoint_ready &&
+        device_control_transport_.set_endpoint(std::string_view(control_endpoint)) &&
         device_control_transport_.begin(SIGAP_NETWORK_CA_CERT);
     device_control_ready_ = control_transport_ready &&
                             device_control_journal_ready_ &&
@@ -667,9 +814,14 @@ void SigapApp::setup() noexcept {
 #else
     constexpr bool transport_ready{true};
 #endif
-    network_ready_ = transport_ready && token_size != 0U &&
+    const bool network_begin_accepted = transport_ready && token_size != 0U &&
                      network_worker_->begin(std::string_view(
                          network_secrets.device_token.data(), token_size));
+#ifdef ARDUINO
+    network_ready_ = network_begin_accepted;
+#else
+    network_ready_ = network_begin_accepted;
+#endif
 #if defined(ARDUINO) && defined(SIGAP_NETWORK_CA_CERT)
     const auto& debug_config = build::kDebugUploadConfig;
     if (debug_config.available() && SIGAP_NETWORK_CA_CERT[0] != '\0') {
@@ -734,23 +886,41 @@ void SigapApp::setup() noexcept {
   const acquisition::ArduinoMonotonicClock clock{};
   now_us = clock.now_us();
   emit_runtime_startup(2U, 0, 3);
+#if !SIGAP_PROTOTYPE_OPERATION
   const bool processing_started = processing_runtime_.begin(
       config_manager_.active(), ref, boot_identity_.sequence, result_context,
       profiles_, now_us);
+#else
+  const bool processing_started = true;
+#endif
   const bool acquisition_started = acquisition_.begin(
       config_manager_.active(), ref, now_us);
 #else
   const uint64_t now_us{0U};
   emit_runtime_startup(2U, 0, 3);
   const bool acquisition_started = acquisition_.begin(config_manager_.active(), ref, 0U);
+#if !SIGAP_PROTOTYPE_OPERATION
   const bool processing_started = processing_runtime_.begin(
       config_manager_.active(), ref, boot_identity_.sequence, result_context,
       profiles_, 0U);
+#else
+  const bool processing_started = true;
+#endif
 #endif
   const bool critical_startup_ready = config_runtime_ready &&
                                       acquisition_started && processing_started;
   emit_runtime_startup(2U, critical_startup_ready ? 1 : 2, 3);
   if (record_context_.device_id.present) {
+#if SIGAP_PROTOTYPE_OPERATION && SIGAP_LIVE_NO_BACKLOG
+    (void)prototype_batch_runtime_.begin(record_context_, boot_identity_.sequence,
+        now_us, build::kFirmwareBuildId,
+#ifdef ARDUINO
+        reset_reason_code()
+#else
+        0U
+#endif
+    );
+#else
     const auto metadata_status = archive_runtime_.append_boot_metadata(
         now_us, build::kFirmwareBuildId,
 #ifdef ARDUINO
@@ -763,6 +933,7 @@ void SigapApp::setup() noexcept {
     // The owned storage worker drains this queued metadata record from the
     // bounded loop slice after all runtime services are available.
     (void)metadata_status;
+#endif
   }
 #ifdef ARDUINO
   log_runtime_diagnostic(RuntimeDiagnosticEvent::SetupComplete, true,
@@ -770,6 +941,21 @@ void SigapApp::setup() noexcept {
 #endif
   emit_runtime_startup(1U, critical_startup_ready ? 1 : 2,
                        critical_startup_ready ? 1 : 3);
+#if SIGAP_PROTOTYPE_OPERATION
+#if !SIGAP_LIVE_NO_BACKLOG
+  prototype_batch_runtime_.bind(&prototype_archive_store_);
+  const acquisition::InjectedMonotonicClock prototype_debug_clock{
+      [](void*) noexcept { return acquisition::ArduinoMonotonicClock{}.now_us(); }, nullptr};
+  prototype_batch_runtime_.bind_debug(&debug_service_, &prototype_debug_clock);
+  // The bounded accumulation window needs the real monotonic clock; the RAM
+  // drain and batch poll stay loop-owned and are not gated on filesystem I/O.
+  prototype_batch_runtime_.bind_clock(prototype_debug_clock);
+  // Prototype live records use volatile RAM only; historical LittleFS data stays isolated.
+  archive_runtime_.set_store(&prototype_archive_store_);
+  archive_runtime_.set_media_migration(nullptr);
+#endif
+  emit_runtime_startup(3U, 1, 1);
+#endif
 }
 
 // cppcheck-suppress unusedFunction
@@ -803,10 +989,12 @@ void SigapApp::observe_loop_gap(uint64_t now_us) noexcept {
 
 void SigapApp::loop() noexcept {
 #ifdef ARDUINO
+  acquisition::usb_phase_begin_loop();
   const acquisition::ArduinoMonotonicClock clock{};
   const uint64_t now_us = clock.now_us();
   observe_loop_gap(now_us);
   log_runtime_diagnostic(RuntimeDiagnosticEvent::LoopAlive, true, now_us);
+  acquisition::usb_phase_mark(acquisition::UsbPhase::Wifi);
   provisioning_clock_.set_now(now_us);
   if (!io_gate_.active(debug::IoOwner::DebugHttp)) wifi_manager_.poll();
   const bool wifi_connected =
@@ -815,13 +1003,17 @@ void SigapApp::loop() noexcept {
     log_runtime_diagnostic(RuntimeDiagnosticEvent::WifiConnected,
                            wifi_connected, now_us);
   }
+  acquisition::usb_phase_mark(acquisition::UsbPhase::Ble);
   ble_service_.poll();
+  acquisition::usb_phase_mark(acquisition::UsbPhase::Maintenance);
   maintenance_service_.poll(now_us);
+  acquisition::usb_phase_mark(acquisition::UsbPhase::Filesystem);
   const bool filesystem_owned = io_gate_.try_acquire(debug::IoOwner::Filesystem);
   std::size_t audit_budget{2U};
-  while (filesystem_owned && audit_budget-- != 0U &&
+  while (!SIGAP_LIVE_NO_BACKLOG && filesystem_owned && audit_budget-- != 0U &&
          archive_runtime_.drain_audit_events(audit_ring_)) {
   }
+  acquisition::usb_phase_mark(acquisition::UsbPhase::Profiles);
   refresh_model_profiles();
   if (profile_generation_ != profile_manager_.generation()) {
     profile_generation_ = profile_manager_.generation();
@@ -829,26 +1021,71 @@ void SigapApp::loop() noexcept {
     // scheduler or restarting unrelated sensors.
     (void)acquisition_.refresh_profiles(now_us);
   }
+  acquisition::usb_phase_mark(acquisition::UsbPhase::Acquisition);
   acquisition_.poll(now_us);
-  if (filesystem_owned) (void)archive_runtime_.drain_samples(acquisition_.handoff());
+#ifdef ARDUINO
+  acquisition::usb_phase_mark(acquisition::UsbPhase::Emitter);
+  const int64_t usb_sensor_time = esp_timer_get_time();
+  acquisition_.target().emit_usb_debug(usb_sensor_time < 0 ? 0U : static_cast<uint64_t>(usb_sensor_time));
+#endif
+  acquisition::usb_phase_mark(acquisition::UsbPhase::Drain);
+#if SIGAP_PROTOTYPE_OPERATION && SIGAP_LIVE_NO_BACKLOG
+  acquisition::SampleRecord current_sample{};
+  while (acquisition_.handoff().try_pop(current_sample) == acquisition::HandoffStatus::Dequeued)
+    prototype_batch_runtime_.observe(current_sample);
+  acquisition_.handoff().clear_last_dropped();
+#endif
+#if !SIGAP_PROTOTYPE_OPERATION
   processing_runtime_.poll(now_us);
-  if (filesystem_owned) (void)archive_runtime_.drain_results(processing_runtime_.handoff());
+#endif
+#if SIGAP_PROTOTYPE_OPERATION && !SIGAP_LIVE_NO_BACKLOG
+  (void)archive_runtime_.poll_storage_slice(4U, 32U * 1024U);
+  (void)prototype_batch_runtime_.poll();
+#endif
+  if (filesystem_owned) {
+#if !SIGAP_PROTOTYPE_OPERATION
+    if (samples_first_drain_) {
+      (void)archive_runtime_.drain_samples(acquisition_.handoff());
+      (void)archive_runtime_.drain_results(processing_runtime_.handoff());
+    } else {
+      (void)archive_runtime_.drain_results(processing_runtime_.handoff());
+      (void)archive_runtime_.drain_samples(acquisition_.handoff());
+    }
+    samples_first_drain_ = !samples_first_drain_;
+#endif
+  }
+#if SIGAP_PROTOTYPE_OPERATION && !SIGAP_LIVE_NO_BACKLOG
+  // The legacy prototype sample handoff and RAM archive are loop-owned; network I/O
+  // ownership must not pause draining while HTTPS is in flight.
+  (void)archive_runtime_.drain_samples(acquisition_.handoff());
+#endif
   // LittleFS and the Arduino VFS share the global descriptor table with the
   // asynchronous HTTPS workers. Keep filesystem ownership in loopTask while
   // either transport task is still active; this prevents a failed TLS socket
   // teardown from colliding with an in-flight filesystem descriptor.
   bool filesystem_transport_busy{false};
-  if (network_worker_.has_value() && network_worker_->transport_pending()) {
+  if (network_worker_.has_value() && network_worker_->busy()) {
     filesystem_transport_busy = true;
   }
+#ifdef ARDUINO
+  if (!SIGAP_PROTOTYPE_OPERATION && async_network_source_.busy()) {
+    filesystem_transport_busy = true;
+  }
+#endif
 #if defined(SIGAP_NETWORK_ENDPOINT) && defined(SIGAP_NETWORK_CA_CERT)
   if (device_control_ready_ && device_control_poller_.busy()) {
     filesystem_transport_busy = true;
   }
 #endif
-  if (filesystem_owned && !filesystem_transport_busy) {
+  if (filesystem_owned && !filesystem_transport_busy &&
+      !SIGAP_PROTOTYPE_OPERATION) {
+    acquisition::usb_phase_mark(acquisition::UsbPhase::StorageSlice);
     (void)archive_runtime_.poll_storage_slice(4U, 32U * 1024U);
+    acquisition::usb_phase_mark(acquisition::UsbPhase::StorageBatch);
     (void)batch_runtime_.poll();
+    // ACK/reclaim runs on the other core. Read mutable store counters only
+    // while this task holds exclusive filesystem ownership.
+    last_flow_pending_bytes_ = littlefs_store_.pending_bytes();
     if (!legacy_retention_reported_ && littlefs_store_.retained_records() != 0U) {
       Serial.printf("[SIGAP][RUNTIME] LEGACY_PENDING_RETAINED=DEGRADED observed_records=%llu observed_bytes=%llu originals=UNDELIVERED\n",
                     static_cast<unsigned long long>(littlefs_store_.retained_records()),
@@ -856,10 +1093,128 @@ void SigapApp::loop() noexcept {
       legacy_retention_reported_ = true;
     }
   }
+  acquisition::usb_phase_mark(acquisition::UsbPhase::Migration);
   if (filesystem_owned) {
-    (void)archive_runtime_.poll_media_migration();
+    if (!SIGAP_PROTOTYPE_OPERATION) {
+      (void)archive_runtime_.poll_media_migration();
+    }
     io_gate_.release(debug::IoOwner::Filesystem);
   }
+#ifdef ARDUINO
+#if SIGAP_PROTOTYPE_OPERATION && SIGAP_LIVE_NO_BACKLOG
+  if (now_us >= last_flow_diagnostic_us_ + 1000000U) {
+    char frame[640U]{};
+    const int length = std::snprintf(frame, sizeof(frame),
+        "SIGAP_LIVE v=32 mode=1 backlog=0 period_us=%llu current=%u in_flight=%u observed=%llu superseded=%llu expired=%llu rejected=%llu unconfirmed=%llu ack_batches=%llu ack_records=%llu start_age_us=%llu uptime_us=%llu loops=%lu heap=%lu min_heap=%lu stack_hwm=%lu outcome=%u handoff_dropped=%llu\n",
+        static_cast<unsigned long long>(build::kLiveSnapshotPeriodUs),
+        static_cast<unsigned>(prototype_batch_runtime_.retained()),
+        prototype_batch_runtime_.pending() ? 1U : 0U,
+        static_cast<unsigned long long>(prototype_batch_runtime_.observed()),
+        static_cast<unsigned long long>(prototype_batch_runtime_.superseded()),
+        static_cast<unsigned long long>(prototype_batch_runtime_.expired()),
+        static_cast<unsigned long long>(prototype_batch_runtime_.rejected()),
+        static_cast<unsigned long long>(prototype_batch_runtime_.discarded_records()),
+        static_cast<unsigned long long>(prototype_batch_runtime_.batches_delivered()),
+        static_cast<unsigned long long>(prototype_batch_runtime_.records_delivered()),
+        static_cast<unsigned long long>(prototype_batch_runtime_.last_start_age_us()),
+        static_cast<unsigned long long>(now_us),
+        static_cast<unsigned long>(acquisition::usb_phase_state().loops),
+        static_cast<unsigned long>(ESP.getFreeHeap()),
+        static_cast<unsigned long>(ESP.getMinFreeHeap()),
+        static_cast<unsigned long>(uxTaskGetStackHighWaterMark(nullptr)),
+        static_cast<unsigned>(last_network_outcome_),
+        static_cast<unsigned long long>(acquisition_.handoff().dropped_records()));
+    if (length > 0 && static_cast<std::size_t>(length) < sizeof(frame) &&
+        Serial.availableForWrite() >= length)
+      (void)Serial.write(reinterpret_cast<const uint8_t*>(frame), static_cast<std::size_t>(length));
+    last_flow_diagnostic_us_ = now_us;
+  }
+#elif SIGAP_PROTOTYPE_OPERATION
+  if (now_us >= last_flow_diagnostic_us_ + 1000000U) {
+    char frame[768U]{};
+    const auto stats = archive_runtime_.storage_worker().stats();
+    // Batches and records are reported separately: `batches_delivered` counts
+    // whole ACKed batches while `records_delivered` counts their records.
+    const int length = std::snprintf(frame, sizeof(frame),
+        "SIGAP_FLOW prototype ram_records=%u pending_bytes=%llu queued_records=%u retryable=%llu terminal=%llu overflow=%llu handoff_dropped=%llu outcome=%u polls=%llu network_delivered_batches=%llu batches_built=%llu batches_delivered=%llu records_delivered=%llu batch_records=%u batch_reclaimed=%u source_mismatch=%llu partial_reclaim=%llu\n",
+        static_cast<unsigned>(prototype_archive_store_.size()),
+        static_cast<unsigned long long>(prototype_archive_store_.pending_bytes()),
+        static_cast<unsigned>(archive_runtime_.queued_records()),
+        static_cast<unsigned long long>(stats.retryable),
+        static_cast<unsigned long long>(stats.terminal),
+        static_cast<unsigned long long>(stats.overflow),
+        static_cast<unsigned long long>(acquisition_.handoff().dropped_records()),
+        static_cast<unsigned>(last_network_outcome_),
+        static_cast<unsigned long long>(network_poll_count_),
+        static_cast<unsigned long long>(network_delivered_count_),
+        static_cast<unsigned long long>(prototype_batch_runtime_.batches_built()),
+        static_cast<unsigned long long>(prototype_batch_runtime_.batches_delivered()),
+        static_cast<unsigned long long>(prototype_batch_runtime_.records_delivered()),
+        static_cast<unsigned>(prototype_batch_runtime_.manifest_size()),
+        static_cast<unsigned>(prototype_batch_runtime_.reclaimed_size()),
+        static_cast<unsigned long long>(prototype_batch_runtime_.source_mismatch_count()),
+        static_cast<unsigned long long>(prototype_batch_runtime_.partial_reclaim_count()));
+    if (length > 0 && static_cast<std::size_t>(length) < sizeof(frame) &&
+        Serial.availableForWrite() >= length) {
+      (void)Serial.write(reinterpret_cast<const uint8_t*>(frame),
+                         static_cast<std::size_t>(length));
+    }
+    last_flow_diagnostic_us_ = now_us;
+  }
+#else
+  if (now_us >= last_flow_diagnostic_us_ + 1000000U) {
+    char frame[640U]{};
+    const auto boot_word = [this](std::size_t offset) noexcept {
+      const auto& bytes = record_context_.boot_id.bytes;
+      return (static_cast<uint32_t>(bytes[offset]) << 24U) |
+             (static_cast<uint32_t>(bytes[offset + 1U]) << 16U) |
+             (static_cast<uint32_t>(bytes[offset + 2U]) << 8U) |
+             static_cast<uint32_t>(bytes[offset + 3U]);
+    };
+#if SIGAP_LIVE_ARCHIVE_SPLIT
+    const uint64_t historical_bytes = littlefs_store_.retained_legacy_bytes();
+#else
+    const uint64_t historical_bytes = 0U;
+#endif
+    const int length = std::snprintf(
+        frame, sizeof(frame),
+        "SIGAP_FLOW v=14 utc_ready=%u bp=%u b0=%lu b1=%lu b2=%lu b3=%lu enabled=%u cycles=%llu observed=%llu rejected=%llu result_failures=%llu results_pending=%u result_drops=%llu encode_failures=%llu durable=%llu queued=%llu sample_pending=%u sample_drops=%llu fs_owned=%u transport_busy=%u priority_fresh=%u historical_bytes=%llu pending_bytes=%llu hxq=%u mqq=%u shtq=%u usq=%u\n",
+        utc_source_.ready() ? 1U : 0U,
+        record_context_.boot_id.present ? 1U : 0U,
+        static_cast<unsigned long>(boot_word(0U)),
+        static_cast<unsigned long>(boot_word(4U)),
+        static_cast<unsigned long>(boot_word(8U)),
+        static_cast<unsigned long>(boot_word(12U)),
+        processing_runtime_.enabled() ? 1U : 0U,
+        static_cast<unsigned long long>(processing_runtime_.cycles_completed()),
+        static_cast<unsigned long long>(processing_runtime_.observed_samples()),
+        static_cast<unsigned long long>(processing_runtime_.rejected_samples()),
+        static_cast<unsigned long long>(processing_runtime_.result_failures()),
+        static_cast<unsigned>(processing_runtime_.handoff().size()),
+        static_cast<unsigned long long>(processing_runtime_.handoff().dropped_results()),
+        static_cast<unsigned long long>(archive_runtime_.encode_failures()),
+        static_cast<unsigned long long>(archive_runtime_.durable_records()),
+        static_cast<unsigned long long>(archive_runtime_.queued_records()),
+        static_cast<unsigned>(acquisition_.handoff().size()),
+        static_cast<unsigned long long>(acquisition_.handoff().dropped_records()),
+        filesystem_owned ? 1U : 0U,
+        filesystem_transport_busy ? 1U : 0U,
+        storage::live_delivery::kPriorityFresh ? 1U : 0U,
+        static_cast<unsigned long long>(historical_bytes),
+        static_cast<unsigned long long>(last_flow_pending_bytes_),
+        static_cast<unsigned>(acquisition_.handoff().pending_for(acquisition::SensorId::Hx711Organic)),
+        static_cast<unsigned>(acquisition_.handoff().pending_for(acquisition::SensorId::Mq135)),
+        static_cast<unsigned>(acquisition_.handoff().pending_for(acquisition::SensorId::Sht31_44)),
+        static_cast<unsigned>(acquisition_.handoff().pending_for(acquisition::SensorId::UltrasonicOrganic)));
+    if (length > 0 && static_cast<std::size_t>(length) < sizeof(frame) &&
+        Serial.availableForWrite() >= length) {
+      (void)Serial.write(reinterpret_cast<const uint8_t*>(frame),
+                         static_cast<std::size_t>(length));
+    }
+    last_flow_diagnostic_us_ = now_us;
+  }
+#endif
+#endif
   network_clock_.set_now(now_us);
   bool tls_time_ready{true};
 #ifdef SIGAP_NETWORK_CA_CERT
@@ -872,19 +1227,93 @@ void SigapApp::loop() noexcept {
                            network_time_ready_, now_us);
   }
 #endif
+  acquisition::usb_phase_mark(acquisition::UsbPhase::ArchiveHttp);
   if (network_worker_.has_value() &&
-      (network_worker_->transport_pending() || (network_ready_ && tls_time_ready)) &&
+      (network_worker_->busy() || (network_ready_ && tls_time_ready
+#ifdef ARDUINO
+#if SIGAP_PROTOTYPE_OPERATION
+                                  && network_ready_
+#else
+                                  && async_network_source_.ready()
+#endif
+#endif
+                                  )) &&
       (io_gate_.active(debug::IoOwner::ArchiveHttp) ||
        io_gate_.try_acquire(debug::IoOwner::ArchiveHttp))) {
     log_runtime_diagnostic(RuntimeDiagnosticEvent::HttpsPollEntered, true,
                            now_us);
-    (void)network_worker_->poll();
-    if (!network_worker_->transport_pending()) io_gate_.release(debug::IoOwner::ArchiveHttp);
+#if SIGAP_PROTOTYPE_OPERATION && SIGAP_LIVE_NO_BACKLOG
+    if (!network_worker_->busy() && wifi_connected && wifi_station_.connected() &&
+        now_us >= network_worker_->next_attempt_us() &&
+        network_worker_->state() != network::NetworkState::AuthRequired)
+      (void)prototype_batch_runtime_.prepare(acquisition::ArduinoMonotonicClock{}.now_us());
+#endif
+    const auto outcome = network_worker_->poll();
+#if SIGAP_PROTOTYPE_OPERATION && SIGAP_LIVE_NO_BACKLOG
+    if (!network_worker_->busy() && prototype_batch_runtime_.pending() &&
+        outcome != network::NetworkOutcome::Waiting && outcome != network::NetworkOutcome::Idle &&
+        outcome != network::NetworkOutcome::Delivered)
+      prototype_batch_runtime_.discard_unconfirmed();
+#endif
+#if SIGAP_PROTOTYPE_OPERATION
+    last_network_outcome_ = outcome;
+    ++network_poll_count_;
+    if (outcome == network::NetworkOutcome::Delivered) ++network_delivered_count_;
+#endif
+    if (!network_worker_->busy()
+#ifdef ARDUINO
+#if SIGAP_PROTOTYPE_OPERATION
+#else
+        && !async_network_source_.busy()
+#endif
+#endif
+        ) io_gate_.release(debug::IoOwner::ArchiveHttp);
   }
+#ifdef ARDUINO
+  if (now_us >= last_ack_worker_diagnostic_us_ + 1000000U) {
+#if SIGAP_PROTOTYPE_OPERATION
+    if (network_worker_.has_value()) {
+      char frame[192U]{};
+      const int length = std::snprintf(frame, sizeof(frame),
+          "SIGAP_ACKWORK path=prototype_main_loop ready=%u busy=%u ack_pending=%u retry_attempt=%lu\n",
+          network_ready_ ? 1U : 0U, network_worker_->busy() ? 1U : 0U,
+          network_worker_->ack_pending() ? 1U : 0U,
+          static_cast<unsigned long>(network_worker_->retry_attempt()));
+      if (length > 0 && static_cast<std::size_t>(length) < sizeof(frame) &&
+          Serial.availableForWrite() >= length) {
+        (void)Serial.write(reinterpret_cast<const uint8_t*>(frame),
+                           static_cast<std::size_t>(length));
+      }
+    }
+#else
+    const auto snapshot = async_network_source_.snapshot();
+    if (snapshot.valid) {
+      char frame[192U]{};
+      const int length = std::snprintf(frame, sizeof(frame),
+          "SIGAP_ACKWORK v=9 main=%u worker=%ld ready=%u busy=%u submitted=%lu finished=%lu duration_us=%llu stack_hwm=%lu\n",
+          static_cast<unsigned>(xPortGetCoreID()),
+          static_cast<long>(snapshot.worker_core), snapshot.ready ? 1U : 0U,
+          snapshot.busy ? 1U : 0U,
+          static_cast<unsigned long>(snapshot.started),
+          static_cast<unsigned long>(snapshot.completed),
+          static_cast<unsigned long long>(snapshot.last_duration_us),
+          static_cast<unsigned long>(snapshot.stack_hwm));
+      if (length > 0 && static_cast<std::size_t>(length) < sizeof(frame) &&
+          Serial.availableForWrite() >= length) {
+        (void)Serial.write(reinterpret_cast<const uint8_t*>(frame),
+                           static_cast<std::size_t>(length));
+      }
+    }
+#endif
+    last_ack_worker_diagnostic_us_ = now_us;
+  }
+#endif
   // The shared controller owns session expiry for every transport, including
   // BLE and USB builds that do not enable the optional HTTPS device-control
   // endpoint.
+  acquisition::usb_phase_mark(acquisition::UsbPhase::Calibration);
   calibration_controller_.poll(now_us);
+  acquisition::usb_phase_mark(acquisition::UsbPhase::ControlHttp);
 #if defined(SIGAP_NETWORK_ENDPOINT) && defined(SIGAP_NETWORK_CA_CERT)
   control_transport_boundary_.set_time_valid(tls_time_ready);
   if (device_control_ready_ && (tls_time_ready || device_control_poller_.busy()) &&
@@ -896,6 +1325,7 @@ void SigapApp::loop() noexcept {
     if (!device_control_poller_.busy()) io_gate_.release(debug::IoOwner::ControlHttp);
   }
 #endif
+  acquisition::usb_phase_mark(acquisition::UsbPhase::DebugWorker);
   if (debug_worker_.has_value()) {
     bool ca_ready{false};
 #ifdef SIGAP_NETWORK_CA_CERT
@@ -908,8 +1338,10 @@ void SigapApp::loop() noexcept {
         io_gate_.active(debug::IoOwner::ArchiveHttp)});
   }
   maintenance_service_.poll(now_us);
+  acquisition::usb_phase_mark(acquisition::UsbPhase::UsbSink);
   debug_usb_sink_.poll(now_us, 384U);
 #ifdef ARDUINO
+  acquisition::usb_phase_mark(acquisition::UsbPhase::Idle);
   if (reboot_controller_.consume_request()) {
     ESP.restart();
   }

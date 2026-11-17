@@ -104,6 +104,8 @@ class NvsCalibrationReplayStore final
     uint8_t transport{0U};
     uint8_t operation{0U};
     uint8_t target{0U};
+    // bit0..2 anchor, bit3 normalized (MQG2) mode. A durable COMMIT identity
+    // must never be replayed across response modes.
     uint8_t anchor{0U};
     uint8_t flags{0U};
     uint8_t criteria_kind{0U};

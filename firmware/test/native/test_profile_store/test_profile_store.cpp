@@ -7,6 +7,7 @@
 
 #include "acquisition/profile_store.h"
 #include "acquisition/profile_manager.h"
+#include "telemetry/sha256.h"
 
 namespace {
 
@@ -39,6 +40,107 @@ UltrasonicProfile ultrasonic(uint32_t version) {
   profile.echo_timeout_us = 30000U;
   profile.inter_sensor_gap_us = 60000U;
   return profile;
+}
+
+void test_default_template_store_is_absent_only_and_never_active_valid() {
+  MemoryProfileStore store{};
+  ProfileCodec codec{};
+  const ProfileKey key{ProfileKind::Calibration, ProfileTarget::Hx711Organic};
+  Hx711Profile unresolved{};
+  manifest<int>(unresolved.manifest, key.target, 1U);
+  unresolved.manifest.validity = ProfileValidity::Invalid;
+  EncodedProfile template_bytes{};
+  TEST_ASSERT_TRUE(codec.encode(unresolved, template_bytes));
+  TEST_ASSERT_TRUE(codec.validate_template(template_bytes, key));
+  TEST_ASSERT_FALSE(codec.validate(template_bytes, key));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileReadStatus::NotFound), static_cast<int>(store.read_default(key, template_bytes)));
+  TEST_ASSERT_TRUE(codec.encode(unresolved, template_bytes));
+  TEST_ASSERT_TRUE(store.write_default(key, template_bytes));
+  EncodedProfile saved{};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileReadStatus::Found), static_cast<int>(store.read_default(key, saved)));
+  TEST_ASSERT_EQUAL_UINT32(template_bytes.size, saved.size);
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(template_bytes.bytes.data(), saved.bytes.data(), template_bytes.size);
+  Hx711Profile newer = unresolved; newer.manifest.profile_version = 2U;
+  EncodedProfile newer_bytes{}; TEST_ASSERT_TRUE(codec.encode(newer, newer_bytes));
+  TEST_ASSERT_FALSE(store.write_default(key, newer_bytes));
+  EncodedProfile after_failed_overwrite{};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileReadStatus::Found),
+                        static_cast<int>(store.read_default(key, after_failed_overwrite)));
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(template_bytes.bytes.data(), after_failed_overwrite.bytes.data(), template_bytes.size);
+
+  ProfilePersistence active(store);
+  Hx711Profile calibrated = hx(3U); EncodedProfile active_bytes{};
+  TEST_ASSERT_TRUE(codec.encode(calibrated, active_bytes));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileCommitResult::Committed), static_cast<int>(active.commit(key, active_bytes)));
+  ProfileActivationMetadata before{};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileReadStatus::Found), static_cast<int>(store.read_activation(key, before)));
+  EncodedProfile slot_a_before{}, slot_b_before{};
+  const ProfileReadStatus a_status_before = store.read_slot(key, ProfileSlot::A, slot_a_before);
+  const ProfileReadStatus b_status_before = store.read_slot(key, ProfileSlot::B, slot_b_before);
+  EncodedProfile hx_template{};
+  unresolved.manifest.profile_version = 4U;
+  TEST_ASSERT_TRUE(codec.encode(unresolved, hx_template));
+  TEST_ASSERT_TRUE(codec.validate_template(hx_template, key));
+  // Defaults are absent-only even after a separate active-profile commit.
+  TEST_ASSERT_FALSE(store.write_default(key, hx_template));
+  EncodedProfile hx_template_readback{};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileReadStatus::Found), static_cast<int>(store.read_default(key, hx_template_readback)));
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(template_bytes.bytes.data(), hx_template_readback.bytes.data(), template_bytes.size);
+  ProfileActivationMetadata after{};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileReadStatus::Found), static_cast<int>(store.read_activation(key, after)));
+  TEST_ASSERT_EQUAL_UINT32(before.generation, after.generation);
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(before.active_hash.data(), after.active_hash.data(), before.active_hash.size());
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(before.active_slot), static_cast<int>(after.active_slot));
+  EncodedProfile slot_a_after{}, slot_b_after{};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(a_status_before), static_cast<int>(store.read_slot(key, ProfileSlot::A, slot_a_after)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(b_status_before), static_cast<int>(store.read_slot(key, ProfileSlot::B, slot_b_after)));
+  if (a_status_before == ProfileReadStatus::Found) TEST_ASSERT_EQUAL_UINT8_ARRAY(slot_a_before.bytes.data(), slot_a_after.bytes.data(), slot_a_before.size);
+  if (b_status_before == ProfileReadStatus::Found) TEST_ASSERT_EQUAL_UINT8_ARRAY(slot_b_before.bytes.data(), slot_b_after.bytes.data(), slot_b_before.size);
+}
+
+void test_default_template_store_faults_and_invalid_bytes() {
+  MemoryProfileStore store{}; ProfileCodec codec{};
+  const ProfileKey key{ProfileKind::Calibration, ProfileTarget::Hx711Organic};
+  Hx711Profile unresolved{}; manifest<int>(unresolved.manifest, key.target, 1U);
+  unresolved.manifest.validity = ProfileValidity::Invalid;
+  EncodedProfile encoded{}; TEST_ASSERT_TRUE(codec.encode(unresolved, encoded));
+  EncodedProfile damaged = encoded; damaged.bytes[damaged.size - 1U] ^= 1U;
+  TEST_ASSERT_FALSE(codec.validate_template(damaged, key));
+  damaged = encoded; damaged.bytes[8] ^= 1U; TEST_ASSERT_FALSE(codec.validate_template(damaged, key));
+  TEST_ASSERT_FALSE(codec.validate_template(encoded, ProfileKey{ProfileKind::Calibration, ProfileTarget::Hx711B3}));
+  Hx711Profile nonfinite = unresolved; nonfinite.counts_per_kg = NAN;
+  EncodedProfile invalid_float{}; TEST_ASSERT_TRUE(codec.encode(nonfinite, invalid_float));
+  TEST_ASSERT_FALSE(codec.validate_template(invalid_float, key));
+  damaged = encoded; damaged.size = damaged.bytes.size() + 1U;
+  TEST_ASSERT_FALSE(codec.validate_template(damaged, key));
+  OperationalCapacityProfile invalid_enum{};
+  manifest<int>(invalid_enum.manifest, ProfileTarget::Hx711Organic, 1U);
+  invalid_enum.manifest.kind = ProfileKind::Capacity;
+  invalid_enum.stream = static_cast<StreamId>(255U);
+  EncodedProfile invalid_stream{}; TEST_ASSERT_TRUE(codec.encode(invalid_enum, invalid_stream));
+  TEST_ASSERT_FALSE(codec.validate_template(invalid_stream, ProfileKey{ProfileKind::Capacity, ProfileTarget::Hx711Organic}));
+  store.fail_next(MemoryProfileStore::Fault::WriteDefault);
+  TEST_ASSERT_FALSE(store.write_default(key, encoded));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileReadStatus::NotFound), static_cast<int>(store.read_default(key, damaged)));
+  store.fail_next(MemoryProfileStore::Fault::CorruptAfterWrite);
+  TEST_ASSERT_FALSE(store.write_default(key, encoded));
+  EncodedProfile corrupt_default{};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileReadStatus::Invalid), static_cast<int>(store.read_default(key, corrupt_default)));
+  EncodedProfile corrupted_bytes = corrupt_default;
+  TEST_ASSERT_FALSE(store.write_default(key, encoded));
+  EncodedProfile still_corrupt{};
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileReadStatus::Invalid), static_cast<int>(store.read_default(key, still_corrupt)));
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(corrupted_bytes.bytes.data(), still_corrupt.bytes.data(), corrupted_bytes.size);
+  // A corrupt occupied default must not be overwritten to arrange another
+  // fault scenario. Use a fresh store for failure after a legitimate write.
+  MemoryProfileStore readback_store{};
+  readback_store.fail_next(MemoryProfileStore::Fault::ReadDefaultback);
+  TEST_ASSERT_FALSE(readback_store.write_default(key, encoded));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileReadStatus::Found), static_cast<int>(readback_store.read_default(key, damaged)));
+  readback_store.fail_next(MemoryProfileStore::Fault::ReadDefault);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileReadStatus::Error), static_cast<int>(readback_store.read_default(key, damaged)));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(ProfileReadStatus::Error), static_cast<int>(NvsProfileStore{}.read_default(key, damaged)));
+  TEST_ASSERT_FALSE(NvsProfileStore{}.write_default(key, encoded));
 }
 
 void test_profile_codec_round_trips_all_profile_families() {
@@ -95,6 +197,17 @@ void test_profile_codec_round_trips_all_profile_families() {
   TEST_ASSERT_TRUE(ds_restored.has_rom);
   TEST_ASSERT_EQUAL_UINT8(10U, ds_restored.resolution_bits);
   TEST_ASSERT_EQUAL_INT(-12, ds_restored.offset_centi_c);
+  EncodedProfile noncanonical_ds = encoded;
+  constexpr std::size_t kDsHasRomOffset = kProfileHeaderBytes;
+  noncanonical_ds.bytes[kDsHasRomOffset] = 2U;
+  const auto ds_digest = sigap::telemetry_contract::sha256(std::string_view(
+      reinterpret_cast<const char*>(noncanonical_ds.bytes.data()),
+      noncanonical_ds.size - kProfileHashBytes));
+  std::copy(ds_digest.begin(), ds_digest.end(),
+            noncanonical_ds.bytes.begin() + noncanonical_ds.size - kProfileHashBytes);
+  TEST_ASSERT_FALSE(codec.decode(noncanonical_ds, ds_restored));
+  TEST_ASSERT_FALSE(codec.validate_template(noncanonical_ds,
+      ProfileKey{ProfileKind::Calibration, ProfileTarget::Ds18b20B3}));
 
   Sht31Profile sht{};
   manifest<int>(sht.manifest, ProfileTarget::Sht31_44, 6U);
@@ -277,8 +390,11 @@ void test_profile_memory_footprint_is_bounded() {
               sizeof(ProfileManifest), sizeof(Hx711Profile),
               sizeof(UltrasonicProfile), sizeof(Ds18b20Profile),
               sizeof(ProfileManager), sizeof(EncodedProfile));
-  TEST_ASSERT_TRUE(sizeof(EncodedProfile) <= 256U);
-  TEST_ASSERT_TRUE(sizeof(ProfileManager) <= 12000U);
+  // Gas profiles retain explicit electrical/reference provenance rather than
+  // overloading legacy fields. Capacity growth is bounded and target-build RAM
+  // usage is verified separately; legacy encoded lengths/hashes stay unchanged.
+  TEST_ASSERT_TRUE(sizeof(EncodedProfile) <= 448U);
+  TEST_ASSERT_TRUE(sizeof(ProfileManager) <= 20000U);
 }
 
 void test_mq7_adc_and_heater_profiles_coexist_by_typed_key() {
@@ -441,6 +557,8 @@ void tearDown() {}
 
 void setup() {
   UNITY_BEGIN();
+  RUN_TEST(test_default_template_store_is_absent_only_and_never_active_valid);
+  RUN_TEST(test_default_template_store_faults_and_invalid_bytes);
   RUN_TEST(test_profile_codec_round_trips_all_profile_families);
   RUN_TEST(test_profile_provenance_is_part_of_hashed_bytes);
   RUN_TEST(test_profile_commit_pointer_last_and_reload);

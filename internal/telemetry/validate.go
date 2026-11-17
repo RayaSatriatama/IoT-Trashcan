@@ -345,7 +345,7 @@ var mqHeaterPhases = map[string]bool{
 	"PREHEAT": true, "HIGH_CLEAN": true, "LOW_DETECT": true, "FAULT": true,
 }
 
-func validateMQPayload(sensorID string, raw, converted json.RawMessage) error {
+func validateMQPayload(sensorID, quality string, raw, converted json.RawMessage) error {
 	if isJSONNull(raw) {
 		return validateAbsentRaw(raw, converted)
 	}
@@ -378,14 +378,68 @@ func validateMQPayload(sensorID string, raw, converted json.RawMessage) error {
 	if err != nil || isNull {
 		return err
 	}
-	if err := requireFields(object, map[string]bool{"adc_mv": true}); err != nil {
+	allowedConverted := map[string]bool{"adc_mv": true}
+	if sensorID == "mq135" {
+		allowedConverted["adc_pin_mv"] = true
+		allowedConverted["sensor_ao_mv"] = true
+		allowedConverted["adc_efuse_calibrated"] = true
+	}
+	if err := requireFields(object, allowedConverted); err != nil {
 		return err
 	}
-	if bytes.Equal(bytes.TrimSpace(object["adc_mv"]), []byte("null")) {
+	adcRaw, ok := object["adc_mv"]
+	if !ok {
+		return contractError(MalformedJSON, "converted.adc_mv", "required MQ voltage is missing")
+	}
+	if bytes.Equal(bytes.TrimSpace(adcRaw), []byte("null")) {
+		for _, key := range []string{"adc_pin_mv", "sensor_ao_mv", "adc_efuse_calibrated"} {
+			if _, ok := object[key]; ok {
+				return contractError(MalformedJSON, "converted."+key, "calibrated voltage fields require adc_mv")
+			}
+		}
 		return nil
 	}
-	_, err = decodeFiniteNumber(object["adc_mv"], "converted.adc_mv")
-	return err
+	adcMV, err := decodeFiniteNumber(adcRaw, "converted.adc_mv")
+	if err != nil {
+		return err
+	}
+	if sensorID != "mq135" {
+		return nil
+	}
+	calibratedKeys := []string{"adc_pin_mv", "sensor_ao_mv", "adc_efuse_calibrated"}
+	present := 0
+	for _, key := range calibratedKeys {
+		if _, ok := object[key]; ok {
+			present++
+		}
+	}
+	if present == 0 {
+		return nil
+	}
+	if present != len(calibratedKeys) {
+		return contractError(MalformedJSON, "converted", "calibrated MQ135 voltage fields must be supplied together")
+	}
+	if quality != "READY" {
+		return contractError(InvalidIdentity, "quality", "calibrated MQ135 voltage requires READY quality")
+	}
+	if _, err := decodeFiniteNumber(object["adc_pin_mv"], "converted.adc_pin_mv"); err != nil {
+		return err
+	}
+	sensorAOMV, err := decodeFiniteNumber(object["sensor_ao_mv"], "converted.sensor_ao_mv")
+	if err != nil {
+		return err
+	}
+	if sensorAOMV != adcMV {
+		return contractError(InvalidIdentity, "converted.sensor_ao_mv", "sensor_ao_mv must preserve the adc_mv legacy alias")
+	}
+	calibrated, err := decodeFiniteNumber(object["adc_efuse_calibrated"], "converted.adc_efuse_calibrated")
+	if err != nil {
+		return err
+	}
+	if calibrated != 1 {
+		return contractError(InvalidIdentity, "converted.adc_efuse_calibrated", "calibration marker must equal 1")
+	}
+	return nil
 }
 
 func validateDS18B20Payload(raw, converted json.RawMessage) error {
@@ -536,7 +590,7 @@ func validateSamplePayload(sensorID, stream, quality, reason string, raw, conver
 	case "ultrasonic_organic", "ultrasonic_inorganic", "ultrasonic_b3":
 		return validateUltrasonicPayload(raw, converted)
 	case "mq4", "mq135", "mq7", "mq8":
-		return validateMQPayload(sensorID, raw, converted)
+		return validateMQPayload(sensorID, quality, raw, converted)
 	case "ds18b20_b3":
 		return validateDS18B20Payload(raw, converted)
 	case "sht31_44", "sht31_45":

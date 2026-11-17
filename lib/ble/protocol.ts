@@ -1,13 +1,14 @@
 import { decodeDebugResponse } from '../debug/codec';
+import { parseMq135GasJson, type Mq135GasResult } from '../calibration/mq135';
 import type { DebugResponse } from '../debug/codec';
 
 export const SIGAP_BLE_SERVICE_UUID = '7d3f0001-7d3f-4a53-9a4b-534947415000';
 export const SIGAP_BLE_CONTROL_UUID = '7d3f0002-7d3f-4a53-9a4b-534947415000';
 export const SIGAP_BLE_EVENTS_UUID = '7d3f0003-7d3f-4a53-9a4b-534947415000';
 
-export const BLE_FRAME_MAX_BYTES = 512;
+export const BLE_FRAME_MAX_BYTES = 2048;
 export const BLE_ATT_FRAME_BYTES = 20;
-const BLE_MAX_CHUNKS = 128;
+const BLE_MAX_CHUNKS = 512;
 const BLE_REQUEST_ID_MAX = 0xFFFFFFFF;
 export const BLE_REQUEST_FRAME_VERSION = 'F1';
 export const BLE_RESPONSE_FRAME_VERSION = 'R1';
@@ -54,6 +55,7 @@ export type BleCalibrationResponse = {
   sessionId: string;
   sensor: string | null;
   data: Record<string, string>;
+  gas?: Mq135GasResult;
   error?: string;
 };
 
@@ -193,10 +195,8 @@ export function encodeBleCommand(_id: string, command: string, payload: Record<s
       !normalizedBody.startsWith('GET_DEBUG ') && !normalizedBody.startsWith('SET_DEBUG_LEVEL ')) {
     throw new Error('BLE command tidak dikenal');
   }
-  // Firmware's bounded CAL line accepts up to 254 bytes. Keep a small
-  // margin for the terminating newline while allowing the full SHA-256
-  // preview identity to reach COMMIT.
-  if (body.startsWith('CAL ') && (body.length > 254 || /[\r\n]/u.test(body))) {
+  // Match the firmware 1024-byte CAL command workspace, including newline.
+  if (body.startsWith('CAL ') && (body.length > 1022 || /[\r\n]/u.test(body))) {
     throw new Error('Perintah kalibrasi tidak valid');
   }
   const encoded = new TextEncoder().encode(`${body}\n`);
@@ -211,6 +211,43 @@ function calibrationToken(value: string): string {
   return value;
 }
 
+function validateMq135NormalizedCriteria(parameters: Record<string, string | number | boolean>): void {
+  const required = [
+    'response_mode','samples','min_duration_ms','max_age_ms','max_variation_milli_percent','circuit_mv',
+    'divider_top_ohm','divider_bottom_ohm','topology','hardware_confirmed','reference_confirmed','hardware_identity',
+    'reference_environment','reference_kind','preparation_confirmed','preparation_method','heating_duration_us',
+  ];
+  const allowed = new Set([...required,'reference_temperature_centi_c','reference_humidity_centi_pct']);
+  if (required.some(key => !Object.hasOwn(parameters,key)) || Object.keys(parameters).some(key => !allowed.has(key)) ||
+      parameters.response_mode !== 'normalized' || !['operational','clean_air_confirmed'].includes(String(parameters.reference_kind)) ||
+      !['unknown','operator_declared'].includes(String(parameters.preparation_method)) ||
+      typeof parameters.hardware_identity !== 'string' || !/^[A-Za-z0-9_.:-]{1,31}$/u.test(parameters.hardware_identity) ||
+      typeof parameters.reference_environment !== 'string' || !/^[A-Za-z0-9_.:-]{1,31}$/u.test(parameters.reference_environment)) {
+    throw new Error('MQ135 normalized criteria invalid');
+  }
+  const integer = (key: string, min: number, max: number) => typeof parameters[key] === 'number' &&
+    Number.isSafeInteger(parameters[key]) && parameters[key] >= min && parameters[key] <= max;
+  if (!integer('samples',3,64) || !integer('min_duration_ms',1,Number.MAX_SAFE_INTEGER) ||
+      !integer('max_age_ms',1,Number.MAX_SAFE_INTEGER) || !integer('max_variation_milli_percent',1,100000) ||
+      !integer('circuit_mv',1,0xFFFFFFFF) || !integer('divider_top_ohm',1,0xFFFFFFFF) ||
+      !integer('divider_bottom_ohm',1,0xFFFFFFFF) || !integer('topology',1,2) ||
+      (parameters.topology !== 1 && parameters.topology !== 2) ||
+      !integer('hardware_confirmed',0,1) || !integer('reference_confirmed',0,1) ||
+      !integer('preparation_confirmed',0,1) || !integer('heating_duration_us',0,Number.MAX_SAFE_INTEGER) ||
+      (Object.hasOwn(parameters,'reference_temperature_centi_c') && !integer('reference_temperature_centi_c',-2147483648,2147483647)) ||
+      (Object.hasOwn(parameters,'reference_humidity_centi_pct') && !integer('reference_humidity_centi_pct',0,10000))) {
+    throw new Error('MQ135 normalized criteria invalid');
+  }
+  if (parameters.preparation_confirmed === 1 && parameters.preparation_method !== 'operator_declared') {
+    throw new Error('MQ135 preparation requires operator declaration');
+  }
+  const heatingDuration = parameters.heating_duration_us;
+  if (parameters.reference_kind === 'clean_air_confirmed' &&
+      (parameters.preparation_confirmed !== 1 || parameters.preparation_method !== 'operator_declared' || typeof heatingDuration !== 'number' || heatingDuration <= 172800000000)) {
+    throw new Error('MQ135 clean-air reference requires confirmed preparation and more than 48 hours of heating');
+  }
+}
+
 export function encodeCalibrationCommand(
   operation: BleCalibrationOperation,
   sensor?: string,
@@ -222,11 +259,12 @@ export function encodeCalibrationCommand(
   const tokens = [`CAL`, operation];
   if (sensor !== undefined) {
     calibrationToken(sensor);
-    if (!/^(?:hx711_(?:organic|inorganic|b3)|ultrasonic_(?:organic|inorganic|b3)|mq(?:4|135|7|8)|ds18b20_b3|sht31_(?:44|45))$/u.test(sensor)) {
+    if (!/^(?:hx711_(?:organic|inorganic|b3)|ultrasonic_(?:organic|inorganic|b3)|mq(?:4|135(?:_gas)?|7|8)|ds18b20_b3|sht31_(?:44|45))$/u.test(sensor)) {
       throw new Error('Sensor kalibrasi tidak dikenal');
     }
     tokens.push(sensor);
   }
+  if (operation === 'CRITERIA' && sensor === 'mq135_gas') validateMq135NormalizedCriteria(parameters);
   if (operation === 'CAPTURE') {
     const anchor = parameters.anchor;
     if (typeof anchor !== 'string' || !['tare', 'reference', 'empty', 'full'].includes(anchor)) {
@@ -327,7 +365,12 @@ export function decodeBleResponse(bytes: Uint8Array): BleResponse {
     const data: Record<string, string> = {};
     const encoded = dataField.slice(5);
     if (encoded.length > BLE_FRAME_MAX_BYTES) throw new Error('BLE calibration data too large');
-    if (encoded) {
+    let gas: Mq135GasResult | undefined;
+    if (values.get('sensor') === 'mq135_gas' && encoded.startsWith('{')) {
+      const parsed = parseMq135GasJson(encoded);
+      if (!parsed) throw new Error('MQ135 result invalid');
+      gas = parsed;
+    } else if (encoded) {
       for (const item of encoded.split(';')) {
         if (!item) continue;
         const separator = item.indexOf('=');
@@ -339,7 +382,7 @@ export function decodeBleResponse(bytes: Uint8Array): BleResponse {
     }
     const result: BleCalibrationResponse = {
       version: 'CAL1', operation, status, sessionId: values.get('session') ?? '',
-      sensor: values.get('sensor') || null, data,
+      sensor: values.get('sensor') || null, data, ...(gas ? { gas } : {}),
     };
     if (status === 'ERROR') result.error = data.error ?? 'CALIBRATION_REJECTED';
     return status === 'ACCEPTED' ? { ok: true, calibration: result } : { ok: false, error: result.error, calibration: result };

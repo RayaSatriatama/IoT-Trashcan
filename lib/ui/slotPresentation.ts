@@ -7,6 +7,7 @@ import type {
   SlotDTO,
 } from '../api/types';
 import { formatNullableMetric } from '../format';
+import { TRANSPORT_INPUTS, transportInputMembership } from './transportFuzzy';
 import type { MetricBarTone } from '../../components/MetricBar';
 
 export interface SlotMetricPresentation {
@@ -18,7 +19,7 @@ export interface SlotMetricPresentation {
 }
 
 export interface DecisionInputPresentation {
-  key: 'fill' | 'weight_utilization' | 'ogi' | 'accumulation_hours';
+  key: 'fill' | 'weight_utilization' | 'ogi' | 'accumulation_hours' | 'temperature';
   label: string;
   value: string;
   category: string;
@@ -72,7 +73,7 @@ const sensorParameterLabels: Record<string, string> = {
 };
 
 const relatedSensors: Record<string, string[]> = {
-  organic: ['Fill Sensor', 'HX711', 'MQ-135', 'MQ-4'],
+  organic: ['Fill Sensor', 'HX711', 'MQ-135', 'SHT31'],
   inorganic: ['Fill Sensor', 'HX711', 'MQ-135'],
   b3: ['Fill Sensor', 'HX711', 'MQ-135', 'MQ-7', 'MQ-8', 'DS18B20'],
 };
@@ -208,22 +209,40 @@ export function buildDerivedResearchRows(slot: ResearchSlotDTO): ResearchSensorP
   ];
 }
 
-export function buildDecisionInputRows(slot: SlotDTO, research?: ResearchSlotDTO | null): DecisionInputPresentation[] {
+
+export function buildDecisionInputRows(slot: SlotDTO, research?: ResearchSlotDTO | null, ammoniaPpm?: number | null, accumulationHours?: number | null, accumulationLabel?: string | null, temperatureC?: number | null): DecisionInputPresentation[] {
   const trace = research?.fis_trace;
-  const ogi = research?.derived_parameters.ogi ?? research?.normalized.ogi ?? slot.ogi;
-  const accumulation = research?.derived_parameters.accumulation_hours ?? research?.normalized.accumulation_hours ?? slot.accumulation_hours;
+  // A web NH3 estimate only fills the gas factor when the MCU publishes nothing.
+  const ogi = research?.derived_parameters.ogi ?? research?.normalized.ogi ?? slot.ogi ?? ammoniaPpm ?? null;
+  const accumulation = research?.derived_parameters.accumulation_hours ?? research?.normalized.accumulation_hours ?? slot.accumulation_hours ?? accumulationHours ?? null;
+  const temperature = research?.normalized.temperature ?? slot.temperature ?? temperatureC ?? null;
   const definitions: Array<[DecisionInputPresentation['key'], string, number | null | undefined, string]> = [
     ['fill', 'Keterisian', trace?.inputs?.fill ?? slot.fill, '%'],
     ['weight_utilization', 'Utilisasi berat', trace?.inputs?.weight_utilization ?? slot.weight_utilization, '%'],
-    ['ogi', 'Indeks gas', trace?.inputs?.ogi ?? ogi, ''],
+    ['ogi', 'Indeks gas', trace?.inputs?.ogi ?? ogi, trace?.inputs?.ogi != null || (research?.derived_parameters.ogi ?? research?.normalized.ogi ?? slot.ogi) != null ? '' : ' ppm'],
     ['accumulation_hours', 'Waktu akumulasi', trace?.inputs?.accumulation_hours ?? accumulation, ' jam'],
+    ['temperature', 'Suhu', temperature, ' °C'],
   ];
-  return definitions.map(([key, label, value, unit]) => ({
-    key,
-    label,
-    value: formatResearchNumber(value, unit),
-    category: formatMembershipCategory(trace?.memberships?.[key]),
-  }));
+  return definitions.map(([key, label, value, unit]) => {
+    const traced = trace?.memberships?.[key];
+    // Without an MCU trace, use the declared transport fuzzy sets for the two
+    // inputs this device publishes. Other inputs stay unavailable, not zero.
+    // The gas factor is the owner's "Amonia (NH3)" set, which the web can now feed.
+    const specId = key === 'ogi' ? 'ammonia' : key === 'accumulation_hours' ? 'accumulation' : key;
+    const spec = TRANSPORT_INPUTS.find(item => item.id === specId);
+    // Accumulation is already in hours, which is the unit the owner's final
+    // configuration assigns to this input, so it feeds the set unchanged.
+    const membershipValue = key === 'accumulation_hours'
+      ? (typeof accumulationHours === 'number' && Number.isFinite(accumulationHours) ? accumulationHours : null)
+      : trace?.inputs?.[key] ?? value;
+    const derived = !traced && spec ? transportInputMembership(spec, membershipValue) : null;
+    return {
+      key,
+      label,
+      value: key === 'accumulation_hours' && accumulationLabel ? accumulationLabel : formatResearchNumber(value, unit),
+      category: derived ? derived.set ?? '—' : formatMembershipCategory(traced),
+    };
+  });
 }
 
 export function formatDecisionSummary(summary: DeviceDecisionSummaryDTO | null | undefined) {
@@ -278,6 +297,17 @@ export function formatShortTime(value: string | null | undefined): string {
     hour12: false,
     timeZone: 'Asia/Jakarta',
   }).format(date).replace('.', ':');
+}
+
+/** Date and clock for the narrow Update tile, for example "16 Nov 08.31". */
+export function formatShortDateTime(value: string | null | undefined): string {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '—';
+  return new Intl.DateTimeFormat('id-ID', {
+    day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit',
+    hour12: false, timeZone: 'Asia/Jakarta',
+  }).format(date).replace(/\./g, ':');
 }
 
 export function formatResearchTimestamp(value: string | null | undefined): string {

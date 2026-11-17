@@ -11,6 +11,8 @@
 #include "provisioning/ble_provisioning.h"
 #include "calibration/calibration_session.h"
 #include "calibration/calibration_transport.h"
+#include "calibration/mq135_reference_parameters.h"
+#include "calibration/mq135_normalized_parameters.h"
 #include "debug/io_gate.h"
 
 namespace sigap::maintenance {
@@ -135,8 +137,28 @@ class CommandRouter final : public IMaintenanceCommandSink,
   bool cancel() noexcept override;
   bool history(calibration::CalibrationResultEnvelope& output) const noexcept override;
   bool rollback() noexcept override;
+  bool history(calibration::CalibrationTarget target, calibration::CalibrationResultEnvelope& output) const noexcept override;
+  bool rollback(calibration::CalibrationTarget target) noexcept override;
   bool append_calibration_preview_response(
       MaintenanceResponse& response) const noexcept;
+  bool configure_gas_reference(const calibration::Mq135GasCaptureCriteria& criteria,
+                                uint64_t now_us) noexcept;
+  bool append_mq135_gas_result(MaintenanceResponse& response, uint64_t now_us) const noexcept;
+  bool append_mq135_gas_result(MaintenanceResponse& response, const acquisition::Mq135Diagnostic& diagnostic) const noexcept;
+  bool gas_diagnostic(calibration::CalibrationTarget target, uint64_t now_us,
+                      acquisition::Mq135Diagnostic& output) const noexcept override;
+  // MQG2 normalized producer. Returns false when no normalized session or
+  // payload-v2 profile exists, leaving the legacy MQG1 path legitimate.
+  bool normalized_gas_diagnostic(calibration::CalibrationTarget target, uint64_t now_us,
+                                 acquisition::Mq135NormalizedDiagnostic& output) const noexcept;
+  bool append_mq135_normalized_result(MaintenanceResponse& response,
+                                      uint64_t now_us) const noexcept;
+  bool append_mq135_normalized_result(
+      MaintenanceResponse& response,
+      const acquisition::Mq135NormalizedDiagnostic& diagnostic) const noexcept;
+  bool configure_normalized_reference(
+      const calibration::Mq135NormalizedCaptureCriteria& criteria,
+      uint64_t now_us) noexcept;
 
  private:
   static bool field_from_text(const FixedText<64U>& text,
@@ -189,6 +211,9 @@ class CommandRouter final : public IMaintenanceCommandSink,
   CalibrationProposal calibration_proposal_{};
   uint64_t evidence_sequence_{0U};
   bool criteria_set_{false};
+  calibration::Mq135ReferenceParameters gas_parameters_{};
+  calibration::Mq135NormalizedParameters normalized_parameters_{};
+  bool normalized_mode_{false};
   calibration::CalibrationTarget pending_target_{calibration::CalibrationTarget::Hx711Organic};
   uint16_t criteria_samples_{0U};
   int64_t criteria_span_{0};

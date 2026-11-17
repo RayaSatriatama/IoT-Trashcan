@@ -256,6 +256,13 @@ class DeviceControlPoller final {
            command.expires_at_us != 0U && now_us <= command.expires_at_us;
   }
 
+  static bool requires_session(std::string_view operation) noexcept {
+    return operation == "set_criteria" || operation == "criteria" ||
+           operation == "capture" || operation == "validate" ||
+           operation == "preview" || operation == "commit" ||
+           operation == "cancel" || operation == "rollback";
+  }
+
   bool valid_recovered_result(const DeviceControlCommand& command,
                               const DeviceControlResult& result) const noexcept {
     // expires_at_us is relative to the uptime of the boot that accepted the
@@ -263,7 +270,9 @@ class DeviceControlPoller final {
     // must not discard an already executed result awaiting reconciliation.
     return command.command_id.size != 0U &&
            command.device_id.view() == device_id_text_.view() &&
-           command.operator_id.size != 0U && command.session_id.size != 0U &&
+           command.operator_id.size != 0U &&
+           (!requires_session(command.operation.view()) ||
+            command.session_id.size != 0U) &&
            command.request_hash.size != 0U && command.sensor_id.size != 0U &&
            command.operation.size != 0U &&
            command.payload_size <= command.payload.size() &&
@@ -305,8 +314,11 @@ class DeviceControlPoller final {
     }
     command_ = response.command;
     result_ = DeviceControlResult{};
+    const bool session_required = requires_session(command_.operation.view());
     if (!result_.command_id.assign(command_.command_id.view()) ||
-        !result_.session_id.assign(command_.session_id.view())) {
+        (session_required && command_.session_id.size == 0U) ||
+        (command_.session_id.size != 0U &&
+         !result_.session_id.assign(command_.session_id.view()))) {
       schedule_retry(now_us);
       return DeviceControlPollOutcome::Invalid;
     }

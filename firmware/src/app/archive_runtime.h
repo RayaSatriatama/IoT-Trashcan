@@ -239,6 +239,7 @@ class ArchiveRuntime final {
 
   uint64_t durable_records() const noexcept { return durable_records_; }
   uint64_t encode_failures() const noexcept { return encode_failures_; }
+  std::size_t queued_records() const noexcept { return worker_.queue().size(); }
   uint64_t gap_persistence_failures() const noexcept {
     return gap_persistence_failures_;
   }

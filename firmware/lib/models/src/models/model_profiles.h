@@ -25,6 +25,7 @@ enum class ModelTarget : uint32_t {
   FisInorganic = 102U,
   FisB3 = 103U,
   SafetyB3 = 104U,
+  SafetyOrganic = 105U,
 };
 
 inline constexpr uint32_t kSafetyB3TargetId{
@@ -48,12 +49,15 @@ enum class ModelInput : uint8_t {
   TemperatureC = 3U,
   Mq7AdcMillivolts = 4U,
   Mq8AdcMillivolts = 5U,
+  Ogi = 6U,
+  AccumulationHours = 7U,
 };
 
 enum class ModelUnit : uint8_t {
   Percent = 1U,
   Celsius = 2U,
   Millivolts = 3U,
+  Hours = 4U,
 };
 
 // Each model input has one physical unit. Keeping this mapping in the model
@@ -63,6 +67,8 @@ constexpr ModelUnit model_unit_for_input(ModelInput value) noexcept {
   switch (value) {
     case ModelInput::FillPercent:
     case ModelInput::WeightUtilizationPercent:
+    case ModelInput::Ogi:
+    case ModelInput::AccumulationHours:
       return ModelUnit::Percent;
     case ModelInput::TemperatureC:
       return ModelUnit::Celsius;

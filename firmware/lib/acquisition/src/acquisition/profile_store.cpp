@@ -1,4 +1,6 @@
 #include "acquisition/profile_store.h"
+#include "acquisition/mq135_gas.h"
+#include "acquisition/mq135_normalized.h"
 
 #include <algorithm>
 #include <cstring>
@@ -358,6 +360,58 @@ config::ConfigHash EncodedProfile::hash() const noexcept {
   return result;
 }
 
+bool ProfileCodec::encode(const Mq135GasProfile& p,
+                          EncodedProfile& output) const noexcept {
+  if (!p.valid()) return false;
+  Writer w(output.bytes);
+  const auto& e = p.electrical; const auto& s = p.reference; const auto& c = p.criteria;
+  if (!begin_payload(p.manifest, ProfileTarget::Mq135, ProfileKind::Calibration, output, w) ||
+      !w.u8(1) || !w.f32(e.circuit_mv) || !w.f32(e.module_load_ohm) ||
+      !w.f32(e.divider_top_ohm) || !w.f32(e.divider_bottom_ohm) ||
+      !w.u8(static_cast<uint8_t>(e.topology)) || !w.u8(e.verified) ||
+      !w.bytes(p.adc_hash.data(), p.adc_hash.size()) || !w.u32(p.adc_version) ||
+      !w.f32(p.r0_ohm) || !w.u8(s.ready) || !w.u16(s.count) || !w.u16(s.rejected) ||
+      !w.f32(s.median_ohm) || !w.f32(s.minimum_ohm) || !w.f32(s.maximum_ohm) ||
+      !w.f32(s.variation_percent) || !w.u64(s.first_us) || !w.u64(s.last_us) ||
+      !w.bytes(s.evidence_hash.data(), s.evidence_hash.size()) ||
+      !w.u16(c.samples) || !w.u64(c.min_duration_us) || !w.u64(c.max_age_us) ||
+      !w.f32(c.max_variation_percent) ||
+      !w.bytes(reinterpret_cast<const uint8_t*>(p.hardware_identity.data()), 32) ||
+      !w.bytes(reinterpret_cast<const uint8_t*>(p.reference_environment.data()), 32) ||
+      !w.i32(p.temperature_centi_c) || !w.u32(p.humidity_centi_percent) ||
+      !w.u64(p.heating_duration_us) || !w.u8(p.preparation_confirmed) ||
+      !w.provenance(p.manifest.provenance)) return false;
+  finish_encoded(output, w.offset()); return true;
+}
+
+bool ProfileCodec::decode(const EncodedProfile& encoded,
+                          Mq135GasProfile& p) const noexcept {
+  ParsedHeader h{};
+  if (!decode_key_header(encoded, kMq135GasKey, h, p)) return false;
+  Reader r(encoded.bytes.data() + h.payload_offset, h.payload_length);
+  uint8_t version{}, topology{}, verified{}, ready{}, prepared{};
+  auto& e = p.electrical; auto& s = p.reference; auto& c = p.criteria;
+  if (!r.u8(version) || version != 1 || !r.f32(e.circuit_mv) || !r.f32(e.module_load_ohm) ||
+      !r.f32(e.divider_top_ohm) || !r.f32(e.divider_bottom_ohm) ||
+      !r.u8(topology) || !r.u8(verified) ||
+      !r.bytes(p.adc_hash.data(), p.adc_hash.size()) || !r.u32(p.adc_version) ||
+      !r.f32(p.r0_ohm) || !r.u8(ready) || !r.u16(s.count) || !r.u16(s.rejected) ||
+      !r.f32(s.median_ohm) || !r.f32(s.minimum_ohm) || !r.f32(s.maximum_ohm) ||
+      !r.f32(s.variation_percent) || !r.u64(s.first_us) || !r.u64(s.last_us) ||
+      !r.bytes(s.evidence_hash.data(), s.evidence_hash.size()) ||
+      !r.u16(c.samples) || !r.u64(c.min_duration_us) || !r.u64(c.max_age_us) ||
+      !r.f32(c.max_variation_percent) ||
+      !r.bytes(reinterpret_cast<uint8_t*>(p.hardware_identity.data()), 32) ||
+      !r.bytes(reinterpret_cast<uint8_t*>(p.reference_environment.data()), 32) ||
+      !r.i32(p.temperature_centi_c) || !r.u32(p.humidity_centi_percent) ||
+      !r.u64(p.heating_duration_us) || !r.u8(prepared) ||
+      !r.provenance(p.manifest.provenance) || r.remaining() ||
+      verified > 1 || ready > 1 || prepared > 1) return false;
+  e.topology = static_cast<Mq135Topology>(topology); e.verified = verified != 0;
+  s.ready = ready != 0; p.preparation_confirmed = prepared != 0;
+  return p.valid();
+}
+
 bool ProfileCodec::encode(const Hx711Profile& profile,
                           EncodedProfile& output) const noexcept {
   Writer writer(output.bytes);
@@ -535,8 +589,11 @@ bool ProfileCodec::decode(const EncodedProfile& encoded,
       h.kind != ProfileKind::Calibration) return false;
   Reader reader(encoded.bytes.data() + h.payload_offset, h.payload_length);
   uint8_t has_rom{0U};
-  if (!reader.u8(has_rom) || !reader.bytes(output.rom.data(), output.rom.size()) ||
-      !reader.u8(output.resolution_bits) || !reader.i32(output.offset_centi_c)) return false;
+  if (!reader.u8(has_rom) || has_rom > 1U ||
+      !reader.bytes(output.rom.data(), output.rom.size()) ||
+      !reader.u8(output.resolution_bits) || !reader.i32(output.offset_centi_c)) {
+    return false;
+  }
   output.has_rom = has_rom != 0U;
   return read_optional_provenance(reader, output.manifest.provenance) &&
          reader.offset() == h.payload_length;
@@ -589,6 +646,17 @@ bool ProfileCodec::validate(const EncodedProfile& encoded,
   }
   switch (expected.kind) {
     case ProfileKind::Calibration: {
+      if (header.target == ProfileTarget::Mq135) {
+        // Payload discriminator 2 is the typed normalized baseline; payload 1
+        // keeps the legacy r0_ohm contract. Both share the SGP1 envelope.
+        if (mq135_normalized_payload(encoded)) {
+          Mq135NormalizedProfile normalized{};
+          return decode_mq135_normalized_profile(encoded, normalized) &&
+                 normalized.valid();
+        }
+        Mq135GasProfile profile{};
+        return decode(encoded, profile) && profile.valid();
+      }
       if (header.target >= ProfileTarget::Hx711Organic &&
           header.target <= ProfileTarget::Hx711B3) {
         Hx711Profile profile{};
@@ -658,9 +726,66 @@ bool ProfileCodec::validate(const EncodedProfile& encoded,
   return validate(encoded, ProfileKey{header.kind, header.target});
 }
 
+bool ProfileCodec::validate_template(const EncodedProfile& encoded,
+                                    ProfileKey expected) const noexcept {
+  ParsedHeader header{};
+  if (!parse_header(encoded, header) || !hash_matches(encoded) ||
+      !valid_key(header, expected) || header.version == 0U) return false;
+  switch (expected.kind) {
+    case ProfileKind::Calibration:
+      if (header.target >= ProfileTarget::Hx711Organic && header.target <= ProfileTarget::Hx711B3) {
+        Hx711Profile p{}; return decode(encoded, p) && std::isfinite(p.counts_per_kg);
+      }
+      if (header.target >= ProfileTarget::UltrasonicOrganic && header.target <= ProfileTarget::UltrasonicB3) {
+        UltrasonicProfile p{}; return decode(encoded, p) && std::isfinite(p.d_empty_mm) && std::isfinite(p.d_full_mm) && std::isfinite(p.echo_mm_per_us) && std::isfinite(p.overshoot_tolerance_mm);
+      }
+      if (header.target == ProfileTarget::Ds18b20B3) {
+        Ds18b20Profile p{}; return decode(encoded, p) && (!p.has_rom || (p.resolution_bits >= 9U && p.resolution_bits <= 12U));
+      }
+      if (header.target == ProfileTarget::Sht31_44 || header.target == ProfileTarget::Sht31_45) {
+        Sht31Profile p{}; return decode(encoded, p) && (p.address == 0U || p.address == 0x44U || p.address == 0x45U);
+      }
+      return false;
+    case ProfileKind::Adc: { MqAdcProfile p{}; return decode(encoded, p); }
+    case ProfileKind::Heater: { Mq7HeaterProfile p{}; return decode(encoded, p); }
+    case ProfileKind::Capacity: { OperationalCapacityProfile p{}; return decode(encoded, p) && std::isfinite(p.operational_capacity_kg); }
+    default: return false;
+  }
+}
+
 const ProfileCodec& ProfilePersistence::default_codec() noexcept {
   static const ProfileCodec codec{};
   return codec;
+}
+
+ProfilePersistence::StorageInspection ProfilePersistence::inspect_storage(
+    ProfileKey key) const noexcept {
+  ProfileActivationMetadata metadata{};
+  const auto activation = store_.read_activation(key, metadata);
+  EncodedProfile a{};
+  EncodedProfile b{};
+  const auto slot_a = store_.read_slot(key, ProfileSlot::A, a);
+  const auto slot_b = store_.read_slot(key, ProfileSlot::B, b);
+  if (activation == ProfileReadStatus::Error || slot_a == ProfileReadStatus::Error ||
+      slot_b == ProfileReadStatus::Error) return StorageInspection::Error;
+  if (activation == ProfileReadStatus::Invalid || slot_a == ProfileReadStatus::Invalid ||
+      slot_b == ProfileReadStatus::Invalid) return StorageInspection::Invalid;
+  if (activation == ProfileReadStatus::NotFound && slot_a == ProfileReadStatus::NotFound &&
+      slot_b == ProfileReadStatus::NotFound) return StorageInspection::Pristine;
+  return StorageInspection::Occupied;
+}
+
+ProfileReadStatus ProfilePersistence::previous(ProfileKey key, EncodedProfile& encoded) const noexcept {
+  ProfileActivationMetadata metadata{};
+  const auto status = store_.read_activation(key, metadata);
+  if (status != ProfileReadStatus::Found) return status;
+  if (!metadata.has_previous) return ProfileReadStatus::NotFound;
+  const auto slot_status = store_.read_slot(key, metadata.previous_slot, encoded);
+  if (slot_status != ProfileReadStatus::Found) return slot_status;
+  ParsedHeader header{};
+  return codec_.validate(encoded, key) && encoded.hash() == metadata.previous_hash &&
+    parse_header(encoded, header) && header.version == metadata.previous_version
+      ? ProfileReadStatus::Found : ProfileReadStatus::Invalid;
 }
 
 ProfileReadStatus ProfilePersistence::load(ProfileKey key,
@@ -822,6 +947,11 @@ void metadata_key(char* output, std::size_t capacity, ProfileKey key,
                 static_cast<unsigned>(copy));
 }
 
+void default_key(char* output, std::size_t capacity, ProfileKey key) noexcept {
+  const char family = key.kind == ProfileKind::Adc ? 'a' : key.kind == ProfileKind::Heater ? 'h' : key.kind == ProfileKind::Capacity ? 'p' : 'c';
+  std::snprintf(output, capacity, "d_%c%02u", family, static_cast<unsigned>(key.target));
+}
+
 void put_u32(uint8_t* bytes, std::size_t offset, uint32_t value) noexcept {
   bytes[offset] = static_cast<uint8_t>(value);
   bytes[offset + 1U] = static_cast<uint8_t>(value >> 8U);
@@ -881,6 +1011,41 @@ bool decode_metadata(const uint8_t* bytes, std::size_t size,
               metadata.integrity.begin());
   return metadata_integrity_valid(metadata);
 }
+}
+
+ProfileReadStatus NvsProfileStore::read_default(ProfileKey profile_key_id, EncodedProfile& encoded) const noexcept {
+  nvs_handle_t handle{};
+  const esp_err_t opened = nvs_open(kProfileNamespace, NVS_READONLY, &handle);
+  if (opened == ESP_ERR_NVS_NOT_FOUND) return ProfileReadStatus::NotFound;
+  if (opened != ESP_OK) return ProfileReadStatus::Error;
+  char key[12]{}; default_key(key, sizeof(key), profile_key_id);
+  std::size_t size = encoded.bytes.size();
+  const esp_err_t result = nvs_get_blob(handle, key, encoded.bytes.data(), &size);
+  nvs_close(handle);
+  if (result == ESP_ERR_NVS_NOT_FOUND) return ProfileReadStatus::NotFound;
+  if (result == ESP_ERR_NVS_INVALID_LENGTH) return ProfileReadStatus::Invalid;
+  if (result != ESP_OK) return ProfileReadStatus::Error;
+  if (size > encoded.bytes.size() || size == 0U) return ProfileReadStatus::Invalid;
+  encoded.size = size;
+  return ProfileCodec{}.validate_template(encoded, profile_key_id) ? ProfileReadStatus::Found : ProfileReadStatus::Invalid;
+}
+
+bool NvsProfileStore::write_default(ProfileKey profile_key_id, const EncodedProfile& encoded) noexcept {
+  const ProfileCodec codec{};
+  if (!codec.validate_template(encoded, profile_key_id)) return false;
+  nvs_handle_t handle{};
+  if (nvs_open(kProfileNamespace, NVS_READWRITE, &handle) != ESP_OK) return false;
+  char key[12]{}; default_key(key, sizeof(key), profile_key_id);
+  size_t existing_size = 0U;
+  const esp_err_t exists = nvs_get_blob(handle, key, nullptr, &existing_size);
+  if (exists == ESP_OK || exists != ESP_ERR_NVS_NOT_FOUND) { nvs_close(handle); return false; }
+  const esp_err_t set = nvs_set_blob(handle, key, encoded.bytes.data(), encoded.size);
+  const esp_err_t committed = set == ESP_OK ? nvs_commit(handle) : set;
+  nvs_close(handle);
+  if (committed != ESP_OK) return false;
+  EncodedProfile readback{};
+  return read_default(profile_key_id, readback) == ProfileReadStatus::Found &&
+         readback.size == encoded.size && std::memcmp(readback.bytes.data(), encoded.bytes.data(), encoded.size) == 0;
 }
 
 ProfileReadStatus NvsProfileStore::read_activation(
@@ -1050,6 +1215,8 @@ bool NvsProfileStore::write_activation(
     ProfileTarget, const ProfileActivationMetadata&) noexcept { return false; }
 bool NvsProfileStore::write_activation(
     ProfileKey, const ProfileActivationMetadata&) noexcept { return false; }
+ProfileReadStatus NvsProfileStore::read_default(ProfileKey, EncodedProfile&) const noexcept { return ProfileReadStatus::Error; }
+bool NvsProfileStore::write_default(ProfileKey, const EncodedProfile&) noexcept { return false; }
 #endif
 
 std::size_t MemoryProfileStore::target_index(ProfileTarget target) noexcept {
@@ -1060,6 +1227,7 @@ std::size_t MemoryProfileStore::target_index(ProfileTarget target) noexcept {
 std::size_t MemoryProfileStore::key_index(ProfileKey key) noexcept {
   const auto target = static_cast<uint32_t>(key.target);
   if (key.kind == ProfileKind::Calibration) {
+    if (target == 8U) return 17U;
     if (target >= 1U && target <= 6U) return target - 1U;
     if (target == 11U) return 6U;
     if (target == 12U) return 7U;
@@ -1072,6 +1240,47 @@ std::size_t MemoryProfileStore::key_index(ProfileKey key) noexcept {
     return 14U + target - 1U;
   }
   return 0U;
+}
+
+ProfileReadStatus MemoryProfileStore::read_default(
+    ProfileKey key, EncodedProfile& encoded) const noexcept {
+  if (has_pending_fault_ && pending_fault_ == Fault::ReadDefault) {
+    has_pending_fault_ = false;
+    return ProfileReadStatus::Error;
+  }
+  const auto index = key_index(key);
+  if (!defaults_present_[index]) return ProfileReadStatus::NotFound;
+  encoded = defaults_[index];
+  return ProfileCodec{}.validate_template(encoded, key)
+             ? ProfileReadStatus::Found
+             : ProfileReadStatus::Invalid;
+}
+
+bool MemoryProfileStore::write_default(ProfileKey key,
+                                       const EncodedProfile& encoded) noexcept {
+  const ProfileCodec codec{};
+  if (!codec.validate_template(encoded, key)) return false;
+  const auto index = key_index(key);
+  EncodedProfile existing{};
+  if (read_default(key, existing) != ProfileReadStatus::NotFound) return false;
+  if (has_pending_fault_ && pending_fault_ == Fault::WriteDefault) {
+    has_pending_fault_ = false;
+    return false;
+  }
+  defaults_[index] = encoded;
+  defaults_present_[index] = true;
+  if (has_pending_fault_ && pending_fault_ == Fault::CorruptAfterWrite) {
+    defaults_[index].bytes[0] ^= 0xffU;
+    has_pending_fault_ = false;
+  }
+  if (has_pending_fault_ && pending_fault_ == Fault::ReadDefaultback) {
+    has_pending_fault_ = false;
+    return false;
+  }
+  EncodedProfile readback{};
+  return read_default(key, readback) == ProfileReadStatus::Found &&
+         readback.size == encoded.size &&
+         std::memcmp(readback.bytes.data(), encoded.bytes.data(), encoded.size) == 0;
 }
 
 ProfileReadStatus MemoryProfileStore::read_activation(

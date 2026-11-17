@@ -221,7 +221,7 @@ func validCommandResult(operation string, status Status) bool {
 		return true
 	}
 	switch normalizedOperation(operation) {
-	case "start", "set_criteria", "criteria":
+	case "start", "set_criteria", "criteria", "evidence", "active_profile", "history":
 		return status == Accepted
 	case "capture":
 		return status == Capturing
@@ -262,6 +262,13 @@ func validSHA256(value string) bool {
 
 func (s *Store) Enqueue(ctx context.Context, req CreateRequest) (Command, error) {
 	req.Operation = normalizedOperation(req.Operation)
+	if req.SensorID == "mq135_gas" {
+		payload, err := mq135CommandPayload(req.Operation, req.Payload)
+		if err != nil {
+			return Command{}, err
+		}
+		req.Payload = payload
+	}
 	if s == nil || s.db == nil || strings.TrimSpace(req.ID) == "" || strings.TrimSpace(req.DeviceID) == "" || strings.TrimSpace(req.OperatorID) == "" || strings.TrimSpace(req.SensorID) == "" || req.Operation == "" || len(req.Payload) == 0 || len(req.Payload) > MaxPayloadBytes || req.ExpiresAt.IsZero() || !commandEnvelopeFits(req) {
 		return Command{}, ErrInvalid
 	}
@@ -424,6 +431,10 @@ func (s *Store) UpdateResult(ctx context.Context, deviceID, commandID string, re
 	}
 	if requiresSession(c.Operation) && (result.SessionID == "" || result.SessionID != c.SessionID) {
 		return Command{}, ErrConflict
+	}
+	if c.SensorID == "mq135_gas" && result.Status == Accepted &&
+		(c.Operation == "evidence" || c.Operation == "active_profile" || c.Operation == "history") && !validMq135GasResult(result.Payload) {
+		return Command{}, ErrInvalid
 	}
 	if result.Status == Committed && !validCommittedResult(result.Payload, c.SensorID) {
 		return Command{}, ErrInvalid

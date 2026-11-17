@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cstdio>
 
 namespace sigap::maintenance {
 namespace {
@@ -50,7 +51,7 @@ bool sensor_from_arguments(std::string_view arguments,
 bool target_from_sensor(std::string_view sensor,
                         calibration::CalibrationTarget& target) noexcept {
   constexpr std::array<std::pair<std::string_view,
-                                 calibration::CalibrationTarget>, 13U>
+                                 calibration::CalibrationTarget>, 14U>
       entries{{
           {"hx711_organic", calibration::CalibrationTarget::Hx711Organic},
           {"hx711_inorganic", calibration::CalibrationTarget::Hx711Inorganic},
@@ -65,6 +66,7 @@ bool target_from_sensor(std::string_view sensor,
           {"ds18b20_b3", calibration::CalibrationTarget::Ds18b20B3},
           {"sht31_44", calibration::CalibrationTarget::Sht31_44},
           {"sht31_45", calibration::CalibrationTarget::Sht31_45},
+          {"mq135_gas", calibration::CalibrationTarget::Mq135Gas},
       }};
   for (const auto& entry : entries) {
     if (entry.first == sensor) {
@@ -183,6 +185,10 @@ bool append_error_envelope(char* output, std::size_t capacity,
 }
 
 bool capability_data(std::string_view sensor, std::string_view& data) noexcept {
+  if (sensor == "mq135_gas") {
+    data = "schema=MQG1;references=hardware_identity:label,reference_environment:label;criteria=samples:count,min_duration_ms:ms,max_age_ms:ms,max_variation_milli_percent:milli_percent;engineering=circuit_mv:mV,module_load_ohm:ohm,divider_top_ohm:ohm,divider_bottom_ohm:ohm,topology:code,hardware_confirmed:bool,preparation_confirmed:bool,reference_confirmed:bool,reference_temperature_centi_c:centi_celsius,reference_humidity_centi_pct:centi_percent,heating_duration_us:us";
+    return true;
+  }
   if (sensor == "hx711_organic" || sensor == "hx711_inorganic" ||
       sensor == "hx711_b3") {
     data = "references=tare_counts:counts,reference_mass_mg:mg;criteria=samples:count,max_span_counts:counts";
@@ -279,6 +285,32 @@ bool CommandRouterBleCalibrationBackend::execute(
   const auto arguments = separator == std::string_view::npos
                              ? std::string_view{}
                              : command.substr(separator + 1U);
+  if (arguments == "mq135_gas" &&
+      (operation == "STATUS" || operation == "EVIDENCE" || operation == "ACTIVE_PROFILE" || operation == "HISTORY")) {
+    if (controller_ == nullptr || (io_gate_ != nullptr && io_gate_->active(debug::IoOwner::DebugHttp))) return false;
+    calibration::CalibrationCommandEnvelope request{};
+    request.device_id = controller_->device_id(); request.principal_id = 1;
+    request.transport = calibration::CalibrationTransport::Ble;
+    request.target = calibration::CalibrationTarget::Mq135Gas;
+    request.request_id = next_request_id_++; request.expires_at_us = clock_.now_us() + 1000000;
+    request.operation = operation == "ACTIVE_PROFILE" ? calibration::CalibrationOperation::GetActiveProfile
+      : operation == "HISTORY" ? calibration::CalibrationOperation::History : calibration::CalibrationOperation::GetEvidence;
+    calibration::CalibrationResultEnvelope result{};
+    const bool exec_ok = controller_->execute(request, clock_.now_us(), result);
+    std::printf("DBG ble exec=%d norm=%d legacy=%d status=%d\n", (int)exec_ok, (int)result.normalized_gas.present, (int)result.gas.present, (int)result.status);
+    if (!exec_ok) return false;
+    MaintenanceResponse payload{};
+    const bool emitted = result.normalized_gas.present
+                             ? router_.append_mq135_normalized_result(
+                                   payload, result.normalized_gas)
+                             : router_.append_mq135_gas_result(payload, result.gas);
+    std::printf("DBG ble emitted=%d size=%u\n", (int)emitted, (unsigned)payload.size());
+    return emitted &&
+      append_envelope(response, capacity, response_size, operation, true, "mq135_gas", session_id_, payload.view());
+  }
+  if (operation == "ROLLBACK" && arguments.substr(0, arguments.find(' ')) == "mq135_gas") {
+    return controller_ != nullptr && execute_controller(operation, arguments, response, capacity, response_size);
+  }
   if (controller_ != nullptr && operation != "STATUS" &&
       operation != "EVIDENCE" && operation != "CAPABILITIES" &&
       operation != "ACTIVE_PROFILE" && operation != "HISTORY" &&
@@ -487,9 +519,7 @@ bool CommandRouterBleCalibrationBackend::execute_controller(
   command.expires_at_us = clock_.now_us() + calibration::CalibrationSession::kSessionTimeoutUs;
   command.session_id = operation == "START" ? 0U : session_id_;
   command.payload_size = static_cast<uint16_t>(arguments.size());
-  for (std::size_t i = 0U; i < arguments.size() && i < command.payload_digest.size(); ++i) {
-    command.payload_digest[i] = static_cast<uint8_t>(arguments[i]);
-  }
+  command.payload_digest = telemetry_contract::sha256(arguments);
 
   if (operation == "START") {
     // Validate all first-time setup fields before starting the session. The
@@ -523,7 +553,12 @@ bool CommandRouterBleCalibrationBackend::execute_controller(
     command.operation = calibration::CalibrationOperation::SetCriteria;
     int64_t samples{0};
     if (!integer_argument(arguments, "samples", samples) || samples <= 0 || samples > UINT16_MAX) return false;
-    if (target >= calibration::CalibrationTarget::UltrasonicOrganic &&
+    if (target == calibration::CalibrationTarget::Mq135Gas) {
+      const auto at = arguments.find(' ');
+      calibration::Mq135ReferenceParameters values{};
+      if (at == std::string_view::npos || !values.arguments(arguments.substr(at + 1))) return false;
+      command.criteria = values.criteria();
+    } else if (target >= calibration::CalibrationTarget::UltrasonicOrganic &&
         target <= calibration::CalibrationTarget::UltrasonicB3) {
       int64_t span{0};
       if (!integer_argument(arguments, "max_span_mm", span) || span <= 0) return false;
@@ -571,8 +606,8 @@ bool CommandRouterBleCalibrationBackend::execute_controller(
     command.operation = calibration::CalibrationOperation::Validate;
   } else if (operation == "PREVIEW") {
     command.operation = calibration::CalibrationOperation::Preview;
-  } else if (operation == "COMMIT") {
-    command.operation = calibration::CalibrationOperation::Commit;
+  } else if (operation == "COMMIT" || operation == "ROLLBACK") {
+    command.operation = operation == "COMMIT" ? calibration::CalibrationOperation::Commit : calibration::CalibrationOperation::Rollback;
     uint64_t expected_version{0U};
     if (!u64_argument(arguments, "expected_profile_version", expected_version) ||
         expected_version == 0U ||
@@ -664,13 +699,13 @@ bool CommandRouterBleCalibrationBackend::execute_controller(
       cursor = end + 1U;
     }
   }
-  if (succeeded && (operation == "COMMIT" || operation == "CANCEL")) {
+  if (succeeded && (operation == "COMMIT" || operation == "ROLLBACK" || operation == "CANCEL")) {
     ble_session_owned_ = false;
   }
   const bool encoded = append_envelope(
       response, capacity, response_size, operation, succeeded, sensor,
       result_session, std::string_view(payload.data(), payload_size));
-  if (succeeded && (operation == "COMMIT" || operation == "CANCEL")) {
+  if (succeeded && (operation == "COMMIT" || operation == "ROLLBACK" || operation == "CANCEL")) {
     session_id_ = 0U;
     session_sensor_.fill('\0');
   }

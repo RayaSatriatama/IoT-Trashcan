@@ -9,7 +9,7 @@ std::size_t ProfileManager::index(ProfileTarget target) noexcept {
 bool ProfileManager::valid_key(ProfileKey key) noexcept {
   const auto target = static_cast<uint32_t>(key.target);
   if (key.kind == ProfileKind::Calibration) {
-    return (target >= 1U && target <= 6U) || (target >= 11U && target <= 13U);
+    return target == 8U || (target >= 1U && target <= 6U) || (target >= 11U && target <= 13U);
   }
   if (key.kind == ProfileKind::Adc) return target >= 7U && target <= 10U;
   if (key.kind == ProfileKind::Heater) return key.target == ProfileTarget::Mq7;
@@ -19,6 +19,7 @@ bool ProfileManager::valid_key(ProfileKey key) noexcept {
 std::size_t ProfileManager::key_index(ProfileKey key) noexcept {
   const auto target = static_cast<uint32_t>(key.target);
   if (key.kind == ProfileKind::Calibration) {
+    if (target == 8U) return 17U;
     if (target >= 1U && target <= 6U) return target - 1U;
     if (target == 11U) return 6U;
     if (target == 12U) return 7U;
@@ -59,6 +60,17 @@ ProfileRef ProfileManager::ref_from(const EncodedProfile& encoded) noexcept {
   return ref;
 }
 
+bool ProfileManager::previous(ProfileKey key, ActiveProfileSnapshot& output) const noexcept {
+  output = ActiveProfileSnapshot{};
+  if (!valid_key(key)) return false;
+  EncodedProfile encoded{};
+  const auto status = persistence_.previous(key, encoded);
+  if (status == ProfileReadStatus::NotFound) return true;
+  if (status != ProfileReadStatus::Found) return false;
+  output.encoded = encoded; output.ref = ref_from(encoded); output.present = output.ref.present;
+  return output.present;
+}
+
 bool ProfileManager::load(ProfileKey key) noexcept {
   const auto target_index = key_index(key);
   if (!valid_key(key) || target_index >= kTargetCount) return false;
@@ -78,6 +90,27 @@ bool ProfileManager::load(ProfileKey key) noexcept {
                               : ProfileManagerState::Unloaded;
   sync_runtime_key(key);
   return result == ProfileReadStatus::NotFound;
+}
+
+FactoryProfileInitResult ProfileManager::initialize_pristine(
+    ProfileKey key, const EncodedProfile& encoded) noexcept {
+  const auto target_index = key_index(key);
+  if (!valid_key(key) || target_index >= kTargetCount)
+    return FactoryProfileInitResult::Invalid;
+  if (states_[target_index] == ProfileManagerState::Draft ||
+      states_[target_index] == ProfileManagerState::Preview)
+    return FactoryProfileInitResult::Busy;
+  const auto inspection = persistence_.inspect_storage(key);
+  if (inspection == ProfilePersistence::StorageInspection::Error)
+    return FactoryProfileInitResult::Error;
+  if (inspection == ProfilePersistence::StorageInspection::Invalid)
+    return FactoryProfileInitResult::Invalid;
+  if (inspection != ProfilePersistence::StorageInspection::Pristine)
+    return FactoryProfileInitResult::Preserved;
+  if (!stage_import(key, encoded) || !validate(key) || !preview(key))
+    return FactoryProfileInitResult::Invalid;
+  if (!commit(key)) return FactoryProfileInitResult::CommitFailed;
+  return FactoryProfileInitResult::Initialized;
 }
 
 bool ProfileManager::ensure_loaded(ProfileTarget target) noexcept {
@@ -233,6 +266,9 @@ void ProfileManager::sync_runtime_target(ProfileTarget target) noexcept {
 
 void ProfileManager::sync_runtime_key(ProfileKey key) noexcept {
   if (runtime_profiles_ == nullptr || !valid_key(key)) return;
+  // Gas has no ADC runtime slot. Never decode its CALIBRATION envelope into
+  // the independent MQ135 ADC profile while synchronizing runtime bindings.
+  if (key.kind == ProfileKind::Calibration && key.target == ProfileTarget::Mq135) return;
   const auto target = key.target;
   const auto target_index = key_index(key);
   const bool present = active_present_[target_index];

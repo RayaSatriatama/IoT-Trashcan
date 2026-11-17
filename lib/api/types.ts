@@ -1,5 +1,15 @@
 import type { CALIBRATION_SENSOR_IDS } from './calibration';
 
+export type SensorConvertedValues = Record<string, number> & {
+  adc_mv?: number;
+  adc_pin_mv?: number;
+  sensor_ao_mv?: number;
+  adc_efuse_calibrated?: 1;
+};
+
+export interface SensorHistoryPoint { boot_id:string; sequence:string; monotonic_us:string; recorded_at:string|null; time_quality:string; quality:string; reason:string; sample_origin: 'PHYSICAL' | 'SIMULATED' | 'UNKNOWN'; raw:Record<string,number>|null; converted:SensorConvertedValues|null }
+export interface SensorHistoryPage { device_id:string; sensor_id:string; points:SensorHistoryPoint[]; next_cursor?:string; unavailable_reason?:string }
+
 export interface FirmwareMonitoringSample {
   sensor_id: typeof CALIBRATION_SENSOR_IDS[number];
   stream: string;
@@ -10,7 +20,7 @@ export interface FirmwareMonitoringSample {
   sample_origin: 'PHYSICAL' | 'SIMULATED' | 'UNKNOWN';
   origin_firmware_version: string | null;
   raw: Record<string, number> | null;
-  converted_value: Record<string, number> | null;
+  converted_value: SensorConvertedValues | null;
   fresh: boolean | null;
   age_ms: number | null;
   ordering_unknown: boolean;

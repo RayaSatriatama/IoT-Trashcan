@@ -7,9 +7,14 @@
 #include <string_view>
 
 #include "archive_store.h"
+#include "live_delivery_paths.h"
 #ifdef ARDUINO
+#include "usb_reclaim_debug.h"
+#include "recovery_index.h"
 #include <FS.h>
 #include <sys/stat.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #endif
 
 namespace sigap::storage {
@@ -419,6 +424,12 @@ class LittleFsArchiveStore : public IArchiveStore {
     bool conflict_seen = false;
     std::size_t archive_records = 0U;
     std::size_t fallback_lookups = 0U;
+    RecoveryPrefixIndex prefix_index(file.size());
+    Serial.printf("SIGAP_INDEX v=16 active=%u slots=%u index_bytes=%u file_bytes=%u\n",
+                  prefix_index.active() ? 1U : 0U,
+                  static_cast<unsigned>(prefix_index.capacity()),
+                  static_cast<unsigned>(prefix_index.bytes()),
+                  static_cast<unsigned>(file.size()));
 #ifdef ESP_PLATFORM
     const uint64_t archive_scan_started_us =
         static_cast<uint64_t>(esp_timer_get_time());
@@ -458,6 +469,32 @@ class LittleFsArchiveStore : public IArchiveStore {
       decode_identity(record);
       record.hash = telemetry_contract::sha256(std::string_view(
           reinterpret_cast<const char*>(record.bytes.data()), record.size));
+      if (prefix_index.active()) {
+        const auto result = prefix_index.observe(
+            record.identity, valid_bytes, [this, &file, &record](uint32_t offset) noexcept {
+              const auto position = file.position();
+              const bool read_ok = file.seek(offset) && read_record(file, lookup_record_);
+              const bool restored = file.seek(position);
+              if (!read_ok || !restored) return RecoveryPrefixIndex::Match::Error;
+              if (!same_identity(lookup_record_.identity, record.identity))
+                return RecoveryPrefixIndex::Match::Other;
+              return lookup_record_.hash == record.hash
+                         ? RecoveryPrefixIndex::Match::Exact
+                         : RecoveryPrefixIndex::Match::Conflict;
+            });
+        if (result == RecoveryPrefixIndex::Result::Error) {
+          file.close();
+          health_ = ArchiveHealth::Degraded;
+          return false;
+        }
+        if (result != RecoveryPrefixIndex::Result::Unique) {
+          if (result == RecoveryPrefixIndex::Result::Conflict) conflict_seen = true;
+          valid_bytes += record.size;
+          last_identity_ = record.identity;
+          have_last_identity_ = true;
+          continue;
+        }
+      }
       const auto* existing = find_index(record.identity);
       if (existing != nullptr) {
         if (*existing != record.hash) conflict_seen = true;
@@ -475,7 +512,7 @@ class LittleFsArchiveStore : public IArchiveStore {
           record.identity.boot_id.bytes == last_identity_.boot_id.bytes;
       const bool same_boot_sequence =
           same_device_boot && record.identity.sequence > last_identity_.sequence;
-      if (same_device_boot && !same_boot_sequence) {
+      if (!prefix_index.active() && same_device_boot && !same_boot_sequence) {
         ++fallback_lookups;
 #ifdef ESP_PLATFORM
         const bool trace_lookup = record_number <= 2U ||
@@ -585,11 +622,14 @@ class LittleFsArchiveStore : public IArchiveStore {
   bool reclaim_pending(const ArchiveIdentity& identity,
                        const config::ConfigHash& hash) noexcept override {
 #ifdef ARDUINO
+    UsbReclaimDebug trace;
     if (filesystem_ == nullptr || !recovery_ready_) return false;
+    trace.mark(1U);
     File source = filesystem_->open(path_, FILE_READ);
     if (!source) {
       return false;
     }
+    trace.mark(2U);
     bool found = false;
     while (source.available()) {
       if (!read_record(source, scan_record_)) {
@@ -610,6 +650,7 @@ class LittleFsArchiveStore : public IArchiveStore {
       if (source) source.close();
       return false;
     }
+    trace.mark(3U);
     char temporary[96]{};
     char backup[96]{};
     if (!make_related_path(temporary, sizeof(temporary), ".migrate") ||
@@ -617,8 +658,10 @@ class LittleFsArchiveStore : public IArchiveStore {
       source.close();
       return false;
     }
+    trace.mark(4U);
     uint64_t available_bytes{0U};
     const uint64_t source_bytes = source.size();
+    trace.source(source_bytes);
     const uint64_t removed_bytes = scan_record_.size;
     if (capacity_probe_ == nullptr ||
         !capacity_probe_(available_bytes, capacity_context_) ||
@@ -634,14 +677,18 @@ class LittleFsArchiveStore : public IArchiveStore {
       health_ = ArchiveHealth::Blocked;
       return false;
     }
+    trace.mark(5U);
     if (entry_exists(temporary)) (void)filesystem_->remove(temporary);
     File destination = filesystem_->open(temporary, FILE_WRITE);
-    if (!destination || !source.seek(0U, SeekSet)) {
+    if (!destination || !destination.setBufferSize(16U * 1024U) ||
+        !source.seek(0U, SeekSet)) {
       if (destination) destination.close();
       source.close();
       return false;
     }
+    trace.mark(6U);
     bool copied = true;
+    std::size_t copied_records{0U};
     while (source.available()) {
       if (!read_record(source, scan_record_)) {
         copied = false;
@@ -653,9 +700,12 @@ class LittleFsArchiveStore : public IArchiveStore {
         copied = false;
         break;
       }
+      if (++copied_records % 16U == 0U) vTaskDelay(1U);
     }
+    trace.mark(7U);
     destination.close();
     source.close();
+    trace.mark(8U);
     if (!copied || !filesystem_->rename(path_, backup) ||
         !filesystem_->rename(temporary, path_)) {
       if (entry_exists(temporary)) (void)filesystem_->remove(temporary);
@@ -663,10 +713,14 @@ class LittleFsArchiveStore : public IArchiveStore {
         (void)filesystem_->rename(backup, path_);
       }
       health_ = ArchiveHealth::Degraded;
+      trace.mark(9U);
       return false;
     }
     (void)filesystem_->remove(backup);
-    return recover();
+    trace.mark(9U);
+    const bool recovered = recover();
+    trace.result(recovered);
+    return recovered;
 #else
     (void)identity;
     (void)hash;
@@ -753,7 +807,8 @@ class LittleFsArchiveStore : public IArchiveStore {
   bool make_related_path(char* output, std::size_t size,
                          const char* suffix) const noexcept {
     if (output == nullptr || suffix == nullptr || path_ == nullptr) return false;
-    const int written = std::snprintf(output, size, "%s%s", path_, suffix);
+    const int written = std::snprintf(output, size, "%s%s", path_,
+        live_delivery::related_suffix(path_, suffix));
     return written > 0 && static_cast<std::size_t>(written) < size;
   }
   bool recovery_marker_path(char* output, std::size_t size) const noexcept {

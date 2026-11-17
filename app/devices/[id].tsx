@@ -6,13 +6,12 @@ import { Button, Card, Text, XStack, YStack, useMedia } from 'tamagui';
 import deviceArtwork from '../../assets/device_detail_three_bin_with_device_card.png';
 import { AppShell } from '../../components/AppShell';
 import { AppButton } from '../../components/AppButton';
-import { EmptyState } from '../../components/EmptyState';
 import { ErrorState } from '../../components/ErrorState';
 import { LoadingState } from '../../components/LoadingState';
 import { DescriptionHint, SectionHeader } from '../../components/SectionHeader';
 import { DeviceDecisionSummary } from '../../components/DeviceDecisionSummary';
 import { ResearchPanel } from '../../components/ResearchPanel';
-import { SlotCard } from '../../components/SlotCard';
+import { DeviceSlotCards } from '../../components/SlotCard';
 import { StatusBadge } from '../../components/StatusBadge';
 import { apiClient } from '../../lib/api/client';
 import { usePollingResource } from '../../lib/api/hooks';
@@ -33,9 +32,7 @@ import { DebugViewController } from '../../lib/debug/poller';
 import { DeviceDebugPanel } from '../../components/device/DeviceDebugPanel';
 import { SensorSelector } from '../../components/device/SensorSelector';
 import { DeviceToolLauncher } from '../../components/device/DeviceToolLauncher';
-import { FirmwareSensorsPanel } from '../../components/device/FirmwareSensorsPanel';
-import { FirmwareMonitoringPanel } from '../../components/device/FirmwareMonitoringPanel';
-import { FirmwareResultsPanel } from '../../components/device/FirmwareResultsPanel';
+import { useOrganicDecision } from '../../lib/ui/useSlotDecision';
 
 export const DEVICE_STREAM_LABELS = { organic: 'Organik', inorganic: 'Anorganik', b3: 'B3' } as const;
 export const DEVICE_UNAVAILABLE_COPY = 'Belum tersedia';
@@ -88,7 +85,7 @@ export default function DeviceDetailRoute() {
   const params = useLocalSearchParams<{ id: string | string[] }>();
   const id = Array.isArray(params.id) ? params.id[0] : params.id;
   const loader = useCallback((signal: AbortSignal) => apiClient.fetchDevice(id ?? '', signal), [id]);
-  const { data, loading, error, stale, retry } = usePollingResource<DeviceDetail>(loader);
+  const { data, loading, error, stale, retry } = usePollingResource<DeviceDetail>(loader, 1_000);
   const researchLoader = useCallback((signal: AbortSignal) => apiClient.fetchResearch(id ?? '', signal), [id]);
   const { data: researchData, loading: researchLoading, error: researchError, retry: retryResearch } = usePollingResource<ResearchResponse>(researchLoader);
   const [selectedSensorIndex, setSelectedSensorIndex] = useState(0);
@@ -98,19 +95,23 @@ export default function DeviceDetailRoute() {
   const wifiController = useMemo(() => new WifiSettingsController(owner), [owner]);
   const peer = useSyncExternalStore(owner.subscribe, owner.getSnapshot, owner.getSnapshot);
   useEffect(() => () => { wifiController.dispose(); owner.dispose(); }, [wifiController, owner]);
+  const firmwareResults = data?.firmware_results ?? [];
+  // The four configured inputs (fill, weight utilization, NH3 ppm, accumulation)
+  // drive the decision whenever the MCU publishes none of its own.
+  const organicDecision = useOrganicDecision(id ?? '', data?.id === id ? data?.firmware_monitoring ?? [] : []);
 
   const handleNavigate = useCallback((path: string) => router.push(path as never), [router]);
 
-  return <AppShell title={data?.device_code ?? 'Detail device'} subtitle="Pantau kondisi perangkat dan metrik per slot." activePath="/locations" onNavigate={handleNavigate}><YStack gap="$6" paddingBottom="$6"><AppButton variant="ghost" size="sm" onPress={() => router.back()} ariaLabel="Kembali ke lokasi"><ArrowLeft size={17} color="#0A9B62" strokeWidth={2.3} aria-hidden={true} /> Kembali</AppButton>
+  return <AppShell title={optionalText(data?.placement_label) ?? 'Detail device'} subtitle="Pantau kondisi perangkat dan metrik per slot." activePath="/locations" onNavigate={handleNavigate}><YStack gap="$6" paddingBottom="$6"><AppButton variant="ghost" size="sm" onPress={() => router.back()} ariaLabel="Kembali ke lokasi"><ArrowLeft size={17} color="#0A9B62" strokeWidth={2.3} aria-hidden={true} /> Kembali</AppButton>
     {stale && data ? <StaleNotice onRetry={retry} /> : null}{loading && !data ? <LoadingState label="Memuat detail device" rows={4} /> : null}{!data && !loading && error ? <ErrorState onRetry={retry} /> : null}
     {data ? <>
-      <Card borderWidth={1} borderColor="$primarySoft" backgroundColor="$surface" borderRadius="$5" padding={media.tablet ? '$6' : '$4'} overflow="hidden"><XStack alignItems="center" gap={media.tablet ? '$5' : '$4'} flexWrap="wrap"><YStack flex={1} minWidth={250} gap="$3"><Text color="$primary" fontSize="$2" fontWeight="800">DETAIL PERANGKAT</Text><Text color="$color" {...textStyles.pageTitle} $compact={textStyles.pageTitleCompact} letterSpacing={-1}>{data.device_code}</Text>{optionalText(data.placement_label) ? <Text color="$colorMuted" fontSize="$3">{optionalText(data.placement_label)}</Text> : null}<XStack gap="$2" flexWrap="wrap" alignItems="center"><StatusBadge status={data.status ?? (data.online_state === 'Offline' ? 'Offline' : null)} />{data.online_state === 'Offline' && data.status && data.status !== 'Offline' ? <StatusBadge status="Offline" /> : null}<Text color="$colorMuted" fontSize="$2">Terakhir terlihat: {formatTimestamp(data.last_seen)}</Text></XStack></YStack><DeviceDecisionSummary summary={researchData?.decision_summary} />{media.tablet ? <RNImage source={deviceArtwork} accessibilityLabel="Ilustrasi tiga jenis tempat sampah" resizeMode="contain" style={{ width: 260, height: 140, maxWidth: '100%' }} /> : null}</XStack></Card>
-      <YStack gap="$3"><SectionHeader title="Kondisi slot" description="Pantau keterisian, kapasitas, dan kondisi setiap jenis sampah." />{data.slots.length ? <XStack gap="$3" flexWrap="wrap">{data.slots.map((slot) => <YStack key={slot.stream} width={media.wide ? 'calc(33.333% - 8px)' : media.tablet ? 'calc(50% - 6px)' : '100%'}><SlotCard slot={slot} research={researchData?.slots.find((item) => item.stream === slot.stream)} /></YStack>)}</XStack> : <EmptyState title="Belum ada data slot" description="Metrik slot akan muncul setelah device mengirimkan pembacaan terbaru." />}</YStack>
-      <ResearchPanel key={id ?? 'research'} data={researchData} loading={researchLoading} error={researchError} onRetry={retryResearch} />
-      <FirmwareMonitoringPanel key={`monitoring:${data.device_code}`} samples={data.firmware_monitoring} />
-      <FirmwareResultsPanel results={data.firmware_results} />
+      <Card borderWidth={1} borderColor="$primarySoft" backgroundColor="$surface" borderRadius="$5" padding={media.tablet ? '$6' : '$4'} overflow="hidden"><XStack alignItems="center" gap={media.tablet ? '$5' : '$4'} flexWrap="wrap"><YStack flex={1} minWidth={250} gap="$3"><Text color="$primary" fontSize="$2" fontWeight="800">DETAIL PERANGKAT</Text><Text color="$color" {...textStyles.pageTitle} $compact={textStyles.pageTitleCompact} letterSpacing={-1}>{optionalText(data.placement_label) ?? 'Perangkat'}</Text><XStack gap="$2" flexWrap="wrap" alignItems="center">{data.status ? <StatusBadge status={data.status} /> : null}{data.online_state === 'Offline' ? <StatusBadge status="Offline" /> : null}{data.last_seen ? <Text color="$colorMuted" fontSize="$2">Terakhir terlihat: {formatTimestamp(data.last_seen)}</Text> : null}</XStack></YStack><DeviceDecisionSummary summary={researchData?.decision_summary} firmwareResults={firmwareResults} webScore={organicDecision.decision.score} webStatus={organicDecision.decision.status} />{media.tablet ? <RNImage source={deviceArtwork} accessibilityLabel="Ilustrasi tiga jenis tempat sampah" resizeMode="contain" style={{ width: 260, height: 140, maxWidth: '100%' }} /> : null}</XStack></Card>
+      <YStack gap="$3">
+        <SectionHeader title="Kondisi slot" />
+        <DeviceSlotCards firmwareResults={firmwareResults} slots={data.slots} researchSlots={researchData?.slots} monitoring={data.id === id ? data.firmware_monitoring ?? [] : []} deviceId={id ?? ''} cardWidth={media.wide ? 'calc(33.333% - 8px)' : media.tablet ? 'calc(50% - 6px)' : '100%'} />
+      </YStack>
+      <ResearchPanel key={id ?? 'research'} data={researchData} firmwareResults={data.firmware_results} deviceId={id ?? ''} monitoring={data.id === id ? data.firmware_monitoring ?? [] : []} monitoringError={stale || Boolean(error)} loading={researchLoading} error={researchError} onRetry={retryResearch} />
       <DeviceDetailSessionView owner={owner} controller={wifiController} deviceCode={data.device_code} bleDeviceId={data.ble_device_id ?? null} sensorId={selectedSensor} onSensorChange={sensor => { if (!owner.getSnapshot().controlActive) setSelectedSensorIndex(CALIBRATION_SENSOR_IDS.indexOf(sensor)); }} diagnostic={selectedDiagnostic} diagnosticLoading={researchLoading} diagnosticError={researchError?.message ?? null} onDiagnosticRefresh={retryResearch} />
-      <FirmwareSensorsPanel key={`firmware-sensors:${data.device_code}`} deviceCode={data.device_code} />
     </> : null}
   </YStack></AppShell>;
 }

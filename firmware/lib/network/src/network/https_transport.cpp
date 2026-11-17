@@ -5,6 +5,7 @@
 #include <limits>
 
 #ifdef ARDUINO
+#include <Arduino.h>
 #include <HTTPClient.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
@@ -12,6 +13,21 @@
 
 namespace sigap::network {
 namespace {
+
+#ifdef ARDUINO
+// Phases: 1=request validation, 2=readiness bitmask, 3=http.begin,
+// 4=POST status, 5=ACK decoded. Readiness bits: configured=1, connected=2,
+// CA present=4. Keep fields numeric; never emit request/response contents.
+void log_http_diagnostic(uint8_t phase, int code, uint16_t records,
+                         std::size_t body_bytes, bool ack,
+                         bool truncated) noexcept {
+  Serial.printf("SIGAP_HTTP phase=%u code=%d records=%u body_bytes=%u ack=%u truncated=%u\n",
+                static_cast<unsigned>(phase), code,
+                static_cast<unsigned>(records),
+                static_cast<unsigned>(body_bytes), ack ? 1U : 0U,
+                truncated ? 1U : 0U);
+}
+#endif
 
 std::size_t bounded_c_string(const char* value, std::size_t capacity) noexcept {
   if (value == nullptr) return capacity + 1U;
@@ -336,21 +352,23 @@ TransportResult WiFiArchiveHttpTransport::start_batch(
 
 TransportResult WiFiArchiveHttpTransport::poll_response(
     NetworkHttpResponse& response) noexcept {
-  if (completion_ == nullptr ||
-      xSemaphoreTake(completion_, 0U) != pdTRUE) {
-    if (state_mutex_ != nullptr &&
-        xSemaphoreTake(state_mutex_, 0U) == pdTRUE) {
-      const auto state = task_state_;
-      xSemaphoreGive(state_mutex_);
-      return state == TaskState::Running ? TransportResult::Pending
-                                         : TransportResult::Failed;
-    }
-    return TransportResult::Failed;
+  if (completion_ == nullptr) return TransportResult::Failed;
+  if (xSemaphoreTake(completion_, 0U) != pdTRUE) {
+    if (state_mutex_ == nullptr) return TransportResult::Failed;
+    // Publication and mutex contention must not retire an outstanding request.
+    if (xSemaphoreTake(state_mutex_, 0U) != pdTRUE) return TransportResult::Pending;
+    const auto state = task_state_;
+    xSemaphoreGive(state_mutex_);
+    return state == TaskState::Idle ? TransportResult::Failed
+                                    : TransportResult::Pending;
   }
-  if (state_mutex_ == nullptr ||
-      xSemaphoreTake(state_mutex_, 0U) != pdTRUE) {
+  if (state_mutex_ == nullptr) {
     (void)xSemaphoreGive(completion_);
     return TransportResult::Failed;
+  }
+  if (xSemaphoreTake(state_mutex_, 0U) != pdTRUE) {
+    (void)xSemaphoreGive(completion_);
+    return TransportResult::Pending;
   }
   if (task_state_ != TaskState::Complete) {
     xSemaphoreGive(state_mutex_);
@@ -397,28 +415,44 @@ TransportResult WiFiArchiveHttpTransport::post_batch(
   response = NetworkHttpResponse{};
   const HttpPostRequest request{
       std::string_view(endpoint_.data()), bearer_token, exact_body, record_count};
-  if (!valid_archive_http_request(request)) return TransportResult::Failed;
-  if (!configured_ || !connected() || ca_certificate_ == nullptr) {
+  if (!valid_archive_http_request(request)) {
+    log_http_diagnostic(1U, 0, record_count, 0U, false, false);
+    return TransportResult::Failed;
+  }
+  const bool is_connected = configured_ && connected();
+  if (!configured_ || !is_connected || ca_certificate_ == nullptr) {
+    const int readiness = (configured_ ? 1 : 0) | (is_connected ? 2 : 0) |
+                          (ca_certificate_ != nullptr ? 4 : 0);
+    log_http_diagnostic(2U, readiness, record_count, 0U, false, false);
     return TransportResult::Failed;
   }
 
   std::array<char, kMaxAuthorizationBytes> authorization{};
   constexpr std::string_view prefix{"Bearer "};
   if (prefix.size() + bearer_token.size() >= authorization.size()) {
+    log_http_diagnostic(1U, 0, record_count, 0U, false, false);
     return TransportResult::Failed;
   }
   std::copy(prefix.begin(), prefix.end(), authorization.begin());
   std::copy(bearer_token.begin(), bearer_token.end(),
             authorization.begin() + prefix.size());
 
+  const uint32_t effective_timeout_ms = timeout_ms == 0U ? kHttpTimeoutMs :
+      std::min<uint32_t>(timeout_ms, std::numeric_limits<uint16_t>::max());
+  const uint32_t timeout_seconds = effective_timeout_ms / 1000U +
+                                  (effective_timeout_ms % 1000U != 0U ? 1U : 0U);
   WiFiClientSecure client;
   client.setCACert(ca_certificate_);
-  client.setTimeout(kHttpTimeoutMs);
+  // Secure-client timeouts are seconds; HTTPClient timeouts are milliseconds.
+  client.setTimeout(timeout_seconds);
+  client.setHandshakeTimeout(timeout_seconds);
   HTTPClient http;
   if (!http.begin(client, endpoint_.data())) {
+    log_http_diagnostic(3U, 0, record_count, 0U, false, false);
     return TransportResult::Failed;
   }
-  http.setTimeout(timeout_ms == 0U ? kHttpTimeoutMs : timeout_ms);
+  http.setConnectTimeout(static_cast<int32_t>(effective_timeout_ms));
+  http.setTimeout(static_cast<uint16_t>(effective_timeout_ms));
   http.addHeader("Content-Type", "application/json");
   http.addHeader("Authorization", authorization.data());
   const char* response_headers[] = {"Retry-After"};
@@ -427,6 +461,7 @@ TransportResult WiFiArchiveHttpTransport::post_batch(
       const_cast<uint8_t*>(reinterpret_cast<const uint8_t*>(request.exact_body.data())),
       request.exact_body.size());
   response.status_code = status;
+  log_http_diagnostic(4U, status, record_count, 0U, false, false);
   if (status <= 0) {
     http.end();
     return TransportResult::Timeout;
@@ -447,8 +482,7 @@ TransportResult WiFiArchiveHttpTransport::post_batch(
                                           : 0U;
     if (expected_size > response_body_.size()) response.body_truncated = true;
     while (!response.body_truncated &&
-           millis() - started_ms <
-               (timeout_ms == 0U ? kHttpTimeoutMs : timeout_ms)) {
+           millis() - started_ms < effective_timeout_ms) {
       if (has_content_length && response_body_size_ >= expected_size) break;
       if (response_body_size_ == response_body_.size()) {
         if (stream->available() > 0) response.body_truncated = true;
@@ -489,6 +523,8 @@ TransportResult WiFiArchiveHttpTransport::post_batch(
       status >= 200 && status < 300 &&
       decode_archive_ack(std::string_view(response_body_.data(), response_body_size_),
                          response.ack);
+  log_http_diagnostic(5U, status, record_count, response.body_size,
+                      response.ack_present, response.body_truncated);
   http.end();
   return TransportResult::Response;
 }

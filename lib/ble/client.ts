@@ -452,7 +452,11 @@ export class BleProvisioningClient {
     return this.calibration('HISTORY', sensor);
   }
 
-  async calibrationRollback(sensor: string, version: string): Promise<BleCalibrationResponse> {
+  async calibrationRollback(sensor: string, version: string, expectedHash?: string): Promise<BleCalibrationResponse> {
+    if (sensor === 'mq135_gas') {
+      if (!expectedHash) throw new Error('Identitas profil aktif wajib tersedia.');
+      return this.calibration('ROLLBACK',sensor,{expected_profile_version:version,expected_profile_hash:expectedHash});
+    }
     return this.calibration('ROLLBACK', sensor, { version });
   }
 

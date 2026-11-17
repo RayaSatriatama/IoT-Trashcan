@@ -36,14 +36,16 @@ constexpr bool valid_input(ModelInput value) noexcept {
     case ModelInput::WeightUtilizationPercent:
     case ModelInput::TemperatureC:
     case ModelInput::Mq7AdcMillivolts:
-    case ModelInput::Mq8AdcMillivolts: return true;
+    case ModelInput::Mq8AdcMillivolts:
+    case ModelInput::Ogi:
+    case ModelInput::AccumulationHours: return true;
   }
   return false;
 }
 
 constexpr bool valid_unit(ModelUnit value) noexcept {
   return value == ModelUnit::Percent || value == ModelUnit::Celsius ||
-         value == ModelUnit::Millivolts;
+         value == ModelUnit::Millivolts || value == ModelUnit::Hours;
 }
 
 constexpr bool valid_hazard(HazardSignal value) noexcept {
@@ -177,7 +179,7 @@ bool valid_model_key(ModelProfileKey key) noexcept {
            key.target == ModelTarget::FisB3;
   }
   return key.kind == acquisition::ProfileKind::Safety &&
-         key.target == ModelTarget::SafetyB3;
+         (key.target == ModelTarget::SafetyB3 || key.target == ModelTarget::SafetyOrganic);
 }
 
 ModelValidationResult validate_fis_model(

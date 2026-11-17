@@ -7,7 +7,7 @@ afterEach(() => {
 });
 
 describe('PollingController', () => {
-  it('polls every 20 seconds and aborts the previous request before replacement', async () => {
+  it('polls every 2.5 seconds without aborting a slow in-flight request', async () => {
     vi.useFakeTimers();
     const signals: AbortSignal[] = [];
     const loader = vi.fn((signal: AbortSignal) => {
@@ -18,15 +18,16 @@ describe('PollingController', () => {
 
     controller.start();
     expect(loader).toHaveBeenCalledTimes(1);
-    await vi.advanceTimersByTimeAsync(19_999);
+    await vi.advanceTimersByTimeAsync(2_499);
     expect(loader).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(1);
-    expect(loader).toHaveBeenCalledTimes(2);
-    expect(signals[0].aborted).toBe(true);
+    expect(loader).toHaveBeenCalledTimes(1);
+    expect(signals[0].aborted).toBe(false);
     controller.stop();
+    expect(signals[0].aborted).toBe(true);
   });
 
-  it('replaces an active request when manually refreshed', async () => {
+  it('does not overlap a slow request when manually refreshed', async () => {
     const signals: AbortSignal[] = [];
     const loader = vi.fn((signal: AbortSignal) => {
       signals.push(signal);
@@ -35,8 +36,8 @@ describe('PollingController', () => {
     const controller = new PollingController(loader, vi.fn(), vi.fn());
     controller.start();
     void controller.refresh();
-    expect(loader).toHaveBeenCalledTimes(2);
-    expect(signals[0].aborted).toBe(true);
+    expect(loader).toHaveBeenCalledTimes(1);
+    expect(signals[0].aborted).toBe(false);
     controller.stop();
   });
 

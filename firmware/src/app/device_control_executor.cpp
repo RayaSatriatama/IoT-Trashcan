@@ -101,7 +101,7 @@ uint64_t ApplicationCalibrationExecutor::stable_id(std::string_view value) noexc
 
 bool ApplicationCalibrationExecutor::sensor_target(
     std::string_view value, calibration::CalibrationTarget& output) noexcept {
-  constexpr std::array<std::pair<std::string_view, calibration::CalibrationTarget>, 13U>
+  constexpr std::array<std::pair<std::string_view, calibration::CalibrationTarget>, 14U>
       entries{{
           {"hx711_organic", calibration::CalibrationTarget::Hx711Organic},
           {"hx711_inorganic", calibration::CalibrationTarget::Hx711Inorganic},
@@ -116,6 +116,7 @@ bool ApplicationCalibrationExecutor::sensor_target(
           {"ds18b20_b3", calibration::CalibrationTarget::Ds18b20B3},
           {"sht31_44", calibration::CalibrationTarget::Sht31_44},
           {"sht31_45", calibration::CalibrationTarget::Sht31_45},
+          {"mq135_gas", calibration::CalibrationTarget::Mq135Gas},
       }};
   for (const auto& entry : entries) {
     if (entry.first == value) {
@@ -356,6 +357,10 @@ bool ApplicationCalibrationExecutor::execute(
   else if (operation == "preview") envelope.operation = calibration::CalibrationOperation::Preview;
   else if (operation == "commit") envelope.operation = calibration::CalibrationOperation::Commit;
   else if (operation == "cancel") envelope.operation = calibration::CalibrationOperation::Cancel;
+  else if (operation == "evidence") envelope.operation = calibration::CalibrationOperation::GetEvidence;
+  else if (operation == "active_profile") envelope.operation = calibration::CalibrationOperation::GetActiveProfile;
+  else if (operation == "history") envelope.operation = calibration::CalibrationOperation::History;
+  else if (operation == "rollback") envelope.operation = calibration::CalibrationOperation::Rollback;
   else return false;
 
   const std::string_view payload(reinterpret_cast<const char*>(command.payload.data()), command.payload_size);
@@ -384,7 +389,86 @@ bool ApplicationCalibrationExecutor::execute(
     int64_t samples{0};
     int64_t span{0};
     if (!json_number(payload, "samples", samples) || samples <= 0 || samples > UINT16_MAX) return false;
-    if (target >= calibration::CalibrationTarget::UltrasonicOrganic && target <= calibration::CalibrationTarget::UltrasonicB3) {
+    if (target == calibration::CalibrationTarget::Mq135Gas) {
+      std::string_view response_mode{};
+      const bool has_response_mode = json_string(payload, "response_mode", response_mode);
+      if (has_response_mode && response_mode == "normalized") {
+        calibration::Mq135NormalizedParameters parameters{};
+        constexpr std::array<std::string_view, 16U> required_keys{{
+            "response_mode", "samples", "min_duration_ms", "max_age_ms",
+            "max_variation_milli_percent", "circuit_mv", "divider_top_ohm",
+            "divider_bottom_ohm", "topology", "hardware_confirmed",
+            "reference_confirmed", "hardware_identity", "reference_environment",
+            "reference_kind", "preparation_confirmed", "preparation_method"}};
+        for (const auto key : required_keys) {
+          std::string_view value{};
+          char number[32]{};
+          if (key == "response_mode" || key == "hardware_identity" ||
+              key == "reference_environment" || key == "reference_kind" ||
+              key == "preparation_method") {
+            if (!json_string(payload, key, value)) return false;
+          } else {
+            int64_t integer{};
+            if (!json_number(payload, key, integer)) return false;
+            const auto converted = std::to_chars(number, number + sizeof(number), integer);
+            if (converted.ec != std::errc{}) return false;
+            value = std::string_view(number, converted.ptr - number);
+          }
+          const auto status = parameters.set(key, value);
+          if (status != calibration::Mq135NormalizedParameters::Status::Incomplete &&
+              status != calibration::Mq135NormalizedParameters::Status::Complete) {
+            return false;
+          }
+        }
+        int64_t heating_duration_us{0};
+        if (!json_number(payload, "heating_duration_us", heating_duration_us) ||
+            heating_duration_us < 0) return false;
+        {
+          char number[32]{};
+          const auto converted = std::to_chars(number, number + sizeof(number),
+                                               heating_duration_us);
+          if (converted.ec != std::errc{}) return false;
+          const auto status = parameters.set(
+              "heating_duration_us", std::string_view(number, converted.ptr - number));
+          if (status != calibration::Mq135NormalizedParameters::Status::Complete) {
+            return false;
+          }
+        }
+        // Optional declared environment keys keep independent presence.
+        for (const auto key : {"reference_temperature_centi_c",
+                               "reference_humidity_centi_pct"}) {
+          int64_t integer{};
+          if (!json_number(payload, key, integer)) continue;
+          char number[32]{};
+          const auto converted = std::to_chars(number, number + sizeof(number), integer);
+          if (converted.ec != std::errc{}) return false;
+          if (parameters.set(key, std::string_view(number, converted.ptr - number)) !=
+              calibration::Mq135NormalizedParameters::Status::Complete) {
+            return false;
+          }
+        }
+        if (!parameters.complete()) return false;
+        criteria = parameters.criteria();
+        envelope.normalized_mode = true;
+      } else {
+        calibration::Mq135ReferenceParameters parameters{};
+        for (const auto key : calibration::kMq135ReferenceParameterNames) {
+          std::string_view value{}; char number[32]{};
+          if (key == "hardware_identity" || key == "reference_environment") {
+            if (!json_string(payload, key, value)) return false;
+          } else {
+            int64_t integer{};
+            if (!json_number(payload, key, integer)) return false;
+            const auto converted = std::to_chars(number, number + sizeof(number), integer);
+            if (converted.ec != std::errc{}) return false;
+            value = std::string_view(number, converted.ptr - number);
+          }
+          if (!parameters.set(key, value)) return false;
+        }
+        if (!parameters.complete()) return false;
+        criteria = parameters.criteria();
+      }
+    } else if (target >= calibration::CalibrationTarget::UltrasonicOrganic && target <= calibration::CalibrationTarget::UltrasonicB3) {
       if (!json_number(payload, "max_span_mm", span)) return false;
       criteria = calibration::DistanceCaptureCriteria{static_cast<uint16_t>(samples), static_cast<float>(span)};
     } else if (target >= calibration::CalibrationTarget::Mq4 && target <= calibration::CalibrationTarget::Mq8) {
@@ -423,12 +507,23 @@ bool ApplicationCalibrationExecutor::execute(
   if (!controller_.execute(envelope, now_us, response)) return false;
   if (response.status == calibration::CalibrationCommandStatus::Replayed &&
       response.profile.present &&
-      envelope.operation == calibration::CalibrationOperation::Commit) {
+      (envelope.operation == calibration::CalibrationOperation::Commit || envelope.operation == calibration::CalibrationOperation::Rollback)) {
     result.status = network::DeviceControlStatus::Committed;
     return append_result_json(response, command.sensor_id.view(), result);
   }
   const bool accepted = response.status == calibration::CalibrationCommandStatus::Accepted ||
                         response.status == calibration::CalibrationCommandStatus::Replayed;
+  if (accepted && response.gas.present) {
+    maintenance::MaintenanceResponse gas{};
+    const bool emitted = response.normalized_gas.present
+                             ? router_.append_mq135_normalized_result(
+                                   gas, response.normalized_gas)
+                             : router_.append_mq135_gas_result(gas, response.gas);
+    if (!emitted || gas.size() > result.payload.size()) return false;
+    std::copy(gas.view().begin(), gas.view().end(), result.payload.begin());
+    result.payload_size = gas.size(); result.status = network::DeviceControlStatus::Accepted;
+    return true;
+  }
   if (envelope.operation == calibration::CalibrationOperation::Start &&
       response.status != calibration::CalibrationCommandStatus::Replayed &&
       !apply_setup_fields(command, target, now_us, true)) {

@@ -145,6 +145,19 @@ describe('monitoring API client', () => {
     );
   });
 
+  it('passes exact boot and cursor while preserving existing argument positions', async () => {
+    let requestUrl = '';
+    const client = createApiClient(async (input) => { requestUrl = String(input); return jsonResponse({device_id:'device-a',sensor_id:'sht31_44',points:[],next_cursor:'cursor-2'}); });
+    const controller = new AbortController();
+    await client.fetchSensorHistory('device-a','sht31_44','cursor-1',controller.signal,'boot-exact');
+    const parsed = new URL(requestUrl, 'http://localhost');
+    expect(parsed.pathname).toBe('/api/devices/device-a/sensor-history');
+    expect(parsed.searchParams.get('sensor_id')).toBe('sht31_44');
+    expect(parsed.searchParams.get('cursor')).toBe('cursor-1');
+    expect(parsed.searchParams.get('boot_id')).toBe('boot-exact');
+    expect(parsed.searchParams.get('limit')).toBe('200');
+  });
+
   it('reads safe runtime simulation metadata without credentials', async () => {
     let requestUrl = '';
     const client = createApiClient(async (input) => {

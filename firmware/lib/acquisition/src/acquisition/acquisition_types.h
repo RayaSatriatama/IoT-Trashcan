@@ -4,6 +4,7 @@
 #include <cstdint>
 
 #include "config/config_types.h"
+#include "acquisition/mq_adc_calibration.h"
 
 namespace sigap::acquisition {
 
@@ -37,7 +38,11 @@ enum class SampleReason : uint8_t {
   InvalidProfile, HeaterPhase, ConversionPending, OutOfRange, ProfileMissing,
 };
 enum class TimeQuality : uint8_t { Unsynced, Synchronized, Estimated };
-enum class ConvertedKind : uint8_t { None, Kilograms, FillPercent, AdcMillivolts, Celsius, HumidityPercent };
+enum class ConvertedKind : uint8_t {
+  None, Kilograms, FillPercent, AdcMillivolts, Celsius, HumidityPercent,
+  // Persisted in the existing secondary-kind byte to identify validated MQ135 pin mV.
+  AdcPinMillivolts = 6,
+};
 enum class DriverPollStatus : uint8_t { NoAttempt, Produced, Fault };
 enum class Mq7HeaterPhase : uint8_t { Preheat, HighClean, LowDetect, Fault };
 
@@ -96,6 +101,11 @@ struct RawObservation {
   std::array<uint8_t, 8> ds_rom{};
   std::array<uint8_t, 9> ds_scratchpad{};
   uint8_t ds_resolution_bits{0U};
+  // Internal same-sample calibrated ADC voltage evidence, appended after the
+  // existing fields so aggregate initialisers and other sensors are unchanged.
+  // Deliberately not encoded by the archive codec or the telemetry-v3 writer;
+  // it becomes a versioned result field only in a later slice.
+  MqAdcCalibratedVoltage adc_calibration{};
 };
 
 struct ConvertedObservation {

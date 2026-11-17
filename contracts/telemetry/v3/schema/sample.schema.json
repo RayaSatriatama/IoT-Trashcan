@@ -33,8 +33,22 @@
       "then": {"properties": {"raw": {"$ref": "sample/ultrasonic.schema.json#/$defs/raw"}, "converted": {"$ref": "sample/ultrasonic.schema.json#/$defs/converted"}}}
     },
     {
-      "if": {"properties": {"sensor_id": {"enum": ["mq4", "mq135", "mq7", "mq8"]}}},
+      "if": {"properties": {"sensor_id": {"enum": ["mq4", "mq7", "mq8"]}}},
       "then": {"properties": {"raw": {"$ref": "sample/mq.schema.json#/$defs/raw"}, "converted": {"$ref": "sample/mq.schema.json#/$defs/converted"}}}
+    },
+    {
+      "if": {"properties": {"sensor_id": {"const": "mq135"}}},
+      "then": {"properties": {"raw": {"$ref": "sample/mq135.schema.json#/$defs/raw"}, "converted": {"$ref": "sample/mq135.schema.json#/$defs/converted"}}}
+    },
+    {
+      "if": {
+        "properties": {
+          "sensor_id": {"const": "mq135"},
+          "converted": {"type": "object", "anyOf": [{"required": ["adc_pin_mv"]}, {"required": ["sensor_ao_mv"]}, {"required": ["adc_efuse_calibrated"]}]}
+        },
+        "required": ["sensor_id", "converted"]
+      },
+      "then": {"properties": {"quality": {"const": "READY"}}}
     },
     {
       "if": {"properties": {"sensor_id": {"const": "ds18b20_b3"}}},

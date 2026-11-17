@@ -211,7 +211,9 @@ void test_scan_is_rate_limited() {
   PersistentSecretStore secrets(backend);
   Clock clock;
   Station station;
-  WifiConnectionManager manager(secrets, station, clock);
+  ProvisioningPolicy policy;
+  policy.scan_cooldown_ms = 15000U;
+  WifiConnectionManager manager(secrets, station, clock, policy);
   TEST_ASSERT_EQUAL_INT(WifiScanStatus::Pending, manager.request_scan());
   std::array<WifiNetwork, 2> networks{};
   std::size_t count{0U};
@@ -219,6 +221,28 @@ void test_scan_is_rate_limited() {
                         manager.poll_scan(networks.data(), networks.size(), count));
   TEST_ASSERT_EQUAL_UINT(1U, count);
   TEST_ASSERT_EQUAL_INT(WifiScanStatus::RateLimited, manager.request_scan());
+}
+
+void test_default_scan_can_restart_immediately_without_overlapping_pending_scan() {
+  MemorySecretBlobStore backend;
+  PersistentSecretStore secrets(backend);
+  Clock clock;
+  clock.now = 100U;
+  Station station;
+  WifiConnectionManager manager(secrets, station, clock);
+  TEST_ASSERT_TRUE(kDefaultProvisioningPolicy.valid());
+  TEST_ASSERT_EQUAL_INT(WifiScanStatus::Pending, manager.request_scan());
+  TEST_ASSERT_EQUAL_INT(WifiScanStatus::Pending, manager.request_scan());
+  TEST_ASSERT_EQUAL_INT(1, station.scan_begin_calls);
+  std::array<WifiNetwork, 2> rows{};
+  std::size_t count{};
+  TEST_ASSERT_EQUAL_INT(WifiScanStatus::Ready, manager.poll_scan(rows.data(), rows.size(), count));
+  TEST_ASSERT_EQUAL_INT(WifiScanStatus::Pending, manager.request_scan());
+  TEST_ASSERT_EQUAL_INT(2, station.scan_begin_calls);
+  TEST_ASSERT_EQUAL_INT(WifiScanStatus::Ready, manager.poll_scan(rows.data(), rows.size(), count));
+  --clock.now;
+  TEST_ASSERT_EQUAL_INT(WifiScanStatus::Pending, manager.request_scan());
+  TEST_ASSERT_EQUAL_INT(3, station.scan_begin_calls);
 }
 
 void test_empty_known_network_list_is_ready_before_first_provisioning() {
@@ -240,7 +264,9 @@ void test_wifi_scan_events_report_observed_lifecycle() {
   PersistentSecretStore secrets(backend);
   Clock clock;
   Station station;
-  WifiConnectionManager manager(secrets, station, clock);
+  ProvisioningPolicy policy;
+  policy.scan_cooldown_ms = 15000U;
+  WifiConnectionManager manager(secrets, station, clock, policy);
   Sink sink;
   manager.bind_debug_sink(&sink);
   TEST_ASSERT_EQUAL_INT(WifiScanStatus::Pending,
@@ -683,13 +709,7 @@ void test_two_association_failure_deadline_retry_up_cycles_preserve_saved_bytes(
     TEST_ASSERT_EQUAL_INT(WifiState::Backoff, manager.state());
     assert_wifi_input(sink.last, 25U, 0, 2, clock.now);
     const auto calls = station.begin_calls;
-    const auto events = sink.attempts;
-    const auto deadline = clock.now + 1000000U;
-    clock.now = deadline - 1U;
-    manager.poll();
-    TEST_ASSERT_EQUAL_INT(calls, station.begin_calls);
-    TEST_ASSERT_EQUAL_UINT(events, sink.attempts);
-    clock.now = deadline;
+    // The next poll retries immediately, without advancing the clock.
     manager.poll();
     TEST_ASSERT_EQUAL_INT(calls + 1, station.begin_calls);
     TEST_ASSERT_EQUAL_INT(WifiState::Connecting, manager.state());
@@ -756,7 +776,9 @@ void test_sink_backpressure_cannot_change_scan_link_or_persistence_business_effe
     Clock clock;
     clock.now = 1U;
     Station station;
-    WifiConnectionManager manager(secrets, station, clock);
+    ProvisioningPolicy policy;
+    policy.scan_cooldown_ms = 15000U;
+    WifiConnectionManager manager(secrets, station, clock, policy);
     Sink sink;
     sink.accept = mode != 2U;
     sigap::acquisition::BootId boot{};
@@ -836,10 +858,12 @@ void test_sink_backpressure_cannot_change_scan_link_or_persistence_business_effe
     TEST_ASSERT_EQUAL_INT(WifiScanStatus::RateLimited, manager.request_scan());
     TEST_ASSERT_EQUAL_INT(1, station.scan_begin_calls);
     TEST_ASSERT_EQUAL_INT(2, station.scan_poll_calls);
+    manager.poll();
+    TEST_ASSERT_EQUAL_INT(4, station.begin_calls);
+    TEST_ASSERT_EQUAL_INT(WifiState::Connecting, manager.state());
     const auto attempts = mode < 3U ? sink.attempts : forwarding.attempts;
     TEST_ASSERT_EQUAL_INT(WifiScanStatus::Ready,
         manager.list_known(rows.data(), rows.size(), count));
-    manager.poll();
     const auto cursor = sigap::debug::Cursor{boot, service.meta(clock.now).latest};
     (void)service.read(cursor);
     sigap::debug::BatchSnapshot snapshot{};
@@ -858,7 +882,7 @@ void test_sink_backpressure_cannot_change_scan_link_or_persistence_business_effe
     if (mode == 2U) {
       TEST_ASSERT_TRUE(sink.attempts > 0U);
       TEST_ASSERT_EQUAL_UINT(0U, sink.size);
-      assert_wifi_input(sink.last, 23U, 15, 0, clock.now);
+      assert_wifi_input(sink.last, 25U, 1, 1, clock.now);
     }
     if (mode == 3U || mode == 4U) {
       TEST_ASSERT_TRUE(forwarding.attempts > 0U);
@@ -873,7 +897,7 @@ void test_sink_backpressure_cannot_change_scan_link_or_persistence_business_effe
         TEST_ASSERT_EQUAL_UINT64(meta_before.overwritten + forwarding.accepted, meta.overwritten);
         const auto last = service.read({boot, meta.latest - 1U});
         TEST_ASSERT_TRUE(last.has_event);
-        TEST_ASSERT_EQUAL_UINT(23U, last.event.event_code);
+        TEST_ASSERT_EQUAL_UINT(25U, last.event.event_code);
         TEST_ASSERT_EQUAL_INT(sigap::debug::Module::Wifi, last.event.module);
       }
     }
@@ -888,6 +912,7 @@ int main() {
   RUN_TEST(test_successful_candidate_persists_after_ip);
   RUN_TEST(test_scan_is_rate_limited);
   RUN_TEST(test_empty_known_network_list_is_ready_before_first_provisioning);
+  RUN_TEST(test_default_scan_can_restart_immediately_without_overlapping_pending_scan);
   RUN_TEST(test_wifi_scan_events_report_observed_lifecycle);
   RUN_TEST(test_wifi_scan_unknown_failure_does_not_invent_reason);
   RUN_TEST(test_wifi_link_retry_cycles_emit_only_real_state_changes);

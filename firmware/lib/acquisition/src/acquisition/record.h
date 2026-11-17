@@ -9,6 +9,9 @@ class IUtcSource {
  public:
   virtual ~IUtcSource() = default;
   virtual bool now_ms(int64_t& epoch_ms) noexcept = 0;
+  virtual bool at_monotonic_us(uint64_t, int64_t& epoch_ms) noexcept {
+    return now_ms(epoch_ms);
+  }
 };
 
 struct RecordContext {
@@ -31,6 +34,8 @@ class RecordFactory final {
     context_.device_id = device_id;
   }
 
+  void set_utc_source(IUtcSource* source) noexcept { context_.utc_source = source; }
+
   DriverPollStatus make(uint64_t monotonic_us, SensorId sensor, StreamId stream,
                         SampleKind kind, SampleQuality quality, SampleReason reason,
                         const RawObservation& raw, const ConvertedObservation& converted,
@@ -50,7 +55,7 @@ class RecordFactory final {
     out.header.time_quality = TimeQuality::Unsynced;
     if (context_.utc_source != nullptr) {
       int64_t epoch_ms{0};
-      if (context_.utc_source->now_ms(epoch_ms)) {
+      if (context_.utc_source->at_monotonic_us(monotonic_us, epoch_ms)) {
         out.header.recorded_at.available = true;
         out.header.recorded_at.epoch_ms = epoch_ms;
         out.header.time_quality = TimeQuality::Synchronized;

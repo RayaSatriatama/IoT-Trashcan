@@ -33,6 +33,13 @@ type firmwareMonitoringDTO struct {
 var monitoringRawKeys = []string{"counts", "adc_counts", "echo_us", "temperature_ticks", "humidity_ticks", "temperature_raw"}
 var monitoringConvertedKeys = []string{"kg", "distance_mm", "fill_percent", "adc_mv", "temperature_c", "humidity_percent"}
 
+func monitoringConvertedKeysFor(sensorID string) []string {
+	if sensorID != "mq135" {
+		return monitoringConvertedKeys
+	}
+	return append(append([]string(nil), monitoringConvertedKeys...), "adc_pin_mv", "sensor_ao_mv", "adc_efuse_calibrated")
+}
+
 func monitoringNumbers(raw json.RawMessage, keys []string) map[string]float64 {
 	var fields map[string]json.RawMessage
 	if json.Unmarshal(raw, &fields) != nil {
@@ -94,7 +101,7 @@ func (api *ReadAPI) firmwareMonitoring(ctx context.Context, owner string) ([]fir
 		// Uncalibrated raw values are useful; they must not be disguised as
 		// calibrated engineering values or feed legacy operational KPIs.
 		if view.Quality == "READY" {
-			view.Converted = monitoringNumbers(item.Converted, monitoringConvertedKeys)
+			view.Converted = monitoringNumbers(item.Converted, monitoringConvertedKeysFor(sensor))
 		}
 		result = append(result, view)
 	}

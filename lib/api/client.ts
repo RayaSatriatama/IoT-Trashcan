@@ -10,6 +10,7 @@ import type {
   OverviewResponse,
   ResearchResponse,
   RuntimeResponse,
+  SensorHistoryPage,
 } from './types';
 
 export type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -63,6 +64,7 @@ export function createApiClient(fetcher: Fetcher = fetch): {
   fetchDevice(id: string, signal?: AbortSignal): Promise<DeviceDetail>;
   fetchDevices(signal?: AbortSignal): Promise<DeviceSummaryResponse>;
   fetchResearch(id: string, signal?: AbortSignal): Promise<ResearchResponse>;
+  fetchSensorHistory(id: string, sensorId: string, cursor?: string, signal?: AbortSignal, bootId?: string): Promise<SensorHistoryPage>;
   fetchRuntime(signal?: AbortSignal): Promise<RuntimeResponse>;
   fetchHistory(filters?: HistoryFilters, page?: HistoryPageRequest, signal?: AbortSignal): Promise<HistoryResponse>;
   buildExportURL(filters?: HistoryFilters): string;
@@ -89,6 +91,7 @@ export function createApiClient(fetcher: Fetcher = fetch): {
     fetchDevice: (id, signal) => get<DeviceDetail>(`/api/devices/${encodeId(id)}`, signal),
     fetchDevices: (signal) => get<DeviceSummaryResponse>('/api/devices', signal),
     fetchResearch: (id, signal) => get<ResearchResponse>(`/api/devices/${encodeId(id)}/research`, signal),
+    fetchSensorHistory: (id, sensorId, cursor, signal, bootId) => { const query = new URLSearchParams({sensor_id:sensorId,limit:'200'}); if(cursor) query.set('cursor',cursor); if(bootId) query.set('boot_id',bootId); return get<SensorHistoryPage>(`/api/devices/${encodeId(id)}/sensor-history?${query}`, signal); },
     fetchRuntime: (signal) => get<RuntimeResponse>('/api/runtime', signal),
     fetchHistory: (filters = {}, page = {}, signal) => {
       const query = new URLSearchParams(serializeHistoryFilters(filters));

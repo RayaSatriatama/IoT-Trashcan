@@ -4,6 +4,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <algorithm>
 #include <limits>
 #include <string_view>
 
@@ -129,6 +130,7 @@ enum class DeliveryStatus : uint8_t {
   Durable,
   Retryable,
   Invalid,
+  Pending,
 };
 
 class IImmutableBatchSource {
@@ -175,6 +177,7 @@ class NetworkWorker final {
 
   NetworkOutcome poll() noexcept {
     const auto now = clock_.now_us();
+    if (ack_pending_) return finish_pending_ack(now);
     if (state_ == NetworkState::AuthRequired) {
       return NetworkOutcome::Unauthorized;
     }
@@ -242,14 +245,9 @@ class NetworkWorker final {
         schedule_retry(now, 0U);
         return NetworkOutcome::ProtocolError;
       }
-      if (batches_.acknowledge(response.ack) != DeliveryStatus::Durable) {
-        schedule_retry(now, 0U);
-        return NetworkOutcome::DeliveryFailure;
-      }
-      retry_attempt_ = 0U;
-      next_attempt_us_ = now;
-      state_ = NetworkState::Online;
-      return NetworkOutcome::Delivered;
+      pending_ack_ = response.ack;
+      ack_pending_ = true;
+      return finish_pending_ack(now);
     }
 
     if (response.status_code == 401 || response.status_code == 403) {
@@ -280,8 +278,24 @@ class NetworkWorker final {
   uint32_t retry_attempt() const noexcept { return retry_attempt_; }
   uint64_t next_attempt_us() const noexcept { return next_attempt_us_; }
   bool transport_pending() const noexcept { return transport_pending_; }
+  bool ack_pending() const noexcept { return ack_pending_; }
+  bool busy() const noexcept { return transport_pending_ || ack_pending_; }
 
  private:
+  NetworkOutcome finish_pending_ack(uint64_t now) noexcept {
+    const DeliveryStatus status = batches_.acknowledge(pending_ack_);
+    if (status == DeliveryStatus::Pending) return NetworkOutcome::Waiting;
+    ack_pending_ = false;
+    if (status == DeliveryStatus::Durable) {
+      retry_attempt_ = 0U;
+      next_attempt_us_ = now;
+      state_ = NetworkState::Online;
+      return NetworkOutcome::Delivered;
+    }
+    schedule_retry(now, 0U);
+    return NetworkOutcome::DeliveryFailure;
+  }
+
   static constexpr std::size_t kMaxTokenBytes{128U};
 
   void schedule_retry(uint64_t now_us, uint32_t retry_after_ms) noexcept {
@@ -320,6 +334,8 @@ class NetworkWorker final {
   uint32_t retry_attempt_{0U};
   uint64_t next_attempt_us_{0U};
   bool transport_pending_{false};
+  telemetry_archive::Ack pending_ack_{};
+  bool ack_pending_{false};
 };
 
 }  // namespace sigap::network

@@ -16,6 +16,8 @@ Status integrasi sensor terbaru, urutan prioritas, dan batas penerimaan fisik: [
 
 SIGAP MVP memiliki satu runtime Go dengan SQLite embedded, authenticated ingest, monitoring read APIs, history, CSV export, dan frontend Expo Web yang di-embed saat release build. Kontrak ingest mendukung bukti sensor fisik opsional, nilai turunan, trace keputusan FIS, dan kanal safety B3. Nilai dan threshold production final untuk FIS, safety, OGI, offline duration, verified-empty, dan event transition tetap deferred.
 
+Mode prototype latest-only memakai HTTPS dengan target snapshot bersama 1 detik untuk empat sensor aktif, tanpa backlog/replay sensor di RAM dan tanpa backup SD. Akuisisi tetap berjalan saat request aktif; riwayat hanya berisi sampel yang diterima server, bukan seluruh pembacaan. Lihat [kebijakan prototype](docs/prototype-operation.md) dan [analisis web TEST_ONLY](docs/web-derived-research.md). Build bukan bukti pemasangan atau penerimaan fisik.
+
 ## Menjalankan development
 
 Frontend:
